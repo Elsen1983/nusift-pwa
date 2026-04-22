@@ -13,13 +13,23 @@ export default defineNuxtConfig({
   compatibilityDate: "2024-04-03",
   devtools: { enabled: true },
 
+  // ANCHOR VITE-OPTIMIZATION
+  // Pre-bundles dynamically injected dependencies to prevent Vite from 
+  // hard-reloading the browser during development.
+  vite: {
+    optimizeDeps: {
+      include: [
+        '@vue/devtools-core',
+        '@vue/devtools-kit',
+        'workbox-window',
+      ]
+    }
+  },
+
   // ANCHOR MODULE-REGISTRATION
-  // Added @vite-pwa/nuxt for Service Worker generation and app installability.
   modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt"],
 
   // ANCHOR ALIAS-CONFIGURATION
-  // Replaces the standard vite.aliases.js implementation.
-  // Nuxt automatically syncs these with Vite and your tsconfig.json.
   alias: {
     "@": "./app",
     "@assets": "./app/assets",
@@ -39,14 +49,12 @@ export default defineNuxtConfig({
         { name: "theme-color", content: "#131313" },
       ],
       link: [
-        // ANCHOR EXTERNAL-RESOURCES
         { rel: "preconnect", href: "https://fonts.googleapis.com" },
         {
           rel: "preconnect",
           href: "https://fonts.gstatic.com",
           crossorigin: "",
         },
-        // ANCHOR TYPOGRAPHY-DEFINITION
         {
           rel: "stylesheet",
           href: "https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Rajdhani:wght@500;600;700&family=Roboto+Mono:wght@400;500;700&family=Inter:wght@400;500&display=swap",
@@ -60,9 +68,15 @@ export default defineNuxtConfig({
   },
 
   // ANCHOR PWA-CONFIGURATION
-  // Defines the Web App Manifest requirements to trigger the 'beforeinstallprompt'.
   pwa: {
     registerType: "autoUpdate",
+    injectRegister: "auto",
+    workbox: {
+      globPatterns: ['**/*.{js,css,html,png,svg,ico}'],
+    },
+    client: {
+      installPrompt: true,
+    },
     manifest: {
       name: "NuSift Sovereign Reader",
       short_name: "NuSift",
@@ -70,30 +84,30 @@ export default defineNuxtConfig({
       description: "Sovereign-Grade AI Reader and Neural Node",
       theme_color: "#131313",
       background_color: "#131313",
-      display: "standalone", // Critical for native app feel
+      display: "standalone",
       orientation: "portrait",
       icons: [
         {
-          src: "pwa-192x192.png",
+          src: "/pwa-192x192.png", // Added leading slash
           sizes: "192x192",
           type: "image/png",
         },
         {
-          src: "pwa-512x512.png",
+          src: "/pwa-512x512.png", // Added leading slash
           sizes: "512x512",
           type: "image/png",
         },
         {
-          src: "pwa-512x512.png",
+          src: "/pwa-512x512.png", // Added leading slash
           sizes: "512x512",
           type: "image/png",
-          purpose: "any maskable", // Recommended for Android adaptive icons
+          purpose: "any maskable",
         },
       ],
     },
-    // Required for Nuxt dev environment testing
     devOptions: {
       enabled: true,
+      suppressWarnings: true,
       type: "module",
     },
   },
@@ -109,7 +123,6 @@ export default defineNuxtConfig({
             label: ["Roboto Mono", "monospace"],
           },
           colors: {
-            // ANCHOR COLOR-PALETTE
             background: "#131313",
             surface: "#1e1e1e",
             "primary-container": "#00ffff",

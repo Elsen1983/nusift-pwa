@@ -1,4 +1,4 @@
-import { ref, shallowRef } from 'vue';
+import { ref, shallowRef, onMounted } from 'vue';
 
 /** ANCHOR GLOBAL-STATE
  * Declared outside the composable to act as a singleton across the application.
@@ -9,10 +9,21 @@ const deferredPrompt = shallowRef<any>(null);
 const isIOS = ref<boolean>(false);
 const isInStandalone = ref<boolean>(false);
 
+// ANCHOR VITE-PWA-DEV-REGISTRATION
+// Ez a sor kényszeríti a Service Worker regisztrálását kliens oldalon.
+if (import.meta.client) {
+  import('virtual:pwa-register').then(({ registerSW }) => {
+    registerSW({ immediate: true });
+  }).catch(() => {
+    // Csendes fail SSR vagy build környezetben
+  });
+}
+
 // ANCHOR EARLY-INTERCEPTION
 // Executed immediately upon file import, bypassing Vue lifecycle hooks.
 // import.meta.client guarantees this strictly runs in the browser, preventing SSR crashes.
 if (import.meta.client) {
+  console.log("Checking if PWA install banner should be suppressed based on localStorage...");
   const ua: string = window.navigator.userAgent.toLowerCase();
   isIOS.value = /iphone|ipad|ipod/.test(ua) && !(window as any).MSStream;
   

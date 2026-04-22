@@ -2,6 +2,8 @@
   <div
     class="min-h-screen bg-background text-on-background font-body selection:bg-primary-container selection:text-on-primary-container relative overflow-hidden"
   >
+    <PwaInstallBanner />
+
     <div
       v-if="isLoading"
       class="fixed inset-0 backdrop-blur-sm bg-surface/80 z-[100] flex flex-col items-center justify-center"
@@ -35,35 +37,6 @@
     <main
       class="min-h-screen flex flex-col items-center justify-center px-8 py-6 max-w-md mx-auto relative z-10"
     >
-      <!-- <div
-        v-if="!isStandalone && deferredPrompt"
-        class="absolute top-0 left-0 w-full z-50 bg-surface-container border-b border-outline-variant/30 px-4 py-3 flex justify-between items-center shadow-lg animate-in slide-in-from-top-4"
-      >
-        <div class="flex items-center gap-3">
-          <span class="material-symbols-outlined text-primary-container text-xl"
-            >install_desktop</span
-          >
-          <div>
-            <p
-              class="font-headline text-xs font-bold text-on-surface uppercase tracking-wide"
-            >
-              Install NuSift
-            </p>
-            <p
-              class="font-label text-[10px] text-on-surface-variant opacity-80"
-            >
-              Enable local sovereign access.
-            </p>
-          </div>
-        </div>
-        <button
-          @click="promptInstall"
-          class="bg-primary-container/10 hover:bg-primary-container/20 text-primary-container font-headline text-[10px] font-bold uppercase tracking-widest px-4 py-2 rounded-lg transition-colors border border-primary-container/30"
-        >
-          Install
-        </button>
-      </div> -->
-      <PwaInstallBanner />
       <section class="w-full flex flex-col items-center mb-6">
         <div class="relative w-[125px] h-[125px] mb-4 shadow-xl rounded-xl">
           <div
@@ -335,7 +308,6 @@ import { useRouter } from "nuxt/app";
 
 /** ANCHOR PAGE-SETUP */
 const router = useRouter();
-// const { isStandalone, deferredPrompt, promptInstall } = usePWADetector(); // Inject PWA logic
 
 /** UI States */
 const isRegistering = ref(false);
