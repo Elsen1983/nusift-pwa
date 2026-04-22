@@ -42,32 +42,31 @@
 import { computed } from 'vue'
 import type { NuxtError } from '#app'
 
-/**
- * Nuxt 3 automatically passes the 'error' prop to this file.
- */
+/** ANCHOR ERROR-PROPS
+ * Nuxt 3/4 automatically injects the error object as a prop. */
 const props = defineProps({
   error: Object as () => NuxtError
 })
 
-/**
- * Specifically check for 404 to provide tailored cyber-punk feedback.
- */
+/** ANCHOR COMPUTED-LOGIC
+ * Checks if the current error is a 404 for tailored UI feedback. */
 const is404 = computed(() => props.error?.statusCode === 404)
 
-/**
- * clearError is a Nuxt utility that resets the error state 
- * and redirects the user to a safe entry point.
- */
+/** ANCHOR NAVIGATION-RECOVERY
+ * Resets the Nuxt error state and forces a clean redirect to /auth. 
+ * This ensures the user doesn't get stuck in a broken routing state. */
 const handleError = () => clearError({ redirect: '/auth' })
 </script>
 
 <style scoped>
-/* Scoped Typography: Ensuring the sci-fi feel */
+/* ANCHOR TYPOGRAPHY-SCOPE
+   Ensuring consistent sci-fi font application within the error boundary. */
 .font-headline { font-family: 'Orbitron', sans-serif; }
 .font-label { font-family: 'Roboto Mono', monospace; }
 .font-body { font-family: 'Rajdhani', sans-serif; }
 
-/* Pulse animation for the neon status code */
+/* ANCHOR ANIMATION-DEFINITIONS
+   Pulse-neon effect for the status code to add a 'living' system feel. */
 @keyframes pulse-neon {
   0%, 100% { opacity: 1; filter: drop-shadow(0 0 15px rgba(0,255,255,0.5)); }
   50% { opacity: 0.8; filter: drop-shadow(0 0 30px rgba(0,255,255,0.8)); }

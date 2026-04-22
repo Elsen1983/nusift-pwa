@@ -1,32 +1,56 @@
-// app/middleware/main-guard.global.ts
+/**
+ * ANCHOR GUARD-OVERVIEW
+ * NuSift Global Route Guard
+ * This middleware acts as the primary traffic controller for the application.
+ * It ensures that unauthenticated or first-time users are funneled toward 
+ * the 'Sovereign Handshake' (Auth) process.
+ */
+
 export default defineNuxtRouteMiddleware((to, from) => {
-  // 1. Path Constants
+  
+  // ANCHOR CONSTANTS
+  // Centralized path definitions to avoid hardcoded string errors across the app.
   const AUTH_PATH = "/auth";
   const DASHBOARD_PATH = '/app/dashboard';
   const ROOT_PATH = "/";
 
-  // 2. SSR Check: A szerver nem látja a localStorage-ot.
-  // Megoldás: Szerver oldalon CSAK a "/" útvonalat irányítjuk át alapértelmezetten, 
-  // vagy hagyjuk, hogy a kliens döntsön.
+  // ANCHOR SSR-HANDLING
+  // Server-Side Rendering Check:
+  // Since localStorage is unavailable on the server, we perform a proactive
+  // redirect for the root path to prevent flashing of unauthorized content.
   if (import.meta.server) {
     if (to.path === ROOT_PATH) {
-      return navigateTo(AUTH_PATH); // Szerver oldali gyors-irányítás
+      return navigateTo(AUTH_PATH); 
     }
     return;
   }
 
-  // 3. Client-side Logic (már van localStorage)
+  // ANCHOR :STATE-RETRIEVAL
+  // Client-side execution starts here.
+  // We check for the 'nusift_visited' flag to identify returning sovereign users.
   const hasVisited = localStorage.getItem("nusift_visited");
+  
+  // FUTURE_ANCHOR PINIA-INTEGRATION
+  // This is the landing spot for the future UserStore.isLoggedIn check.
   const isLoggedIn = false;
 
-  // CASE 1: First time visitor
+  // ANCHOR REDIRECT-LOGIC
+  // Logic Gate 1: First time visitor (Handshake missing)
+  // If the user has never visited, they are replaced in history by the Auth page.
   if (!hasVisited && to.path !== AUTH_PATH) {
     return navigateTo(AUTH_PATH, { replace: true });
   }
 
-  // CASE 2: Routing from Root
+  // ANCHOR ROOT-DISPATCHER
+  // Logic Gate 2: Root Path handling.
+  // The "/" path is never a final destination; it always dispatches 
+  // users to their relevant environment based on auth status.
   if (to.path === ROOT_PATH) {
     const target = isLoggedIn ? DASHBOARD_PATH : AUTH_PATH;
     return navigateTo(target, { replace: true });
   }
+
+  // ANCHOR SECURITY-AUDIT
+  // Additional safety checks or role-based access control (RBAC) 
+  // can be inserted here as the NuSift ecosystem expands.
 });

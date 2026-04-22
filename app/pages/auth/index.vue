@@ -36,7 +36,7 @@
       class="min-h-screen flex flex-col items-center justify-center px-8 py-6 max-w-md mx-auto relative z-10"
     >
       <section class="w-full flex flex-col items-center mb-6">
-        <div class="relative w-[100px] h-[100px] mb-4 shadow-xl rounded-xl">
+        <div class="relative w-[125px] h-[125px] mb-4 shadow-xl rounded-xl">
           <div
             class="absolute inset-0 bg-primary-container/10 blur-xl rounded-full"
           ></div>
@@ -304,6 +304,7 @@
 import { ref, onMounted, watch } from "vue";
 import { useRouter } from "nuxt/app";
 
+/** ANCHOR PAGE-SETUP */
 const router = useRouter();
 
 /** UI States */
@@ -312,16 +313,16 @@ const isLoading = ref(false);
 const showForgotButton = ref(false);
 const activeModal = ref<null | "terms" | "privacy" | "help">(null);
 
-/** Form Data */
+/** ANCHOR FORM-MODELS */
 const email = ref("");
 const password = ref("");
 const emailError = ref("");
 const passwordError = ref("");
 
-/** RFC 5322 Email Validation */
+/** ANCHOR VALIDATION-EMAIL */
 const validateEmailField = () => {
   if (!email.value) {
-    emailError.value = ""; // Don't show error if empty during typing
+    emailError.value = ""; 
     return false;
   }
   const regex =
@@ -334,7 +335,7 @@ const validateEmailField = () => {
   return true;
 };
 
-/** NIST Password Validation (Strict AND logic) */
+/** ANCHOR VALIDATION-PASSWORD */
 const validatePasswordField = () => {
   passwordError.value = "";
   if (!password.value) return false;
@@ -359,7 +360,7 @@ const validatePasswordField = () => {
   return true;
 };
 
-/** Immediate Reactive Watchers */
+/** ANCHOR REACTIVE-WATCHERS */
 watch(email, () => validateEmailField());
 watch(password, () => validatePasswordField());
 
@@ -367,10 +368,7 @@ onMounted(() => {
   if (!localStorage.getItem("nusift_visited")) isRegistering.value = true;
 });
 
-/**
- * FIX: Full State Reset on toggle
- * Clears inputs, errors and resets the UI state
- */
+/** ANCHOR UI-HANDLERS */
 const toggleAuthMode = () => {
   isRegistering.value = !isRegistering.value;
 
@@ -378,7 +376,7 @@ const toggleAuthMode = () => {
   email.value = "";
   password.value = "";
 
-  // Clear Errors (Implicitly re-enables button via v-model/watch)
+  // Clear Errors
   emailError.value = "";
   passwordError.value = "";
 
@@ -392,6 +390,7 @@ const handleAuth = async () => {
 
   isLoading.value = true;
   try {
+    /** ANCHOR SIMULATED-HANDSHAKE */
     await new Promise((resolve) => setTimeout(resolve, 2200));
     localStorage.setItem("nusift_visited", "true");
     isRegistering.value ? router.push("/verify-email") : router.push("/");
@@ -416,6 +415,7 @@ const handleOAuth = async (provider: string) => {
 </script>
 
 <style>
+/* ANCHOR PAGE-STYLES */
 .standard-field input {
   padding-top: 0.85rem !important;
   padding-bottom: 0.85rem !important;

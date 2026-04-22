@@ -1,10 +1,23 @@
+/** ANCHOR TYPESCRIPT-ROOT-CONFIG
+ * The master TypeScript configuration for NuSift.
+ * It acts as a bridge to Nuxt's auto-generated types, ensuring 
+ * full type-safety across the 'Sovereign' codebase. */
 {
-  // https://nuxt.com/docs/guide/concepts/typescript
+  // ANCHOR COMPILER-OPTIONS
+  // Enforces strict type-checking to prevent runtime anomalies 
+  // and ensures cross-platform case sensitivity consistency.
   "compilerOptions": {
     "strict": true,
     "forceConsistentCasingInFileNames": true
   },
+  // ANCHOR FILE-EXCLUSIONS
+  // The 'files' array is empty because the logic is handled 
+  // via the references to Nuxt's internal JSON files.
   "files": [],
+  // ANCHOR NUXT-INTERNAL-REFERENCES
+  // These paths link to the internal Nuxt build environment.
+  // This allows the IDE to understand the split between 
+  // app-side, server-side (Nitro), and node-side logic.
   "references": [
     {
       "path": "./.nuxt/tsconfig.app.json"
