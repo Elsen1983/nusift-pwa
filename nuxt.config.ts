@@ -1,13 +1,11 @@
-/** * ANCHOR NUXT-CONFIG-OVERVIEW
+/** ANCHOR NUXT-CONFIG-OVERVIEW
  * Central configuration manifest for NuSift.
  * Handles framework versioning, module integration, SEO metadata,
- * and the Sovereign-Grade design system tokens.
+ * PWA configuration, and the Sovereign-Grade design system tokens.
  */
 
 export default defineNuxtConfig({
   // ANCHOR VERSION-COMPATIBILITY
-  // Enables Nuxt 4 features and the new /app directory structure.
-  // This is critical for the project's modern architectural alignment.
   future: {
     compatibilityVersion: 4,
   },
@@ -16,8 +14,21 @@ export default defineNuxtConfig({
   devtools: { enabled: true },
 
   // ANCHOR MODULE-REGISTRATION
-  // TailwindCSS for styling and Pinia for state management (Sovereign Node State).
-  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt"],
+  // Added @vite-pwa/nuxt for Service Worker generation and app installability.
+  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt"],
+
+  // ANCHOR ALIAS-CONFIGURATION
+  // Replaces the standard vite.aliases.js implementation.
+  // Nuxt automatically syncs these with Vite and your tsconfig.json.
+  alias: {
+    "@": "./app",
+    "@assets": "./app/assets",
+    "@components": "./app/components",
+    "@layouts": "./app/layouts",
+    "@pages": "./app/pages",
+    "@stores": "./app/stores",
+    "@img": "./app/assets/images",
+  },
 
   app: {
     head: {
@@ -29,7 +40,6 @@ export default defineNuxtConfig({
       ],
       link: [
         // ANCHOR EXTERNAL-RESOURCES
-        // Preconnecting to Google Fonts for optimized latency during neural handshake.
         { rel: "preconnect", href: "https://fonts.googleapis.com" },
         {
           rel: "preconnect",
@@ -37,7 +47,6 @@ export default defineNuxtConfig({
           crossorigin: "",
         },
         // ANCHOR TYPOGRAPHY-DEFINITION
-        // Loading the core font families: Orbitron (Headlines), Rajdhani (Body), Roboto Mono (Labels).
         {
           rel: "stylesheet",
           href: "https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Rajdhani:wght@500;600;700&family=Roboto+Mono:wght@400;500;700&family=Inter:wght@400;500&display=swap",
@@ -50,8 +59,46 @@ export default defineNuxtConfig({
     },
   },
 
+  // ANCHOR PWA-CONFIGURATION
+  // Defines the Web App Manifest requirements to trigger the 'beforeinstallprompt'.
+  pwa: {
+    registerType: "autoUpdate",
+    manifest: {
+      name: "NuSift Sovereign Reader",
+      short_name: "NuSift",
+      start_url: "/",
+      description: "Sovereign-Grade AI Reader and Neural Node",
+      theme_color: "#131313",
+      background_color: "#131313",
+      display: "standalone", // Critical for native app feel
+      orientation: "portrait",
+      icons: [
+        {
+          src: "pwa-192x192.png",
+          sizes: "192x192",
+          type: "image/png",
+        },
+        {
+          src: "pwa-512x512.png",
+          sizes: "512x512",
+          type: "image/png",
+        },
+        {
+          src: "pwa-512x512.png",
+          sizes: "512x512",
+          type: "image/png",
+          purpose: "any maskable", // Recommended for Android adaptive icons
+        },
+      ],
+    },
+    // Required for Nuxt dev environment testing
+    devOptions: {
+      enabled: true,
+      type: "module",
+    },
+  },
+
   // ANCHOR TAILWIND-SYSTEM-TOKENS
-  // Mapping the design system to Tailwind classes for rapid, consistent UI development.
   tailwindcss: {
     config: {
       theme: {
@@ -63,10 +110,9 @@ export default defineNuxtConfig({
           },
           colors: {
             // ANCHOR COLOR-PALETTE
-            // Material Design 3 inspired dark palette for maximum legibility in low light.
             background: "#131313",
             surface: "#1e1e1e",
-            "primary-container": "#00ffff", // Neon cyan accent
+            "primary-container": "#00ffff",
             "on-primary-container": "#000000",
           },
         },
