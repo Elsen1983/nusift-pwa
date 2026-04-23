@@ -14,16 +14,12 @@ export default defineNuxtConfig({
   devtools: { enabled: true },
 
   // ANCHOR VITE-OPTIMIZATION
-  // Pre-bundles dynamically injected dependencies to prevent Vite from 
+  // Pre-bundles dynamically injected dependencies to prevent Vite from
   // hard-reloading the browser during development.
   vite: {
     optimizeDeps: {
-      include: [
-        '@vue/devtools-core',
-        '@vue/devtools-kit',
-        'workbox-window',
-      ]
-    }
+      include: ["@vue/devtools-core", "@vue/devtools-kit", "workbox-window"],
+    },
   },
 
   // ANCHOR MODULE-REGISTRATION
@@ -72,7 +68,7 @@ export default defineNuxtConfig({
     registerType: "autoUpdate",
     injectRegister: "auto",
     workbox: {
-      globPatterns: ['**/*.{js,css,html,png,svg,ico}'],
+      globPatterns: ["**/*.{js,css,html,png,svg,ico}"],
     },
     client: {
       installPrompt: true,
@@ -130,6 +126,30 @@ export default defineNuxtConfig({
           },
         },
       },
+    },
+  },
+
+  // ANCHOR CUSTOM-ROUTING
+  // Uses Nuxt 3/4 hooks to extend the file-based router
+  hooks: {
+    "pages:extend"(pages) {
+      pages.push(
+        {
+          name: "verify-email-custom",
+          path: "/verify-email",
+          file: "~/pages/verifyEmail/verify-email.vue",
+        },
+        {
+          name: "preloader-custom",
+          path: "/preloader-page", 
+          file: "~/pages/preloader/preloader-page-one.vue",
+        },
+        // {
+        //   name: "calibration-custom",
+        //   path: "/calibration", 
+        //   file: "~/pages/calibrations/sourceCalibration.vue",
+        // },
+      );
     },
   },
 

@@ -2,7 +2,9 @@
   <div
     class="min-h-screen bg-background text-on-background font-body selection:bg-primary-container selection:text-on-primary-container relative overflow-hidden"
   >
-    <PwaInstallBanner />
+    <ClientOnly>
+      <PwaInstallBanner />
+    </ClientOnly>
 
     <div
       v-if="isLoading"
