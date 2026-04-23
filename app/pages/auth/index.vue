@@ -307,6 +307,8 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
 import { useRouter } from "nuxt/app";
+import { useAuthStore } from '~/../stores/auth';
+const authStore = useAuthStore();
 
 /** ANCHOR PAGE-SETUP */
 const router = useRouter();
@@ -392,17 +394,27 @@ const handleAuth = async () => {
   const pValid = validatePasswordField();
   if (!eValid || !pValid) return;
 
-  isLoading.value = true;
-  try {
-    /** ANCHOR SIMULATED-HANDSHAKE */
+  if (isRegistering.value) {
+    // --- PINIA REGISZTRÁCIÓ ---
+    // A store.isLoading-et később rákötheted a gombod loader-ére is!
+    const success = await authStore.registerIdentity(email.value, password.value);
+    
+    if (success) {
+      // Ha a Pinia végzett, és sikeres volt az adatbázis írás
+      localStorage.setItem("nusift_visited", "true");
+      router.push("/verify-email");
+    } else {
+      // Ha hiba volt, a store kimenti a hibaüzenetet, mi csak kiírjuk
+      emailError.value = authStore.authError || "An unexpected error occurred.";
+    }
+    
+  } else {
+    // --- BEJELENTKEZÉS (Még mindig szimulálva) ---
+    isLoading.value = true;
     await new Promise((resolve) => setTimeout(resolve, 2200));
     localStorage.setItem("nusift_visited", "true");
-    isRegistering.value ? router.push("/verify-email") : router.push("/");
-  } catch (err) {
-    emailError.value = "Authentication failure. Check credentials.";
-    if (!isRegistering.value) showForgotButton.value = true;
-  } finally {
     isLoading.value = false;
+    router.push("/");
   }
 };
 

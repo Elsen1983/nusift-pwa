@@ -20,7 +20,7 @@ export default defineNuxtRouteMiddleware((to, from) => {
   const PUBLIC_ROUTES = [
     AUTH_PATH,
     '/verify-email',
-    '/preloader-page' // Ezt is add hozzá, ha tesztelni akarod
+    '/preloader-page'
   ];
 
   // If the target path is in the public whitelist, let them pass immediately.

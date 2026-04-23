@@ -4,16 +4,20 @@
  * full type-safety across the 'Sovereign' codebase. */
 {
   // ANCHOR COMPILER-OPTIONS
-  // Enforces strict type-checking to prevent runtime anomalies 
-  // and ensures cross-platform case sensitivity consistency.
+  // Enforces strict type-checking to prevent runtime anomalies, 
+  // ensures cross-platform case sensitivity consistency, and 
+  // explicitly loads Node.js typings for server-side tools (like Prisma).
   "compilerOptions": {
     "strict": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
   },
+  
   // ANCHOR FILE-EXCLUSIONS
   // The 'files' array is empty because the logic is handled 
   // via the references to Nuxt's internal JSON files.
   "files": [],
+  
   // ANCHOR NUXT-INTERNAL-REFERENCES
   // These paths link to the internal Nuxt build environment.
   // This allows the IDE to understand the split between 

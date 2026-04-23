@@ -22,3 +22,9 @@ logs
 .env
 .env.*
 !.env.example
+.env.development.local
+
+.vercel
+.env*.local
+
+/app/generated/prisma

@@ -34,17 +34,17 @@
         </div>
 
         <!-- Typography Clustered -->
-        <div class="space-y-4 mb-10">
-          <h1 class="font-headline text-4xl font-bold tracking-tight text-on-surface">
+        <div class="space-y-4 mb-5">
+          <h1 class="font-lg text-4xl font-bold tracking-tight text-on-surface">
             Check your inbox
           </h1>
-          <p class="font-body text-lg text-on-surface-variant leading-relaxed max-w-sm mx-auto px-2">
+          <p class="font-body text-medium text-on-surface-variant leading-relaxed max-w-sm mx-auto px-2">
             We've sent a Verification Link to your email. Click the link in the email to automatically confirm your account.
           </p>
         </div>
 
         <!-- Deep-Link Awaiting State -->
-        <div class="flex items-center justify-center gap-3 mb-8 py-3 px-6 rounded-full bg-surface-container-low border border-outline-variant/10">
+        <div class="flex items-center justify-center gap-3 mb-8 py-2 px-2 rounded-full bg-surface-container-low border border-outline-variant/10">
           <div class="relative flex h-3 w-3">
             <div class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></div>
             <div class="relative inline-flex rounded-full h-3 w-3 bg-primary"></div>
@@ -61,14 +61,14 @@
             <button 
               @click="simulateAction('verify')" 
               :disabled="isLoading" 
-              class="w-full py-4 px-6 rounded-xl font-headline font-semibold text-on-surface bg-transparent border border-outline-variant hover:border-primary hover:bg-surface-bright/5 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="w-full bg-primary-container text-on-primary-container font-headline font-bold py-4 rounded-xl shadow-lg hover:brightness-110 active:scale-[0.97] transition-all disabled:opacity-50 disabled:cursor-not-allowed text-base mt-4 uppercase tracking-widest"
             >
               I've Verified My Email
             </button>
           </div>
           
           <!-- Secondary Action -->
-          <div class="pt-2">
+          <div class="pt-1">
             <button 
               @click="simulateAction('resend')" 
               :disabled="isLoading" 
@@ -81,7 +81,7 @@
         </div>
 
         <!-- Status Card (Bento-style element) -->
-        <div class="mt-12 p-5 w-full bg-surface-container rounded-2xl flex items-start gap-4 text-left border border-outline-variant/10">
+        <div class="mt-5 p-5 w-full bg-surface-container rounded-2xl flex items-start gap-4 text-left border border-outline-variant/10">
           <div class="p-2 rounded-full bg-surface-container-highest text-primary">
             <span class="material-symbols-outlined">info</span>
           </div>

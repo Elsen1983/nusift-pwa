@@ -30,7 +30,7 @@
           </div>
         </div>
 
-        <div class="marquee-container mb-2">
+        <!-- <div class="marquee-container mb-2">
           <div class="marquee-content">
             <span class="marquee-item">Crystal Clear Insights</span>
             <span class="marquee-item">Sovereign Truth</span>
@@ -38,7 +38,7 @@
             <span class="marquee-item">The Future of Curation</span>
             <span class="marquee-item">Verified Knowledge</span>
           </div>
-        </div>
+        </div> -->
       </div>
 
       <div class="w-full min-h-[140px] flex items-center justify-center mb-8 px-4 relative">
@@ -57,10 +57,10 @@
       <div class="w-full space-y-8">
         <div class="relative">
           <div
-            class="h-[2px] w-full bg-surface-container-highest rounded-full overflow-hidden"
+            class="h-[8px] w-full bg-surface-container-highest rounded-full overflow-hidden"
           >
             <div
-              class="absolute top-0 h-[2px] bg-primary-container shadow-[0_0_12px_#00ffff] loading-bar-logic"
+              class="absolute top-0 h-[8px] bg-primary-container shadow-[0_0_12px_#00ffff] loading-bar-logic"
             ></div>
           </div>
           <div class="flex justify-between items-center mt-4 px-1">
