@@ -96,7 +96,7 @@
       </div>
     </main>
 
-    <footer class="fixed bottom-12 w-full text-center z-10">
+    <footer class="fixed bottom-12 w-full text-center z-10 mb-5 pb-5">
       <div
         class="inline-flex items-center gap-3 px-6 py-2 rounded-full border border-outline-variant/15 bg-surface-container/40 backdrop-blur-sm"
       >
@@ -221,7 +221,7 @@ onBeforeUnmount(() => {
 /* Marquee Animations */
 @keyframes marquee-scroll {
   0% {
-    transform: translateX(100%);
+    transform: translateX(0);
   }
   100% {
     transform: translateX(-100%);
@@ -238,7 +238,7 @@ onBeforeUnmount(() => {
 }
 .marquee-content {
   display: inline-block;
-  padding-left: 50%;
+  padding-left: 100%;
   animation: marquee-scroll 15s linear infinite;
 }
 .marquee-item {
