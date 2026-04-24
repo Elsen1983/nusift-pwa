@@ -1,5 +1,5 @@
 // server/api/auth/login.post.ts
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../../utils/prisma';
 
