@@ -119,14 +119,17 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { useAuthStore } from '~/stores/auth';
+import { useRouter } from 'vue-router';
 
-// 1. Define an interface for strict type safety
+const router = useRouter();
+const authStore = useAuthStore();
+
 interface Quote {
   text: string;
   author: string;
 }
 
-// 2. Strongly type the static array
 const quotes: Quote[] = [
   {
     text: "In a time of deceit, telling the truth is a revolutionary act.",
@@ -146,19 +149,29 @@ const quotes: Quote[] = [
 const currentQuoteIndex = ref(0);
 let quoteInterval: ReturnType<typeof setInterval> | null = null;
 
-// 3. Create a computed property that guarantees a valid Quote object is returned.
-// Fallback to the first quote just in case, satisfying TypeScript completely.
 const currentQuote = computed<Quote>(() => {
-  // We use the nullish coalescing operator (??) and cast the fallback.
-  // This tells TypeScript: "If the current index fails, use index 0, 
-  // and I personally guarantee index 0 is a valid Quote."
   return quotes[currentQuoteIndex.value] ?? (quotes[0] as Quote);
 });
 
 onMounted(() => {
+  // Idézetek váltakozása
   quoteInterval = setInterval(() => {
     currentQuoteIndex.value = (currentQuoteIndex.value + 1) % quotes.length;
-  }, 6000);
+  }, 4000);
+
+  // Preloader animáció futása
+  setTimeout(() => {
+    const step = authStore.user?.onboardingStep || 0;
+    
+    // Routing az állapot alapján
+    if (step >= 2) {
+      router.push('/app/dashboard');
+    } else if (step === 1) {
+      router.push('/interest-calibration');
+    } else {
+      router.push('/source-calibration');
+    }
+  }, 3500); // 3.5 másodperc, hogy lehessen olvasni
 });
 
 onBeforeUnmount(() => {

@@ -16,4 +16,5 @@ model User {
   isVerified     Boolean   @default(false)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+  onboardingStep Int      @default(0)
 }

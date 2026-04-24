@@ -307,7 +307,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
 import { useRouter } from "nuxt/app";
-import { useAuthStore } from '~/../stores/auth';
+import { useAuthStore } from "~/stores/auth";
 const authStore = useAuthStore();
 
 /** ANCHOR PAGE-SETUP */
@@ -397,8 +397,11 @@ const handleAuth = async () => {
   if (isRegistering.value) {
     // --- PINIA REGISZTRÁCIÓ ---
     // A store.isLoading-et később rákötheted a gombod loader-ére is!
-    const success = await authStore.registerIdentity(email.value, password.value);
-    
+    const success = await authStore.registerIdentity(
+      email.value,
+      password.value,
+    );
+
     if (success) {
       // Ha a Pinia végzett, és sikeres volt az adatbázis írás
       localStorage.setItem("nusift_visited", "true");
@@ -407,14 +410,26 @@ const handleAuth = async () => {
       // Ha hiba volt, a store kimenti a hibaüzenetet, mi csak kiírjuk
       emailError.value = authStore.authError || "An unexpected error occurred.";
     }
-    
   } else {
-    // --- BEJELENTKEZÉS (Még mindig szimulálva) ---
-    isLoading.value = true;
-    await new Promise((resolve) => setTimeout(resolve, 2200));
-    localStorage.setItem("nusift_visited", "true");
-    isLoading.value = false;
-    router.push("/");
+    // --- LIVE LOGIN ---
+    
+    const success = await authStore.loginIdentity(email.value, password.value);
+    
+    console.log(
+      "Login attempt completed. Success:",
+      success,
+      "Error:",
+      authStore.authError,
+    );
+    if (success) {
+      localStorage.setItem("nusift_visited", "true");
+      console.log("Authentication successful, redirecting...");
+      router.push("/preloader-page");
+    } else {
+      emailError.value =
+        authStore.authError || "Authentication failure. Check credentials.";
+      showForgotButton.value = true;
+    }
   }
 };
 

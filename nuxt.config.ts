@@ -32,7 +32,6 @@ export default defineNuxtConfig({
     "@components": "./app/components",
     "@layouts": "./app/layouts",
     "@pages": "./app/pages",
-    "@stores": "./app/stores",
     "@img": "./app/assets/images",
   },
 
@@ -142,13 +141,28 @@ export default defineNuxtConfig({
         {
           name: "preloader-custom",
           path: "/preloader-page", 
-          file: "~/pages/preloader/preloader-page-one.vue",
+          file: "~/pages/preloader/preloader-first.vue",
         },
-        // {
-        //   name: "calibration-custom",
-        //   path: "/calibration", 
-        //   file: "~/pages/calibrations/sourceCalibration.vue",
-        // },
+        {
+          name: "source-calibration-custom",
+          path: "/source-calibration", 
+          file: "~/pages/calibration/source-calibration.vue",
+        },
+        {
+          name: "interest-calibration-custom",
+          path: "/interest-calibration", 
+          file: "~/pages/calibration/interest-calibration.vue",
+        },
+        {
+          name: "preloader-custom-two",
+          path: "/initialization-preloader-page", 
+          file: "~/pages/preloader/preloader-second.vue",
+        },
+         {
+          name: "dashboard-initiate-custom",
+          path: "/dashboard-initiate", 
+          file: "~/pages/dashboard/initiate-dashboard.vue",
+        },
       );
     },
   },

@@ -46,6 +46,7 @@ export default defineEventHandler(async (event) => {
         id: newUser.id,
         email: newUser.email,
         createdAt: newUser.createdAt,
+        onboardingStep: newUser.onboardingStep
       },
       message: 'Sovereign Identity forged successfully.',
     };
