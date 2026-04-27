@@ -143,23 +143,16 @@
         @readNow="handleReadNow"
         @toggleMenu="toggleActionMenu"
         @openOverlay="openOverlay"
+        @openRating="openRatingModal"
       />
 
       <section class="flex justify-center items-center gap-2 py-4">
         <div class="flex items-center gap-3 text-xs font-medium">
           <button class="text-[#00E5FF] font-bold transition-colors">1</button>
           <span class="text-outline-variant/30 text-[10px]">|</span>
-          <button
-            class="text-on-surface-variant hover:text-[#00E5FF] transition-colors"
-          >
-            2
-          </button>
+          <button class="text-on-surface-variant hover:text-[#00E5FF] transition-colors">2</button>
           <span class="text-outline-variant/30 text-[10px]">|</span>
-          <button
-            class="text-on-surface-variant hover:text-[#00E5FF] transition-colors"
-          >
-            3
-          </button>
+          <button class="text-on-surface-variant hover:text-[#00E5FF] transition-colors">3</button>
         </div>
       </section>
 
@@ -174,6 +167,12 @@
         :article="activeArticleData"
         :content="readerContent"
         @browser="openInBrowser"
+      />
+
+      <RatingModal
+        v-model="showRatingModal"
+        :initialScore="activeRatingInitialScore"
+        @confirm="handleConfirmRating"
       />
     </main>
   </div>
@@ -397,6 +396,8 @@ const openOverlay = (id: number) => {
 const showPaywallModal = ref(false);
 const showReaderModal = ref(false);
 const activeArticleData = ref<any>(null);
+const showRatingModal = ref(false);
+const activeRatingArticleId = ref<number | null>(null);
 
 const loremIpsum = [
   "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
@@ -444,12 +445,42 @@ const openInBrowser = () => {
   showPaywallModal.value = false;
 };
 
+// Computes the correct initial score to pass down to the slider
+const activeRatingInitialScore = computed(() => {
+  if (!activeRatingArticleId.value) return 0;
+  const article = articles.value.find(a => a.id === activeRatingArticleId.value);
+  return article ? article.score : 0;
+});
+
+// Opens the modal and closes the action menu on the card
+const openRatingModal = (id: number) => {
+  activeRatingArticleId.value = id;
+  showRatingModal.value = true;
+  activeActionMenu.value = null; // Close the 3-dot dropdown
+};
+
+// Receives the payload from the RatingModal and updates the specific article
+const handleConfirmRating = (newScore: number) => {
+  const articleIndex = articles.value.findIndex(a => a.id === activeRatingArticleId.value);
+  
+  if (articleIndex !== -1) {
+    // 1. Extract the specific article into a variable
+    const targetArticle = articles.value[articleIndex];
+    
+    // 2. Explicitly check if it exists to satisfy TypeScript
+    if (targetArticle) {
+      // 3. Mutate the property
+      targetArticle.score = newScore;
+    }
+  }
+};
+
 // Ez a blokk automatikusan kezeli a görgetést
-watch([showPaywallModal, showReaderModal], ([newPaywall, newReader]) => {
-  if (newPaywall || newReader) {
-    document.body.style.overflow = "hidden";
+watch([showPaywallModal, showReaderModal, showRatingModal], ([newPaywall, newReader, newRating]) => {
+  if (newPaywall || newReader || newRating) {
+    document.body.style.overflow = 'hidden';
   } else {
-    document.body.style.overflow = "";
+    document.body.style.overflow = '';
   }
 });
 </script>

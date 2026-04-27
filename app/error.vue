@@ -55,7 +55,12 @@ const is404 = computed(() => props.error?.statusCode === 404)
 /** ANCHOR NAVIGATION-RECOVERY
  * Resets the Nuxt error state and forces a clean redirect to /auth. 
  * This ensures the user doesn't get stuck in a broken routing state. */
-const handleError = () => clearError({ redirect: '/auth' })
+const handleError = () => {
+  clearError().then(() => {
+    // Teljes újratöltés, hogy tiszta lappal induljunk és megkerüljük a belső router memóriáját
+    window.location.href = '/auth';
+  });
+}
 </script>
 
 <style scoped>

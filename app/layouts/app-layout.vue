@@ -8,10 +8,52 @@
             AI Filtering.<br/>Guided by Your Hand.
           </span>
         </div>
-        <div class="flex items-center gap-4">
-          <div class="w-9 h-9 rounded-full overflow-hidden" style="border: 2px solid #00E5FF;">
-            <img alt="User Profile" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCKQFpho9N6vNb597g658gofpMtTfArkL752rpR3k6rxeDzEqXZerZhpd3mQs7bV1aSAfXs4c8OjyoaWQaiNXQjAldOB7gFixiZbOkrydVdRRwix4N1uCOiik3IkWYLzb921cnm_F4R4A3LFfa-8Ah5YAzjox-xAfSPbCwz7wtURyhhHFZseEljkd2aDX_o91u5QK2zrT0nD981j4OgFsCrBPN4tsTfJkGVoNL_xnc0-f81gL5h9OEKzGG9XnOID8ANo2j1kJbhz8k"/>
-          </div>
+        
+        <div class="flex items-center gap-4 relative" v-click-outside="() => isProfileMenuOpen = false">
+          
+          <button 
+            @click="isProfileMenuOpen = !isProfileMenuOpen" 
+            class="w-9 h-9 rounded-full overflow-hidden focus:outline-none transition-transform active:scale-95" 
+            style="border: 2px solid #00E5FF;"
+          >
+           <img alt="User Profile" class="w-full h-full object-cover" :src="userAvatar"/>
+          </button>
+          
+          <transition 
+            enter-active-class="transition duration-200 ease-out" 
+            enter-from-class="opacity-0 scale-95" 
+            enter-to-class="opacity-100 scale-100" 
+            leave-active-class="transition duration-100 ease-in" 
+            leave-from-class="opacity-100 scale-100" 
+            leave-to-class="opacity-0 scale-95"
+          >
+            <div 
+              v-show="isProfileMenuOpen" 
+              class="absolute top-12 right-0 w-56 bg-surface-container-highest border border-outline-variant/20 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] z-[110] flex flex-col py-2 origin-top-right"
+            >
+              <div class="px-4 py-3 border-b border-outline-variant/20 mb-1">
+                <p class="text-sm font-headline font-bold text-on-surface">Norbert Korom</p>
+                <p class="text-xs font-body text-on-surface-variant truncate">norbertkorom@gmail.com</p>
+              </div>
+
+              <NuxtLink to="/profile" class="flex items-center gap-3 px-4 py-2 hover:bg-surface-bright transition-colors text-left w-full group" @click="isProfileMenuOpen = false">
+                <span class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-primary-container">person</span>
+                <span class="text-xs font-medium text-on-surface-variant group-hover:text-primary-container">My Profile</span>
+              </NuxtLink>
+              
+              <NuxtLink to="/audit/profile-fine-tuning" class="flex items-center gap-3 px-4 py-2 hover:bg-surface-bright transition-colors text-left w-full group" @click="isProfileMenuOpen = false">
+                <span class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-primary-container">tune</span>
+                <span class="text-xs font-medium text-on-surface-variant group-hover:text-primary-container">Agent Fine-Tuning</span>
+              </NuxtLink>
+
+              <div class="h-px bg-outline-variant/20 w-full my-1"></div>
+              
+              <button class="flex items-center gap-3 px-4 py-2 hover:bg-error/10 transition-colors text-left w-full group" @click="isProfileMenuOpen = false">
+                <span class="material-symbols-outlined text-error text-[20px]">logout</span>
+                <span class="text-xs font-medium text-error">Logout</span>
+              </button>
+            </div>
+          </transition>
         </div>
       </header>
     </div>
@@ -19,24 +61,26 @@
     <div class="pt-[60px] pb-28">
       <slot />
     </div>
-
-    <nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-4 pb-5 pt-2 bg-[#1c1b1b]/80 backdrop-blur-xl shadow-[0_-4px_24px_rgba(0,229,255,0.08)] rounded-t-[28px]">
-      <NuxtLink to="/dashboard" class="flex flex-col items-center justify-center text-[#c3f5ff] bg-[#353534]/50 rounded-xl px-3 py-1.5 transition-all duration-300">
-        <span class="material-symbols-outlined text-xl" :style="{ fontVariationSettings: '\'FILL\' 1' }">newspaper</span>
-        <span class="font-label text-[10px] font-medium mt-0.5">News</span>
-      </NuxtLink>
-      <NuxtLink to="/saved" class="flex flex-col items-center justify-center text-[#bac9cc] py-1.5 hover:text-[#00e5ff] transition-all">
-        <span class="material-symbols-outlined text-xl">bookmarks</span>
-        <span class="font-label text-[10px] font-medium mt-0.5">Saved</span>
-      </NuxtLink>
-      <NuxtLink to="/shared" class="flex flex-col items-center justify-center text-[#bac9cc] py-1.5 hover:text-[#00e5ff] transition-all">
-        <span class="material-symbols-outlined text-xl">share</span>
-        <span class="font-label text-[10px] font-medium mt-0.5">Shared</span>
-      </NuxtLink>
-      <NuxtLink to="/trends" class="flex flex-col items-center justify-center text-[#bac9cc] py-1.5 hover:text-[#00e5ff] transition-all">
-        <span class="material-symbols-outlined text-xl">trending_up</span>
-        <span class="font-label text-[10px] font-medium mt-0.5">Trends</span>
-      </NuxtLink>
-    </nav>
   </div>
 </template>
+
+<script setup lang="ts">
+import { ref } from 'vue';
+const userAvatar = ref('https://lh3.googleusercontent.com/a/default-user=s96-c');
+
+const isProfileMenuOpen = ref(false);
+
+const vClickOutside = {
+  mounted(el: any, binding: any) {
+    el.clickOutsideEvent = function (event: Event) {
+      if (!(el === event.target || el.contains(event.target))) {
+        binding.value(event, el);
+      }
+    };
+    document.body.addEventListener('click', el.clickOutsideEvent);
+  },
+  unmounted(el: any) {
+    document.body.removeEventListener('click', el.clickOutsideEvent);
+  },
+};
+</script>
