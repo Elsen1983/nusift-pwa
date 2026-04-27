@@ -144,6 +144,11 @@ export default defineNuxtConfig({
           file: "~/pages/preloader/preloader-first.vue",
         },
         {
+          name: "region-calibration-custom",
+          path: "/region-calibration", 
+          file: "~/pages/calibration/region-calibration.vue",
+        },
+        {
           name: "source-calibration-custom",
           path: "/source-calibration", 
           file: "~/pages/calibration/source-calibration.vue",

@@ -10,6 +10,7 @@ export const useAuthStore = defineStore("auth", () => {
     createdAt: string;
     onboardingStep: number;
   } | null>(null);
+  
   const isLoading = ref(false);
   const authError = ref<string | null>(null);
 

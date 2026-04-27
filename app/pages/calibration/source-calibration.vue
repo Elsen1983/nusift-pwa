@@ -12,35 +12,39 @@
     <header
       class="fixed top-0 w-full z-50 flex items-center justify-between px-6 py-4 bg-[#131313]"
     >
-      <div class="flex items-center gap-3">
+      <div
+        class="flex items-center gap-3 cursor-pointer group"
+        @click="goBackToRegion"
+      >
         <span
-          class="material-symbols-outlined text-[#00E5FF] cursor-pointer"
-          @click="logoutAndGoBack"
+          class="material-symbols-outlined text-[#00E5FF] group-hover:-translate-x-1 transition-transform"
           >arrow_back</span
         >
-        <h1 class="font-headline tracking-tighter text-[#00E5FF]">
-          Back to Login
+        <h1
+          class="font-headline tracking-tighter text-[#00E5FF] group-hover:text-white transition-colors"
+        >
+          Back to Region Calibration
         </h1>
       </div>
       <div class="hidden md:flex flex-col items-end">
         <span
           class="text-[10px] text-on-surface-variant font-label uppercase tracking-[0.2em]"
-          >Sifting Progress</span
+          >Step 02/03</span
         >
         <div
           class="w-32 h-1 bg-surface-container-highest rounded-full mt-1 overflow-hidden"
         >
           <div
-            class="h-full w-[33%] bg-primary-container shadow-[0_0_8px_rgba(0,229,255,0.5)]"
+            class="h-full w-[66%] bg-primary-container shadow-[0_0_8px_rgba(0,229,255,0.5)]"
           ></div>
         </div>
       </div>
     </header>
 
-    <main class="pt-24 pb-32 px-6 max-w-4xl mx-auto">
-      <section class="mb-12">
+    <main class="mt-12 pt-6 pb-4 px-6 max-w-4xl mx-auto">
+      <section class="mb-4">
         <div
-          class="inline-block px-3 py-1 bg-surface-container-highest rounded-lg mb-4"
+          class="inline-block px-2 py-1 bg-surface-container-highest rounded-lg mb-2"
         >
           <span
             class="text-[10px] font-label font-bold text-primary tracking-widest uppercase"
@@ -48,19 +52,21 @@
           >
         </div>
         <h2
-          class="font-headline text-4xl md:text-5xl font-bold text-primary leading-tight tracking-tight mb-4"
+          class="font-headline text-3xl md:text-4xl font-bold text-primary leading-tight tracking-tight mb-4"
         >
           Deploy Your Agents
         </h2>
-        <p class="text-on-surface-variant text-lg max-w-2xl leading-relaxed">
+        <p
+          class="text-on-surface-variant text-[15px] max-w-2xl leading-relaxed"
+        >
           Enter the domains or site names you want NuSift to prioritize.
         </p>
       </section>
 
-      <section class="mb-12 space-y-6">
+      <section class="mb-8 space-y-6">
         <div class="relative group">
           <label
-            class="block text-[11px] font-label uppercase tracking-widest text-on-surface-variant mb-2 ml-1"
+            class="block text-[13px] font-label uppercase tracking-widest text-on-surface-variant mb-2 ml-1"
             >Manual Domain Entry</label
           >
           <div
@@ -68,14 +74,16 @@
           >
             <input
               v-model="urlInput"
-              class="w-full bg-surface-container-highest border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-primary-fixed/30 font-body h-[52px] text-sm px-4"
+              :disabled="isSaving"
+              @keyup.enter="addSource"
+              class="w-full bg-surface-container-highest border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-primary-fixed/30 font-body h-[52px] text-sm px-4 disabled:opacity-50"
               placeholder="Paste URL (e.g., techcrunch.com)..."
               type="url"
             />
           </div>
           <p
             v-if="showUrlError"
-            class="text-error text-[10px] font-label mt-1 ml-1"
+            class="text-error text-[12px] font-label mt-1 ml-1 leading-tight text-red-500"
           >
             {{
               serverErrorMsg
@@ -87,7 +95,7 @@
         <div class="flex justify-end">
           <button
             @click="addSource"
-            :disabled="!isValidUrl || isAdding"
+            :disabled="!isValidUrl || isAdding || isSaving"
             class="bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] font-bold px-8 rounded-xl flex items-center gap-2 hover:scale-[1.02] active:scale-95 transition-all shadow-[0_8px_20px_rgba(0,229,255,0.15)] group py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <span v-if="!isAdding" class="material-symbols-outlined text-xl"
@@ -104,17 +112,19 @@
 
       <section>
         <div class="flex items-center justify-between mb-6">
-          <h3 class="font-headline text-xl text-primary font-medium">
+          <h3
+            class="font-headline text-medium md:text-xl text-primary font-medium"
+          >
             Active Monitoring List
           </h3>
-          <span class="text-on-surface-variant font-label text-xs"
-            >{{ sources.length }} Sources Active</span
+          <span class="text-on-surface-variant font-label text-[12px]"
+            >{{ sources.length }} Active</span
           >
         </div>
 
         <div
           v-if="sources.length === 0"
-          class="p-12 border-2 border-dashed border-outline-variant/30 rounded-2xl flex flex-col items-center text-center"
+          class="p-8 border-2 border-dashed border-outline-variant/30 rounded-2xl flex flex-col items-center text-center"
         >
           <span
             class="material-symbols-outlined text-outline-variant text-4xl mb-3"
@@ -125,13 +135,13 @@
           </p>
         </div>
 
-        <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <div
             v-for="(source, index) in sources"
             :key="index"
             class="bg-surface-container-low p-5 rounded-xl flex flex-col justify-between hover:bg-surface-container transition-colors group"
           >
-            <div class="flex justify-between items-start mb-6">
+            <div class="flex justify-between items-start mb-2">
               <div class="flex items-center gap-3">
                 <div
                   class="w-10 h-10 bg-surface-container-highest rounded-full flex items-center justify-center text-primary-container"
@@ -149,7 +159,8 @@
               </div>
               <button
                 @click="promptDelete(index)"
-                class="text-on-surface-variant hover:text-error transition-colors"
+                :disabled="isSaving"
+                class="text-on-surface-variant hover:text-error transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 <span class="material-symbols-outlined text-xl">delete</span>
               </button>
@@ -167,23 +178,34 @@
           </div>
         </div>
       </section>
-    </main>
 
-    <nav
-      class="fixed bottom-0 left-0 w-full z-50 flex items-center px-8 pb-8 pt-4 bg-[#201f1f]/80 backdrop-blur-xl rounded-t-3xl shadow-[0_-4px_24px_rgba(0,229,255,0.08)] justify-end"
-    >
-      <button
-        @click="saveAndContinue"
-        :disabled="sources.length === 0"
-        class="flex items-center gap-3 px-6 py-3 rounded-xl transition-all group bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        <span class="font-headline font-bold">Next: Map My Interests</span>
-        <span
-          class="material-symbols-outlined group-hover:translate-x-1 transition-transform"
-          >arrow_forward</span
+      <section class="flex flex-col items-end pt-8">
+        <p
+          v-if="saveErrorMsg"
+          class="text-error text-[12px] font-label mb-3 leading-tight text-red-500 text-right"
         >
-      </button>
-    </nav>
+          {{ saveErrorMsg }}
+        </p>
+        <button
+          @click="saveAndContinue"
+          :disabled="sources.length === 0 || isSaving"
+          class="flex items-center gap-3 px-6 py-3 rounded-xl transition-all group bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <span class="font-headline font-bold">
+            {{ isSaving ? "Finalizing..." : "Next: Map My Interests" }}
+          </span>
+          <span
+            class="material-symbols-outlined transition-transform"
+            :class="{
+              'animate-spin': isSaving,
+              'group-hover:translate-x-1': !isSaving,
+            }"
+          >
+            {{ isSaving ? "sync" : "arrow_forward" }}
+          </span>
+        </button>
+      </section>
+    </main>
 
     <div
       v-if="showModal"
@@ -215,12 +237,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed , onMounted} from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "~/stores/auth";
+import { useAgentStore } from "~/stores/agent";
 
 const router = useRouter();
 const authStore = useAuthStore();
+const agentStore = useAgentStore();
 
 const urlInput = ref("");
 const isAdding = ref(false);
@@ -229,8 +253,10 @@ const sources = ref<string[]>([]);
 const showModal = ref(false);
 const sourceToDelete = ref<number | null>(null);
 const serverErrorMsg = ref("");
+const saveErrorMsg = ref("");
 
-const domainRegex = /^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$/;
+const domainRegex =
+  /^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$/;
 
 const isValidUrl = computed(() => domainRegex.test(urlInput.value.trim()));
 const showUrlError = computed(
@@ -239,18 +265,61 @@ const showUrlError = computed(
     serverErrorMsg.value !== "",
 );
 
-const logoutAndGoBack = async () => {
-  await authStore.logoutIdentity();
-  router.push('/auth');
+onMounted(async () => {
+  // Ha a user kiválasztott egy régiót a 0. lépésben (pl. "HU"), lekérjük a listát
+  if (agentStore.primaryRegion) {
+    try {
+      const data = await $fetch<any>(`/api/util/get-regional-sources?country=${agentStore.primaryRegion}`);
+      if (data.success && data.sources) {
+        // Eltesszük a listát a memóriába
+        agentStore.regionalWhitelist = data.sources;
+        console.log(`Loaded ${data.count} whitelisted sources for ${agentStore.primaryRegion}`);
+      }
+    } catch (error) {
+      console.warn("Could not fetch regional whitelist. Fallback validation will be used.");
+    }
+  }
+});
+
+// Replace logoutAndGoBack with this:
+const goBackToRegion = async () => {
+  if (isSaving.value || isAdding.value) return;
+  
+  // Step the state machine backward so the global guard allows the route
+  if (authStore.user) {
+    authStore.user.onboardingStep = 0; 
+    if (!import.meta.server) {
+      localStorage.setItem("nusift_pwa_profile", JSON.stringify(authStore.user));
+    }
+  }
+  
+  router.push("/region-calibration");
 };
 
 const addSource = async () => {
-  if (!isValidUrl.value || isAdding.value) return;
-
+  if (!isValidUrl.value || isAdding.value || isSaving.value) return;
   isAdding.value = true;
   serverErrorMsg.value = ""; 
 
   try {
+    // 1. Tiszta Domain Kinyerése (pl. "https://www.telex.hu/tech" -> "telex.hu")
+    const inputUrlObj = new URL(
+      urlInput.value.startsWith('http') ? urlInput.value : `https://${urlInput.value}`
+    );
+    const cleanDomain = inputUrlObj.hostname.replace(/^www\./, '').toLowerCase();
+
+    // 2. AZONNALI (O(1)) VALIDÁCIÓ A WHITELIST ALAPJÁN
+    if (agentStore.regionalWhitelist.includes(cleanDomain)) {
+      // Ha benne van, azonnal hozzáadjuk, NINCS szerver hívás (0ms késleltetés)!
+      const finalUrl = `https://${cleanDomain}`;
+      if (!sources.value.includes(finalUrl)) {
+        sources.value.push(finalUrl);
+      }
+      urlInput.value = "";
+      return; // ITT KILÉPÜNK A FÜGGVÉNYBŐL!
+    }
+
+    // 3. FALLBACK: Ha nincs benne a Whitelist-ben, hívjuk a nehéz API-t (Phase 1/GDELT)
     const response = await $fetch<any>("/api/util/verify-source", {
       method: "POST",
       body: { url: urlInput.value },
@@ -272,6 +341,7 @@ const addSource = async () => {
 };
 
 const promptDelete = (index: number) => {
+  if (isSaving.value) return;
   sourceToDelete.value = index;
   showModal.value = true;
 };
@@ -285,19 +355,34 @@ const confirmDelete = () => {
 };
 
 const saveAndContinue = async () => {
+  if (sources.value.length === 0 || isSaving.value) return;
+
   isSaving.value = true;
-  
-  // TODO: Majd itt hívjuk a backendet, ami elmenti a source-okat és átállítja az onboardingStep-et 1-re
-  setTimeout(() => {
+  saveErrorMsg.value = "";
+
+  try {
+    agentStore.topSources = [...sources.value];
+
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    // ANCHOR STATE SHIFT: 2. Lépés rögzítése
     if (authStore.user) {
-      authStore.user.onboardingStep = 1;
-      
-      // Update PWA offline profile
+      authStore.user.onboardingStep = 2;
+
       if (!import.meta.server) {
-        localStorage.setItem('nusift_pwa_profile', JSON.stringify(authStore.user));
+        localStorage.setItem(
+          "nusift_pwa_profile",
+          JSON.stringify(authStore.user),
+        );
       }
     }
-    router.push("/interest-calibration");
-  }, 1000);
+
+    await router.push("/interest-calibration");
+  } catch (error) {
+    console.error("Save/Navigation error:", error);
+    saveErrorMsg.value =
+      "Failed to continue. Please check your network and try again.";
+    isSaving.value = false;
+  }
 };
 </script>

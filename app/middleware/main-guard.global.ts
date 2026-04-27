@@ -11,6 +11,7 @@ export default defineNuxtRouteMiddleware((to, from) => {
   const ROOT_PATH = "/";
 
   // Onboarding routes synchronized with nuxt.config.ts hooks
+  const REGION_CALIBRATION = "/region-calibration";
   const SOURCE_CALIBRATION = "/source-calibration";
   const INTEREST_CALIBRATION = "/interest-calibration";
   const DASHBOARD_PATH = "/dashboard";
@@ -36,14 +37,18 @@ export default defineNuxtRouteMiddleware((to, from) => {
   const isAuthenticated = authStore.user !== null;
   const currentStep = authStore.user?.onboardingStep || 0;
 
-  /**
-   * ANCHOR TARGET-RESOLVER
-   * Calculates where the user should be based on their onboarding progress.
-   */
+  // ANCHOR TARGET LOGIC (Eltolva az új lépések szerint)
   const getOnboardingTarget = (step: number) => {
-    if (step === 0) return SOURCE_CALIBRATION;
-    if (step === 1) return INTEREST_CALIBRATION;
-    return DASHBOARD_PATH;
+    switch (step) {
+      case 0:
+        return REGION_CALIBRATION; 
+      case 1:
+        return SOURCE_CALIBRATION; 
+      case 2:
+        return INTEREST_CALIBRATION; 
+      default:
+        return DASHBOARD_PATH;
+    }
   };
 
   // ANCHOR SSR-HANDLING
@@ -67,7 +72,7 @@ export default defineNuxtRouteMiddleware((to, from) => {
   }
 
   // ANCHOR CLIENT-LOGIC
-  const hasVisited = localStorage.getItem("nusift_visited");
+  // const hasVisited = localStorage.getItem("nusift_visited");
 
   // Root handling
   if (to.path === ROOT_PATH) {
@@ -94,13 +99,27 @@ export default defineNuxtRouteMiddleware((to, from) => {
     return;
   }
 
-  // Final fallback to onboarding flow for authenticated users on non-public routes
+  // ANCHOR TRANSITIONAL ROUTES WHITELIST
+  // Ezek azok az oldalak (preloaderek, animációk), amiken átmehet a user
+  // a kötelező onboarding lépések között is.
+  const TRANSITIONAL_ROUTES = [
+    "/preloader-page", 
+    "/initialization-preloader-page"
+  ];
+
+  // Final fallback protection against direct access to wrong steps
+  const targetPath = getOnboardingTarget(currentStep);
+  
+  const isTransitional = TRANSITIONAL_ROUTES.includes(to.path);
+
   if (
-    isAuthenticated &&
-    !isPublicRoute &&
-    to.path !== getOnboardingTarget(currentStep) &&
-    to.path === ROOT_PATH
+    isAuthenticated && 
+    to.path !== targetPath && 
+    !isPublicRoute && 
+    to.path !== DASHBOARD_PATH &&
+    !isTransitional // ÚJ FELTÉTEL: Ha nem átmeneti oldal, akkor dobjuk vissza
   ) {
-    return navigateTo(getOnboardingTarget(currentStep));
+     console.warn(`[Sovereign Shield] Forcing step alignment. User step: ${currentStep}. Redirecting to: ${targetPath}`);
+     return navigateTo(targetPath, { replace: true });
   }
 });

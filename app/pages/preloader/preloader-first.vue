@@ -12,7 +12,7 @@
     </div>
 
     <main
-      class="relative z-10 flex flex-col items-center justify-center w-full max-w-lg px-4 text-center -mt-24"
+      class="relative z-10 flex flex-col items-center justify-center w-full max-w-lg px-8 text-center -mt-24"
     >
       <div class="w-full flex flex-col items-center mb-6">
         <div class="relative w-[125px] h-[125px] mb-6">
@@ -41,13 +41,19 @@
         </div> -->
       </div>
 
-      <div class="w-full min-h-[140px] flex items-center justify-center mb-8 px-4 relative">
+      <div
+        class="w-full min-h-[140px] flex items-center justify-center mb-8 px-4 relative"
+      >
         <transition name="quote" mode="out-in">
           <div :key="currentQuote.text" class="absolute w-full">
-            <p class="font-headline text-lg italic text-on-surface-variant leading-relaxed">
+            <p
+              class="font-headline text-lg italic text-on-surface-variant leading-relaxed"
+            >
               "{{ currentQuote.text }}"
             </p>
-            <p class="font-label text-[11px] uppercase tracking-widest mt-3 text-primary-container/80">
+            <p
+              class="font-label text-[11px] uppercase tracking-widest mt-3 text-primary-container/80"
+            >
               — {{ currentQuote.author }}
             </p>
           </div>
@@ -119,8 +125,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
-import { useAuthStore } from '~/stores/auth';
-import { useRouter } from 'vue-router';
+import { useAuthStore } from "~/stores/auth";
+import { useRouter } from "vue-router";
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -162,14 +168,16 @@ onMounted(() => {
   // Preloader animáció futása
   setTimeout(() => {
     const step = authStore.user?.onboardingStep || 0;
-    
+
     // Routing az állapot alapján
-    if (step >= 2) {
-      router.push('/app/dashboard');
+    if (step >= 3) {
+      router.push("/app/dashboard");
+    } else if (step >= 0) {
+      router.push("/region-calibration");
     } else if (step === 1) {
-      router.push('/interest-calibration');
-    } else {
-      router.push('/source-calibration');
+      router.push("/interest-calibration");
+    } else if (step === 2) {
+      router.push("/source-calibration");
     }
   }, 3500); // 3.5 másodperc, hogy lehessen olvasni
 });
