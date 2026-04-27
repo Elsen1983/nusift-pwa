@@ -163,6 +163,11 @@ export default defineNuxtConfig({
           path: "/dashboard-initiate", 
           file: "~/pages/dashboard/initiate-dashboard.vue",
         },
+        {
+          name: "dashboard-custom",
+          path: "/dashboard", 
+          file: "~/pages/dashboard/dashboard-main.vue",
+        },
       );
     },
   },

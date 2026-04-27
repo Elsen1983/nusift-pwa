@@ -1,7 +1,10 @@
 <template>
   <div class="min-h-screen bg-background text-on-background font-body selection:bg-primary-container selection:text-on-primary-container">
-    <VitePwaManifest />
+    <NuxtLayout>
+      <VitePwaManifest />
     <NuxtPage /> 
+    </NuxtLayout>
+    
   </div>
 </template>
 
