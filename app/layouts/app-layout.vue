@@ -1,56 +1,45 @@
 <template>
-  <div class="bg-background text-on-background min-h-screen font-body">
-    <div class="fixed top-0 left-0 w-full bg-[#131313] z-[100]">
-      <header class="flex justify-between items-center px-6 py-3 w-full h-[60px]">
-        <div class="flex items-center flex-nowrap">
-          <img alt="NuSift Logo" class="object-contain w-1/3 max-w-[120px]" src="~/assets/images/NuSift_Transparent_Logo.png"/>
-          <span class="text-[#00E5FF] font-medium ml-4 border-l-2 border-[#00E5FF]/40 pl-4 leading-tight uppercase tracking-wider font-label text-[10px] block flex-shrink-0">
-            AI Filtering.<br/>Guided by Your Hand.
-          </span>
-        </div>
+  <div class="bg-background text-on-background min-h-screen font-body selection:bg-primary-container/30">
+    
+    <div class="fixed top-0 left-0 w-full bg-[#131313] z-[100] border-b border-white/5">
+      <header class="flex justify-between items-center px-6 py-3 w-full h-[60px] max-w-7xl mx-auto">
+        
+        <NuxtLink to="/dashboard" class="flex items-center group transition-all duration-300">
+          <img alt="NuSift Logo" class="h-[28px] w-auto object-contain" src="~/assets/images/NuSift_Transparent_Logo.png"/>
+          <div class="ml-4 pl-4 border-l border-[#00E5FF]/30 py-1">
+            <span class="text-[#00E5FF] font-label text-[9px] uppercase tracking-[0.15em] leading-tight block opacity-80 group-hover:opacity-100 transition-opacity">
+              AI Filtering.<br/>Guided by Your Hand.
+            </span>
+          </div>
+        </NuxtLink>
         
         <div class="flex items-center gap-4 relative" v-click-outside="() => isProfileMenuOpen = false">
-          
           <button 
             @click="isProfileMenuOpen = !isProfileMenuOpen" 
-            class="w-9 h-9 rounded-full overflow-hidden focus:outline-none transition-transform active:scale-95" 
-            style="border: 2px solid #00E5FF;"
+            class="relative w-10 h-10 rounded-full p-[2px] bg-gradient-to-tr from-[#00E5FF]/20 to-[#00E5FF] active:scale-90 transition-transform shadow-[0_0_15px_rgba(0,229,255,0.2)]"
           >
-           <img alt="User Profile" class="w-full h-full object-cover" :src="userAvatar"/>
+            <div class="w-full h-full rounded-full bg-[#131313] overflow-hidden">
+              <img alt="User Profile" class="w-full h-full object-cover" :src="userAvatar"/>
+            </div>
           </button>
-          
-          <transition 
-            enter-active-class="transition duration-200 ease-out" 
-            enter-from-class="opacity-0 scale-95" 
-            enter-to-class="opacity-100 scale-100" 
-            leave-active-class="transition duration-100 ease-in" 
-            leave-from-class="opacity-100 scale-100" 
-            leave-to-class="opacity-0 scale-95"
-          >
-            <div 
-              v-show="isProfileMenuOpen" 
-              class="absolute top-12 right-0 w-56 bg-surface-container-highest border border-outline-variant/20 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] z-[110] flex flex-col py-2 origin-top-right"
-            >
-              <div class="px-4 py-3 border-b border-outline-variant/20 mb-1">
-                <p class="text-sm font-headline font-bold text-on-surface">Norbert Korom</p>
-                <p class="text-xs font-body text-on-surface-variant truncate">norbertkorom@gmail.com</p>
-              </div>
 
-              <NuxtLink to="/profile" class="flex items-center gap-3 px-4 py-2 hover:bg-surface-bright transition-colors text-left w-full group" @click="isProfileMenuOpen = false">
-                <span class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-primary-container">person</span>
-                <span class="text-xs font-medium text-on-surface-variant group-hover:text-primary-container">My Profile</span>
+          <transition name="dropdown">
+            <div v-if="isProfileMenuOpen" class="absolute top-12 right-0 w-60 bg-[#1A1A1A] border border-white/10 rounded-2xl shadow-2xl py-2 z-[110] backdrop-blur-2xl">
+              <NuxtLink to="/profile" @click="isProfileMenuOpen = false" class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group">
+                <span class="material-symbols-outlined text-primary-container text-[20px]">account_circle</span>
+                <span class="text-xs font-medium text-on-surface">My Profile</span>
               </NuxtLink>
               
-              <NuxtLink to="/audit/profile-fine-tuning" class="flex items-center gap-3 px-4 py-2 hover:bg-surface-bright transition-colors text-left w-full group" @click="isProfileMenuOpen = false">
-                <span class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-primary-container">tune</span>
-                <span class="text-xs font-medium text-on-surface-variant group-hover:text-primary-container">Agent Fine-Tuning</span>
+              <NuxtLink to="/audit/profile-fine-tuning" @click="isProfileMenuOpen = false" class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group">
+                <span class="material-symbols-outlined text-primary-container text-[20px]">tune</span>
+                <span class="text-xs font-medium text-on-surface">Agent Fine-Tuning</span>
               </NuxtLink>
 
-              <div class="h-px bg-outline-variant/20 w-full my-1"></div>
+              <div class="h-px bg-white/5 w-full my-1"></div>
               
-              <button class="flex items-center gap-3 px-4 py-2 hover:bg-error/10 transition-colors text-left w-full group" @click="isProfileMenuOpen = false">
-                <span class="material-symbols-outlined text-error text-[20px]">logout</span>
-                <span class="text-xs font-medium text-error">Logout</span>
+              <button @click="openLogoutModal" class="flex items-center gap-3 px-4 py-3 hover:bg-error/10 text-error w-full text-left group">
+                <span class="material-symbols-outlined text-[20px]">logout</span>
+                <span class="text-xs font-medium">Logout</span>
               </button>
             </div>
           </transition>
@@ -61,20 +50,96 @@
     <div class="pt-[60px] pb-28">
       <slot />
     </div>
+
+    <nav class="fixed bottom-0 left-0 w-full bg-[#131313]/95 backdrop-blur-xl border-t border-white/5 z-[100] pb-safe">
+      <div class="flex justify-around items-center h-16 max-w-md mx-auto">
+        <NuxtLink v-for="item in navItems" :key="item.path" :to="item.path" 
+                  class="flex flex-col items-center gap-1 group py-1"
+                  active-class="text-primary-container">
+          <span class="material-symbols-outlined text-[24px]"
+                :class="{'text-primary-container drop-shadow-[0_0_8px_rgba(0,229,255,0.4)]': $route.path === item.path, 'text-on-surface-variant': $route.path !== item.path}">
+            {{ item.icon }}
+          </span>
+          <span class="text-[10px] font-bold uppercase tracking-tighter"
+                :class="{'text-primary-container': $route.path === item.path, 'text-on-surface-variant': $route.path !== item.path}">
+            {{ item.label }}
+          </span>
+        </NuxtLink>
+      </div>
+    </nav>
+
+    <LogoutModal 
+      :is-open="isLogoutModalOpen" 
+      @close="isLogoutModalOpen = false" 
+      @confirm="handleSecureLogout"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue';
-const userAvatar = ref('https://lh3.googleusercontent.com/a/default-user=s96-c');
+import { useAuthStore } from '~/stores/auth';
+import { useAgentStore } from '~/stores/agent';
 
+const authStore = useAuthStore();
+const agentStore = useAgentStore();
+
+const userAvatar = ref('https://lh3.googleusercontent.com/a/ACg8ocL...'); // Placeholder
 const isProfileMenuOpen = ref(false);
+const isLogoutModalOpen = ref(false);
 
+const navItems = [
+  { label: 'Feed', icon: 'auto_awesome_motion', path: '/dashboard' },
+  { label: 'Saved', icon: 'bookmark', path: '/saved' },
+  { label: 'Shared', icon: 'share', path: '/shared' },
+  { label: 'Trends', icon: 'insights', path: '/trends' }
+];
+
+/**
+ * Megnyitja a megerősítő ablakot és bezárja a profil menüt.
+ */
+const openLogoutModal = () => {
+  isProfileMenuOpen.value = false;
+  isLogoutModalOpen.value = true;
+};
+
+/**
+ * ANCHOR SECURE-LOGOUT-REFACTORED
+ * Tisztább, TS-hibáktól mentes logout protokoll.
+ */
+const handleSecureLogout = () => {
+  // 1. Cookie-k törlése
+  const token = useCookie('auth_token');
+  token.value = null;
+
+  // 2. Pinia Store manuális resetelése (void hiba elkerülése)
+  if (typeof authStore.$reset === 'function') {
+    authStore.$reset();
+  } else {
+    // Setup Store esetén manuálisan ürítjük a reaktív állapotot
+    authStore.user = null;
+  }
+
+  if (typeof agentStore.$reset === 'function') {
+    agentStore.$reset();
+  }
+
+  // 3. Kliens oldali extra takarítás
+  if (process.client) {
+    localStorage.removeItem('nusift_visited');
+    sessionStorage.clear();
+  }
+
+  // 4. Hard redirect
+  window.location.href = '/auth';
+};
+
+// Click Outside direktíva a profil menühöz
 const vClickOutside = {
   mounted(el: any, binding: any) {
-    el.clickOutsideEvent = function (event: Event) {
+    el.clickOutsideEvent = (event: Event) => {
       if (!(el === event.target || el.contains(event.target))) {
-        binding.value(event, el);
+        binding.value();
       }
     };
     document.body.addEventListener('click', el.clickOutsideEvent);
@@ -84,3 +149,13 @@ const vClickOutside = {
   },
 };
 </script>
+
+<style scoped>
+.dropdown-enter-active, .dropdown-leave-active {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.dropdown-enter-from, .dropdown-leave-to {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.95);
+}
+</style>

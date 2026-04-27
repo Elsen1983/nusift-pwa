@@ -4,24 +4,40 @@ import { ref } from "vue";
 
 export const useAuthStore = defineStore("auth", () => {
   // ANCHOR STATE
-  // Itt tároljuk az aktív felhasználó adatait. Ha null, akkor nincs bejelentkezve.
-  const user = ref<{ id: string; email: string; createdAt: string; onboardingStep: number } | null>(null);
+  const user = ref<{
+    id: string;
+    email: string;
+    createdAt: string;
+    onboardingStep: number;
+  } | null>(null);
+  const isLoading = ref(false);
+  const authError = ref<string | null>(null);
 
   // PWA OFFLINE FALLBACK
   if (!import.meta.server && !user.value) {
-    const offlineProfile = localStorage.getItem('nusift_pwa_profile');
+    const offlineProfile = localStorage.getItem("nusift_pwa_profile");
     if (offlineProfile) {
       try {
         user.value = JSON.parse(offlineProfile);
       } catch (e) {
-        console.error('Hibás PWA profil a cache-ben');
+        console.error("Hibás PWA profil a cache-ben");
       }
     }
   }
 
-  // A hálózati kérések állapotát is itt kezeljük globálisan
-  const isLoading = ref(false);
-  const authError = ref<string | null>(null);
+  // ANCHOR MANUAL RESET
+  /** * Mivel Setup Store-t használunk, manuálisan kell implementálnunk a reset-et.
+   * Ezt fogja hívni az app-layout.vue logout közben.
+   */
+  function $reset() {
+    user.value = null;
+    isLoading.value = false;
+    authError.value = null;
+
+    if (!import.meta.server) {
+      localStorage.removeItem("nusift_pwa_profile");
+    }
+  }
 
   // ANCHOR ACTIONS
   const registerIdentity = async (
@@ -32,7 +48,6 @@ export const useAuthStore = defineStore("auth", () => {
     authError.value = null;
 
     try {
-      // API hívás a saját Nitro szerverünkhöz
       const response = await $fetch("/api/auth/register", {
         method: "POST",
         body: {
@@ -40,21 +55,10 @@ export const useAuthStore = defineStore("auth", () => {
           password: passwordPayload,
         },
       });
-
-      // Sikeres válasz esetén elmentjük a usert a globális memóriába
-      user.value = response.user;
-
-      if (!import.meta.server) {
-        localStorage.setItem('nusift_pwa_profile', JSON.stringify(response.user));
-      }
-
-      return true; // Sikeres futás jelzése a komponens felé
+      return true;
     } catch (error: any) {
-      // Hibakezelés (pl. 409 Conflict - Email már létezik)
-      console.error("Store: Registration failed", error);
-      authError.value =
-        error.data?.statusMessage || "System Error. Could not forge identity.";
-      return false; // Sikertelen futás
+      authError.value = error.data?.statusMessage || "Registration failed.";
+      return false;
     } finally {
       isLoading.value = false;
     }
@@ -76,20 +80,18 @@ export const useAuthStore = defineStore("auth", () => {
         },
       });
 
-      // Store the user data in memory
       user.value = response.user;
 
-      // PWA OFFLINE MENTÉS
       if (!import.meta.server) {
-        localStorage.setItem('nusift_pwa_profile', JSON.stringify(response.user));
+        localStorage.setItem(
+          "nusift_pwa_profile",
+          JSON.stringify(response.user),
+        );
       }
 
       return true;
     } catch (error: any) {
-      console.error("Store: Login failed", error);
-      authError.value =
-        error.data?.statusMessage ||
-        "Authentication failure. Check credentials.";
+      authError.value = error.data?.statusMessage || "Authentication failure.";
       return false;
     } finally {
       isLoading.value = false;
@@ -99,26 +101,22 @@ export const useAuthStore = defineStore("auth", () => {
   const logoutIdentity = async () => {
     try {
       await $fetch("/api/auth/logout", { method: "POST" });
-      user.value = null; // Töröljük a memóriát is
-
-      // PWA OFFLINE DELETE
-      if (!import.meta.server) {
-        localStorage.removeItem('nusift_pwa_profile');
-      }
-
+      $reset(); // A belső reset hívása
       return true;
     } catch (error) {
-      console.error("Logout failed", error);
+      console.error("Logout API failed", error);
       return false;
     }
   };
 
+  // Fontos: mindent vissza kell adni, amit kívülről el akarunk érni!
   return {
     user,
     isLoading,
     authError,
     registerIdentity,
     loginIdentity,
-    logoutIdentity
+    logoutIdentity,
+    $reset,
   };
 });
