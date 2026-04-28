@@ -175,7 +175,7 @@ const finalizeOnboarding = async () => {
   // TODO: Majd itt hívjuk a backendet, ami elmenti a kategóriákat az adatbázisba
   setTimeout(() => {
     if (authStore.user) {
-      authStore.user.onboardingStep = 2; // Beállítjuk, hogy végzett az onboardinggal
+      authStore.user.onboardingStep = 3; // Beállítjuk, hogy végzett az onboardinggal
 
       // Update PWA offline profile
       if (!import.meta.server) {

@@ -104,7 +104,11 @@ export default defineNuxtRouteMiddleware((to, from) => {
   // a kötelező onboarding lépések között is.
   const TRANSITIONAL_ROUTES = [
     "/preloader-page", 
-    "/initialization-preloader-page"
+    "/initialization-preloader-page",
+    "/region-calibration",
+    "/source-calibration",
+    "/interest-calibration",
+    "/dashboard-initiate",
   ];
 
   // Final fallback protection against direct access to wrong steps
@@ -112,8 +116,11 @@ export default defineNuxtRouteMiddleware((to, from) => {
   
   const isTransitional = TRANSITIONAL_ROUTES.includes(to.path);
 
+  // ADD THIS LINE
+  const isFullyOnboarded = currentStep >= 3;
+
   if (
-    isAuthenticated && 
+    isAuthenticated && !isFullyOnboarded &&
     to.path !== targetPath && 
     !isPublicRoute && 
     to.path !== DASHBOARD_PATH &&

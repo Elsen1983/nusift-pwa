@@ -116,6 +116,7 @@ onMounted(() => {
   // Preloader működése: 3.5 másodperc várakozás, majd továbbirányítás
   setTimeout(() => {
     // Továbbirányítás a korábban megbeszélt '/dashboard-initiate' útvonalra
+    console.log("Preloader véget ért, továbbirányítás a dashboard-initiate oldalra...");
     router.push("/dashboard-initiate");
   }, 3500);
 });

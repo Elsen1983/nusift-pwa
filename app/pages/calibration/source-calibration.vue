@@ -237,7 +237,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed , onMounted} from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
@@ -257,7 +257,6 @@ const saveErrorMsg = ref("");
 
 const domainRegex =
   /^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$/;
-
 const isValidUrl = computed(() => domainRegex.test(urlInput.value.trim()));
 const showUrlError = computed(
   () =>
@@ -265,76 +264,90 @@ const showUrlError = computed(
     serverErrorMsg.value !== "",
 );
 
+// Fetch the local JSON whitelist on mount
 onMounted(async () => {
-  // Ha a user kiválasztott egy régiót a 0. lépésben (pl. "HU"), lekérjük a listát
   if (agentStore.primaryRegion) {
     try {
-      const data = await $fetch<any>(`/api/util/get-regional-sources?country=${agentStore.primaryRegion}`);
+      const data = await $fetch<any>(
+        `/api/util/get-regional-whitelist?country=${agentStore.primaryRegion}`,
+      );
       if (data.success && data.sources) {
-        // Eltesszük a listát a memóriába
         agentStore.regionalWhitelist = data.sources;
-        console.log(`Loaded ${data.count} whitelisted sources for ${agentStore.primaryRegion}`);
+        console.log(
+          `Loaded ${data.count} whitelisted sources for ${agentStore.primaryRegion} from local DB.`,
+        );
       }
     } catch (error) {
-      console.warn("Could not fetch regional whitelist. Fallback validation will be used.");
+      console.warn(
+        "Could not load local whitelist. Relying entirely on fallback validation.",
+      );
     }
   }
 });
 
-// Replace logoutAndGoBack with this:
 const goBackToRegion = async () => {
   if (isSaving.value || isAdding.value) return;
-  
-  // Step the state machine backward so the global guard allows the route
+
   if (authStore.user) {
-    authStore.user.onboardingStep = 0; 
+    authStore.user.onboardingStep = 0;
     if (!import.meta.server) {
-      localStorage.setItem("nusift_pwa_profile", JSON.stringify(authStore.user));
+      localStorage.setItem(
+        "nusift_pwa_profile",
+        JSON.stringify(authStore.user),
+      );
     }
   }
-  
   router.push("/region-calibration");
 };
 
 const addSource = async () => {
   if (!isValidUrl.value || isAdding.value || isSaving.value) return;
   isAdding.value = true;
-  serverErrorMsg.value = ""; 
+  serverErrorMsg.value = "";
 
   try {
-    // 1. Tiszta Domain Kinyerése (pl. "https://www.telex.hu/tech" -> "telex.hu")
-    const inputUrlObj = new URL(
-      urlInput.value.startsWith('http') ? urlInput.value : `https://${urlInput.value}`
-    );
-    const cleanDomain = inputUrlObj.hostname.replace(/^www\./, '').toLowerCase();
+    // 1. Clean the input domain
+    let targetUrl = urlInput.value.trim();
+    if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+      targetUrl = `https://${targetUrl}`;
+    }
+    const inputUrlObj = new URL(targetUrl);
+    const cleanDomain = inputUrlObj.hostname
+      .replace(/^www\./, "")
+      .toLowerCase();
 
-    // 2. AZONNALI (O(1)) VALIDÁCIÓ A WHITELIST ALAPJÁN
-    if (agentStore.regionalWhitelist.includes(cleanDomain)) {
-      // Ha benne van, azonnal hozzáadjuk, NINCS szerver hívás (0ms késleltetés)!
-      const finalUrl = `https://${cleanDomain}`;
-      if (!sources.value.includes(finalUrl)) {
-        sources.value.push(finalUrl);
+    // 2. INSTANT O(1) VALIDATION (Bypasses external APIs entirely)
+    // If the domain exists in our downloaded JSON, accept it instantly.
+    if (
+      agentStore.regionalWhitelist &&
+      agentStore.regionalWhitelist.includes(cleanDomain)
+    ) {
+      if (!sources.value.includes(targetUrl)) {
+        sources.value.push(targetUrl);
       }
       urlInput.value = "";
-      return; // ITT KILÉPÜNK A FÜGGVÉNYBŐL!
+      isAdding.value = false;
+      return;
     }
 
-    // 3. FALLBACK: Ha nincs benne a Whitelist-ben, hívjuk a nehéz API-t (Phase 1/GDELT)
+    // 3. FALLBACK VALIDATION (Liveness check + GDELT)
+    // Runs only if the domain wasn't in our local JSON database
     const response = await $fetch<any>("/api/util/verify-source", {
       method: "POST",
-      body: { url: urlInput.value },
+      body: { url: targetUrl },
     });
 
     if (response.success) {
       if (!sources.value.includes(response.url)) {
         sources.value.push(response.url);
       }
-      urlInput.value = ""; 
+      urlInput.value = "";
     } else {
-      serverErrorMsg.value = response.message || "Hálózat: Nem létező weboldal.";
+      serverErrorMsg.value =
+        response.message || "Network: Invalid source domain.";
     }
   } catch (err) {
-    serverErrorMsg.value = "Hiba történt a validálás során.";
+    serverErrorMsg.value = "An error occurred during validation.";
   } finally {
     isAdding.value = false;
   }
@@ -365,7 +378,6 @@ const saveAndContinue = async () => {
 
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    // ANCHOR STATE SHIFT: 2. Lépés rögzítése
     if (authStore.user) {
       authStore.user.onboardingStep = 2;
 

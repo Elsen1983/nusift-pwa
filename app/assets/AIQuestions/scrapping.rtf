@@ -1,0 +1,23 @@
+Go to the homepage: https://www.einpresswire.com/world-media-directory/
+
+Extract all available country links listed on the page.
+Visit each country’s media directory page systematically.
+On each country page, locate all links inside <div class="sl-heading"> elements that point to detailed media outlet pages.
+Open each collected detail page individually.
+On each detail page, find the table with class <table class="simple full">.
+Extract and store all data from this table, including:
+Media name
+Media type (e.g., Newspaper, TV, Radio, Internet, etc.)
+Language
+Location
+Also extract:
+Website section URLs (e.g., Front Page, Contact Page, etc.)
+Contacts section data (Email, Phone number, etc.)
+Ensure that all media types are included without filtering.
+Compile the collected data into a structured JSON format, grouped by country.
+
+Output format requirements:
+
+Organize the data by country as the top-level keys.
+Each country should contain a list of media outlets.
+Each media outlet should include all extracted fields in a consistent schema.

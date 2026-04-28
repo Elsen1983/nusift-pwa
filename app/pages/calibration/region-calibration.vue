@@ -261,22 +261,63 @@ const logoutAndGoBack = async () => {
   router.push('/auth');
 };
 
+// const saveAndContinue = async () => {
+//   if (!selectedCountry.value || isSaving.value) return;
+  
+//   isSaving.value = true;
+  
+//   try {
+//     agentStore.primaryRegion = selectedCountry.value;
+//     await new Promise(resolve => setTimeout(resolve, 800));
+    
+//     if (authStore.user) {
+//       authStore.user.onboardingStep = 1;
+//       if (!import.meta.server) {
+//         localStorage.setItem('nusift_pwa_profile', JSON.stringify(authStore.user));
+//       }
+//     }
+    
+//     await router.push("/source-calibration");
+//   } catch (error) {
+//     console.error("Navigation error:", error);
+//     isSaving.value = false;
+//   }
+// };
+
 const saveAndContinue = async () => {
   if (!selectedCountry.value || isSaving.value) return;
-  
+
   isSaving.value = true;
-  
+
   try {
+    // 1. Eltesszük a Pinia store-ba a kiválasztott országot
     agentStore.primaryRegion = selectedCountry.value;
-    await new Promise(resolve => setTimeout(resolve, 800));
-    
+
+    // ==========================================
+    // 2. HÁTTÉRADATBÁZIS ÉPÍTÉS INDÍTÁSA (SEEDER)
+    // ==========================================
+    // Nem várjuk meg (nincs await), azonnal megy tovább a kód!
+    $fetch("/api/util/seed-region", {
+      method: "POST",
+      body: { country: selectedCountry.value }
+    }).catch(err => console.warn("Background seeder API failed:", err));
+
+    // 3. UX miatti minimális várakozás (hogy látszódjon a "Finalizing..." gomb)
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    // 4. Állapotgép (State Machine) frissítése a Guard miatt
     if (authStore.user) {
       authStore.user.onboardingStep = 1;
+
       if (!import.meta.server) {
-        localStorage.setItem('nusift_pwa_profile', JSON.stringify(authStore.user));
+        localStorage.setItem(
+          "nusift_pwa_profile",
+          JSON.stringify(authStore.user),
+        );
       }
     }
-    
+
+    // 5. Tovább a következő oldalra
     await router.push("/source-calibration");
   } catch (error) {
     console.error("Navigation error:", error);
