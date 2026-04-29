@@ -5,7 +5,7 @@
         <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">{{ icon }}</span>
         <h4 class="font-headline text-lg text-on-surface">{{ title }}</h4>
       </div>
-      <button class="bg-primary/10 text-primary hover:bg-primary-container hover:text-on-primary-container px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all">
+      <button @click="$emit('add')" class="bg-primary/10 text-primary hover:bg-primary-container hover:text-on-primary-container px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all">
         Activate
       </button>
     </div>
@@ -23,4 +23,5 @@
 
 <script setup lang="ts">
 defineProps<{ id: string; title: string; icon: string; }>();
+defineEmits(['add']);
 </script>

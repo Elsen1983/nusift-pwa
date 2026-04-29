@@ -28,7 +28,7 @@
         </p>
       </section>
 
-      <section class="flex flex-col items-center justify-center py-6">
+      <section class="flex flex-col items-center justify-center py-0">
         <div class="relative w-64 h-64 md:w-80 md:h-80">
           <svg viewBox="0 0 100 100" class="w-full h-full transform -rotate-90">
             <path
@@ -78,10 +78,10 @@
             <div class="flex items-center gap-3">
               <span
                 class="bg-surface-container-highest px-3 py-1 rounded-full text-[12px] font-label font-bold text-primary"
-                >4 Active</span
+                >{{ activeCategories.length }} Active</span
               >
-              <span
-                class="material-symbols-outlined text-on-surface-variant transition-transform duration-300"
+              <span 
+                class="material-symbols-outlined text-on-surface-variant transition-transform duration-300" 
                 :class="{ 'rotate-180': isActiveSectionOpen }"
               >
                 expand_more
@@ -92,7 +92,7 @@
             v-show="isActiveSectionOpen"
             class="p-3 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-outline-variant/10"
           >
-            <div 
+           <div 
               v-for="cat in mappedActive"
               :key="cat.id"
               :id="`card-${cat.id}`"
@@ -106,6 +106,9 @@
                 :initial-prompt="cat.initialPrompt"
                 :chips="cat.chips"
                 :theme-color="cat.themeColor"
+                :is-new="cat.isNew"
+                @update="updateCategory"
+                @deactivate="deactivateCategory"
               />
             </div>
           </div>
@@ -116,9 +119,9 @@
         <div
           class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/10"
         >
-          <div
+          <div 
             @click="isInactiveSectionOpen = !isInactiveSectionOpen"
-            class="w-full flex items-center justify-between p-6 cursor-pointer hover:bg-surface-container-low/50 transition-colors select-none"
+            class="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-container-low/50 transition-colors select-none"
           >
             <h2 class="font-headline text-[16px] font-bold text-white">
               Inactive Categories
@@ -126,10 +129,10 @@
             <div class="flex items-center gap-3">
               <span
                 class="bg-surface-container-highest px-3 py-1 rounded-full text-[12px] font-label font-bold text-white"
-                >14/18</span
+                >{{ availableCategories.length - activeCategories.length }}/{{ availableCategories.length }}</span
               >
-              <span
-                class="material-symbols-outlined text-on-surface-variant transition-transform duration-300"
+              <span 
+                class="material-symbols-outlined text-on-surface-variant transition-transform duration-300" 
                 :class="{ 'rotate-180': isInactiveSectionOpen }"
               >
                 expand_more
@@ -188,7 +191,18 @@ const availableCategories = [
   { name: "Education", icon: "school", color: "#90CAF9" },
 ];
 
-const activeCategories = ref([
+interface ActiveCategory {
+  id: string;
+  name: string;
+  weight: number;
+  icon: string;
+  color: string;
+  prompt: string;
+  chips: string[];
+  isNew?: boolean; // AZ OPCIONÁLIS MEZŐ, ami miatt nem lesz több hiba!
+}
+
+const activeCategories = ref<ActiveCategory[]>([
   {
     id: "ai_strategy",
     name: "Technology",
@@ -233,11 +247,12 @@ const activeCategories = ref([
 
 // Map internal active categories to match ActiveCategoryCard props
 const mappedActive = computed(() => {
-  return activeCategories.value.map((cat) => ({
+  return activeCategories.value.map((cat: any) => ({
     ...cat,
-    initialPrompt: cat.prompt, // Maps 'prompt' to 'initialPrompt'
+    initialPrompt: cat.prompt,
     chips: cat.chips,
     themeColor: cat.color,
+    isNew: cat.isNew,
   }));
 });
 
@@ -267,15 +282,40 @@ function getCoordinatesForAngle(startAngle: number, endAngle: number) {
 }
 
 const addCategory = (cat: any) => {
+  const newId = cat.name.toLowerCase().replace(/\s+/g, "_");
   activeCategories.value.push({
-    id: cat.name.toLowerCase().replace(/\s+/g, "_"),
+    id: newId,
     name: cat.name,
-    weight: 50,
+    weight: 0, // A DB-ben még 0 a súlya
     icon: cat.icon,
     color: cat.color,
     prompt: "",
-    chips: [],
+    chips: [], // Üres AI node-ok
+    isNew: true, // Ezzel kényszerítjük ki a sárga keretet és a gombot
   });
+  
+  // Automatikus odagörgetés a frissen hozzáadott kártyához
+  setTimeout(() => {
+    scrollToCard(newId);
+  }, 150);
+};
+
+// Amikor rányom a "Save Changes"-re
+// Amikor rányom a "Save Changes"-re
+const updateCategory = (data: { id: string, weight: number, prompt: string }) => {
+  // findIndex helyett find-ot használunk, ami visszaadja magát az objektumot
+  const category = activeCategories.value.find(c => c.id === data.id);
+  
+  if (category) {
+    category.weight = data.weight;
+    category.prompt = data.prompt;
+    category.isNew = false; // Sikeres mentés után normál állapotba kerül
+  }
+};
+
+// Amikor rányom az X gombra az aktív kártyán
+const deactivateCategory = (id: string) => {
+  activeCategories.value = activeCategories.value.filter(c => c.id !== id);
 };
 
 const scrollToCard = async (id: string) => {

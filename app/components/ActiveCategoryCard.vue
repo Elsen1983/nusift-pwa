@@ -13,6 +13,14 @@
         </div>
         <h3 class="text-[#00E5FF] font-headline text-[16px] font-bold">{{ title }}</h3>
       </div>
+      
+      <button 
+        @click="$emit('deactivate', id)" 
+        class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-red-500/10 text-on-surface-variant hover:text-red-400 transition-colors"
+        title="Deactivate Category"
+      >
+        <span class="material-symbols-outlined text-lg">close</span>
+      </button>
     </div>
     
     <div class="space-y-2">
@@ -20,8 +28,12 @@
         <div class="flex justify-between text-[10px] text-on-surface-variant uppercase font-label font-bold tracking-wider">
           <span>Priority Weight</span>
           <span :class="hasChanges ? 'text-[#fec931]' : 'text-primary'">
-            <template v-if="hasChanges">{{ localWeight }}% <- </template>
-            {{ initialWeight }}%
+            <template v-if="hasChanges">
+              {{ isNew ? 0 : initialWeight }}% 
+              <span class="material-symbols-outlined text-[10px] align-middle font-bold px-1">arrow_forward</span> 
+              {{ localWeight }}%
+            </template>
+            <template v-else>{{ initialWeight }}%</template>
           </span>
         </div>
         <div v-if="hasChanges" class="absolute h-1 bg-[#fec931]/30 rounded-lg pointer-events-none" 
@@ -39,19 +51,23 @@
         <div class="relative">
           <textarea 
             v-model="localPrompt"
-            class="w-full bg-surface-container-highest/50 border-none rounded-xl p-4 text-sm font-body text-on-surface focus:ring-1 focus:ring-primary/40 min-h-[50px] resize-none"
+            maxlength="500"
+            class="w-full bg-surface-container-highest/50 border-none rounded-xl p-2 text-sm font-body text-on-surface focus:ring-1 focus:ring-primary/40 min-h-[65px] resize-none"
             placeholder="Fine-tune agent focus..."
           ></textarea>
-          <span v-if="localPrompt.length > 0 && !hasChanges" class="text-cursor absolute bottom-4 right-4 opacity-0"></span>
+          <!-- <span v-if="localPrompt.length > 0 && !hasChanges" class="text-cursor absolute bottom-4 right-4 opacity-0"></span> -->
         </div>
-        <div class="text-[10px] text-on-surface-variant/60 font-medium text-right pr-1">
+        <div 
+          class="text-[10px] font-medium text-right pr-1 transition-colors duration-300"
+          :class="localPrompt.length >= 500 ? 'text-red-400 font-bold' : 'text-on-surface-variant/60'"
+        >
           {{ localPrompt.length }}/500
         </div>
       </div>
       
       <p class="text-[12px] text-on-surface-variant italic opacity-70">AI-curated sub-nodes based on calibration.</p>
       
-      <div class="flex flex-wrap gap-2 transition-all duration-300">
+      <div v-if="chips && chips.length > 0" class="flex flex-wrap gap-2 transition-all duration-300">
         <span v-for="chip in visibleChips" :key="chip" class="bg-surface-container-highest text-primary-fixed-dim text-[#00E5FF] px-3 py-1 rounded-full text-[10px] font-medium border border-outline-variant/10">
           {{ chip }}
         </span>
@@ -73,26 +89,35 @@
 </template>
 
 <script setup lang="ts">
+import { ref, computed } from 'vue';
+
 const props = defineProps<{
   id: string; title: string; icon: string; 
   initialWeight: number; initialPrompt: string; chips: string[];
+  isNew?: boolean; // ÚJ: Érzékeljük, ha frissen aktivált
 }>();
 
-const emit = defineEmits(['update']);
+const emit = defineEmits(['update', 'deactivate']); // ÚJ: deactivate regisztrálása
 
-const localWeight = ref(props.initialWeight);
+// Ha új, akkor 100%-ról indul a csúszka, egyébként a meglévő súlyról
+const localWeight = ref(props.isNew ? 100 : props.initialWeight);
 const localPrompt = ref(props.initialPrompt);
 const isExpanded = ref(false);
 
 const hasChanges = computed(() => {
+  if (props.isNew) return true; // Új elem esetén mindig "változás van", amíg el nem mentjük
   return localWeight.value !== props.initialWeight || localPrompt.value !== props.initialPrompt;
 });
 
-const visibleChips = computed(() => isExpanded.value ? props.chips : props.chips.slice(0, 3));
+const visibleChips = computed(() => {
+  if (!props.chips) return [];
+  return isExpanded.value ? props.chips : props.chips.slice(0, 3);
+});
 
 const sliderDiffStyle = computed(() => {
-  const start = Math.min(localWeight.value, props.initialWeight);
-  const end = Math.max(localWeight.value, props.initialWeight);
+  const baseWeight = props.isNew ? 0 : props.initialWeight; // Bázis 0, ha új
+  const start = Math.min(localWeight.value, baseWeight);
+  const end = Math.max(localWeight.value, baseWeight);
   return {
     left: `${start}%`,
     width: `${end - start}%`,
