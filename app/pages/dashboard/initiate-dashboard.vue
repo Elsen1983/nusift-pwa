@@ -24,7 +24,7 @@
             <img
               alt="User Profile"
               class="w-full h-full object-cover"
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuCKQFpho9N6vNb597g658gofpMtTfArkL752rpR3k6rxeDzEqXZerZhpd3mQs7bV1aSAfXs4c8OjyoaWQaiNXQjAldOB7gFixiZbOkrydVdRRwix4N1uCOiik3IkWYLzb921cnm_F4R4A3LFfa-8Ah5YAzjox-xAfSPbCwz7wtURyhhHFZseEljkd2aDX_o91u5QK2zrT0nD981j4OgFsCrBPN4tsTfJkGVoNL_xnc0-f81gL5h9OEKzGG9XnOID8ANo2j1kJbhz8k"
+              :src="userAvatar"
             />
           </div>
         </div>
@@ -121,8 +121,10 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useRouter } from "vue-router";
+import defaultAvatar from '~/assets/images/default_avatar.png';
 
 const router = useRouter();
+const userAvatar = ref(defaultAvatar);
 const isSifting = ref(false);
 
 const initiateSift = () => {

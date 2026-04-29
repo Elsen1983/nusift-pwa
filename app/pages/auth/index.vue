@@ -424,7 +424,12 @@ const handleAuth = async () => {
     if (success) {
       localStorage.setItem("nusift_visited", "true");
       console.log("Authentication successful, redirecting...");
-      router.push("/preloader-page");
+      // ANCHOR SMART-ROUTING
+      if (authStore.user?.onboardingStep !== undefined && authStore.user.onboardingStep >= 3) {
+        router.push('/dashboard'); 
+      } else {
+        router.push('/preloader-page'); 
+      }
     } else {
       emailError.value =
         authStore.authError || "Authentication failure. Check credentials.";

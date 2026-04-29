@@ -136,11 +136,13 @@
 import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "~/stores/auth";
+import { useAgentStore } from "~/stores/agent";
 
 const router = useRouter();
 const authStore = useAuthStore();
-const selected = ref<string[]>([]);
+const agentStore = useAgentStore();
 const isInitializing = ref(false);
+const selected = ref<string[]>([]);
 
 const availableCategories = [
   { name: "Politics", icon: "policy" },
@@ -170,14 +172,29 @@ const toggleCategory = (name: string) => {
 };
 
 const finalizeOnboarding = async () => {
+  if (selected.value.length === 0 || isInitializing.value) return;
+  
   isInitializing.value = true;
 
-  // TODO: Majd itt hívjuk a backendet, ami elmenti a kategóriákat az adatbázisba
-  setTimeout(() => {
-    if (authStore.user) {
-      authStore.user.onboardingStep = 3; // Beállítjuk, hogy végzett az onboardinggal
+  try {
+    // 1. Pinia store frissítése a végleges választással
+    agentStore.topInterests = [...selected.value];
 
-      // Update PWA offline profile
+    // 2. BACKEND MENTÉS
+    // Itt küldjük fel az összes korábbi lépésben gyűjtött adatot (Agent + Region + Sources)
+    await $fetch("/api/user/finalize-onboarding", {
+      method: "POST",
+      body: {
+        region: agentStore.primaryRegion,
+        sources: agentStore.topSources,
+        interests: agentStore.topInterests
+      }
+    });
+
+    // 3. Lokális Auth állapot véglegesítése
+    if (authStore.user) {
+      authStore.user.onboardingStep = 3; 
+
       if (!import.meta.server) {
         localStorage.setItem(
           "nusift_pwa_profile",
@@ -185,7 +202,16 @@ const finalizeOnboarding = async () => {
         );
       }
     }
-    router.push("/initialization-preloader-page");
-  }, 2000);
+
+    // 4. Kért várakozás és navigáció a preloaderre
+    setTimeout(() => {
+      router.push("/initialization-preloader-page");
+    }, 2000);
+
+  } catch (error) {
+    console.error("Hiba az onboarding véglegesítése során:", error);
+    // Itt érdemes lenne egy hibaüzenetet mutatni a usernek
+    isInitializing.value = false;
+  }
 };
 </script>

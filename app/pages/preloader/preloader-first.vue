@@ -171,7 +171,7 @@ onMounted(() => {
 
     // Routing az állapot alapján
     if (step >= 3) {
-      router.push("/app/dashboard");
+      router.push("/dashboard");
     } else if (step >= 0) {
       router.push("/region-calibration");
     } else if (step === 1) {

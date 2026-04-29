@@ -2,7 +2,7 @@
   <div class="px-4 py-8 max-w-2xl mx-auto space-y-8">
     
     <section class="bg-surface-container rounded-3xl p-6 border border-outline-variant/10 flex items-center gap-5">
-      <div class="w-20 h-20 rounded-full border-2 border-primary-container p-1 shrink-0 shadow-[0_0_15px_rgba(0,229,255,0.2)]">
+      <div class="w-20 h-20 rounded-full border-1 border-primary-container p-0 shrink-0 shadow-[0_0_15px_rgba(0,229,255,0.2)]">
         <img :src="userAvatar" class="w-full h-full object-cover rounded-full" />
       </div>
       <div class="min-w-0">
@@ -63,6 +63,7 @@
 <script setup lang="ts">
 import { useAuthStore } from '~/stores/auth';
 import { useAgentStore } from '~/stores/agent';
+import defaultAvatar from '~/assets/images/default_avatar.png';
 
 // ANCHOR LAYOUT-DEFINITION
 definePageMeta({
@@ -71,7 +72,7 @@ definePageMeta({
 
 const authStore = useAuthStore();
 const agentStore = useAgentStore();
-const userAvatar = "https://lh3.googleusercontent.com/a/default-user";
+const userAvatar = ref(defaultAvatar);
 
 /**
  * ANCHOR SECURE-LOGOUT

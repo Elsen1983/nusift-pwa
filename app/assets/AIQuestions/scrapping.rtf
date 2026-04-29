@@ -21,3 +21,12 @@ Output format requirements:
 Organize the data by country as the top-level keys.
 Each country should contain a list of media outlets.
 Each media outlet should include all extracted fields in a consistent schema.
+
+
+--------------------
+
+1 - a media_directory.json-ban keresse meg az orszagokat (peldaul "Algeria": [] vagy "Hungary": []) es mindegyiknek keszitsen egy uj json file-t az orszag nevevel kiveve a "United States"-et
+2 - minden orszag alatti objectumban keresse meg a "detail_page_url" -t, es annak az erteket (peldaul "https://www.einpresswire.com/world-media-directory/detail/1873") nyissa meg
+3 - a megnyitott link html kodjaban keresse meg a <section class="main"> section-t, es azon belul bedig a <table class="simple full"> table-table
+4 - keresse meg az osszes th es td taget a table-ben, majd ezeket key-value pair-kent irja bele a hozza tartozo orszag json file-ba ujabb objektumon belulre (peldaul igy : "media_name": ""xyz, "media_type": "Internet",) a kapott adatokat
+5 - amikor egy adott orszaggal vegzett es keszen van a json, akkor irjon ki egy '[orszag neve] adatgyujtes elkeszul...' uzenetet

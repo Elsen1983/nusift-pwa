@@ -72,6 +72,9 @@ export default defineEventHandler(async (event) => {
         email: user.email,
         createdAt: user.createdAt,
         onboardingStep: user.onboardingStep,
+        primaryRegion: user.primaryRegion,
+        topSources: user.topSources,
+        topInterests: user.topInterests
       },
       message: 'Secure Handshake established.',
     };

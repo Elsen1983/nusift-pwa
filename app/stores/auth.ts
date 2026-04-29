@@ -1,8 +1,12 @@
 // stores/auth.ts
 import { defineStore } from "pinia";
 import { ref } from "vue";
+import { useAgentStore } from "./agent";
 
 export const useAuthStore = defineStore("auth", () => {
+
+  const agentStore = useAgentStore();
+
   // ANCHOR STATE
   const user = ref<{
     id: string;
@@ -15,16 +19,24 @@ export const useAuthStore = defineStore("auth", () => {
   const authError = ref<string | null>(null);
 
   // PWA OFFLINE FALLBACK
-  if (!import.meta.server && !user.value) {
-    const offlineProfile = localStorage.getItem("nusift_pwa_profile");
-    if (offlineProfile) {
-      try {
-        user.value = JSON.parse(offlineProfile);
-      } catch (e) {
-        console.error("Hibás PWA profil a cache-ben");
-      }
-    }
-  }
+  // if (!import.meta.server && !user.value) {
+  //   const offlineProfile = localStorage.getItem("nusift_pwa_profile");
+  //   if (offlineProfile) {
+  //     try {
+  //       const parsed = JSON.parse(offlineProfile);
+  //       user.value = parsed;
+        
+  //       // F5 ESETÉN IS TÖLTSÜK VISSZA AZ AGENT ADATAIT!
+  //       const aStore = useAgentStore();
+  //       aStore.primaryRegion = parsed.primaryRegion || null;
+  //       aStore.topSources = parsed.topSources || [];
+  //       aStore.topInterests = parsed.topInterests || [];
+        
+  //     } catch (e) {
+  //       console.error("Hibás PWA profil a cache-ben");
+  //     }
+  //   }
+  // }
 
   // ANCHOR MANUAL RESET
   /** * Mivel Setup Store-t használunk, manuálisan kell implementálnunk a reset-et.
@@ -82,6 +94,13 @@ export const useAuthStore = defineStore("auth", () => {
       });
 
       user.value = response.user;
+
+      // 4. Áttöltjük a kalibrációs adatokat az Agent Store-ba!
+      if (response.user) {
+        agentStore.primaryRegion = response.user.primaryRegion || null;
+        agentStore.topSources = response.user.topSources || [];
+        agentStore.topInterests = response.user.topInterests || [];
+      }
 
       if (!import.meta.server) {
         localStorage.setItem(

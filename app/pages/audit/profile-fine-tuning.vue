@@ -4,10 +4,10 @@
       class="fixed top-0 right-0 w-[500px] h-[500px] bg-primary-container/5 blur-[120px] rounded-full -z-10 pointer-events-none"
     ></div>
 
-    <main class="pt-5 pb-5 px-4 max-w-5xl mx-auto space-y-12 relative z-10">
-      <section class="mb-12 px-2">
+    <main class="pt-5 pb-5 px-4 max-w-5xl mx-auto space-y-4 relative z-10">
+      <section class="mb-4 px-2">
         <div
-          class="inline-block px-3 py-1 bg-surface-container-highest rounded-lg mb-4"
+          class="inline-block px-3 py-1 bg-surface-container-highest rounded-lg mb-2"
         >
           <span
             class="text-[10px] font-label font-bold text-primary tracking-widest uppercase"
@@ -15,12 +15,12 @@
           >
         </div>
         <h2
-          class="font-lg text-4xl md:text-5xl font-bold text-primary leading-tight tracking-tight mb-4 text-white"
+          class="font-lg text-3xl md:text-5xl font-bold text-primary leading-tight tracking-tight mb-4 text-white"
         >
           Fine-Tune Your Intelligence
         </h2>
         <p
-          class="text-on-surface-variant text-12 max-w-2xl leading-relaxed font-body"
+          class="text-on-surface-variant text-[12px] max-w-2xl leading-relaxed font-body"
         >
           Refine how your AI Agent prioritizes information. Adjust weights,
           provide specific technical instructions, and audit the curated
@@ -28,16 +28,13 @@
         </p>
       </section>
 
-      <section class="flex flex-col items-center justify-center py-2">
-        <div class="relative w-48 h-48 md:w-80 md:h-80">
-          <svg
-            class="w-full h-full drop-shadow-[0_0_30px_rgba(0,229,255,0.1)]"
-            viewBox="0 0 100 100"
-          >
+      <section class="flex flex-col items-center justify-center py-6">
+        <div class="relative w-64 h-64 md:w-80 md:h-80">
+          <svg viewBox="0 0 100 100" class="w-full h-full transform -rotate-90">
             <path
-              v-for="slice in pieSlices"
-              :key="slice.id"
-              :d="slice.path"
+              v-for="(slice, index) in pieSlices"
+              :key="'pie-' + slice.id"
+              :d="`M 50 50 L ${slice.path.x1} ${slice.path.y1} A 45 45 0 ${slice.path.largeArcFlag} 1 ${slice.path.x2} ${slice.path.y2} Z`"
               :fill="slice.color"
               stroke="#131313"
               stroke-width="0.5"
@@ -72,26 +69,45 @@
           class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/10"
         >
           <div
-            class="w-full flex items-center justify-between p-4 bg-surface-container-low/50"
+            @click="isActiveSectionOpen = !isActiveSectionOpen"
+            class="w-full flex items-center justify-between p-4 bg-surface-container-low/50 cursor-pointer hover:bg-surface-container-low/80 transition-colors select-none"
           >
-            <h2 class="font-headline text-2xl font-bold text-white">
+            <h2 class="font-headline text-[16px] font-bold text-white">
               Active Horizon
             </h2>
-            <span
-              class="bg-surface-container-highest px-3 py-1 rounded-full text-xs font-label font-bold text-primary"
-              >4 Active</span
-            >
+            <div class="flex items-center gap-3">
+              <span
+                class="bg-surface-container-highest px-3 py-1 rounded-full text-[12px] font-label font-bold text-primary"
+                >4 Active</span
+              >
+              <span
+                class="material-symbols-outlined text-on-surface-variant transition-transform duration-300"
+                :class="{ 'rotate-180': isActiveSectionOpen }"
+              >
+                expand_more
+              </span>
+            </div>
           </div>
           <div
+            v-show="isActiveSectionOpen"
             class="p-3 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-outline-variant/10"
           >
-            <ActiveCategoryCard
-  v-for="cat in mappedActiveCategories"
-  :key="cat.id"
-  v-bind="cat"
-  @update="handleUpdate"
-  :id="'card-' + cat.id"
-/>
+            <div 
+              v-for="cat in mappedActive"
+              :key="cat.id"
+              :id="`card-${cat.id}`"
+              class="rounded-3xl transition-all duration-300"
+            >
+              <ActiveCategoryCard
+                :id="cat.id"
+                :title="cat.name"
+                :icon="cat.icon"
+                :initial-weight="cat.weight"
+                :initial-prompt="cat.initialPrompt"
+                :chips="cat.chips"
+                :theme-color="cat.themeColor"
+              />
+            </div>
           </div>
         </div>
       </section>
@@ -100,84 +116,56 @@
         <div
           class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/10"
         >
-          <div class="w-full flex items-center justify-between p-6">
-            <h2 class="font-headline text-2xl font-bold text-white/50">
+          <div
+            @click="isInactiveSectionOpen = !isInactiveSectionOpen"
+            class="w-full flex items-center justify-between p-6 cursor-pointer hover:bg-surface-container-low/50 transition-colors select-none"
+          >
+            <h2 class="font-headline text-[16px] font-bold text-white">
               Inactive Categories
             </h2>
-            <span
-              class="bg-surface-container-highest px-3 py-1 rounded-full text-xs font-label font-bold text-on-surface-variant"
-              >14/18</span
-            >
+            <div class="flex items-center gap-3">
+              <span
+                class="bg-surface-container-highest px-3 py-1 rounded-full text-[12px] font-label font-bold text-white"
+                >14/18</span
+              >
+              <span
+                class="material-symbols-outlined text-on-surface-variant transition-transform duration-300"
+                :class="{ 'rotate-180': isInactiveSectionOpen }"
+              >
+                expand_more
+              </span>
+            </div>
           </div>
           <div
+            v-show="isInactiveSectionOpen"
             class="p-6 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-outline-variant/10"
           >
             <InactiveCategoryCard
-              v-for="cat in inactiveCategories"
-              :key="cat.id"
-              v-bind="cat"
+              v-for="cat in availableCategories.filter(
+                (c) => !activeCategories.find((ac) => ac.name === c.name),
+              )"
+              :key="cat.name"
+              :id="cat.name.toLowerCase().replace(/\s+/g, '_')"
+              :title="cat.name"
+              :icon="cat.icon"
+              :theme-color="cat.color"
+              @add="addCategory(cat)"
             />
           </div>
         </div>
       </section>
 
-      <section class="flex flex-col items-center py-12">
-        <div
-          class="w-full max-w-md border-2 border-error/40 rounded-3xl p-8 space-y-6 relative bg-error/5"
-        >
-          <div
-            class="absolute -top-3 left-1/2 -translate-x-1/2 bg-surface px-4 text-error font-label text-[10px] uppercase tracking-[0.2em] font-bold"
-          >
-            System Danger Zone
-          </div>
-          <div class="space-y-4">
-            <button
-              class="w-full py-4 px-6 rounded-2xl border border-outline-variant hover:bg-surface-container-highest transition-all flex items-center justify-between group text-on-surface"
-            >
-              <div class="flex items-center gap-3">
-                <span
-                  class="material-symbols-outlined group-hover:text-primary transition-colors"
-                  >cloud_download</span
-                >
-                <span class="font-headline font-bold"
-                  >Export Interest Graph</span
-                >
-              </div>
-              <span class="material-symbols-outlined opacity-30 text-sm"
-                >chevron_right</span
-              >
-            </button>
-            <button
-              class="w-full py-4 px-6 rounded-2xl border border-error/40 hover:bg-error/10 transition-all flex items-center justify-between group text-error"
-            >
-              <div class="flex items-center gap-3">
-                <span class="material-symbols-outlined">delete_sweep</span>
-                <span class="font-headline font-bold">Reset Agent Memory</span>
-              </div>
-              <span class="material-symbols-outlined opacity-30 text-sm"
-                >chevron_right</span
-              >
-            </button>
-          </div>
-        </div>
-      </section>
+      <div class="h-20"></div>
     </main>
-
-    <div
-      class="fixed bottom-[85px] left-0 w-full z-[80] p-6 flex justify-center pointer-events-none"
-    >
-      <button
-        class="w-full max-w-lg pointer-events-auto bg-gradient-to-r from-[#00daf3] to-[#00626e] text-on-primary font-headline font-bold py-4 rounded-full shadow-[0_8px_32px_rgba(0,229,255,0.3)] active:scale-95 transition-all flex items-center justify-center gap-2"
-      >
-        <span class="material-symbols-outlined">save</span> SAVE ALL CHANGES
-      </button>
-    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, nextTick } from "vue";
 definePageMeta({ layout: "app-layout" });
+
+const isActiveSectionOpen = ref(true);
+const isInactiveSectionOpen = ref(true);
 
 const availableCategories = [
   { name: "Politics", icon: "policy", color: "#FFFFFF" },
@@ -186,73 +174,70 @@ const availableCategories = [
   { name: "Science", icon: "science", color: "#00626e" },
   { name: "Health", icon: "health_and_safety", color: "#ffb4ab" },
   { name: "Environment", icon: "eco", color: "#81c784" },
-  { name: "Entertainment", icon: "movie", color: "#ba68c8" },
-  { name: "Culture", icon: "museum", color: "#ff8a65" },
-  { name: "Sports", icon: "sports_soccer", color: "#ffd54f" },
-  { name: "Society", icon: "public", color: "#4fc3f7" },
-  { name: "Transport", icon: "directions_car", color: "#90a4ae" },
-  { name: "Lifestyle", icon: "style", color: "#f06292" },
-  { name: "Gastronomy", icon: "restaurant", color: "#a1887f" },
-  { name: "Real Estate", icon: "home", color: "#d4e157" },
-  { name: "Gardening", icon: "yard", color: "#4db6ac" },
-  { name: "Travel", icon: "flight", color: "#4f91ff" },
-  { name: "Hobbies", icon: "sports_esports", color: "#9575cd" },
-  { name: "Education", icon: "school", color: "#fff176" },
+  { name: "Business", icon: "business_center", color: "#FFD54F" },
+  { name: "Art & Culture", icon: "palette", color: "#E1BEE7" },
+  { name: "Sports", icon: "sports_soccer", color: "#FFCC80" },
+  { name: "Entertainment", icon: "movie", color: "#F48FB1" },
+  { name: "Travel", icon: "flight", color: "#80CBC4" },
+  { name: "Food & Drink", icon: "restaurant", color: "#FFAB91" },
+  { name: "Lifestyle", icon: "self_improvement", color: "#BCAAA4" },
+  { name: "Gaming", icon: "sports_esports", color: "#9FA8DA" },
+  { name: "Automotive", icon: "directions_car", color: "#B0BEC5" },
+  { name: "Real Estate", icon: "house", color: "#A5D6A7" },
+  { name: "Law & Crime", icon: "gavel", color: "#CE93D8" },
+  { name: "Education", icon: "school", color: "#90CAF9" },
 ];
 
-// Active State
 const activeCategories = ref([
   {
-    id: "tech",
+    id: "ai_strategy",
     name: "Technology",
+    weight: 85,
     icon: "memory",
-    weight: 65,
-    prompt: "Focus on GenAI.",
-    chips: ["LLMs", "GPU"],
     color: "#00E5FF",
+    prompt:
+      "Focus exclusively on architectural advancements, LLM scaling laws, and decentralized infrastructure.",
+    chips: ["LLMs", "Rust", "Web3"],
   },
   {
-    id: "politics",
+    id: "market_analysis",
+    name: "Economy",
+    weight: 60,
+    icon: "monitoring",
+    color: "#fec931",
+    prompt:
+      "Filter out clickbait. Prioritize institutional reports, macro trends, and deep quantitative analysis.",
+    chips: ["Macro", "Venture Capital"],
+  },
+  {
+    id: "geopolitics",
     name: "Politics",
-    icon: "policy",
-    weight: 40,
-    prompt: "Regulation focus.",
-    chips: ["EU Acts"],
+    weight: 45,
+    icon: "public",
     color: "#FFFFFF",
+    prompt:
+      "Track EU tech regulations, AI governance acts, and global trade shifts affecting the semiconductor supply chain.",
+    chips: ["EU Regs", "Supply Chain"],
   },
   {
     id: "science",
     name: "Science",
+    weight: 30,
     icon: "science",
-    weight: 76,
-    prompt: "Spaceship focus.",
-    chips: ["SpaceX", "NASA"],
     color: "#00626e",
+    prompt:
+      "Focus on quantum computing breakthroughs and material sciences relevant to clean energy.",
+    chips: ["Quantum", "Clean Energy"],
   },
 ]);
 
-// 1. FIX: Derive inactiveCategories from available minus active
-const inactiveCategories = computed(() => {
-  return availableCategories.filter(
-    (avail) => !activeCategories.value.some((active) => active.name === avail.name)
-  ).map(cat => ({
-    // Mapping for InactiveCategoryCard
-    id: cat.name.toLowerCase().replace(/\s+/g, '-'),
-    title: cat.name,
-    icon: cat.icon
-  }));
-});
-
-// 2. FIX: Computed property to map data to Component Props
-const mappedActiveCategories = computed(() => {
-  return activeCategories.value.map(cat => ({
-    id: cat.id,
-    title: cat.name,           // Maps 'name' to 'title'
-    icon: cat.icon,
-    initialWeight: cat.weight, // Maps 'weight' to 'initialWeight'
+// Map internal active categories to match ActiveCategoryCard props
+const mappedActive = computed(() => {
+  return activeCategories.value.map((cat) => ({
+    ...cat,
     initialPrompt: cat.prompt, // Maps 'prompt' to 'initialPrompt'
     chips: cat.chips,
-    themeColor: cat.color
+    themeColor: cat.color,
   }));
 });
 
@@ -278,21 +263,60 @@ function getCoordinatesForAngle(startAngle: number, endAngle: number) {
   const x2 = 50 + 45 * Math.cos(((endAngle - 90) * Math.PI) / 180);
   const y2 = 50 + 45 * Math.sin(((endAngle - 90) * Math.PI) / 180);
   const largeArcFlag = endAngle - startAngle <= 180 ? 0 : 1;
-  return `M 50 50 L ${x1} ${y1} A 45 45 0 ${largeArcFlag} 1 ${x2} ${y2} Z`;
+  return { x1, y1, x2, y2, largeArcFlag };
 }
 
-const scrollToCard = (id: string) => {
-  const el = document.getElementById(`card-${id}`);
-  if (el) {
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    el.classList.add("ring-2", "ring-primary");
-    setTimeout(() => el.classList.remove("ring-2", "ring-primary"), 2000);
-  }
+const addCategory = (cat: any) => {
+  activeCategories.value.push({
+    id: cat.name.toLowerCase().replace(/\s+/g, "_"),
+    name: cat.name,
+    weight: 50,
+    icon: cat.icon,
+    color: cat.color,
+    prompt: "",
+    chips: [],
+  });
 };
 
-const handleUpdate = (payload: any) => {
-  console.log("Update received:", payload);
+const scrollToCard = async (id: string) => {
+  // 1. Biztosítjuk, hogy a szekció nyitva legyen a görgetés előtt
+  if (!isActiveSectionOpen.value) {
+    isActiveSectionOpen.value = true;
+  }
+
+  // 2. Megvárjuk, amíg a Vue frissíti a DOM-ot (ha ki kellett nyitni)
+  await nextTick();
+
+  // 3. Most már garantáltan létezik az elem a DOM-ban
+  const element = document.getElementById(`card-${id}`);
+  console.log("Scrolling to:", id, element);
+  
+  if (element) {
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+    
+    // Vizuális visszajelzés
+    element.classList.add(
+      "ring-2",
+      "ring-primary",
+      "ring-offset-4",
+      "ring-offset-background",
+    );
+    
+    setTimeout(() => {
+      element.classList.remove(
+        "ring-2",
+        "ring-primary",
+        "ring-offset-4",
+        "ring-offset-background",
+      );
+    }, 1500);
+  }
 };
 </script>
 
-<style scoped></style>
+<style scoped>
+/* Optional: Additional smooth transition for the icon */
+.rotate-180 {
+  transform: rotate(180deg);
+}
+</style>

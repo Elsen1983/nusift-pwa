@@ -1,16 +1,24 @@
 /**
  * ANCHOR GUARD-OVERVIEW
- * NuSift Global Route Guard (Sovereign Shield 4.1 - Error Recovery Optimized)
- * This guard handles authentication, onboarding flow, and prevents navigation loops.
+ * NuSift Global Route Guard (Sovereign Shield 5.0 - JWT Synchronized)
  */
 import { useAuthStore } from "~/stores/auth";
 
+// Egy apró segédfüggvény, ami titkosítás-ellenőrzés nélkül kiolvassa a JWT tartalmát a routinghoz
+const decodeJwtPayload = (token: string) => {
+  try {
+    const base64Url = token.split(".")[1];
+    if (!base64Url) return null;
+    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(base64)); // atob() univerzálisan működik Node.js-ben és böngészőben is
+  } catch (error) {
+    return null;
+  }
+};
+
 export default defineNuxtRouteMiddleware((to, from) => {
-  // ANCHOR CONSTANTS
   const AUTH_PATH = "/auth";
   const ROOT_PATH = "/";
-
-  // Onboarding routes synchronized with nuxt.config.ts hooks
   const REGION_CALIBRATION = "/region-calibration";
   const SOURCE_CALIBRATION = "/source-calibration";
   const INTEREST_CALIBRATION = "/interest-calibration";
@@ -23,58 +31,50 @@ export default defineNuxtRouteMiddleware((to, from) => {
   const authStore = useAuthStore();
   const hasToken = !!tokenCookie.value;
 
-  // ANCHOR INLINE-HYDRATION
-  // Restores session state on hard refresh (F5) if token exists
+  // ANCHOR JWT-HYDRATION
+  // A szerver és a kliens is pontosan ugyanazt az adatot olvassa ki a sütiből! Nincs több mismatch!
   if (hasToken && !authStore.user) {
-    authStore.user = {
-      id: "session-restored",
-      email: "restoring...",
-      createdAt: new Date().toISOString(),
-      onboardingStep: 0,
-    };
+    const payload = decodeJwtPayload(tokenCookie.value as string);
+    if (payload && payload.userId) {
+      authStore.user = {
+        id: payload.userId,
+        email: payload.email,
+        onboardingStep: payload.onboardingStep ?? 0,
+        createdAt: new Date().toISOString(), // Fallback (nem lényeges a routinghoz)
+      };
+    } else if (import.meta.client) {
+      tokenCookie.value = null; // Hibás token törlése a kliensen
+    }
   }
 
   const isAuthenticated = authStore.user !== null;
   const currentStep = authStore.user?.onboardingStep || 0;
 
-  // ANCHOR TARGET LOGIC (Eltolva az új lépések szerint)
   const getOnboardingTarget = (step: number) => {
     switch (step) {
       case 0:
-        return REGION_CALIBRATION; 
+        return REGION_CALIBRATION;
       case 1:
-        return SOURCE_CALIBRATION; 
+        return SOURCE_CALIBRATION;
       case 2:
-        return INTEREST_CALIBRATION; 
+        return INTEREST_CALIBRATION;
       default:
         return DASHBOARD_PATH;
     }
   };
 
-  // ANCHOR SSR-HANDLING
+  // SSR Handling
   if (import.meta.server) {
-    if (to.path === ROOT_PATH) {
+    if (to.path === ROOT_PATH)
       return navigateTo(
         isAuthenticated ? getOnboardingTarget(currentStep) : AUTH_PATH,
       );
-    }
-
-    if (!isAuthenticated && !isPublicRoute) {
-      return navigateTo(AUTH_PATH);
-    }
-
-    // BREAKING THE LOOP: If authenticated but hitting AUTH_PATH, we allow it
-    // to prevent circular redirects during error recovery.
-    if (isAuthenticated && to.path === AUTH_PATH) {
-      return;
-    }
+    if (!isAuthenticated && !isPublicRoute) return navigateTo(AUTH_PATH);
+    if (isAuthenticated && to.path === AUTH_PATH) return;
     return;
   }
 
-  // ANCHOR CLIENT-LOGIC
-  // const hasVisited = localStorage.getItem("nusift_visited");
-
-  // Root handling
+  // Client Handling
   if (to.path === ROOT_PATH) {
     return navigateTo(
       isAuthenticated ? getOnboardingTarget(currentStep) : AUTH_PATH,
@@ -82,28 +82,16 @@ export default defineNuxtRouteMiddleware((to, from) => {
     );
   }
 
-  // Public access control
   if (!isAuthenticated && !isPublicRoute) {
     return navigateTo(AUTH_PATH, { replace: true });
   }
 
-  /**
-   * ANCHOR ERROR-RECOVERY-EXCEPTION
-   * Crucial Fix: If an authenticated user lands on /auth (triggered by error.vue),
-   * we stop the guard from forcing them back to the broken onboarding route.
-   */
   if (isAuthenticated && to.path === AUTH_PATH) {
-    console.warn(
-      "[Sovereign Shield] Authenticated user on Auth Path - Holding for recovery.",
-    );
     return;
   }
 
-  // ANCHOR TRANSITIONAL ROUTES WHITELIST
-  // Ezek azok az oldalak (preloaderek, animációk), amiken átmehet a user
-  // a kötelező onboarding lépések között is.
   const TRANSITIONAL_ROUTES = [
-    "/preloader-page", 
+    "/preloader-page",
     "/initialization-preloader-page",
     "/region-calibration",
     "/source-calibration",
@@ -111,22 +99,18 @@ export default defineNuxtRouteMiddleware((to, from) => {
     "/dashboard-initiate",
   ];
 
-  // Final fallback protection against direct access to wrong steps
   const targetPath = getOnboardingTarget(currentStep);
-  
   const isTransitional = TRANSITIONAL_ROUTES.includes(to.path);
-
-  // ADD THIS LINE
   const isFullyOnboarded = currentStep >= 3;
 
   if (
-    isAuthenticated && !isFullyOnboarded &&
-    to.path !== targetPath && 
-    !isPublicRoute && 
+    isAuthenticated &&
+    !isFullyOnboarded &&
+    to.path !== targetPath &&
+    !isPublicRoute &&
     to.path !== DASHBOARD_PATH &&
-    !isTransitional // ÚJ FELTÉTEL: Ha nem átmeneti oldal, akkor dobjuk vissza
+    !isTransitional
   ) {
-     console.warn(`[Sovereign Shield] Forcing step alignment. User step: ${currentStep}. Redirecting to: ${targetPath}`);
-     return navigateTo(targetPath, { replace: true });
+    return navigateTo(targetPath, { replace: true });
   }
 });

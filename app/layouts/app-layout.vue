@@ -80,11 +80,12 @@
 import { ref } from 'vue';
 import { useAuthStore } from '~/stores/auth';
 import { useAgentStore } from '~/stores/agent';
+import defaultAvatar from '~/assets/images/default_avatar.png';
+const userAvatar = ref(defaultAvatar);
 
 const authStore = useAuthStore();
 const agentStore = useAgentStore();
 
-const userAvatar = ref('https://lh3.googleusercontent.com/a/ACg8ocL...'); // Placeholder
 const isProfileMenuOpen = ref(false);
 const isLogoutModalOpen = ref(false);
 
