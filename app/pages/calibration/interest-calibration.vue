@@ -177,21 +177,28 @@ const finalizeOnboarding = async () => {
   isInitializing.value = true;
 
   try {
-    // 1. Pinia store frissítése a végleges választással
-    agentStore.topInterests = [...selected.value];
+    // 1. Structure the selected strings into the new JSON format
+    const structuredInterests = selected.value.map(name => ({
+      id: name.toLowerCase().replace(/\s+/g, "_"),
+      name: name,
+      weight: 100, // Default to 100% on first calibration
+      prompt: "",  // Empty prompt
+      chips: []    // Empty nodes
+    }));
 
-    // 2. BACKEND MENTÉS
-    // Itt küldjük fel az összes korábbi lépésben gyűjtött adatot (Agent + Region + Sources)
+    // 2. Update Pinia
+    agentStore.topInterests = structuredInterests;
+
+    // 3. Backend Save
     await $fetch("/api/user/finalize-onboarding", {
       method: "POST",
       body: {
         region: agentStore.primaryRegion,
         sources: agentStore.topSources,
-        interests: agentStore.topInterests
+        interests: structuredInterests
       }
     });
 
-    // 3. Lokális Auth állapot véglegesítése
     if (authStore.user) {
       authStore.user.onboardingStep = 3; 
 
@@ -203,14 +210,12 @@ const finalizeOnboarding = async () => {
       }
     }
 
-    // 4. Kért várakozás és navigáció a preloaderre
     setTimeout(() => {
       router.push("/initialization-preloader-page");
     }, 2000);
 
   } catch (error) {
     console.error("Hiba az onboarding véglegesítése során:", error);
-    // Itt érdemes lenne egy hibaüzenetet mutatni a usernek
     isInitializing.value = false;
   }
 };

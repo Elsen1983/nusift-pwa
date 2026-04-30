@@ -19,5 +19,5 @@ model User {
   onboardingStep Int      @default(0)
   primaryRegion  String?
   topSources     String[]
-  topInterests   String[]
+  topInterests   Json      @default("[]")
 }

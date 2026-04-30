@@ -1,6 +1,14 @@
 // stores/agent.ts
 import { defineStore } from "pinia";
 
+export interface UserInterest {
+  id: string;
+  name: string;
+  weight: number;
+  prompt: string;
+  chips: string[];
+}
+
 export const useAgentStore = defineStore("agent", {
   state: () => ({
     agentVersion: "v4.2.0-sovereign",
@@ -9,7 +17,7 @@ export const useAgentStore = defineStore("agent", {
     primaryRegion: null as string | null, // Új mező a régiónak
     regionalWhitelist: [] as string[],
     topSources: [] as string[],
-    topInterests: [] as string[],
+    topInterests: [] as UserInterest[],
 
     // Központosított preferenciák (Súlyozott adatok)
     topPreferences: [

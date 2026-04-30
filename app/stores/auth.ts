@@ -99,7 +99,8 @@ export const useAuthStore = defineStore("auth", () => {
       if (response.user) {
         agentStore.primaryRegion = response.user.primaryRegion || null;
         agentStore.topSources = response.user.topSources || [];
-        agentStore.topInterests = response.user.topInterests || [];
+        // BUGFIX: Force TypeScript to accept the new JSON structure from the DB
+        agentStore.topInterests = (response.user.topInterests || []) as any;
       }
 
       if (!import.meta.server) {

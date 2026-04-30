@@ -170,17 +170,20 @@ onMounted(() => {
     const step = authStore.user?.onboardingStep || 0;
 
     // Routing az állapot alapján
-    if (step >= 3) {
-      router.push("/dashboard");
-    } else if (step >= 0) {
+    if (step === 0) {
       router.push("/region-calibration");
     } else if (step === 1) {
       router.push("/interest-calibration");
     } else if (step === 2) {
       router.push("/source-calibration");
+    } else if (step >= 3) {
+      router.push("/dashboard");
+    } else {
+      // Fallback
+      router.push("/region-calibration");
     }
-  }, 3500); // 3.5 másodperc, hogy lehessen olvasni
-});
+  }, 3500); // <-- FIX: Properly closing the setTimeout with 3.5s delay
+}); // <-- FIX: Properly closing onMounted
 
 onBeforeUnmount(() => {
   if (quoteInterval) clearInterval(quoteInterval);
