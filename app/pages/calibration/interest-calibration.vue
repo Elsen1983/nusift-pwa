@@ -58,8 +58,10 @@
           v-for="cat in availableCategories"
           :key="cat.name"
           @click="toggleCategory(cat.name)"
+          :disabled="isInitializing"
           :class="[
-            'group flex items-center p-3 rounded-lg transition-all duration-200 active:scale-[0.98]',
+            'group flex items-center p-3 rounded-lg transition-all duration-200',
+            !isInitializing ? 'active:scale-[0.98]' : 'opacity-60 cursor-not-allowed',
             selected.includes(cat.name)
               ? 'border border-primary-container bg-surface-container shadow-[0_0_15px_rgba(0,229,255,0.2)]'
               : 'bg-surface-container-low hover:bg-surface-container',
@@ -166,8 +168,9 @@ const availableCategories = [
 ];
 
 const toggleCategory = (name: string) => {
-  const idx = selected.value.indexOf(name);
-  if (idx === -1) selected.value.push(name);
+  if (isInitializing.value) return; // Prevent changes while initializing 
+  const idx = selected.value.indexOf(name); // Toggle selection
+  if (idx === -1) selected.value.push(name); // Add if not selected, remove if selected
   else selected.value.splice(idx, 1);
 };
 

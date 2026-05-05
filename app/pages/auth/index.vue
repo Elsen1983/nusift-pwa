@@ -273,8 +273,8 @@ const handleOAuth = async (provider: string) => {
   isLoading.value = true;
   emailError.value = "";
 
-  // 1. Safety Timeout definíció (pl. 45 másodperc)
-  const OAUTH_TIMEOUT_MS = 45000;
+  // 1. Safety Timeout definíció (pl. 30 másodperc)
+  const OAUTH_TIMEOUT_MS = 30000;
   let safetyTimer: NodeJS.Timeout | null = null;
 
   const clearSafetyTimer = () => {
@@ -303,6 +303,9 @@ const handleOAuth = async (provider: string) => {
         client_id: googleId, // Use the bridged config value
         scope: 'email profile',
         callback: async (response: any) => {
+          // CALL #1: Success/Response received. Kill the timer now!
+          clearSafetyTimer();
+
           if (response.error) {
             isLoading.value = false;
             if (response.error === 'access_denied') {
@@ -322,7 +325,7 @@ const handleOAuth = async (provider: string) => {
           console.warn("OAuth Handshake Timed Out.");
         }
       }, OAUTH_TIMEOUT_MS);
-      
+
       client.requestAccessToken();
     } 
     else if (provider === 'Apple') {
@@ -337,6 +340,8 @@ const handleOAuth = async (provider: string) => {
       await processOAuthLogin(response.authorization.id_token, 'APPLE');
     }
   } catch (error: any) {
+    // CALL #2: Something went wrong. Kill the timer so it doesn't fire later.
+    clearSafetyTimer();
     console.error(`${provider} OAuth Error:`, error);
     emailError.value = `Failed to authenticate with ${provider}.`; 
     isLoading.value = false;

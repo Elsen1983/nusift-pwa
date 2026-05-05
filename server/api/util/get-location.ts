@@ -1,5 +1,20 @@
 // server/api/util/get-location.ts
 export default defineEventHandler(async (event) => {
+
+  const vercelCountry = getHeader(event, 'x-vercel-ip-country');
+
+  if (vercelCountry) {
+    // A Vercel csak országkódot küld (pl. "IE"), 
+    // így a nevet neked kell hozzárendelned, vagy csak a kódot használnod
+    return {
+      success: true,
+      countryCode: vercelCountry,
+      // Egy egyszerű mapping vagy fallback név
+      countryName: vercelCountry === 'IE' ? 'Ireland' : vercelCountry, 
+      provider: 'vercel-edge'
+    };
+  }
+
   try {
     // 1. Próbálkozás: ipapi.co (Böngésző szimulációval)
     const response: any = await $fetch('https://ipapi.co/json/', {
