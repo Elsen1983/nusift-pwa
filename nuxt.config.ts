@@ -39,6 +39,14 @@ export default defineNuxtConfig({
     "@img": "./app/assets/images",
   },
 
+  runtimeConfig: {
+    // Private keys (server-side only)
+    // public keys (available to browser)
+    public: {
+      googleClientId: process.env.NUXT_PUBLIC_GOOGLE_CLIENT_ID
+    }
+  },
+
   app: {
     head: {
       // ANCHOR SEO-METADATA

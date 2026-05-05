@@ -271,15 +271,21 @@ const handleAuth = async () => {
 /** ANCHOR OAUTH-LOGIC */
 const handleOAuth = async (provider: string) => {
   isLoading.value = true;
-  emailError.value = ""; // FIX: Changed from authError to emailError
+  emailError.value = "";
 
   try {
     if (provider === 'Google') {
+      // 2. Runtime config használata (Nuxt módszer)
+      const config = useRuntimeConfig();
       const client = (window as any).google.accounts.oauth2.initTokenClient({
-        client_id: 'process.env.NUXT_PUBLIC_GOOGLE_CLIENT_ID',
+        // FIX: Ne használd a 'process.env' stringet idézőjelben!
+        client_id: config.public.googleClientId || process.env.NUXT_PUBLIC_GOOGLE_CLIENT_ID,
         scope: 'email profile',
         callback: async (response: any) => {
-          if (response.error) throw new Error(response.error);
+          if (response.error) {
+            isLoading.value = false;
+            throw new Error(response.error);
+          }
           await processOAuthLogin(response.access_token, 'GOOGLE');
         }
       });
