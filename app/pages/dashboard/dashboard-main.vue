@@ -186,6 +186,19 @@ definePageMeta({
   layout: "app-layout",
 });
 
+// 1. Explicitly define the shape of your data
+interface Article {
+  id: number;
+  title: string;
+  source: string;
+  date: string;
+  score: number;
+  isPaywall: boolean;
+  tags: string[];
+  reasoning: string;
+  signals: string[];
+}
+
 // --- Directives ---
 const vClickOutside = {
   mounted(el: any, binding: any) {
@@ -202,7 +215,7 @@ const vClickOutside = {
 };
 
 // --- Mock Data ---
-const articles = ref([
+const articles = ref<Article[]>([
   {
     id: 1,
     title: "Global Energy Shifts: Rise of Decentralized Power Grids",

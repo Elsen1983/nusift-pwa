@@ -26,12 +26,7 @@ export default defineNuxtConfig({
   modules: [
     "@nuxtjs/tailwindcss", 
     "@pinia/nuxt", 
-    "@vite-pwa/nuxt", 
-    // Group the module and its config together in a tuple
-    ['@vue-email/nuxt', {
-      autoImport: true,
-      tailwind: true,
-    }]
+    "@vite-pwa/nuxt"
   ],
 
   // ANCHOR ALIAS-CONFIGURATION

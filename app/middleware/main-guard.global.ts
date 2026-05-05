@@ -40,7 +40,11 @@ export default defineNuxtRouteMiddleware((to, from) => {
         id: payload.userId,
         email: payload.email,
         onboardingStep: payload.onboardingStep ?? 0,
-        createdAt: new Date().toISOString(), // Fallback (nem lényeges a routinghoz)
+        createdAt: new Date().toISOString(),
+        // Add default values for the missing required fields
+        primaryRegion: null,
+        topSources: [],
+        topInterests: []
       };
     } else if (import.meta.client) {
       tokenCookie.value = null; // Hibás token törlése a kliensen

@@ -29,6 +29,15 @@ export default defineEventHandler(async (event) => {
       });
     }
 
+    // NEW GUARD: Prevent bcrypt from crashing on OAuth users
+    if (!user.passwordHash) {
+      throw createError({
+        statusCode: 401,
+        // Optional: You can make this message more helpful, e.g., "Please log in with Google."
+        statusMessage: 'Invalid credentials. Please use your connected social account.', 
+      });
+    }
+
     // 3. Verify the Password
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
 

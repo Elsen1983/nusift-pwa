@@ -3,14 +3,21 @@
  * It acts as a bridge to Nuxt's auto-generated types, ensuring 
  * full type-safety across the 'Sovereign' codebase. */
 {
+  // ANCHOR NUXT-INTERNAL-REFERENCES
+  // Inherit all auto-imports, path aliases, and the split 
+  // app/server/node environments directly from the Nuxt engine.
+  "extends": "./.nuxt/tsconfig.json",
+
   // ANCHOR COMPILER-OPTIONS
-  // Enforces strict type-checking to prevent runtime anomalies, 
-  // ensures cross-platform case sensitivity consistency, and 
-  // explicitly loads Node.js typings for server-side tools (like Prisma).
+  // These options override/append to the Nuxt defaults.
+  // We explicitly load Node.js typings for server-side tools (like Prisma).
   "compilerOptions": {
     "strict": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["node"]
+    "types": ["node"],
+    // ADD THESE TWO LINES TO OVERRIDE NUXT
+    "module": "ESNext",
+    "moduleResolution": "bundler"
   },
   
   // ANCHOR FILE-EXCLUSIONS
@@ -22,18 +29,18 @@
   // These paths link to the internal Nuxt build environment.
   // This allows the IDE to understand the split between 
   // app-side, server-side (Nitro), and node-side logic.
-  "references": [
-    {
-      "path": "./.nuxt/tsconfig.app.json"
-    },
-    {
-      "path": "./.nuxt/tsconfig.server.json"
-    },
-    {
-      "path": "./.nuxt/tsconfig.shared.json"
-    },
-    {
-      "path": "./.nuxt/tsconfig.node.json"
-    }
-  ]
+  // "references": [
+  //   {
+  //     "path": "./.nuxt/tsconfig.app.json"
+  //   },
+  //   {
+  //     "path": "./.nuxt/tsconfig.server.json"
+  //   },
+  //   {
+  //     "path": "./.nuxt/tsconfig.shared.json"
+  //   },
+  //   {
+  //     "path": "./.nuxt/tsconfig.node.json"
+  //   }
+  // ]
 }

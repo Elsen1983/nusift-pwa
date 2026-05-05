@@ -3,45 +3,29 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useAgentStore } from "./agent";
 
-export const useAuthStore = defineStore("auth", () => {
+/** ANCHOR TYPE-DEFINITIONS
+ * Ensures strict type-safety for user data flowing from the 
+ * verified backend handshake to the frontend state.
+ */
+interface UserProfile {
+  id: string;
+  email: string;
+  onboardingStep: number;
+  createdAt?: string; 
+  primaryRegion: string | null;
+  topSources: string[];
+  topInterests: any; 
+}
 
+export const useAuthStore = defineStore("auth", () => {
   const agentStore = useAgentStore();
 
   // ANCHOR STATE
-  const user = ref<{
-    id: string;
-    email: string;
-    createdAt: string;
-    onboardingStep: number;
-  } | null>(null);
-  
+  const user = ref<UserProfile | null>(null);
   const isLoading = ref(false);
   const authError = ref<string | null>(null);
 
-  // PWA OFFLINE FALLBACK
-  // if (!import.meta.server && !user.value) {
-  //   const offlineProfile = localStorage.getItem("nusift_pwa_profile");
-  //   if (offlineProfile) {
-  //     try {
-  //       const parsed = JSON.parse(offlineProfile);
-  //       user.value = parsed;
-        
-  //       // F5 ESETÉN IS TÖLTSÜK VISSZA AZ AGENT ADATAIT!
-  //       const aStore = useAgentStore();
-  //       aStore.primaryRegion = parsed.primaryRegion || null;
-  //       aStore.topSources = parsed.topSources || [];
-  //       aStore.topInterests = parsed.topInterests || [];
-        
-  //     } catch (e) {
-  //       console.error("Hibás PWA profil a cache-ben");
-  //     }
-  //   }
-  // }
-
-  // ANCHOR MANUAL RESET
-  /** * Mivel Setup Store-t használunk, manuálisan kell implementálnunk a reset-et.
-   * Ezt fogja hívni az app-layout.vue logout közben.
-   */
+  // ANCHOR UTILS
   function $reset() {
     user.value = null;
     isLoading.value = false;
@@ -53,20 +37,14 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   // ANCHOR ACTIONS
-  const registerIdentity = async (
-    emailPayload: string,
-    passwordPayload: string,
-  ) => {
+  const registerIdentity = async (emailPayload: string, passwordPayload: string) => {
     isLoading.value = true;
     authError.value = null;
 
     try {
-      const response = await $fetch("/api/auth/register", {
+      await $fetch("/api/auth/register", {
         method: "POST",
-        body: {
-          email: emailPayload,
-          password: passwordPayload,
-        },
+        body: { email: emailPayload, password: passwordPayload },
       });
       return true;
     } catch (error: any) {
@@ -77,39 +55,27 @@ export const useAuthStore = defineStore("auth", () => {
     }
   };
 
-  const loginIdentity = async (
-    emailPayload: string,
-    passwordPayload: string,
-  ) => {
+  const loginIdentity = async (emailPayload: string, passwordPayload: string) => {
     isLoading.value = true;
     authError.value = null;
 
     try {
-      const response = await $fetch("/api/auth/login", {
+      const response: any = await $fetch("/api/auth/login", {
         method: "POST",
-        body: {
-          email: emailPayload,
-          password: passwordPayload,
-        },
+        body: { email: emailPayload, password: passwordPayload },
       });
 
       user.value = response.user;
 
-      // 4. Áttöltjük a kalibrációs adatokat az Agent Store-ba!
       if (response.user) {
         agentStore.primaryRegion = response.user.primaryRegion || null;
         agentStore.topSources = response.user.topSources || [];
-        // BUGFIX: Force TypeScript to accept the new JSON structure from the DB
         agentStore.topInterests = (response.user.topInterests || []) as any;
       }
 
       if (!import.meta.server) {
-        localStorage.setItem(
-          "nusift_pwa_profile",
-          JSON.stringify(response.user),
-        );
+        localStorage.setItem("nusift_pwa_profile", JSON.stringify(response.user));
       }
-
       return true;
     } catch (error: any) {
       authError.value = error.data?.statusMessage || "Authentication failure.";
@@ -119,10 +85,50 @@ export const useAuthStore = defineStore("auth", () => {
     }
   };
 
+  /** ANCHOR OAUTH-HANDSHAKE
+   * NEW SIGNATURE: Accepts raw token from identity provider.
+   * Trust is deferred to the backend verification logic.
+   */
+  const oauthIdentity = async (rawToken: string, providerName: string) => {
+    isLoading.value = true;
+    authError.value = null;
+
+    try {
+      // Calls the unified, secure endpoint
+      const response: any = await $fetch("/api/auth/oauth", {
+        method: "POST",
+        body: {
+          token: rawToken,
+          provider: providerName
+        },
+      });
+
+      // Synchronize state with verified response
+      user.value = response.user;
+
+      if (response.user) {
+        agentStore.primaryRegion = response.user.primaryRegion || null;
+        agentStore.topSources = response.user.topSources || [];
+        agentStore.topInterests = (response.user.topInterests || []) as any;
+      }
+
+      if (!import.meta.server) {
+        localStorage.setItem("nusift_pwa_profile", JSON.stringify(response.user));
+      }
+
+      return true;
+    } catch (error: any) {
+      authError.value = error.data?.statusMessage || "OAuth handshake failed.";
+      return false;
+    } finally {
+      isLoading.value = false;
+    }
+  };
+
   const logoutIdentity = async () => {
     try {
       await $fetch("/api/auth/logout", { method: "POST" });
-      $reset(); // A belső reset hívása
+      $reset();
       return true;
     } catch (error) {
       console.error("Logout API failed", error);
@@ -130,13 +136,13 @@ export const useAuthStore = defineStore("auth", () => {
     }
   };
 
-  // Fontos: mindent vissza kell adni, amit kívülről el akarunk érni!
   return {
     user,
     isLoading,
     authError,
     registerIdentity,
     loginIdentity,
+    oauthIdentity,
     logoutIdentity,
     $reset,
   };
