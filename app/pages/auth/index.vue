@@ -277,9 +277,15 @@ const handleOAuth = async (provider: string) => {
     if (provider === 'Google') {
       // 2. Runtime config használata (Nuxt módszer)
       const config = useRuntimeConfig();
+      // Senior Check: Ensure the ID actually exists before calling the SDK
+      const googleId = config.public.googleClientId;
+
+      if (!googleId) {
+        throw new Error("Configuration Error: Google Client ID is missing.");
+      }
+
       const client = (window as any).google.accounts.oauth2.initTokenClient({
-        // FIX: Ne használd a 'process.env' stringet idézőjelben!
-        client_id: config.public.googleClientId || process.env.NUXT_PUBLIC_GOOGLE_CLIENT_ID,
+        client_id: googleId, // Use the bridged config value
         scope: 'email profile',
         callback: async (response: any) => {
           if (response.error) {
