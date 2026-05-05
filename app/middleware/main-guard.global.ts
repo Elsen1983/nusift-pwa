@@ -44,7 +44,7 @@ export default defineNuxtRouteMiddleware((to, from) => {
         // Add default values for the missing required fields
         primaryRegion: null,
         topSources: [],
-        topInterests: []
+        topInterests: [],
       };
     } else if (import.meta.client) {
       tokenCookie.value = null; // Hibás token törlése a kliensen
@@ -94,26 +94,43 @@ export default defineNuxtRouteMiddleware((to, from) => {
     return;
   }
 
-  const TRANSITIONAL_ROUTES = [
+  // 1. Routes that fully onboarded users are NEVER allowed to visit again
+  const LOCKED_ONBOARDING_ROUTES = [
     "/preloader-page",
-    "/initialization-preloader-page",
     "/region-calibration",
     "/source-calibration",
     "/interest-calibration",
+  ];
+
+  // 2. Transitional animations that happen after onboarding but before the dashboard
+  const POST_ONBOARDING_PAGES = [
+    "/initialization-preloader-page",
     "/dashboard-initiate",
   ];
 
+  // Combine them for the un-onboarded user logic
+  const ALL_TRANSITIONAL_ROUTES = [
+    ...LOCKED_ONBOARDING_ROUTES,
+    ...POST_ONBOARDING_PAGES,
+  ];
+
   const targetPath = getOnboardingTarget(currentStep);
-  const isTransitional = TRANSITIONAL_ROUTES.includes(to.path);
   const isFullyOnboarded = currentStep >= 3;
 
+  // FIX: If fully onboarded, only block them from the LOCKED routes.
+  // Let them pass through the post-onboarding animations!
+  if (isFullyOnboarded && LOCKED_ONBOARDING_ROUTES.includes(to.path)) {
+    return navigateTo(DASHBOARD_PATH, { replace: true });
+  }
+
+  // If the user is authenticated but not fully onboarded, keep them on track
   if (
     isAuthenticated &&
     !isFullyOnboarded &&
     to.path !== targetPath &&
     !isPublicRoute &&
     to.path !== DASHBOARD_PATH &&
-    !isTransitional
+    !ALL_TRANSITIONAL_ROUTES.includes(to.path)
   ) {
     return navigateTo(targetPath, { replace: true });
   }

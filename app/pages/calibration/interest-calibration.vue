@@ -14,7 +14,7 @@
     >
       <div class="flex items-center gap-3">
         <button
-          @click="router.push('/source-calibration')"
+          @click="router.replace('/source-calibration')"
           class="hover:bg-[#353534] transition-colors p-2 rounded-full active:scale-95 duration-200 flex items-center justify-center"
         >
           <span class="material-symbols-outlined text-[#00E5FF]"
@@ -214,7 +214,7 @@ const finalizeOnboarding = async () => {
     }
 
     setTimeout(() => {
-      router.push("/initialization-preloader-page");
+      router.replace("/initialization-preloader-page");
     }, 2000);
 
   } catch (error) {

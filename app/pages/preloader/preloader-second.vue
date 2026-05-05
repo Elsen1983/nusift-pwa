@@ -117,7 +117,7 @@ onMounted(() => {
   setTimeout(() => {
     // Továbbirányítás a korábban megbeszélt '/dashboard-initiate' útvonalra
     console.log("Preloader véget ért, továbbirányítás a dashboard-initiate oldalra...");
-    router.push("/dashboard-initiate");
+    router.replace("/dashboard-initiate");
   }, 3500);
 });
 

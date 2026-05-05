@@ -297,7 +297,7 @@ const goBackToRegion = async () => {
       );
     }
   }
-  router.push("/region-calibration");
+  router.replace("/region-calibration");
 };
 
 const addSource = async () => {
@@ -389,7 +389,7 @@ const saveAndContinue = async () => {
       }
     }
 
-    await router.push("/interest-calibration");
+    await router.replace("/interest-calibration");
   } catch (error) {
     console.error("Save/Navigation error:", error);
     saveErrorMsg.value =

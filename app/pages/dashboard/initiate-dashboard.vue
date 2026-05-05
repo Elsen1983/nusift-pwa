@@ -134,7 +134,7 @@ const initiateSift = () => {
 
   setTimeout(() => {
     isSifting.value = false;
-    router.push("/dashboard");
+    router.replace("/dashboard");
   }, 2500);
 };
 </script>

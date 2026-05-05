@@ -259,7 +259,7 @@ const handleAuth = async () => {
       if (authStore.user?.onboardingStep !== undefined && authStore.user.onboardingStep >= 3) {
         router.push('/dashboard'); 
       } else {
-        router.push('/preloader-page'); 
+       router.replace('/preloader-page'); 
       }
     } else {
       emailError.value = authStore.authError || "Authentication failure.";
@@ -357,7 +357,7 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
     if (authStore.user?.onboardingStep !== undefined && authStore.user.onboardingStep >= 3) {
       router.push('/dashboard'); 
     } else {
-      router.push('/preloader-page'); 
+      router.replace('/preloader-page'); 
     }
   } else {
     emailError.value = authStore.authError || `${providerName} handshake failed.`;

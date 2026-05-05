@@ -171,16 +171,16 @@ onMounted(() => {
 
     // Routing az állapot alapján
     if (step === 0) {
-      router.push("/region-calibration");
+      router.replace("/region-calibration");
     } else if (step === 1) {
-      router.push("/interest-calibration");
+      router.replace("/interest-calibration");
     } else if (step === 2) {
-      router.push("/source-calibration");
+      router.replace("/source-calibration");
     } else if (step >= 3) {
-      router.push("/dashboard");
+      router.replace("/dashboard");
     } else {
       // Fallback
-      router.push("/region-calibration");
+      router.replace("/region-calibration");
     }
   }, 3500); // <-- FIX: Properly closing the setTimeout with 3.5s delay
 }); // <-- FIX: Properly closing onMounted

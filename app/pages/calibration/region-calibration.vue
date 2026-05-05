@@ -258,7 +258,7 @@ onUnmounted(() => {
 const logoutAndGoBack = async () => {
   if (isSaving.value) return; 
   await authStore.logoutIdentity();
-  router.push('/auth');
+  router.replace('/auth');
 };
 
 // const saveAndContinue = async () => {
@@ -318,7 +318,7 @@ const saveAndContinue = async () => {
     }
 
     // 5. Tovább a következő oldalra
-    await router.push("/source-calibration");
+    await router.replace("/source-calibration");
   } catch (error) {
     console.error("Navigation error:", error);
     isSaving.value = false;
