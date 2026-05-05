@@ -273,6 +273,17 @@ const handleOAuth = async (provider: string) => {
   isLoading.value = true;
   emailError.value = "";
 
+  // 1. Safety Timeout definíció (pl. 45 másodperc)
+  const OAUTH_TIMEOUT_MS = 45000;
+  let safetyTimer: NodeJS.Timeout | null = null;
+
+  const clearSafetyTimer = () => {
+    if (safetyTimer) {
+      clearTimeout(safetyTimer);
+      safetyTimer = null;
+    }
+  };
+
   try {
     if (provider === 'Google') {
       // 2. Runtime config használata (Nuxt módszer)
@@ -284,17 +295,34 @@ const handleOAuth = async (provider: string) => {
         throw new Error("Configuration Error: Google Client ID is missing.");
       }
 
+      if (!(window as any).google?.accounts?.oauth2) {
+        throw new Error("Handshake failed: Identity provider not initialized yet.");
+      }
+
       const client = (window as any).google.accounts.oauth2.initTokenClient({
         client_id: googleId, // Use the bridged config value
         scope: 'email profile',
         callback: async (response: any) => {
           if (response.error) {
             isLoading.value = false;
+            if (response.error === 'access_denied') {
+              emailError.value = "Authentication cancelled by user.";
+              return;
+            }
             throw new Error(response.error);
           }
           await processOAuthLogin(response.access_token, 'GOOGLE');
         }
       });
+
+      safetyTimer = setTimeout(() => {
+        if (isLoading.value) {
+          isLoading.value = false;
+          emailError.value = "The authentication window took too long to respond. Please try again.";
+          console.warn("OAuth Handshake Timed Out.");
+        }
+      }, OAUTH_TIMEOUT_MS);
+      
       client.requestAccessToken();
     } 
     else if (provider === 'Apple') {
