@@ -12,11 +12,13 @@ datasource db {
 model User {
   id             String    @id @default(uuid()) // Sovereign ID (UUID v4)
   email          String    @unique
-  passwordHash   String    
+  passwordHash   String?   // MUST BE OPTIONAL (?) FOR OAUTH USERS
   isVerified     Boolean   @default(false)
+  onboardingStep Int       @default(0)
+  oauthProvider  String?   // e.g., "GOOGLE" or "APPLE"
+  oauthId        String?   @unique
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
-  onboardingStep Int      @default(0)
   primaryRegion  String?
   topSources     String[]
   topInterests   Json      @default("[]")

@@ -23,7 +23,16 @@ export default defineNuxtConfig({
   },
 
   // ANCHOR MODULE-REGISTRATION
-  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt"],
+  modules: [
+    "@nuxtjs/tailwindcss", 
+    "@pinia/nuxt", 
+    "@vite-pwa/nuxt", 
+    // Group the module and its config together in a tuple
+    ['@vue-email/nuxt', {
+      autoImport: true,
+      tailwind: true,
+    }]
+  ],
 
   // ANCHOR ALIAS-CONFIGURATION
   alias: {
