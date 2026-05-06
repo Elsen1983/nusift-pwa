@@ -28,3 +28,5 @@ logs
 .env*.local
 
 /app/generated/prisma
+
+secrets.txt

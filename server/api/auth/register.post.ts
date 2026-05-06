@@ -54,7 +54,7 @@ export default defineEventHandler(async (event) => {
 
     // 7. Send verification email using Resend
     await resend.emails.send({
-      from: 'NuSift Sovereign <onboarding@resend.dev>',
+      from: 'NuSift Sovereign <onboarding@nusift.com>',
       to: email, // For testing, replace with the actual recipient email
       subject: 'Initialize Your Neural Node - Verification Required',
       html: `

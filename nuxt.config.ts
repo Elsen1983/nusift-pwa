@@ -43,7 +43,8 @@ export default defineNuxtConfig({
     // Private keys (server-side only)
     // public keys (available to browser)
     public: {
-      googleClientId: process.env.NUXT_PUBLIC_GOOGLE_CLIENT_ID
+      googleClientId: process.env.NUXT_PUBLIC_GOOGLE_CLIENT_ID,
+      appUrl: process.env.NUXT_PUBLIC_APP_URL || "http://localhost:3000",
     }
   },
 
