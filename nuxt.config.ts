@@ -151,6 +151,11 @@ export default defineNuxtConfig({
           file: "~/pages/verifyEmail/verify-email.vue",
         },
         {
+          name: "verify-custom",
+          path: "/verify",
+          file: "~/pages/verifyEmail/verify.vue",
+        },
+        {
           name: "preloader-custom",
           path: "/preloader-page", 
           file: "~/pages/preloader/preloader-first.vue",

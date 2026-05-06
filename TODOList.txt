@@ -1,0 +1,1 @@
+1 - megnezni a verify-email oldalt, es implementalni az email kuldest a resend-en keresztul a verification link-el, amit kovetoen meg kell oldani az automatikus verifikaciot az appon belul

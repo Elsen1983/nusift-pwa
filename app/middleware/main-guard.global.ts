@@ -24,7 +24,7 @@ export default defineNuxtRouteMiddleware((to, from) => {
   const INTEREST_CALIBRATION = "/interest-calibration";
   const DASHBOARD_PATH = "/dashboard";
 
-  const PUBLIC_ROUTES = [AUTH_PATH, "/verify-email"];
+  const PUBLIC_ROUTES = [AUTH_PATH, "/verify-email", "/verify"];
   const isPublicRoute = PUBLIC_ROUTES.includes(to.path);
 
   const tokenCookie = useCookie("auth_token");

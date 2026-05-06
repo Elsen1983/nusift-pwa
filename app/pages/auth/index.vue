@@ -248,6 +248,7 @@ const handleAuth = async () => {
     const success = await authStore.registerIdentity(email.value, password.value);
     if (success) {
       localStorage.setItem("nusift_visited", "true");
+      localStorage.setItem("nusift_pending_email", email.value);
       router.push("/verify-email");
     } else {
       emailError.value = authStore.authError || "An unexpected error occurred.";
