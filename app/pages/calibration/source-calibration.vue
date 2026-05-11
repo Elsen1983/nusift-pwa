@@ -9,39 +9,41 @@
       class="fixed bottom-0 left-0 w-[500px] h-[500px] bg-secondary-container/5 blur-[120px] rounded-full -z-10 pointer-events-none"
     ></div>
 
-    <header
-      class="fixed top-0 w-full z-50 flex items-center justify-between px-6 py-4 bg-[#131313]"
-    >
+    <header class="fixed top-0 left-0 w-full z-50 bg-[#131313]">
       <div
-        class="flex items-center gap-3 cursor-pointer group"
-        @click="goBackToRegion"
+        class="mx-auto w-full max-w-4xl flex items-center justify-between px-6 py-4"
       >
-        <span
-          class="material-symbols-outlined text-[#00E5FF] group-hover:-translate-x-1 transition-transform"
-          >arrow_back</span
-        >
-        <h1
-          class="font-headline tracking-tighter text-[#00E5FF] group-hover:text-white transition-colors"
-        >
-          Back to Region Calibration
-        </h1>
-      </div>
-      <div class="hidden md:flex flex-col items-end">
-        <span
-          class="text-[10px] text-on-surface-variant font-label uppercase tracking-[0.2em]"
-          >Step 02/03</span
-        >
         <div
-          class="w-32 h-1 bg-surface-container-highest rounded-full mt-1 overflow-hidden"
+          class="flex items-center gap-3 cursor-pointer group"
+          @click="goBackToRegion"
         >
+          <span
+            class="material-symbols-outlined text-[#00E5FF] group-hover:-translate-x-1 transition-transform"
+            >arrow_back</span
+          >
+          <h1
+            class="font-headline tracking-tighter text-[#00E5FF] group-hover:text-white transition-colors"
+          >
+            Back to Region Calibration
+          </h1>
+        </div>
+        <div class="hidden md:flex flex-col items-end">
+          <span
+            class="text-[10px] text-on-surface-variant font-label uppercase tracking-[0.2em]"
+            >Step 02/03</span
+          >
           <div
-            class="h-full w-[66%] bg-primary-container shadow-[0_0_8px_rgba(0,229,255,0.5)]"
-          ></div>
+            class="w-32 h-1 bg-surface-container-highest rounded-full mt-1 overflow-hidden"
+          >
+            <div
+              class="h-full w-[66%] bg-primary-container shadow-[0_0_8px_rgba(0,229,255,0.5)]"
+            ></div>
+          </div>
         </div>
       </div>
     </header>
 
-    <main class="mt-12 pt-6 pb-4 px-6 max-w-4xl mx-auto">
+    <main class="mt-12 pt-6 pb-2 px-6 max-w-4xl mx-auto flex flex-col">
       <section class="mb-4">
         <div
           class="inline-block px-2 py-1 bg-surface-container-highest rounded-lg mb-2"
@@ -56,9 +58,7 @@
         >
           Deploy Your Agents
         </h2>
-        <p
-          class="text-on-surface-variant text-[15px] max-w-2xl leading-relaxed"
-        >
+        <p class="text-on-surface-variant text-[14px] leading-relaxed">
           Enter the domains or site names you want NuSift to prioritize.
         </p>
       </section>
@@ -76,7 +76,7 @@
               v-model="urlInput"
               :disabled="isSaving"
               @keyup.enter="addSource"
-              class="w-full bg-surface-container-highest border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-primary-fixed/30 font-body h-[52px] text-sm px-4 disabled:opacity-50"
+              class="w-full bg-surface-container-highest border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-primary-fixed/30 font-body h-[52px] text-[14px] font-bold px-4 disabled:opacity-50"
               placeholder="Paste URL (e.g., techcrunch.com)..."
               type="url"
             />
@@ -124,7 +124,7 @@
 
         <div
           v-if="sources.length === 0"
-          class="p-8 border-2 border-dashed border-outline-variant/30 rounded-2xl flex flex-col items-center text-center"
+          class="p-4 border-2 border-dashed border-outline-variant/30 rounded-2xl flex flex-col items-center text-center"
         >
           <span
             class="material-symbols-outlined text-outline-variant text-4xl mb-3"
@@ -179,7 +179,7 @@
         </div>
       </section>
 
-      <section class="flex flex-col items-end pt-8">
+      <section class="flex flex-col items-end pt-2">
         <p
           v-if="saveErrorMsg"
           class="text-error text-[12px] font-label mb-3 leading-tight text-red-500 text-right"
@@ -189,7 +189,7 @@
         <button
           @click="saveAndContinue"
           :disabled="sources.length === 0 || isSaving"
-          class="flex items-center gap-3 px-6 py-3 rounded-xl transition-all group bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] disabled:opacity-50 disabled:cursor-not-allowed"
+          class="flex items-center gap-3 px-6 py-2 rounded-xl transition-all group bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] disabled:opacity-50 disabled:grayscale disabled:cursor-not-allowed"
         >
           <span class="font-headline font-bold">
             {{ isSaving ? "Finalizing..." : "Next: Map My Interests" }}

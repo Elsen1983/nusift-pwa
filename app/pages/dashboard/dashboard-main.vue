@@ -1,9 +1,9 @@
 <template>
   <div>
     <div
-      class="fixed top-[60px] left-0 w-full bg-gradient-to-b from-[#131313] via-[#131313] to-surface-container-low shadow-[0_8px_16px_-4px_rgba(0,0,0,0.3)] z-[90] border-b border-black"
+      class="fixed top-[60px] inset-x-0 mx-auto w-full max-w-2xl bg-gradient-to-b from-[#131313] via-[#131313] to-surface-container-low shadow-[0_8px_16px_-4px_rgba(0,0,0,0.3)] z-[90] border-b border-black"
     >
-      <nav class="px-4 py-3 flex gap-3 flex-row relative">
+      <div class="px-4 py-3 flex gap-3 flex-row relative">
         <div class="flex items-end gap-3 w-full">
           <div
             class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
@@ -15,7 +15,7 @@
             >
             <div
               @click="toggleDateDropdown"
-              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-2.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px]"
+              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px]"
             >
               <div class="flex flex-col w-full h-full justify-center min-w-0">
                 <div class="flex justify-between items-center w-full min-w-0">
@@ -55,7 +55,7 @@
             >
             <div
               @click="toggleCategoryDropdown"
-              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-2.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px]"
+              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px]"
             >
               <div class="flex flex-col w-full h-full justify-center min-w-0">
                 <div class="flex justify-between items-center w-full min-w-0">
@@ -127,7 +127,7 @@
             </button>
           </div>
         </div>
-      </nav>
+      </div>
     </div>
 
     <main

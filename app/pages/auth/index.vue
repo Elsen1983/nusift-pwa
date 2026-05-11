@@ -36,7 +36,7 @@
           {{ isRegistering ? "Registration" : "Welcome Back" }}
         </h1>
         <p class="text-[11px] text-on-surface-variant mt-2 font-label uppercase tracking-[0.25em] text-center opacity-80">
-          {{ isRegistering ? "Neural Node Creation" : "Horizon Feed Access" }}
+          {{ isRegistering ? "Unlock your daily news" : "Your personalized news awaits" }}
         </p>
       </section>
 
@@ -76,22 +76,22 @@
           <button
             type="submit"
             :disabled="isLoading || !!emailError || !!passwordError || !email || !password"
-            class="w-full bg-primary-container text-on-primary-container font-headline font-bold py-4 rounded-xl shadow-lg hover:brightness-110 active:scale-[0.97] transition-all disabled:opacity-50 disabled:cursor-not-allowed text-base mt-4 uppercase tracking-widest"
+            class="w-full bg-primary-container text-on-primary-container font-headline font-bold py-3 rounded-xl shadow-lg hover:brightness-110 active:scale-[0.97] transition-all disabled:opacity-50 disabled:cursor-not-allowed text-base mt-4 uppercase tracking-widest"
           >
             {{ isRegistering ? "Register Identity" : "Authenticate" }}
           </button>
         </form>
 
-        <div class="mt-8 text-center space-y-2">
+        <div class="mt-4 text-center space-y-2">
           <p class="text-xs font-label text-on-surface-variant uppercase tracking-widest">
-            {{ isRegistering ? "Already have an account?" : "Don't have a node yet?" }}
+            {{ isRegistering ? "Already have an account?" : "Don't have an account yet?" }}
           </p>
-          <button @click="toggleAuthMode" type="button" class="text-sm font-headline font-bold text-primary-container hover:text-primary underline underline-offset-4 transition-colors">
+          <button @click="toggleAuthMode" type="button" class="text-[18px] font-headline font-bold text-primary-container hover:text-primary underline underline-offset-4 transition-colors">
             {{ isRegistering ? "Login" : "Register Identity" }}
           </button>
         </div>
 
-        <div class="relative flex items-center py-5">
+        <div class="relative flex items-center py-2">
           <div class="flex-grow border-t border-outline-variant/15"></div>
           <span class="flex-shrink mx-4 text-[9px] font-label font-bold text-zinc-500 tracking-[0.4em] uppercase">Social Gate</span>
           <div class="flex-grow border-t border-outline-variant/15"></div>
@@ -116,7 +116,7 @@
         </button>
       </section>
 
-      <footer class="mt-8 text-center w-full">
+      <footer class="mt-4 text-center w-full">
         <p class="text-[10px] text-zinc-500 font-label uppercase tracking-[0.4em] mb-2 font-bold opacity-70">
           Sovereign-Grade Encryption
         </p>

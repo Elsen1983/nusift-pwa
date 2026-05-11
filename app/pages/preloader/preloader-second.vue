@@ -19,15 +19,14 @@
           class="relative p-6 border border-outline-variant/10 rounded-xl bg-surface-container-low/20 backdrop-blur-md mb-12"
         >
           <div
-            class="absolute inset-0 rounded-xl border border-[#00E5FF]/20 animate-[pulse-ring_4s_cubic-bezier(0.4,0,0.6,1)_infinite]"
-          ></div>
-          <div
-            class="absolute inset-2 rounded-lg border border-[#00E5FF]/10 animate-[pulse-ring_4s_cubic-bezier(0.4,0,0.6,1)_infinite_1s]"
+            class="absolute inset-0 rounded-xl border border-[#00E5FF]/20 animate-ring-1"
           ></div>
 
           <div
-            class="w-48 h-48 flex items-center justify-center animate-[pulse-logo_4s_cubic-bezier(0.4,0,0.6,1)_infinite]"
-          >
+            class="absolute inset-2 rounded-lg border border-[#00E5FF]/10 animate-ring-2"
+          ></div>
+
+          <div class="w-48 h-48 flex items-center justify-center animate-logo">
             <span class="material-symbols-outlined text-6xl text-[#00E5FF]"
               >satellite_alt</span
             >
@@ -37,14 +36,15 @@
         <div class="w-full flex flex-col items-center max-w-xs">
           <span
             class="font-headline text-[10px] tracking-[0.3em] text-primary mb-4 uppercase"
-            >FORGING INTELLIGENCE HORIZON...</span
           >
+            FORGING INTELLIGENCE HORIZON...
+          </span>
 
           <div
             class="w-full h-[2px] bg-surface-container-highest rounded-full overflow-hidden relative"
           >
             <div
-              class="absolute top-0 left-0 h-full w-1/3 bg-gradient-to-r from-transparent via-primary-container to-transparent animate-[progress-loading_2.5s_infinite_linear] shadow-[0_0_15px_rgba(0,229,255,0.6)]"
+              class="absolute top-0 left-0 h-full w-1/3 bg-gradient-to-r from-transparent via-primary-container to-transparent animate-progress shadow-[0_0_15px_rgba(0,229,255,0.6)]"
             ></div>
           </div>
         </div>
@@ -90,7 +90,6 @@ interface Quote {
   author: string;
 }
 
-// A preloader-second-ben használt idézet
 const quotes: Quote[] = [
   {
     text: "When you sift through the noise, you don't just find information; you find clarity. And in clarity, you find your own path.",
@@ -106,17 +105,16 @@ const currentQuote = computed<Quote>(() => {
 });
 
 onMounted(() => {
-  // Idézetek váltakozása (bár itt csak egy van, a struktúra megmarad)
   if (quotes.length > 1) {
     quoteInterval = setInterval(() => {
       currentQuoteIndex.value = (currentQuoteIndex.value + 1) % quotes.length;
     }, 4000);
   }
 
-  // Preloader működése: 3.5 másodperc várakozás, majd továbbirányítás
   setTimeout(() => {
-    // Továbbirányítás a korábban megbeszélt '/dashboard-initiate' útvonalra
-    console.log("Preloader véget ért, továbbirányítás a dashboard-initiate oldalra...");
+    console.log(
+      "Preloader véget ért, továbbirányítás a dashboard-initiate oldalra...",
+    );
     router.replace("/dashboard-initiate");
   }, 3500);
 });
@@ -127,6 +125,24 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* NEW: CSS Classes mapping to the keyframes */
+.animate-ring-1 {
+  animation: pulse-ring 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-ring-2 {
+  animation: pulse-ring 4s cubic-bezier(0.4, 0, 0.6, 1) infinite 1s;
+}
+
+.animate-logo {
+  animation: pulse-logo 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-progress {
+  animation: progress-loading 2.5s infinite linear;
+}
+
+/* Original Keyframes */
 @keyframes pulse-ring {
   0% {
     transform: scale(0.95);
@@ -140,6 +156,7 @@ onBeforeUnmount(() => {
     opacity: 0;
   }
 }
+
 @keyframes pulse-logo {
   0%,
   100% {
@@ -151,6 +168,7 @@ onBeforeUnmount(() => {
     transform: scale(1.05);
   }
 }
+
 @keyframes progress-loading {
   0% {
     transform: translateX(-100%);

@@ -27,7 +27,7 @@ export default defineEventHandler(async (event) => {
     if (existingUser) {
       throw createError({
         statusCode: 409, // Conflict (Ütközés)
-        statusMessage: 'A Neural Node with this identity already exists.',
+        statusMessage: 'This email is already in use.',
       });
     }
 
