@@ -23,11 +23,7 @@ export default defineNuxtConfig({
   },
 
   // ANCHOR MODULE-REGISTRATION
-  modules: [
-    "@nuxtjs/tailwindcss", 
-    "@pinia/nuxt", 
-    "@vite-pwa/nuxt"
-  ],
+  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt"],
 
   // ANCHOR ALIAS-CONFIGURATION
   alias: {
@@ -45,7 +41,7 @@ export default defineNuxtConfig({
     public: {
       googleClientId: process.env.NUXT_PUBLIC_GOOGLE_CLIENT_ID,
       appUrl: process.env.NUXT_PUBLIC_APP_URL || "http://localhost:3000",
-    }
+    },
   },
 
   app: {
@@ -158,38 +154,43 @@ export default defineNuxtConfig({
         },
         {
           name: "preloader-custom",
-          path: "/preloader-page", 
+          path: "/preloader-page",
           file: "~/pages/preloader/preloader-first.vue",
         },
         {
           name: "region-calibration-custom",
-          path: "/region-calibration", 
+          path: "/region-calibration",
           file: "~/pages/calibration/region-calibration.vue",
         },
         {
           name: "source-calibration-custom",
-          path: "/source-calibration", 
+          path: "/source-calibration",
           file: "~/pages/calibration/source-calibration.vue",
         },
         {
           name: "interest-calibration-custom",
-          path: "/interest-calibration", 
+          path: "/interest-calibration",
           file: "~/pages/calibration/interest-calibration.vue",
         },
         {
           name: "preloader-custom-two",
-          path: "/initialization-preloader-page", 
+          path: "/initialization-preloader-page",
           file: "~/pages/preloader/preloader-second.vue",
         },
-         {
+        {
           name: "dashboard-initiate-custom",
-          path: "/dashboard-initiate", 
+          path: "/dashboard-initiate",
           file: "~/pages/dashboard/initiate-dashboard.vue",
         },
         {
           name: "dashboard-custom",
-          path: "/dashboard", 
+          path: "/dashboard",
           file: "~/pages/dashboard/dashboard-main.vue",
+        },
+        {
+          name: "reset-password",
+          path: "/reset-password",
+          file: "~/pages/reset-password.vue",
         },
       );
     },
