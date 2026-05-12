@@ -95,17 +95,37 @@ export default defineEventHandler(async (event) => {
     const secret = process.env.JWT_SECRET;
     if (!secret) throw new Error('JWT_SECRET missing');
 
+    // SENIOR PROTOCOL: Dual-Zone Expiration
+    // In case onboarding is complete (step >= 3), token lasts 7 days. Otherwise, only 1 hour for security reasons.
+    const isFullyOnboarded = user.onboardingStep >= 3;
+    const tokenExpirationStr = isFullyOnboarded ? '7d' : '1h';
+    const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60;
+
     const sessionToken = jwt.sign(
-      { userId: user.id, email: user.email, onboardingStep: user.onboardingStep },
+      { 
+        userId: user.id, 
+        email: user.email, 
+        onboardingStep: user.onboardingStep 
+      },
       secret,
-      { expiresIn: '7d' } 
+      { expiresIn: tokenExpirationStr } 
     );
 
+    // 5.a Set the HTTP-Only Cookie
     setCookie(event, 'auth_token', sessionToken, {
       httpOnly: true, 
       secure: process.env.NODE_ENV === 'production', 
       sameSite: 'lax', 
-      maxAge: 60 * 60 * 24 * 7, 
+      maxAge: cookieMaxAge, 
+      path: '/', 
+    });
+
+    // 5.b Set a non-HTTP-Only cookie to indicate session status (optional, can be used by frontend to show user is logged in)
+    setCookie(event, 'session_status', 'active', {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production', 
+      sameSite: 'lax', 
+      maxAge: cookieMaxAge,
       path: '/', 
     });
 

@@ -30,14 +30,6 @@
         }}
       </p>
     </div>
-
-    <div
-      class="fixed top-[-5%] left-[-5%] w-[40%] h-[30%] bg-primary-container/5 blur-[100px] rounded-full -z-10 pointer-events-none"
-    ></div>
-    <div
-      class="fixed bottom-[0%] right-[-5%] w-[30%] h-[25%] bg-secondary-container/5 blur-[80px] rounded-full -z-10 pointer-events-none"
-    ></div>
-
     <main
       class="min-h-screen flex flex-col items-center justify-center px-8 py-6 max-w-md mx-auto relative z-10"
     >

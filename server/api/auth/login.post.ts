@@ -54,6 +54,12 @@ export default defineEventHandler(async (event) => {
       throw new Error('JWT_SECRET is not defined in environment variables.');
     }
 
+    // SENIOR PROTOCOL: Dual-Zone Expiration
+    // If onboarding is complete (step >= 3), token lasts 7 days. Otherwise, only 1 hour for security reasons.
+    const isFullyOnboarded = user.onboardingStep >= 3;
+    const tokenExpirationStr = isFullyOnboarded ? '7d' : '1h';
+    const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60; // másodpercben
+
     const token = jwt.sign(
       { 
         userId: user.id, 
@@ -61,16 +67,25 @@ export default defineEventHandler(async (event) => {
         onboardingStep: user.onboardingStep
       },
       secret,
-      { expiresIn: '7d' } // Token expires in 7 days
+      { expiresIn: tokenExpirationStr } 
     );
 
-    // 5. Set the HTTP-Only Cookie
+    // 5.a Set the HTTP-Only Cookie
     setCookie(event, 'auth_token', token, {
-      httpOnly: true, // Prevents JavaScript access (XSS protection)
-      secure: process.env.NODE_ENV === 'production', // Only sent over HTTPS in production
-      sameSite: 'lax', // CSRF protection
-      maxAge: 60 * 60 * 24 * 7, // 7 days in seconds
-      path: '/', // Cookie is valid across the whole site
+      httpOnly: true, 
+      secure: process.env.NODE_ENV === 'production', 
+      sameSite: 'lax', 
+      maxAge: cookieMaxAge, 
+      path: '/', 
+    });
+
+    // 5.b Set a non-HTTP-Only cookie to indicate session status (optional, can be used by frontend to show user is logged in)
+    setCookie(event, 'session_status', 'active', {
+      httpOnly: false, // This cookie can be read by JavaScript to manage UI state (e.g., show user is logged in)
+      secure: process.env.NODE_ENV === 'production', 
+      sameSite: 'lax', 
+      maxAge: cookieMaxAge, // same as auth_token to keep them in sync
+      path: '/', 
     });
 
     // 6. Return safe user data to the frontend

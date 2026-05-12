@@ -30,22 +30,39 @@ export default defineEventHandler(async (event) => {
 
     // 3. Automatikus Beléptetés (JWT generálás)
     const secret = process.env.JWT_SECRET || 'fallback_secret';
-    const jwtToken = jwt.sign(
+
+    // SENIOR PROTOCOL: Dual-Zone Expiration
+    const isFullyOnboarded = user.onboardingStep >= 3;
+    const tokenExpirationStr = isFullyOnboarded ? '7d' : '1h';
+    const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60; // second-based
+
+    const sessionToken = jwt.sign(
       { 
-        userId: updatedUser.id, 
-        email: updatedUser.email, 
-        onboardingStep: updatedUser.onboardingStep 
+        userId: user.id, 
+        email: user.email, 
+        onboardingStep: user.onboardingStep 
       },
       secret,
-      { expiresIn: '7d' }
+      { expiresIn: tokenExpirationStr } 
     );
 
-    // 4. Süti beállítása a hitelesítéshez
-    setCookie(event, 'auth_token', jwtToken, {
-      httpOnly: false, // Fontos, hogy a Guard hozzáférjen
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 60 * 60 * 24 * 7,
-      path: '/',
+    // --- 4. SESSION PROVISIONING ---
+    // 4.a Set the HTTP-Only Cookie for Authentication
+    setCookie(event, 'auth_token', sessionToken, {
+      httpOnly: true, // The cookie is inaccessible to JavaScript, mitigating XSS risks
+      secure: process.env.NODE_ENV === 'production', 
+      sameSite: 'lax', 
+      maxAge: cookieMaxAge, // Dinamically set based on onboarding status
+      path: '/', 
+    });
+
+    // 4.b Set a non-HTTP-Only cookie to indicate session status (optional, can be used by frontend to show user is logged in)
+    setCookie(event, 'session_status', 'active', {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production', 
+      sameSite: 'lax', 
+      maxAge: cookieMaxAge,
+      path: '/', 
     });
 
     return { 

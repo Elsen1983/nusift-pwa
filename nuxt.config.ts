@@ -75,11 +75,13 @@ export default defineNuxtConfig({
   pwa: {
     registerType: "autoUpdate",
     injectRegister: "auto",
-    workbox: {
-      globPatterns: ["**/*.{js,css,html,png,svg,ico}"],
-    },
     client: {
       installPrompt: true,
+    },
+    workbox: {
+      globPatterns: ["**/*.{js,css,html,png,svg,ico}"],
+      navigateFallback: null as any, // Moved inside workbox and cast to bypass TS
+      cleanupOutdatedCaches: true,
     },
     manifest: {
       name: "NuSift Sovereign Reader",

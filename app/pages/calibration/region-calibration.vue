@@ -3,10 +3,11 @@
     class="bg-surface text-on-surface font-body selection:bg-primary-container selection:text-on-primary-container min-h-screen relative z-0"
   >
     <div
-      class="fixed top-0 right-0 w-[500px] h-[500px] bg-primary-container/5 blur-[120px] rounded-full -z-10 pointer-events-none"
+      class="fixed top-0 left-1/2 -translate-x-1/2 w-[500px] h-[500px] bg-primary-container/5 blur-[120px] rounded-full -z-10 pointer-events-none"
     ></div>
+    
     <div
-      class="fixed bottom-0 left-0 w-[500px] h-[500px] bg-secondary-container/5 blur-[120px] rounded-full -z-10 pointer-events-none"
+      class="fixed bottom-0 left-1/2 -translate-x-1/2 w-[500px] h-[500px] bg-secondary-container/5 blur-[120px] rounded-full -z-10 pointer-events-none"
     ></div>
 
     <header class="fixed top-0 left-0 w-full z-50 bg-[#131313]">
@@ -550,6 +551,7 @@ const saveAndContinue = async () => {
     // 4. Állapotgép (State Machine) frissítése a Guard miatt
     if (authStore.user) {
       authStore.user.onboardingStep = 1;
+      authStore.user.primaryRegion = selectedCountry.value; // NEW: Sync state
 
       if (!import.meta.server) {
         localStorage.setItem(

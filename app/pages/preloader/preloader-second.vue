@@ -1,6 +1,6 @@
 <template>
   <div
-    class="bg-surface text-on-surface font-body overflow-hidden min-h-screen relative selection:bg-primary-container selection:text-on-primary-container"
+    class="text-on-surface font-body overflow-hidden min-h-screen relative selection:bg-primary-container selection:text-on-primary-container"
   >
     <div class="fixed inset-0 pointer-events-none z-0">
       <div

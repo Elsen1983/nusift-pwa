@@ -1,22 +1,22 @@
 /**
  * ANCHOR GUARD-OVERVIEW
- * NuSift Global Route Guard (Sovereign Shield 5.0 - JWT Synchronized)
+ * NuSift Global Route Guard (Sovereign Shield 6.1 - Ghost State Prevention)
  */
 import { useAuthStore } from "~/stores/auth";
 
-// Egy apró segédfüggvény, ami titkosítás-ellenőrzés nélkül kiolvassa a JWT tartalmát a routinghoz
 const decodeJwtPayload = (token: string) => {
   try {
     const base64Url = token.split(".")[1];
     if (!base64Url) return null;
     const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-    return JSON.parse(atob(base64)); // atob() univerzálisan működik Node.js-ben és böngészőben is
+    return JSON.parse(atob(base64));
   } catch (error) {
     return null;
   }
 };
 
 export default defineNuxtRouteMiddleware((to, from) => {
+  // Path Constants
   const AUTH_PATH = "/auth";
   const ROOT_PATH = "/";
   const REGION_CALIBRATION = "/region-calibration";
@@ -27,13 +27,15 @@ export default defineNuxtRouteMiddleware((to, from) => {
   const PUBLIC_ROUTES = [AUTH_PATH, "/verify-email", "/verify", "/reset-password"];
   const isPublicRoute = PUBLIC_ROUTES.includes(to.path);
 
-  const tokenCookie = useCookie("auth_token");
   const authStore = useAuthStore();
-  const hasToken = !!tokenCookie.value;
+  const tokenCookie = useCookie("auth_token");     // SSR Only
+  const sessionStatus = useCookie("session_status"); // Client & Server
 
-  // ANCHOR JWT-HYDRATION
-  // A szerver és a kliens is pontosan ugyanazt az adatot olvassa ki a sütiből! Nincs több mismatch!
-  if (hasToken && !authStore.user) {
+  // 1. ANCHOR SESSION-DETECTION
+  const hasActiveSession = import.meta.server ? !!tokenCookie.value : !!sessionStatus.value;
+
+  // 2. ANCHOR JWT-HYDRATION (SSR Only)
+  if (import.meta.server && tokenCookie.value && !authStore.user) {
     const payload = decodeJwtPayload(tokenCookie.value as string);
     if (payload && payload.userId) {
       authStore.user = {
@@ -41,60 +43,51 @@ export default defineNuxtRouteMiddleware((to, from) => {
         email: payload.email,
         onboardingStep: payload.onboardingStep ?? 0,
         createdAt: new Date().toISOString(),
-        // Add default values for the missing required fields
         primaryRegion: null,
         topSources: [],
         topInterests: [],
       };
-    } else if (import.meta.client) {
-      tokenCookie.value = null; // Hibás token törlése a kliensen
     }
   }
 
-  const isAuthenticated = authStore.user !== null;
+  // 3. ANCHOR SYNC-CHECK (Ghost State Prevention)
+  // If no cookie exists but Pinia still thinks we are logged in, force a reset.
+  if (!hasActiveSession && authStore.user !== null) {
+    authStore.$reset();
+  }
+
+  const isAuthenticated = authStore.user !== null && hasActiveSession;
   const currentStep = authStore.user?.onboardingStep || 0;
 
   const getOnboardingTarget = (step: number) => {
     switch (step) {
-      case 0:
-        return REGION_CALIBRATION;
-      case 1:
-        return SOURCE_CALIBRATION;
-      case 2:
-        return INTEREST_CALIBRATION;
-      default:
-        return DASHBOARD_PATH;
+      case 0: return REGION_CALIBRATION;
+      case 1: return SOURCE_CALIBRATION;
+      case 2: return INTEREST_CALIBRATION;
+      default: return DASHBOARD_PATH;
     }
   };
 
-  // SSR Handling
-  if (import.meta.server) {
-    if (to.path === ROOT_PATH)
-      return navigateTo(
-        isAuthenticated ? getOnboardingTarget(currentStep) : AUTH_PATH,
-      );
-    if (!isAuthenticated && !isPublicRoute) return navigateTo(AUTH_PATH);
-    if (isAuthenticated && to.path === AUTH_PATH) return;
-    return;
+  const targetPath = getOnboardingTarget(currentStep);
+
+  // 4. ANCHOR REDIRECT-LOGIC (Tightened)
+  
+  // If authenticated, NEVER allow access to /auth - send to current onboarding step or dashboard
+  if (isAuthenticated && to.path === AUTH_PATH) {
+    return navigateTo(targetPath);
   }
 
-  // Client Handling
+  // Handle Root Path
   if (to.path === ROOT_PATH) {
-    return navigateTo(
-      isAuthenticated ? getOnboardingTarget(currentStep) : AUTH_PATH,
-      { replace: true },
-    );
+    return navigateTo(isAuthenticated ? targetPath : AUTH_PATH);
   }
 
+  // Protect private routes
   if (!isAuthenticated && !isPublicRoute) {
     return navigateTo(AUTH_PATH, { replace: true });
   }
 
-  if (isAuthenticated && to.path === AUTH_PATH) {
-    return;
-  }
-
-  // 1. Routes that fully onboarded users are NEVER allowed to visit again
+  // --- Onboarding Flow Lockdown ---
   const LOCKED_ONBOARDING_ROUTES = [
     "/preloader-page",
     "/region-calibration",
@@ -102,28 +95,18 @@ export default defineNuxtRouteMiddleware((to, from) => {
     "/interest-calibration",
   ];
 
-  // 2. Transitional animations that happen after onboarding but before the dashboard
-  const POST_ONBOARDING_PAGES = [
+  const ALL_TRANSITIONAL_ROUTES = [
+    ...LOCKED_ONBOARDING_ROUTES,
     "/initialization-preloader-page",
     "/dashboard-initiate",
   ];
 
-  // Combine them for the un-onboarded user logic
-  const ALL_TRANSITIONAL_ROUTES = [
-    ...LOCKED_ONBOARDING_ROUTES,
-    ...POST_ONBOARDING_PAGES,
-  ];
-
-  const targetPath = getOnboardingTarget(currentStep);
   const isFullyOnboarded = currentStep >= 3;
 
-  // FIX: If fully onboarded, only block them from the LOCKED routes.
-  // Let them pass through the post-onboarding animations!
   if (isFullyOnboarded && LOCKED_ONBOARDING_ROUTES.includes(to.path)) {
     return navigateTo(DASHBOARD_PATH, { replace: true });
   }
 
-  // If the user is authenticated but not fully onboarded, keep them on track
   if (
     isAuthenticated &&
     !isFullyOnboarded &&

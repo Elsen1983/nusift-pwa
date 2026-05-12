@@ -31,8 +31,13 @@ export const useAuthStore = defineStore("auth", () => {
     isLoading.value = false;
     authError.value = null;
 
-    if (!import.meta.server) {
+    if (import.meta.client) {
       localStorage.removeItem("nusift_pwa_profile");
+      sessionStorage.clear();
+      
+      // ANCHOR COOKIE-CLEANUP
+      const sessionStatus = useCookie("session_status");
+      sessionStatus.value = null; // Explicitly nullify the indicator
     }
   }
 
@@ -127,11 +132,14 @@ export const useAuthStore = defineStore("auth", () => {
 
   const logoutIdentity = async () => {
     try {
+      // Ez meghívja a /api/auth/logout-ot, ami törli mindkét sütit a szerveren
       await $fetch("/api/auth/logout", { method: "POST" });
       $reset();
       return true;
     } catch (error) {
       console.error("Logout API failed", error);
+      // Hiba esetén is kényszerítjük a lokális resetet
+      $reset();
       return false;
     }
   };
