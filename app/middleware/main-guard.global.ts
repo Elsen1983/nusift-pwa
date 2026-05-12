@@ -9,8 +9,16 @@ const decodeJwtPayload = (token: string) => {
     const base64Url = token.split(".")[1];
     if (!base64Url) return null;
     const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-    return JSON.parse(atob(base64));
+    
+    // ANCHOR SSR-SAFE DECODING
+    // A Node.js (szerver) a Buffer-t használja, a böngésző (kliens) az atob-t.
+    if (import.meta.server) {
+      return JSON.parse(Buffer.from(base64, 'base64').toString('utf-8'));
+    } else {
+      return JSON.parse(atob(base64));
+    }
   } catch (error) {
+    console.error("Sovereign Shield: JWT Decode Error", error);
     return null;
   }
 };

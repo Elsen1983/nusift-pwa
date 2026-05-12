@@ -152,23 +152,20 @@ let pollingInterval: NodeJS.Timeout | null = null;
 const checkCookieExists = () => {
   return document.cookie
     .split(";")
-    .some((item) => item.trim().startsWith("auth_token="));
+    .some((item) => item.trim().startsWith("session_status="));
 };
 
 onMounted(() => {
-  // Csendes Figyelő: 1.5 másodpercenként megnézi, megjött-e a süti a másik fülről
   pollingInterval = setInterval(() => {
     if (checkCookieExists()) {
       if (pollingInterval) clearInterval(pollingInterval);
       isLoading.value = true;
       loadingText.value = "Identity Confirmed. Forging Horizon...";
-      setTimeout(() => router.replace("/"), 1500);
+      
+      // Instead of using router.replace, we directly set window.location.href to ensure the new session cookie is recognized in the next page load
+      setTimeout(() => window.location.href = "/", 1500); 
     }
   }, 1500);
-});
-
-onUnmounted(() => {
-  if (pollingInterval) clearInterval(pollingInterval);
 });
 
 const handleManualVerification = async () => {
@@ -180,7 +177,8 @@ const handleManualVerification = async () => {
   await new Promise((resolve) => setTimeout(resolve, 800));
 
   if (checkCookieExists()) {
-    router.replace("/");
+    // router.replace("/");
+    window.location.href = "/"; // This forces a full page reload, ensuring the new session cookie is recognized immediately
   } else {
     isLoading.value = false;
     errorMsg.value =

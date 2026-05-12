@@ -1,17 +1,28 @@
 <template>
-  <div class="min-h-screen bg-background text-on-background font-body selection:bg-primary-container selection:text-on-primary-container transition-opacity duration-300"
-  :class="isHydrated ? 'opacity-100' : 'opacity-0'">
+  <div 
+    v-if="!isHydrated" 
+    class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#131313]"
+  >
+    <div class="delayed-spinner relative flex items-center justify-center">
+      <div class="absolute w-12 h-12 border-2 border-primary-container/20 rounded-full"></div>
+      <div class="absolute w-12 h-12 border-2 border-t-primary-container rounded-full animate-spin"></div>
+    </div>
+  </div>
+
+  <div 
+    class="min-h-screen bg-background text-on-background font-body selection:bg-primary-container selection:text-on-primary-container transition-opacity duration-300"
+    :class="isHydrated ? 'opacity-100' : 'opacity-0'"
+  >
     <NuxtLayout>
       <VitePwaManifest />
-    <NuxtPage /> 
+      <NuxtPage /> 
     </NuxtLayout>
-    
   </div>
 </template>
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue';
-import { useAuthStore } from '~/stores/auth';
-import { useAgentStore } from '~/stores/agent'; // Csak ha majd akarod frissíteni a feedet
+import { ref, onMounted, onBeforeUnmount } from "vue";
+import { useAuthStore } from "~/stores/auth";
+import { useAgentStore } from "~/stores/agent"; // Csak ha majd akarod frissíteni a feedet
 
 const authStore = useAuthStore();
 const agentStore = useAgentStore();
@@ -19,19 +30,20 @@ const isHydrated = ref(false);
 
 // ANCHOR PAGE-VISIBILITY-GUARD
 const handleVisibilityChange = () => {
-  if (document.visibilityState === 'visible') {
-    
+  if (document.visibilityState === "visible") {
     // 1. Check the Shadow Cookie instead of the httpOnly token
-    const sessionCookie = useCookie('session_status');
+    const sessionCookie = useCookie("session_status");
     const hasActiveSession = !!sessionCookie.value;
-    
+
     // If Pinia says logged in, but the Shadow Cookie is gone (expired in background)
     if (authStore.user !== null && !hasActiveSession) {
-      console.warn("Security Alert: Session expired in the background. Terminating access.");
-      
+      console.warn(
+        "Security Alert: Session expired in the background. Terminating access.",
+      );
+
       if (typeof authStore.$reset === "function") authStore.$reset();
       else authStore.user = null;
-      
+
       if (typeof agentStore.$reset === "function") agentStore.$reset();
 
       if (process.client) {
@@ -40,12 +52,16 @@ const handleVisibilityChange = () => {
         sessionStatus.value = null;
       }
 
-      window.location.href = '/auth';
-      return; 
+      window.location.href = "/auth";
+      return;
     }
 
     // 2. Data Refresh
-    if (authStore.user !== null && hasActiveSession && authStore.user.onboardingStep >= 3) {
+    if (
+      authStore.user !== null &&
+      hasActiveSession &&
+      authStore.user.onboardingStep >= 3
+    ) {
       console.log("Welcome back. Checking for daily horizon updates...");
       // agentStore.refreshFeedIfStale();
     }
@@ -63,10 +79,12 @@ onMounted(() => {
         // Security check: Only hydrate if the IDs match
         if (parsed.id === authStore.user.id) {
           // 1. Restore Agent Store
-          if (parsed.primaryRegion) agentStore.primaryRegion = parsed.primaryRegion;
+          if (parsed.primaryRegion)
+            agentStore.primaryRegion = parsed.primaryRegion;
           if (parsed.topSources) agentStore.topSources = parsed.topSources;
-          if (parsed.topInterests) agentStore.topInterests = parsed.topInterests;
-          
+          if (parsed.topInterests)
+            agentStore.topInterests = parsed.topInterests;
+
           // 2. Sync Auth Store
           authStore.user.primaryRegion = parsed.primaryRegion || null;
           authStore.user.topSources = parsed.topSources || [];
@@ -81,25 +99,51 @@ onMounted(() => {
   isHydrated.value = true;
 
   if (import.meta.client) {
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
   }
 });
 
 onBeforeUnmount(() => {
   // Memory leak elkerülése: mindig takarítjuk az eseménykezelőt, ha a komponens megsemmisül
   if (import.meta.client) {
-    document.removeEventListener('visibilitychange', handleVisibilityChange);
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
   }
 });
 </script>
 <style>
 /* ANCHOR: GLOBAL-STYLES
    Universal CSS rules that govern core UI components and utility behaviors. */
+html,
+body {
+  background-color: #131313; /* A te bg-background színed */
+  margin: 0;
+  padding: 0;
+}
+
+/* The delay trick: 
+  Keeps the spinner completely invisible (opacity: 0) for the first 200ms.
+  If hydration takes longer than 200ms, it smoothly fades in. 
+*/
+.delayed-spinner {
+  opacity: 0;
+  animation: fadeIn 0.3s ease-in forwards;
+  animation-delay: 0.2s; /* 200ms delay */
+}
+
+@keyframes fadeIn {
+  to {
+    opacity: 1;
+  }
+}
 
 /* ANCHOR: ICONOGRAPHY-CONFIG
    Material Symbols base configuration. Ensures consistent weight and optical size. */
 .material-symbols-outlined {
-  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  font-variation-settings:
+    "FILL" 0,
+    "wght" 400,
+    "GRAD" 0,
+    "opsz" 24;
 }
 
 /* ANCHOR: GLASSMORPHISM-UTILITY

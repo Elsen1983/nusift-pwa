@@ -63,6 +63,7 @@ onMounted(async () => {
 
 const continueInThisTab = () => {
   // A Guard automatikusan meglátja a sütit és a kalibrációra dob
-  router.replace('/'); 
+  // router.replace('/'); 
+  window.location.href = "/"; // This forces a full page reload, ensuring the new session cookie is recognized immediately
 };
 </script>
