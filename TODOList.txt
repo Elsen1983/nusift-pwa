@@ -1,1 +1,10 @@
-1 - megnezni a verify-email oldalt, es implementalni az email kuldest a resend-en keresztul a verification link-el, amit kovetoen meg kell oldani az automatikus verifikaciot az appon belul
+AI AGENT-el kapcsolatban :
+1 - Agent Heuristic: Amikor az AI ágens felfedez egy oldalt, be kell állítani egy logikát: if (urlPath.split('/').length > 2 || /\d/.test(urlPath)) return false; – ez megvédi az adatbázist a több ezer cikk beáramlásától a kategóriák közé.
+2 - Source Management - Advanced Feature Ideas
+    The AI Agent can use this dashboard to communicate back to the user, creating a two-way feedback loop:
+    Health Status Reporting: If the AI agent detects a source has died (DOMAIN_DEAD) or put up a strict paywall, it can flag the source in the user's dashboard with a warning icon: "We haven't been able to reach this feed for 3 days. Do you want to update the link or remove it?"
+    Algorithmic Discovery (Recommendations): Because the database maps exactly which users follow which combinations of sources, the AI can run clustering algorithms. The UI can have a "Suggested for You" section: "Users who follow Telex Tech and HWSW also highly rate Prohardver."
+    Volume Balancing (Anti-Flood): Some sources publish 100 articles a day; others publish 2. The AI can analyze the volume and suggest to the user: "Source X is dominating your feed. Would you like me to summarize it strictly into bullet points to leave room for your other sources?"
+
+Kodolassal kapcsolatban:
+1 - URL Utility: Írni kell egy normalizeUrl(rawUrl: string): string függvényt a utils/ mappába, amit minden adatbázis-mentés előtt meghívsz.

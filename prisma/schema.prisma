@@ -2,27 +2,146 @@
 
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
 }
-
 datasource db {
   provider = "postgresql"
 }
 
-// ANCHOR NEURAL-NODE-ENTITY
+// ANCHOR ENUMS
+enum RssStatus {
+  ACTIVE
+  FAILED
+  PENDING_DISCOVERY
+  NO_RSS_FOUND
+  DOMAIN_DEAD
+}
+
+enum UserTier {
+  FREE
+  PRO
+}
+
+// ANCHOR MODELS
 model User {
-  id             String    @id @default(uuid()) // Sovereign ID (UUID v4)
-  email          String    @unique
-  passwordHash   String?   // MUST BE OPTIONAL (?) FOR OAUTH USERS
-  isVerified     Boolean   @default(false)
-  verificationToken String? @unique
-  resetPasswordToken   String?   @unique
-  resetPasswordExpires DateTime?
-  onboardingStep Int       @default(0)
-  oauthProvider  String?   // e.g., "GOOGLE" or "APPLE"
-  oauthId        String?   @unique
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  primaryRegion  String?
-  topSources     String[]
-  topInterests   Json      @default("[]")
+  id                    String    @id @default(uuid()) // Sovereign ID (UUID v4)
+  email                 String    @unique
+  passwordHash          String?   // MUST BE OPTIONAL (?) FOR OAUTH USERS
+  isVerified            Boolean   @default(false)
+  tier                  UserTier  @default(FREE)
+  verificationToken     String? @unique
+  resetPasswordToken    String?   @unique
+  resetPasswordExpires  DateTime?
+  onboardingStep        Int       @default(0)
+  oauthProvider         String?   // e.g., "GOOGLE" or "APPLE"
+  oauthId               String?   @unique
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  primaryRegion         String?
+  topInterests          Json      @default("[]")
+
+  sourceSubscriptions   UserSourceSubscription[]
+  categorySubscriptions UserCategorySubscription[]
+}
+
+model NewsSource {
+  id             String   @id @default(uuid())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  mediaName      String
+  mediaType      String?
+  language       String?
+  
+  location       String?
+  continent      String?
+  countryCode    String?
+
+  frontPageUrl   String   @unique
+  detailPageUrl  String?
+  aboutPageUrl   String?
+  contactPageUrl String?
+
+  contactName    String?
+  contactEmail   String?
+  contactPhone   String?
+
+  rssFeedUrl     String?
+  rssStatus      RssStatus @default(PENDING_DISCOVERY)
+  lastRssCheckAt DateTime?
+  nextRetryAt    DateTime?
+
+  categories     SourceCategory[]
+  
+  subscribers    UserSourceSubscription[]
+
+  @@index([continent, countryCode])
+  @@index([rssStatus, nextRetryAt])
+}
+
+model SourceCategory {
+  id              String   @id @default(uuid())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  newsSourceId    String
+  newsSource      NewsSource @relation(fields: [newsSourceId], references: [id], onDelete: Cascade)
+
+  name            String
+  pathUrl         String
+  isUserRequested Boolean  @default(false)
+
+  rssFeedUrl      String?
+  rssStatus       RssStatus @default(PENDING_DISCOVERY)
+  lastRssCheckAt  DateTime?
+  nextRetryAt     DateTime?
+
+  // ÚJ: Kapcsolat a feliratkozók felé (Explicit)
+  subscribers     UserCategorySubscription[]
+
+  @@unique([newsSourceId, pathUrl])
+  @@index([isUserRequested])
+  @@index([rssStatus, nextRetryAt])
+}
+
+// --- ÚJ: EXPLICIT KAPCSOLÓTÁBLÁK (Subscription Logic) ---
+
+model UserSourceSubscription {
+  id           String     @id @default(uuid())
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  sourceId     String
+  newsSource   NewsSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  // QUOTA LOGIC: A felhasználó ki/be kapcsolhatja a csomagja limitjéig
+  isActive     Boolean    @default(true)
+
+  // USER PREFERENCES: Lehetőség egyedi átnevezésre a Dashboardon
+  customAlias  String?    
+  
+  @@unique([userId, sourceId]) // Garantálja, hogy egy user ne iratkozhasson fel kétszer ugyanarra
+  @@index([userId, isActive])  // Gyorsítja a kvóta-számláló API lekérdezéseket
+}
+
+model UserCategorySubscription {
+  id           String         @id @default(uuid())
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  userId       String
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  categoryId   String
+  category     SourceCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  isActive     Boolean        @default(true)
+  customAlias  String?
+
+  @@unique([userId, categoryId]) 
+  @@index([userId, isActive])    
 }

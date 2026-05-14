@@ -14,9 +14,8 @@ export default defineEventHandler(async (event) => {
   let verifiedProviderId: string | undefined;
 
   try {
-    // --- 1. CRYPTOGRAPHIC VERIFICATION (The Lock) ---
+    // --- 1. CRYPTOGRAPHIC VERIFICATION ---
     if (provider === 'GOOGLE') {
-      // Interrogate Google using the Access Token
       const googleResponse: any = await $fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -27,76 +26,62 @@ export default defineEventHandler(async (event) => {
       verifiedProviderId = googleResponse.sub;
 
     } else if (provider === 'APPLE') {
-      // Verify Apple's JWT Signature
       const appleTokenPayload = await appleSigninAuth.verifyIdToken(token, {
-        audience: 'com.yourdomain.nusift', // MUST match your Apple Services ID
+        audience: 'com.yourdomain.nusift', 
         ignoreExpiration: false,
       });
 
       verifiedProviderId = appleTokenPayload.sub;
-      
-      // FALLBACK: Apple only sends email on the FIRST login attempt
-      if (appleTokenPayload.email) {
-        verifiedEmail = appleTokenPayload.email;
-      } else {
-        const existingAppleUser = await prisma.user.findUnique({
-          where: { oauthId: verifiedProviderId }
-        });
-        if (!existingAppleUser) throw new Error("Identity record missing");
-        verifiedEmail = existingAppleUser.email;
-      }
-    } else {
-      throw new Error("Unsupported Identity Provider");
+      verifiedEmail = appleTokenPayload.email;
     }
 
     if (!verifiedEmail || !verifiedProviderId) {
-       throw new Error("Identity extraction failed");
+      throw new Error("Identity verification failed: Missing payload.");
     }
 
-    // --- 2. UNIFIED DATABASE HANDSHAKE ---
-    const existingUser = await prisma.user.findUnique({ where: { email: verifiedEmail } });
-    const isNewUser = !existingUser;
-
-    const user = await prisma.user.upsert({
+    // --- 2. DATABASE SYNC (Explicit Relational Fetch) ---
+    let user = await prisma.user.findUnique({ 
       where: { email: verifiedEmail },
-      update: {}, // You could update 'lastLogin' here
-      create: {
-        email: verifiedEmail,
-        oauthProvider: provider, 
-        oauthId: verifiedProviderId,
-        isVerified: true, 
-        onboardingStep: 0,
+      include: {
+        sourceSubscriptions: {
+          include: { newsSource: true }
+        },
+        categorySubscriptions: {
+          include: { category: true }
+        }
       }
     });
 
-    // --- 3. CONDITIONAL WELCOME SEQUENCE ---
-    if (isNewUser) {
-      const htmlContent = `
-        <div style="background-color: #131313; color: white; font-family: 'Inter', sans-serif; padding: 40px;">
-          <div style="max-width: 500px; margin: 0 auto; background-color: #1e1e1e; padding: 30px; border-radius: 12px; border: 1px solid rgba(0, 229, 255, 0.2);">
-            <h1 style="color: #00E5FF; text-align: center;">Welcome to NUSIFT</h1>
-            <p style="color: #d1d5db;">Your neural node has been initialized via <strong>${provider}</strong>.</p>
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="https://nusift.io/auth" style="background-color: #00E5FF; color: black; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Enter Dashboard</a>
-            </div>
-          </div>
-        </div>
-      `;
-
-      await resend.emails.send({
-        from: 'NuSift System <system@nusift.io>', 
-        to: [user.email],
-        subject: 'Welcome to NuSift Agent',
-        html: htmlContent, 
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          email: verifiedEmail,
+          isVerified: true,
+          oauthProvider: provider,
+          oauthId: verifiedProviderId,
+        },
+        include: {
+          sourceSubscriptions: { include: { newsSource: true } },
+          categorySubscriptions: { include: { category: true } }
+        }
       });
+
+      try {
+        await resend.emails.send({
+          from: 'NuSift <welcome@nusift.com>',
+          to: [verifiedEmail],
+          subject: 'Welcome to your Sovereign-Grade Intelligence Platform',
+          html: '<strong>Success! Your NuSift node is ready for calibration.</strong>',
+        });
+      } catch (e) {
+        console.error("Welcome email failed, but account created:", e);
+      }
     }
 
-    // --- 4. SESSION PROVISIONING ---
+    // --- 3. JWT GENERATION ---
     const secret = process.env.JWT_SECRET;
-    if (!secret) throw new Error('JWT_SECRET missing');
+    if (!secret) throw new Error("Missing JWT_SECRET in environment variables.");
 
-    // SENIOR PROTOCOL: Dual-Zone Expiration
-    // In case onboarding is complete (step >= 3), token lasts 7 days. Otherwise, only 1 hour for security reasons.
     const isFullyOnboarded = user.onboardingStep >= 3;
     const tokenExpirationStr = isFullyOnboarded ? '7d' : '1h';
     const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60;
@@ -111,7 +96,7 @@ export default defineEventHandler(async (event) => {
       { expiresIn: tokenExpirationStr } 
     );
 
-    // 5.a Set the HTTP-Only Cookie
+    // --- 4. COOKIE MANAGEMENT ---
     setCookie(event, 'auth_token', sessionToken, {
       httpOnly: true, 
       secure: process.env.NODE_ENV === 'production', 
@@ -120,7 +105,6 @@ export default defineEventHandler(async (event) => {
       path: '/', 
     });
 
-    // 5.b Set a non-HTTP-Only cookie to indicate session status (optional, can be used by frontend to show user is logged in)
     setCookie(event, 'session_status', 'active', {
       httpOnly: false,
       secure: process.env.NODE_ENV === 'production', 
@@ -137,13 +121,21 @@ export default defineEventHandler(async (event) => {
         email: user.email,
         onboardingStep: user.onboardingStep,
         primaryRegion: user.primaryRegion,
-        topSources: user.topSources,
+        tier: user.tier,
+        topSources: [
+          ...user.sourceSubscriptions.map(s => s.newsSource.frontPageUrl),
+          ...user.categorySubscriptions.map(c => c.category.pathUrl)
+        ],
         topInterests: user.topInterests
-      } 
+      }
     };
 
   } catch (error: any) {
-    console.error("OAuth Verification Security Exception:", error);
-    throw createError({ statusCode: 401, statusMessage: "Identity verification failed" });
+    console.error("OAuth Internal Error:", error);
+    throw createError({ 
+      statusCode: 401, 
+      statusMessage: 'Identity verification failed',
+      message: error.message 
+    });
   }
 });

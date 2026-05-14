@@ -194,6 +194,11 @@ export default defineNuxtConfig({
           path: "/reset-password",
           file: "~/pages/reset-password.vue",
         },
+        {
+          name: "source-manager-custom",
+          path: "/audit/source-manager",
+          file: "~/pages/audit/source-manager.vue",
+        }
       );
     },
   },

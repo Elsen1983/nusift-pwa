@@ -79,6 +79,20 @@
                   >
                 </NuxtLink>
 
+                <NuxtLink
+                  to="/audit/source-manager"
+                  @click="isProfileMenuOpen = false"
+                  class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group"
+                >
+                  <span
+                    class="material-symbols-outlined text-primary-container text-[20px]"
+                    >hub</span
+                  >
+                  <span class="text-xs font-medium text-on-surface"
+                    >Source Manager</span
+                  >
+                </NuxtLink>
+
                 <div class="h-px bg-white/5 w-full my-1"></div>
 
                 <button
@@ -163,28 +177,18 @@ const navItems = [
   { label: "Trends", icon: "insights", path: "/trends" },
 ];
 
-/**
- * Megnyitja a megerősítő ablakot és bezárja a profil menüt.
- */
 const openLogoutModal = () => {
   isProfileMenuOpen.value = false;
   isLogoutModalOpen.value = true;
 };
 
-/**
- * ANCHOR SECURE-LOGOUT-REFACTORED
- * Tisztább, TS-hibáktól mentes logout protokoll.
- */
 const handleSecureLogout = () => {
-  // 1. Cookie-k törlése
   const token = useCookie("auth_token");
   token.value = null;
 
-  // 2. Pinia Store manuális resetelése (void hiba elkerülése)
   if (typeof authStore.$reset === "function") {
     authStore.$reset();
   } else {
-    // Setup Store esetén manuálisan ürítjük a reaktív állapotot
     authStore.user = null;
   }
 
@@ -192,17 +196,14 @@ const handleSecureLogout = () => {
     agentStore.$reset();
   }
 
-  // 3. Kliens oldali extra takarítás
   if (process.client) {
     localStorage.removeItem("nusift_visited");
     sessionStorage.clear();
   }
 
-  // 4. Hard redirect
   window.location.href = "/auth";
 };
 
-// Click Outside direktíva a profil menühöz
 const vClickOutside = {
   mounted(el: any, binding: any) {
     el.clickOutsideEvent = (event: Event) => {

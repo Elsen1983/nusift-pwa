@@ -1,0 +1,148 @@
+Ez egy tökéletes "Sovereign-Grade" funkció! Ezzel a lépéssel nemcsak a redundanciát (felesleges adatbázis-szemetet) küszöböljük ki, hanem bevezetünk egy rendkívül erős bizalomépítő (Trust & Transparency) vizuális réteget is a felhasználó számára. Látni fogják, hogy a rendszer dolgozik a háttérben, és transzparensen kommunikálja a források minőségét.
+
+Íme a Source Management modul véglegesített, átfogó logikai struktúrája, amely integrálja a csomag-limiteket (Tier) és az új validációs/deduplikációs folyamatot, szigorúan kódok nélkül.
+1. A Source Manager UI (A Felület és a Vizuális Visszajelzés)
+
+A forráskezelő oldal egy profi műszerfallá alakul, ahol minden forrás mellett státuszjelző "jelvények" (Badges) adnak azonnali információt.
+
+    Kapacitásjelző (Quota Tracker):
+
+        Mutatja az aktív forrásokat: pl. "Aktív források: 5/5 (Free)" vagy "12/15 (Pro)". (Ha betelt: "Upgrade" gomb).
+
+    A Források Listája (Aktív és Várakozó Zóna):
+
+        A listában szereplő források mellett a kapacitás-státusz (Aktív/Felfüggesztett) mellett megjelennek a Validációs Jelvények is:
+
+            🟢 Validated Source: Zöld pipa vagy pajzs ikon. Jelzi, hogy ez az oldal a NuSift globális, ellenőrzött adatbázisából származik.
+
+            📡 RSS Found / Optimized: Egy kis RSS ikon, amely mutatja, hogy a rendszer megtalálta a leggyorsabb adatszivattyút az oldalhoz, így a hírek azonnal és stabilan érkeznek.
+
+            🟡 Pending Validation: Sárga homokóra ikon. Megjelenik, ha a felhasználó egy teljesen ismeretlen, új URL-t adott meg, amit az AI még sosem látott.
+
+            ⏳ RSS Detection in Progress: Pulzáló ikon, amely jelzi, hogy az AI ágens épp most fésüli át az új oldalt RSS feed-et keresve.
+
+            🔴 No RSS / Direct Crawl: Jelzi, hogy a validáció lefutott, de az oldalon nincs RSS, így az AI "lassabb" módszerrel (pl. DOM olvasással) tudja csak kinyerni a híreket.
+
+2. A Működési Folyamatok (A Háttérlogika)
+
+A. Hozzáadás és Deduplikáció (A Csatlakoztató Motor):
+Amikor a felhasználó beír egy URL-t (akár az onboarding során, akár a Managerben), a rendszer nem hoz létre azonnal új bejegyzést. Ehelyett:
+
+    Keresés a Globális Adatbázisban: A backend lecsupaszítja az URL-t, és megnézi, szerepel-e már a te általad korábban feltöltött (vagy más userek által már validált) nagy adatbázisban.
+
+    Ha MEGTALÁLJA (Létező forrás):
+
+        A rendszer egyszerűen összeköti a felhasználót a meglévő forrással (Reláció).
+
+        A felületen a forrás azonnal megkapja a 🟢 Validated Source jelvényt.
+
+        Ha az adatbázis szerint van RSS-e, megkapja a 📡 RSS Found jelvényt is. Az AI azonnal tudja szállítani a híreket.
+
+    Ha NEM TALÁLJA (Új forrás):
+
+        A rendszer létrehoz egy új rekordot az adatbázisban.
+
+        A felületen a forrás megkapja a 🟡 Pending Validation és ⏳ RSS detection... jelvényeket.
+
+        A forrás bekerül az AI ágens feladatlistájába (Queue).
+
+B. A Limit-Szabályozó (Tier Enforcement):
+A deduplikáció után a rendszer ellenőrzi a felhasználó csomagját:
+
+    Ha a hozzáadott forrással belül marad a limiten (pl. 4/5), a forrás Aktív lesz (akár Validated, akár Pending).
+
+    Ha túllépi a limitet (pl. 6. forrás a Free csomagban), a forrás Felfüggesztett (Suspended) státuszba kerül. A validáció (Pending -> Validated) ettől függetlenül lefuthat a háttérben, de az AI nem fog onnan híreket letölteni a felhasználónak addig, amíg ő nem cseréli ki egy másik aktív forrással.
+
+C. Az AI Ágens Visszacsatolása (Feedback Loop):
+Az AI ágens a háttérben folyamatosan dolgozza fel a 🟡 Pending forrásokat.
+
+    Ha az AI sikeresen feltérképezi az új oldalt és megtalálja az RSS-t, az adatbázisban frissíti a státuszt.
+
+    A felhasználó felületén a 🟡 Pending Validation és ⏳ RSS detection... jelvények automatikusan átváltanak 🟢 Validated és 📡 RSS Found jelvényekre. A felhasználó látja, hogy a rendszer kiszolgálta az egyedi kérését.
+
+3. Összegzés a Rendszer Szempontjából
+
+Ez a logika három óriási problémát old meg egyszerre:
+
+    Adatbázis Higiénia: Nincs többé 50 darab különálló "telex.hu" bejegyzés, mert 50 különböző user adta meg. Csak egy van, amire 50 user van rácsatlakozva.
+
+    Szerver Erőforrások (Költséghatékonyság): A limitek (5/15) miatt az AI sosem dolgozik feleslegesen, a deduplikáció miatt pedig ha 500 ember olvassa ugyanazt a forrást, az AI-nak akkor is csak egyszer kell letöltenie az adott RSS-t, amit utána szétoszt.
+
+    Felhasználói Élmény (UX): A jelvények transzparenssé teszik a gép működését. A user nem érzi úgy, hogy egy "fekete dobozba" dobálja a linkeket; látja, ahogy a személyes hírhálózata (Node) felépül és hitelesítődik.
+
+
+---------------------------------------------
+Design Prompt
+---------------------------------------------
+
+Role: You are an elite Frontend Engineer specializing in Vue 3 (Composition API), Nuxt 3, and Tailwind CSS.
+Task: Build a "Source Manager" UI component for a Sovereign-Grade Intelligence Platform.
+Constraint: Do not write backend logic or database calls. Focus entirely on a highly polished, responsive, and interactive frontend layout.
+
+1. Global Design System & Styling (Strict)
+
+    Theme: Deep Dark Mode. The global background must be #131313.
+
+    Typography: Use the class font-headline for titles and font-body for standard text. Text color should be text-on-surface (or standard light gray/white).
+
+    Accents: The primary brand color is a neon cyan (#00E5FF). Use this for active states, primary buttons, and hover effects.
+
+    Background Effects: Include 2 fixed, large, heavily blurred background blobs (e.g., w-[500px] h-[500px] bg-[#00E5FF]/5 blur-[120px] rounded-full) behind the main content to create a subtle glow.
+
+    Icons: Use Google Material Symbols Outlined (<span class="material-symbols-outlined">...</span>).
+
+2. Page Layout & Hierarchy
+
+    Header: A fixed header at the top with a max-width container. Include a "Back" arrow icon (arrow_back) that shifts left on hover, and the title "Source Network".
+
+    Main Container: A centered column (e.g., max-w-3xl) with smooth padding.
+
+3. Component Requirements
+
+A. Quota Tracker (The Limit Display)
+
+    Create a sleek progress bar section at the top of the main container.
+
+    Display text: "Active Nodes: 5/5 (Free Tier)".
+
+    Progress bar should be full.
+
+    Next to it, include a subtle but clickable "Upgrade to Pro (15 max)" badge/button.
+
+B. Ingestion Hub (Add Source)
+
+    A clean, modern input field with placeholder "Enter source URL (e.g., cnn.com/tech)...".
+
+    An "Add Source" button attached to the input.
+
+    If the user adds a 6th source, show a temporary, elegant toast/alert below the input: "Added to Suspended Zone (Quota Full)."
+
+C. The Active Zone (Live Sources)
+
+    Section title: "Active Data Streams".
+
+    Create a list of 5 beautifully designed cards. Each card represents a news source.
+
+    Card Data: Show the Domain (bold) and the Category path (subtle).
+
+    Validation Badges (Crucial): Inside the card, display dynamic status badges using flexbox:
+
+        Validated: A green shield/check icon with text "Verified".
+
+        RSS Found: A cyan RSS icon (rss_feed) indicating optimal data flow.
+
+        Pending/Detection: A pulsing yellow hourglass (hourglass_empty) for sources currently being checked by the AI.
+
+    Actions: Right-aligned icon buttons for "Suspend" (pause icon) and "Delete" (delete icon). Hovering over them should show a slight background highlight.
+
+D. The Suspended Zone (Waiting List)
+
+    Section title: "Suspended / Waiting List".
+
+    Cards here should look visually muted (lower opacity, grayed out borders) to indicate the AI is ignoring them.
+
+    Include the same Validation Badges (because a suspended source can still be validated in the background).
+
+    Action: An "Activate" (play_arrow) button.
+
+    State Logic: Because the Quota is 5/5, this "Activate" button MUST be styled as disabled (opacity-50, cursor-not-allowed). Add a tooltip on hover: "Suspend an active source to free up space."

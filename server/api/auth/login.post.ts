@@ -16,29 +16,35 @@ export default defineEventHandler(async (event) => {
       });
     }
 
-    // 2. Find the User in the database
+    // 2. Find the User in the database (Explicit Relációkkal)
     const user = await prisma.user.findUnique({
       where: { email },
+      include: {
+        sourceSubscriptions: {
+          include: { newsSource: true }
+        },
+        categorySubscriptions: {
+          include: { category: true }
+        }
+      }
     });
 
     if (!user) {
-      // Use generic error messages to prevent email enumeration attacks
       throw createError({
         statusCode: 401,
         statusMessage: 'Invalid credentials.',
       });
     }
 
-    // NEW GUARD: Prevent bcrypt from crashing on OAuth users
+    // 3. OAuth Guard
     if (!user.passwordHash) {
       throw createError({
         statusCode: 401,
-        // Optional: You can make this message more helpful, e.g., "Please log in with Google."
         statusMessage: 'Invalid credentials. Please use your connected social account.', 
       });
     }
 
-    // 3. Verify the Password
+    // 4. Verify the Password
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
 
     if (!isPasswordValid) {
@@ -48,17 +54,15 @@ export default defineEventHandler(async (event) => {
       });
     }
 
-    // 4. Generate the JWT
+    // 5. Generate the JWT
     const secret = process.env.JWT_SECRET;
     if (!secret) {
       throw new Error('JWT_SECRET is not defined in environment variables.');
     }
 
-    // SENIOR PROTOCOL: Dual-Zone Expiration
-    // If onboarding is complete (step >= 3), token lasts 7 days. Otherwise, only 1 hour for security reasons.
     const isFullyOnboarded = user.onboardingStep >= 3;
     const tokenExpirationStr = isFullyOnboarded ? '7d' : '1h';
-    const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60; // másodpercben
+    const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60; 
 
     const token = jwt.sign(
       { 
@@ -70,7 +74,7 @@ export default defineEventHandler(async (event) => {
       { expiresIn: tokenExpirationStr } 
     );
 
-    // 5.a Set the HTTP-Only Cookie
+    // 6. Set Cookies
     setCookie(event, 'auth_token', token, {
       httpOnly: true, 
       secure: process.env.NODE_ENV === 'production', 
@@ -79,16 +83,15 @@ export default defineEventHandler(async (event) => {
       path: '/', 
     });
 
-    // 5.b Set a non-HTTP-Only cookie to indicate session status (optional, can be used by frontend to show user is logged in)
     setCookie(event, 'session_status', 'active', {
-      httpOnly: false, // This cookie can be read by JavaScript to manage UI state (e.g., show user is logged in)
+      httpOnly: false, 
       secure: process.env.NODE_ENV === 'production', 
       sameSite: 'lax', 
-      maxAge: cookieMaxAge, // same as auth_token to keep them in sync
+      maxAge: cookieMaxAge, 
       path: '/', 
     });
 
-    // 6. Return safe user data to the frontend
+    // 7. Return safe user data
     return {
       success: true,
       user: {
@@ -97,7 +100,12 @@ export default defineEventHandler(async (event) => {
         createdAt: user.createdAt,
         onboardingStep: user.onboardingStep,
         primaryRegion: user.primaryRegion,
-        topSources: user.topSources,
+        tier: user.tier, // Visszaadjuk a csomagot is
+        // Lapos string tömbbé alakítjuk az explicit relációkat a frontend store számára
+        topSources: [
+          ...user.sourceSubscriptions.map(sub => sub.newsSource.frontPageUrl),
+          ...user.categorySubscriptions.map(sub => sub.category.pathUrl)
+        ],
         topInterests: user.topInterests
       },
       message: 'Secure Handshake established.',
