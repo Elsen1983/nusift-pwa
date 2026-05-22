@@ -192,7 +192,7 @@
         <button
           @click="handleOAuth('Google')"
           type="button"
-          class="flex items-center justify-center w-full bg-[#1e1e1e] hover:bg-[#252525] text-on-surface text-xs font-label font-semibold py-3 rounded-xl border border-outline-variant/10 transition-colors shadow-sm active:scale-[0.98]"
+          class="flex items-center justify-center w-full bg-[#1e1e1e] hover:bg-[#252525] text-on-surface text-xs font-label font-semibold py-3 rounded-xl border border-outline-variant/10 transition-colors shadow-sm active:scale-[0.98] background-button-custom"
         >
           <svg class="w-5 h-5 mr-3" fill="currentColor" viewBox="0 0 24 24">
             <path
@@ -570,3 +570,9 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
   }
 };
 </script>
+<style scoped>
+/* ANCHOR CUSTOM Style */
+.background-button-custom{
+  background: linear-gradient(135deg, rgba(80, 80, 80, 0.8) 0%, rgba(121, 121, 121, 0.6) 100%) !important;
+}
+</style>

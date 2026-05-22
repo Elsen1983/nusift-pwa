@@ -8,3 +8,11 @@ AI AGENT-el kapcsolatban :
 
 Kodolassal kapcsolatban:
 1 - URL Utility: Írni kell egy normalizeUrl(rawUrl: string): string függvényt a utils/ mappába, amit minden adatbázis-mentés előtt meghívsz.
+
+
+
+
+
+
+// parancsok:
+    // npx prisma db push --force-reset     -> db full reset

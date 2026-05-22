@@ -50,6 +50,8 @@ model NewsSource {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  isSystemImported Boolean  @default(false)
+
   mediaName      String
   mediaType      String?
   language       String?

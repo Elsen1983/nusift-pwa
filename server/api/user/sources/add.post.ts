@@ -18,87 +18,73 @@ export default defineEventHandler(async (event) => {
   }
 
   const userId = decodedToken.userId;
-  const body = await readBody(event);
-  const rawUrl = body.url;
+  const { url, name } = await readBody(event); // A validált, tiszta URL érkezik
 
-  if (!rawUrl) {
-    throw createError({ statusCode: 400, statusMessage: "URL is required" });
-  }
+  if (!url) throw createError({ statusCode: 400, statusMessage: "URL is required" });
 
   try {
-    // 2. Kvóta kiszámítása
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { tier: true }
-    });
-
-    if (!user) throw createError({ statusCode: 404, statusMessage: "User not found" });
-
-    const maxActiveLimit = user.tier === 'PRO' ? 15 : 5;
-
-    // Aktív források összeszámlálása (Főoldalak + Rovatok)
-    const activeRoots = await prisma.userSourceSubscription.count({
-      where: { userId, isActive: true }
-    });
-    const activeCategories = await prisma.userCategorySubscription.count({
-      where: { userId, isActive: true }
-    });
+    // 2. TÁRHELY LIMIT (50 összesen)
+    const totalCount = await prisma.userSourceSubscription.count({ where: { userId } }) +
+                       await prisma.userCategorySubscription.count({ where: { userId } });
     
-    const currentlyActiveCount = activeRoots + activeCategories;
-    const shouldBeActive = currentlyActiveCount < maxActiveLimit;
+    if (totalCount >= 50) {
+      throw createError({ statusCode: 403, statusMessage: "Tárhely limit elérve (max 50 forrás)." });
+    }
 
-    // 3. URL Normalizáció
-    const urlObj = new URL(rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`);
+    // 3. AKTIVÁCIÓS KVÓTA (5 vagy 15 aktív)
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { tier: true } });
+    const maxActiveLimit = user?.tier === 'PRO' ? 15 : 5;
+    
+    const activeRoots = await prisma.userSourceSubscription.count({ where: { userId, isActive: true } });
+    const activeCats = await prisma.userCategorySubscription.count({ where: { userId, isActive: true } });
+    const shouldBeActive = (activeRoots + activeCats) < maxActiveLimit;
+
+    // 4. NewsSource keresése/létrehozása
+    const urlObj = new URL(url);
     const rootDomain = `${urlObj.protocol}//${urlObj.hostname}`;
-    let path = urlObj.pathname === "/" ? "" : urlObj.pathname.replace(/\/$/, "");
+    
+    let newsSource = await prisma.newsSource.findUnique({ where: { frontPageUrl: rootDomain } });
+    if (!newsSource) {
+      newsSource = await prisma.newsSource.create({
+        data: { frontPageUrl: rootDomain, mediaName: name || urlObj.hostname }
+      });
+    }
 
-    // 4. Globális forrás létrehozása/frissítése (Deduplikáció)
-    const newsSource = await prisma.newsSource.upsert({
-      where: { frontPageUrl: rootDomain },
-      create: {
-        frontPageUrl: rootDomain,
-        mediaName: urlObj.hostname.replace(/^www\./, ''),
-      },
-      update: {}
-    });
+    // 5. UPSERT (Főoldal vs Rovat)
+    const path = urlObj.pathname;
 
-    let newSubscription;
-
-    // 5. Kapcsolat létrehozása (Főoldal vs Rovat)
-    if (path === "") {
-      newSubscription = await prisma.userSourceSubscription.upsert({
+    if (path === "/" || path === "") {
+      await prisma.userSourceSubscription.upsert({
         where: { userId_sourceId: { userId, sourceId: newsSource.id } },
         create: { userId, sourceId: newsSource.id, isActive: shouldBeActive },
-        update: {} // Ha már fel van iratkozva, nem írjuk felül a státuszát itt
+        update: { isActive: shouldBeActive } // Újraaktiválás lehetősége
       });
     } else {
-      const fullPathUrl = `${rootDomain}${path}`;
       const sourceCategory = await prisma.sourceCategory.upsert({
-        where: { newsSourceId_pathUrl: { newsSourceId: newsSource.id, pathUrl: fullPathUrl } },
-        create: {
-          newsSourceId: newsSource.id,
-          name: path.substring(1).replace(/\//g, ' - '),
-          pathUrl: fullPathUrl,
-          isUserRequested: true
+        where: { newsSourceId_pathUrl: { newsSourceId: newsSource.id, pathUrl: url } },
+        create: { 
+          newsSourceId: newsSource.id, 
+          name: path.substring(1).replace(/\//g, ' - '), 
+          pathUrl: url, 
+          isUserRequested: true 
         },
         update: {}
       });
 
-      newSubscription = await prisma.userCategorySubscription.upsert({
+      await prisma.userCategorySubscription.upsert({
         where: { userId_categoryId: { userId, categoryId: sourceCategory.id } },
         create: { userId, categoryId: sourceCategory.id, isActive: shouldBeActive },
-        update: {}
+        update: { isActive: shouldBeActive }
       });
     }
 
-    return {
-      success: true,
-      activated: shouldBeActive,
-      message: shouldBeActive ? 'Source added and activated.' : 'Added to Suspended Zone (Quota Full).'
+    return { 
+      success: true, 
+      activated: shouldBeActive, 
+      message: shouldBeActive ? 'Forrás hozzáadva és aktiválva.' : 'Kvóta elérve: Felfüggesztett zónába került.' 
     };
 
   } catch (error: any) {
-    console.error("Add Source Error:", error);
-    throw createError({ statusCode: 500, statusMessage: "Failed to process source." });
+    throw createError({ statusCode: 500, statusMessage: error.message });
   }
 });

@@ -14,7 +14,7 @@
         @blur="$emit('blur')" 
         :type="isPasswordType && showPassword ? 'text' : type"
         :placeholder="placeholder"
-        class="w-full bg-surface-container border border-outline-variant/30 rounded-xl px-4 py-3.5 text-on-surface placeholder:text-zinc-600 focus:outline-none focus:shadow-[0_0_8px_rgba(0,218,243,0.4)] focus:border-[#00daf3] transition-all duration-300"
+        class="w-full bg-surface-container border border-outline-variant/30 rounded-xl px-4 py-3.5 text-on-surface placeholder:text-zinc-600 focus:outline-none focus:shadow-[0_0_8px_rgba(0,218,243,0.4)] focus:border-[#00daf3] transition-all duration-300 border-input-custom"
         v-bind="$attrs"
       />
       </div>
@@ -41,3 +41,8 @@ defineEmits(['update:modelValue', 'blur']) // Register blur event
 const showPassword = ref(false)
 const isPasswordType = computed(() => props.type === 'password')
 </script>
+<style scoped>  
+.border-input-custom {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+</style>
