@@ -3,7 +3,7 @@
     class="min-h-screen bg-background text-on-background font-body selection:bg-primary-container selection:text-on-primary-container relative overflow-hidden"
   >
     <ClientOnly>
-      <PwaInstallBanner />
+      <PwaInstallBanner v-if="isLanguageReady"/>
     </ClientOnly>
 
     <ClientOnly>
@@ -323,9 +323,11 @@ import { useHead } from "#imports";
 import { useAuthStore } from "~/stores/auth";
 import { $api } from "~/utils/api";
 
-const { t } = useI18n()
 const authStore = useAuthStore();
 const router = useRouter();
+
+type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
+const { t, setLocale } = useI18n();
 
 /** ANCHOR SDK-INJECTION */
 useHead({
@@ -341,7 +343,7 @@ useHead({
 
 /** ANCHOR UI-STATES */
 const activeLanguage = ref('en'); // Local state for the chosen language payload
-
+const isLanguageReady = ref(false);
 const isRegistering = ref(false);
 const isResettingPassword = ref(false);
 const isLoading = ref(false);
@@ -402,6 +404,9 @@ onMounted(() => {
   const savedLang = localStorage.getItem('nusift_preferred_language');
   if (savedLang) {
     activeLanguage.value = savedLang;
+    setLocale(savedLang as AvailableLocales);
+    // Gate Open: The user already selected a language in a previous session
+    isLanguageReady.value = true;
   }
 });
 
@@ -436,10 +441,9 @@ const cancelResetMode = () => {
 /** ANCHOR HANDLERS */
 const handleLanguageSelection = (langCode: string) => {
   activeLanguage.value = langCode;
-  
-  // Future implementation: Trigger @nuxtjs/i18n locale switch here
-  // const { setLocale } = useI18n();
-  // setLocale(langCode);
+  setLocale(langCode as AvailableLocales);
+  // Gate Open: The user just clicked a language button (User Interaction!)
+  isLanguageReady.value = true;
 };
 
 const handleAuth = async () => {

@@ -1,1 +1,79 @@
-{}
+{
+    "auth": {
+        "loading": {
+            "resetting": "Protokoll engedélyezése...",
+            "registering": "Szuverén identitás létrehozása...",
+            "initializing": "Biztonságos kapcsolat inicializálása..."
+        },
+        "heading": {
+            "reset": "Biztonsági helyreállítás",
+            "register": "Regisztráció",
+            "login": "Üdvözlünk újra"
+        },
+        "subheading": {
+            "reset": "Jelszó-helyreállítás engedélyezése",
+            "register": "Oldd fel a napi híreid",
+            "login": "Személyre szabott híreid várnak"
+        },
+        "form": {
+            "email_label": "Email cím",
+            "email_placeholder": "mernok\\@ceg.hu",
+            "password_label": "Jelszó",
+            "password_placeholder": "••••••••••••",
+            "forgot_password": "Elfelejtetted?",
+            "password_hint": "Min. 12 karakter, kis- és nagybetűk, valamint szimbólumok."
+        },
+        "buttons": {
+            "send_reset": "Helyreállító link küldése",
+            "register_identity": "Regisztráció",
+            "authenticate": "Hitelesítés",
+            "continue_google": "Folytatás Google-lal",
+            "continue_apple": "Folytatás Apple-lel",
+            "back_to_login": "Vissza a bejelentkezéshez"
+        },
+        "prompts": {
+            "already_have_account": "Van már fiókod?",
+            "dont_have_account": "Még nincs fiókod?",
+            "login_link": "Bejelentkezés",
+            "registration_link": "Regisztráció",
+            "divider_label": "Social Kapu"
+        }
+    },
+    "footer": {
+        "encryption_label": "Szuverén szintű titkosítás",
+        "terms": "Felhasználási feltételek",
+        "privacy": "Adatvédelem",
+        "help": "Segítség"
+    },
+    "modal": {
+        "language_selection_title": "Interfész kiválasztása",
+        "language_selection_subtitle": "Válaszd ki a preferált nyelvi protokollt.",
+        "terms_title": "Szuverenitási feltételek",
+        "terms_p1": "Ezen csomópont inicializálásával elfogadod a NuSift decentralizált irányítási protokolljait.",
+        "terms_p2": "A felhasználói adatok helyileg titkosítottak; a NuSift soha nem tárolja a privát kulcsaidat.",
+        "acknowledge": "Tudomásul veszem",
+        "privacy_title": "Adatvédelmi tájékoztató",
+        "privacy_p1": "A NuSift zéró tudású (zero-knowledge) architektúrán működik. Nem gyűjtünk és nem tárolunk semmilyen személyes azonosításra alkalmas adatot. Minden felhasználói adat az eszközödön titkosított, és soha nem továbbítjuk azokat szervereinkre.",
+        "privacy_p2": "A NuSift használatával elfogadod az ebben a tájékoztatóban leírt adatvédelmi gyakorlatunkat.",
+        "privacy_acknowledge": "Megértettem",
+        "help_title": "Segítségre van szükséged?",
+        "help_p1": "Ha problémákat tapasztalsz a hitelesítés során, vagy kérdéseid vannak a fiókoddal kapcsolatban, kérjük, vedd fel a kapcsolatot támogató csapatunkkal.",
+        "help_p2": "Email: support\\@ceg.hu",
+        "help_acknowledge": "Kapcsolatfelvétel"
+    },
+    "validation": {
+        "invalid_email": "Érvénytelen formátum.",
+        "password_too_short": "Biztonsági hiba: Minimum 12 karakter szükséges."
+    },
+    "errors": {
+        "unexpected": "Váratlan hiba történt.",
+        "auth_failure": "Hitelesítési hiba.",
+        "request_failed": "A kérés feldolgozása sikertelen.",
+        "oauth_cancelled": "A felhasználó megszakította a hitelesítést.",
+        "oauth_timeout": "A hitelesítési ablak túl sokáig válaszolt. Kérlek, próbáld újra.",
+        "oauth_failed": "Sikertelen hitelesítés ezzel: {provider}.",
+        "oauth_missing_id": "Konfigurációs hiba: A Google Client ID hiányzik.",
+        "oauth_not_init": "Kézfogás sikertelen: Az identitás-szolgáltató még nem inicializált.",
+        "handshake_failed": "{provider} kézfogás sikertelen."
+    }
+}

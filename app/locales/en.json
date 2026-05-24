@@ -46,16 +46,16 @@
         "help": "Help"
     },
     "modal": {
+        "language_selection_title": "Select Interface",
+        "language_selection_subtitle": "Choose your preferred language protocol.",
         "terms_title": "Terms of Sovereignty",
         "terms_p1": "By initializing this node, you agree to the decentralized governance protocols of NuSift.",
         "terms_p2": "User data is encrypted locally; NuSift never holds your private keys.",
         "acknowledge": "Acknowledge",
-
         "privacy_title": "Privacy Notice",
         "privacy_p1": "NuSift operates on a zero-knowledge architecture. We do not collect or store any personally identifiable information. All user data is encrypted on-device and never transmitted to our servers.",
         "privacy_p2": "By using NuSift, you consent to our privacy practices as outlined in this notice.",
         "privacy_acknowledge": "I Understand",
-
         "help_title": "Need Assistance?",
         "help_p1": "If you're experiencing issues with authentication or have questions about your account, please reach out to our support team.",
         "help_p2": "Email:  support\\@company.com",

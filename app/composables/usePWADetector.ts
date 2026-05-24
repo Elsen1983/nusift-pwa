@@ -40,7 +40,7 @@ if (import.meta.client) {
     if (!dismissed || new Date(dismissed) < monthStart) {
       window.addEventListener('beforeinstallprompt', (e: Event) => {
         console.log('%c[PWA-Core] beforeinstallprompt intercepted', 'color: #00ffff; font-weight: bold;');
-        e.preventDefault();
+        // e.preventDefault();
         deferredPrompt.value = e;
         isInstallable.value = true;
       }, { once: true }); // Critical optimization: Prevent memory leaks

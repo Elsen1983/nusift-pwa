@@ -24,7 +24,7 @@ export default defineNuxtConfig({
   },
 
   // ANCHOR MODULE-REGISTRATION
-  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt", "@nuxtjs/i18n"],
+  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt", '@nuxt/icon', "@nuxtjs/i18n"],
 
   // ANCHOR I18N-CONFIGURATION
   // ts-ignore is used to bypass a type error in the i18n module configuration, which is a known issue with the current version of @nuxtjs/i18n. This allows us to maintain type safety for the rest of the configuration while still using the i18n module effectively.

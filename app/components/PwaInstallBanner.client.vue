@@ -74,7 +74,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watchEffect } from "vue";
+import { ref, computed } from "vue";
 
 const { $pwa } = useNuxtApp();
 
@@ -87,13 +87,13 @@ const isFirefox: boolean = import.meta.client
   : false;
 console.warn("isFirefox:", isFirefox);
 
-const showInstallUI = ref<boolean>(false);
+// const showInstallUI = ref<boolean>(false);
 const dismissedThisMonth = ref<boolean>(false);
 
 const checkSuppressed = (): void => {
   if (!import.meta.client) return;
 
-  const dismissed: string | null = localStorage.getItem("pwaDismissed");
+  const dismissed: string | null = localStorage.getItem("nusift_pwa_dismissed");
   if (dismissed) {
     const now = new Date();
     const dismissedDate = new Date(dismissed);
@@ -107,11 +107,15 @@ console.warn("Checking if PWA install banner should be suppressed based on local
 
 checkSuppressed();
 
-watchEffect(() => {
-  // Figyeljük mind a saját hook-ot, mind a hivatalos Vite PWA plugint
-  if ((isInstallable.value || $pwa?.showInstallPrompt) && !dismissedThisMonth.value) {
-    showInstallUI.value = true;
-  }
+// watchEffect(() => {
+//   // Figyeljük mind a saját hook-ot, mind a hivatalos Vite PWA plugint
+//   if ((isInstallable.value || $pwa?.showInstallPrompt) && !dismissedThisMonth.value) {
+//     showInstallUI.value = true;
+//   }
+// });
+
+const showInstallUI = computed(() => {
+  return (isInstallable.value || $pwa?.showInstallPrompt) && !dismissedThisMonth.value;
 });
 
 const installApp = async (): Promise<void> => {
@@ -120,7 +124,8 @@ const installApp = async (): Promise<void> => {
   } else {
     await triggerInstall();
   }
-  showInstallUI.value = false;
+  // showInstallUI.value = false;
+  dismissedThisMonth.value = true;
 };
 
 const dismiss = (): void => {
@@ -128,8 +133,8 @@ const dismiss = (): void => {
 
   // Utilizing the non-null assertion operator (!) to satisfy strict string typing
   const today: string = new Date().toISOString().split("T")[0]!;
-  localStorage.setItem("pwaDismissed", today);
-  showInstallUI.value = false;
+  localStorage.setItem("nusift_pwa_dismissed", today);
+  // showInstallUI.value = false;
   dismissedThisMonth.value = true;
 };
 </script>
