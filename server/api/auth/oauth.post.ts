@@ -8,7 +8,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 export default defineEventHandler(async (event) => {
   const body = await readBody(event);
-  const { token, provider } = body; 
+  const { token, provider, language } = body; 
 
   let verifiedEmail: string | undefined;
   let verifiedProviderId: string | undefined;
@@ -59,6 +59,7 @@ export default defineEventHandler(async (event) => {
           isVerified: true,
           oauthProvider: provider,
           oauthId: verifiedProviderId,
+          preferredLanguage: language || "en",
         },
         include: {
           sourceSubscriptions: { include: { newsSource: true } },
@@ -121,6 +122,7 @@ export default defineEventHandler(async (event) => {
         email: user.email,
         onboardingStep: user.onboardingStep,
         primaryRegion: user.primaryRegion,
+        preferredLanguage: user.preferredLanguage,
         tier: user.tier,
         topSources: [
           ...user.sourceSubscriptions.map(s => s.newsSource.frontPageUrl),

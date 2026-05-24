@@ -29,6 +29,7 @@ model User {
   passwordHash          String?   // MUST BE OPTIONAL (?) FOR OAUTH USERS
   isVerified            Boolean   @default(false)
   tier                  UserTier  @default(FREE)
+  preferredLanguage     String    @default("en") // NEW: Stores the ISO language code
   verificationToken     String? @unique
   resetPasswordToken    String?   @unique
   resetPasswordExpires  DateTime?

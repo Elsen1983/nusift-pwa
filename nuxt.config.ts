@@ -18,12 +18,13 @@ export default defineNuxtConfig({
   // hard-reloading the browser during development.
   vite: {
     optimizeDeps: {
-      include: ["@vue/devtools-core", "@vue/devtools-kit", "workbox-window"],
+      include: ["@vue/devtools-core", "@vue/devtools-kit", "workbox-window", '@nuxtjs/i18n'],
+      // 'vue-i18n', 'vue-i18n-bridge', 'vue-i18n-legacy', 'vue-i18n-composable'
     },
   },
 
   // ANCHOR MODULE-REGISTRATION
-  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt"],
+  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt", ],
 
   // ANCHOR ALIAS-CONFIGURATION
   alias: {

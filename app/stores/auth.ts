@@ -13,6 +13,7 @@ interface UserProfile {
   onboardingStep: number;
   createdAt?: string; 
   primaryRegion: string | null;
+  preferredLanguage?: string;
   topSources: string[];
   topInterests: any; 
 }
@@ -42,14 +43,14 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   // ANCHOR ACTIONS
-  const registerIdentity = async (emailPayload: string, passwordPayload: string) => {
+  const registerIdentity = async (emailPayload: string, passwordPayload: string, language?: string) => {
     isLoading.value = true;
     authError.value = null;
 
     try {
       await $fetch("/api/auth/register", {
         method: "POST",
-        body: { email: emailPayload, password: passwordPayload },
+        body: { email: emailPayload, password: passwordPayload, language: language || "en" },
       });
       return true;
     } catch (error: any) {
@@ -94,7 +95,7 @@ export const useAuthStore = defineStore("auth", () => {
    * NEW SIGNATURE: Accepts raw token from identity provider.
    * Trust is deferred to the backend verification logic.
    */
-  const oauthIdentity = async (rawToken: string, providerName: string) => {
+  const oauthIdentity = async (rawToken: string, providerName: string, language?: string) => {
     isLoading.value = true;
     authError.value = null;
 
@@ -104,7 +105,8 @@ export const useAuthStore = defineStore("auth", () => {
         method: "POST",
         body: {
           token: rawToken,
-          provider: providerName
+          provider: providerName,
+          language: language || "en"
         },
       });
 

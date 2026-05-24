@@ -6,6 +6,10 @@
       <PwaInstallBanner />
     </ClientOnly>
 
+    <ClientOnly>
+      <LanguageSelectorModal @language-selected="handleLanguageSelection" />
+    </ClientOnly>
+
     <div
       v-if="isLoading"
       class="fixed inset-0 backdrop-blur-sm bg-surface/80 z-[100] flex flex-col items-center justify-center"
@@ -313,6 +317,7 @@ import { useHead } from "#imports";
 import { useAuthStore } from "~/stores/auth";
 import { $api } from "~/utils/api";
 
+
 const authStore = useAuthStore();
 const router = useRouter();
 
@@ -329,6 +334,8 @@ useHead({
 });
 
 /** ANCHOR UI-STATES */
+const activeLanguage = ref('en'); // Local state for the chosen language payload
+
 const isRegistering = ref(false);
 const isResettingPassword = ref(false);
 const isLoading = ref(false);
@@ -385,6 +392,11 @@ watch(password, () => {
 
 onMounted(() => {
   if (!localStorage.getItem("nusift_visited")) isRegistering.value = true;
+  // Retrieve the language if it was already selected previously
+  const savedLang = localStorage.getItem('nusift_preferred_language');
+  if (savedLang) {
+    activeLanguage.value = savedLang;
+  }
 });
 
 const toggleAuthMode = () => {
@@ -416,6 +428,14 @@ const cancelResetMode = () => {
 };
 
 /** ANCHOR HANDLERS */
+const handleLanguageSelection = (langCode: string) => {
+  activeLanguage.value = langCode;
+  
+  // Future implementation: Trigger @nuxtjs/i18n locale switch here
+  // const { setLocale } = useI18n();
+  // setLocale(langCode);
+};
+
 const handleAuth = async () => {
   const eValid = validateEmailField();
   if (!eValid) return;
@@ -447,6 +467,7 @@ const handleAuth = async () => {
     const success = await authStore.registerIdentity(
       email.value,
       password.value,
+      activeLanguage.value,
     );
     if (success) {
       localStorage.setItem("nusift_visited", "true");
@@ -552,7 +573,8 @@ const handleOAuth = async (provider: string) => {
 };
 
 const processOAuthLogin = async (rawToken: string, providerName: string) => {
-  const success = await authStore.oauthIdentity(rawToken, providerName);
+  // const success = await authStore.oauthIdentity(rawToken, providerName);
+  const success = await authStore.oauthIdentity(rawToken, providerName, activeLanguage.value);
 
   if (success) {
     localStorage.setItem("nusift_visited", "true");

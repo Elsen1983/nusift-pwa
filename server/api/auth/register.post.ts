@@ -9,7 +9,7 @@ export default defineEventHandler(async (event) => {
   try {
     // 1. Kinyerjük a frontendről küldött adatokat a kérés törzséből (body)
     const body = await readBody(event);
-    const { email, password } = body;
+    const { email, password, language } = body;
 
     // 2. Alapvető validáció a szerver oldalon is (Sovereign-Grade védelem)
     if (!email || !password || password.length < 12) {
@@ -44,6 +44,7 @@ export default defineEventHandler(async (event) => {
         email,
         passwordHash,
         verificationToken,
+        preferredLanguage: language || "en",
       },
     });
 
