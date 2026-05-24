@@ -33,14 +33,25 @@ export default defineEventHandler(async (event) => {
     const urlObj = new URL(finalUrl);
     const cleanHostname = urlObj.hostname.replace(/^www\./, '');
 
-    // Adatbázis keresés a domainre
-    const existingSource = await prisma.newsSource.findFirst({
+    // 1. Fetch potential matches (broad search to minimize DB load)
+    const potentialSources = await prisma.newsSource.findMany({
       where: { frontPageUrl: { contains: cleanHostname, mode: 'insensitive' } }
+    });
+
+    // 2. Filter for an exact hostname match in JavaScript
+    const existingSource = potentialSources.find(source => {
+      try {
+        const dbUrlObj = new URL(source.frontPageUrl);
+        const dbCleanHostname = dbUrlObj.hostname.replace(/^www\./, '');
+        return dbCleanHostname === cleanHostname;
+      } catch {
+        return false; // Skip if DB contains malformed URLs
+      }
     });
 
     return {
       success: true,
-      url: finalUrl, // Itt már a tiszta, végleges link van!
+      url: finalUrl,
       name: existingSource?.mediaName || cleanHostname,
       status: existingSource?.rssStatus || 'PENDING_DISCOVERY'
     };

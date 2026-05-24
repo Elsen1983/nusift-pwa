@@ -182,7 +182,15 @@ const openLogoutModal = () => {
   isLogoutModalOpen.value = true;
 };
 
-const handleSecureLogout = () => {
+const handleSecureLogout = async () => {
+  // 1. Megkérjük a szervert, hogy semmisítse meg a HttpOnly sütiket
+  try {
+    await $fetch('/api/auth/logout', { method: 'POST' });
+  } catch (error) {
+    console.error("Sovereign Shield: Logout API hívás sikertelen", error);
+  }
+
+  // 2. Kliensoldali állapotok tisztítása
   const token = useCookie("auth_token");
   token.value = null;
 
@@ -199,9 +207,10 @@ const handleSecureLogout = () => {
   if (process.client) {
     localStorage.removeItem("nusift_visited");
     sessionStorage.clear();
+    
+    // Hard-redirect a bejelentkező oldalra
+    window.location.href = "/auth";
   }
-
-  window.location.href = "/auth";
 };
 
 const vClickOutside = {

@@ -10,8 +10,6 @@ const decodeJwtPayload = (token: string) => {
     if (!base64Url) return null;
     const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
     
-    // ANCHOR SSR-SAFE DECODING
-    // A Node.js (szerver) a Buffer-t használja, a böngésző (kliens) az atob-t.
     if (import.meta.server) {
       return JSON.parse(Buffer.from(base64, 'base64').toString('utf-8'));
     } else {
@@ -23,8 +21,7 @@ const decodeJwtPayload = (token: string) => {
   }
 };
 
-export default defineNuxtRouteMiddleware((to, from) => {
-  // Path Constants
+export default defineNuxtRouteMiddleware(async (to, from) => {
   const AUTH_PATH = "/auth";
   const ROOT_PATH = "/";
   const REGION_CALIBRATION = "/region-calibration";
@@ -36,14 +33,34 @@ export default defineNuxtRouteMiddleware((to, from) => {
   const isPublicRoute = PUBLIC_ROUTES.includes(to.path);
 
   const authStore = useAuthStore();
-  const tokenCookie = useCookie("auth_token");     // SSR Only
-  const sessionStatus = useCookie("session_status"); // Client & Server
+  const tokenCookie = useCookie("auth_token");     
+  const sessionStatus = useCookie("session_status"); 
 
-  // 1. ANCHOR SESSION-DETECTION
-  const hasActiveSession = import.meta.server ? !!tokenCookie.value : !!sessionStatus.value;
+  let hasActiveSession = import.meta.server ? !!tokenCookie.value : !!sessionStatus.value;
 
+// ==========================================
+  // ANCHOR RUNTIME ZOMBIE CHECK (CLIENT ONLY)
+  // ==========================================
+  // This executes strictly in the user's browser during navigation.
+  // It completely bypasses the Nuxt SSR engine, eliminating any risk of OOM deadlocks.
+  if (import.meta.client && hasActiveSession && !isPublicRoute) {
+    try {
+      // Pointing to your existing validation endpoint
+      await $fetch('/api/auth/user-validate');
+    } catch (error: any) {
+      // Pass the 'error' object to the console logger to satisfy SonarQube
+      console.warn("Sovereign Shield: Active session rejected by authority. Forcing eviction.", error);
+      
+      tokenCookie.value = null;
+      sessionStatus.value = null;
+      hasActiveSession = false;
+      authStore.$reset();
+      
+      return navigateTo(AUTH_PATH, { replace: true });
+    }
+  }
   // 2. ANCHOR JWT-HYDRATION (SSR Only)
-  if (import.meta.server && tokenCookie.value && !authStore.user) {
+  if (import.meta.server && hasActiveSession && !authStore.user) {
     const payload = decodeJwtPayload(tokenCookie.value as string);
     if (payload && payload.userId) {
       authStore.user = {
@@ -59,7 +76,6 @@ export default defineNuxtRouteMiddleware((to, from) => {
   }
 
   // 3. ANCHOR SYNC-CHECK (Ghost State Prevention)
-  // If no cookie exists but Pinia still thinks we are logged in, force a reset.
   if (!hasActiveSession && authStore.user !== null) {
     authStore.$reset();
   }
