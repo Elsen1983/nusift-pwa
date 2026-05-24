@@ -138,6 +138,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
 import { useRouter, useCookie } from "nuxt/app";
+import { $api } from "~/utils/api";
 
 const router = useRouter();
 const isLoading = ref(false);
@@ -203,7 +204,7 @@ const resendEmail = async () => {
   loadingText.value = "Dispatching secure packet...";
 
   try {
-    const response = await $fetch("/api/auth/resend", {
+    const response = await $api("/api/auth/resend", {
       method: "POST",
       body: { email: pendingEmail },
     });

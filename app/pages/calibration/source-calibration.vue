@@ -142,6 +142,7 @@ import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
+import { $api } from "~/utils/api";
 
 interface SourceItem {
   url: string;
@@ -194,7 +195,7 @@ const addSource = async () => {
 
   try {
     // DB Ellenőrző hívás az új végpontra
-    const response = await $fetch<any>("/api/util/check-source", {
+    const response = await $api<any>("/api/util/check-source", {
       method: "POST",
       body: { url: targetUrl },
     });

@@ -180,6 +180,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
+import { $api } from "~/utils/api";
 
 // Define the layout constraint
 definePageMeta({
@@ -487,6 +488,29 @@ const handleConfirmRating = (newScore: number) => {
     }
   }
 };
+
+// const handleConfirmRating = async (newScore: number) => {
+//   const articleIndex = articles.value.findIndex(a => a.id === activeRatingArticleId.value);
+  
+//   if (articleIndex !== -1) {
+//     const targetArticle = articles.value[articleIndex];
+//     if (targetArticle) {
+//       try {
+//         // HÍVD MEG AZ API-T AZ ÚJ $api KLISENSSEL
+//         await $api('/api/user/rate-article', {
+//           method: 'POST',
+//           body: { id: targetArticle.id, score: newScore }
+//         });
+        
+//         // Csak sikeres mentés után frissítjük a lokális UI-t
+//         targetArticle.score = newScore;
+//       } catch (error) {
+//         console.error("Failed to sync rating:", error);
+//         // Itt nem kell manuálisan redirectelni, az $api interceptor automatikusan megteszi 401 esetén
+//       }
+//     }
+//   }
+// };
 
 // Ez a blokk automatikusan kezeli a görgetést
 watch([showPaywallModal, showReaderModal, showRatingModal], ([newPaywall, newReader, newRating]) => {

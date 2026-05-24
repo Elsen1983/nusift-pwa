@@ -162,6 +162,8 @@ import { ref } from "vue";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
 import defaultAvatar from "~/assets/images/default_avatar.png";
+import { $api } from "~/utils/api";
+
 const userAvatar = ref(defaultAvatar);
 
 const authStore = useAuthStore();
@@ -185,7 +187,7 @@ const openLogoutModal = () => {
 const handleSecureLogout = async () => {
   // 1. Megkérjük a szervert, hogy semmisítse meg a HttpOnly sütiket
   try {
-    await $fetch('/api/auth/logout', { method: 'POST' });
+    await $api('/api/auth/logout', { method: 'POST' });
   } catch (error) {
     console.error("Sovereign Shield: Logout API hívás sikertelen", error);
   }

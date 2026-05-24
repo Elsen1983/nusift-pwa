@@ -311,6 +311,7 @@ import { ref, onMounted, watch } from "vue";
 import { useRouter } from "nuxt/app";
 import { useHead } from "#imports";
 import { useAuthStore } from "~/stores/auth";
+import { $api } from "~/utils/api";
 
 const authStore = useAuthStore();
 const router = useRouter();
@@ -423,7 +424,7 @@ const handleAuth = async () => {
   if (isResettingPassword.value) {
     isLoading.value = true;
     try {
-      const response = await $fetch<any>("/api/auth/forgot-password", {
+      const response = await $api<any>("/api/auth/forgot-password", {
         method: "POST",
         body: { email: email.value },
       });

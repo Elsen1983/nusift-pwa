@@ -201,6 +201,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
+import { $api } from "~/utils/api";
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -484,7 +485,7 @@ const handleClickOutside = (event: MouseEvent) => {
 onMounted(async () => {
   document.addEventListener("click", handleClickOutside);
   try {
-    const data = await $fetch<any>("/api/util/get-location");
+    const data = await $api<any>("/api/util/get-location");
     if (data.success && data.countryName && data.countryCode) {
       detectedCountry.value = data.countryName;
       detectedCountryCode.value = data.countryCode;
@@ -540,7 +541,7 @@ const saveAndContinue = async () => {
     // 2. HÁTTÉRADATBÁZIS ÉPÍTÉS INDÍTÁSA (SEEDER)
     // ==========================================
     // Nem várjuk meg (nincs await), azonnal megy tovább a kód!
-    $fetch("/api/util/seed-region", {
+    $api("/api/util/seed-region", {
       method: "POST",
       body: { country: selectedCountry.value },
     }).catch((err) => console.warn("Background seeder API failed:", err));

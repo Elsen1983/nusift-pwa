@@ -35,6 +35,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'nuxt/app';
+import { $api } from "~/utils/api";
 
 const route = useRoute();
 const router = useRouter();
@@ -49,7 +50,7 @@ onMounted(async () => {
   }
 
   try {
-    const response = await $fetch<any>('/api/auth/verify', {
+    const response = await $api<any>('/api/auth/verify', {
       method: 'POST',
       body: { token }
     });

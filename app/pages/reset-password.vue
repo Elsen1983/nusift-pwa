@@ -65,6 +65,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
+import { $api } from "~/utils/api";
 
 const route = useRoute();
 const token = ref<string | null>(null);
@@ -112,7 +113,7 @@ const submitNewPassword = async () => {
   serverError.value = "";
 
   try {
-    const response = await $fetch<any>('/api/auth/reset-password', {
+    const response = await $api<any>('/api/auth/reset-password', {
       method: 'POST',
       body: { 
         token: token.value, 

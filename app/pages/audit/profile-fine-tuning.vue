@@ -214,6 +214,7 @@
 import { ref, computed, onMounted, nextTick } from "vue";
 import { useAgentStore } from "~/stores/agent";
 definePageMeta({ layout: "app-layout" });
+import { $api } from "~/utils/api";
 
 const agentStore = useAgentStore();
 const globalHasChanges = ref(false); // Tracks if there are unsaved changes globally
@@ -476,7 +477,7 @@ const saveAllChanges = async () => {
 
     agentStore.topInterests = structuredInterests;
 
-    await $fetch("/api/user/update-interests", {
+    await $api("/api/user/update-interests", {
       method: "POST",
       body: { interests: structuredInterests }
     });

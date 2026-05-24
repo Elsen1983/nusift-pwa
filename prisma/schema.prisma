@@ -43,6 +43,7 @@ model User {
 
   sourceSubscriptions   UserSourceSubscription[]
   categorySubscriptions UserCategorySubscription[]
+  articleRatings        ArticleRating[]
 }
 
 model NewsSource {
@@ -146,4 +147,46 @@ model UserCategorySubscription {
 
   @@unique([userId, categoryId]) 
   @@index([userId, isActive])    
+}
+
+// ========================================================
+// DYNAMIC AI ARTICLES & CLIENT RATING INJECTIONS (MOCKUP STAGE)
+// ========================================================
+
+model Article {
+  id         Int      @id @default(autoincrement()) // Numerikus ID a frontend mockup adatokhoz igazodva
+  title      String
+  source     String   // Pl. "reuters.com"
+  date       DateTime // Időbélyeg a performáns szűrésekhez (frontend string formázást igényel)
+  score      Int      @default(0)
+  isPaywall  Boolean  @default(false)
+  
+  // PostgreSQL natív skalár string tömbök (Gyors indexelés, nincs szükség plusz junction táblákra)
+  tags       String[]
+  signals    String[]
+  
+  reasoning  String?  @db.Text 
+  
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  ratings    ArticleRating[]
+
+  @@index([date])
+}
+
+model ArticleRating {
+  id        String   @id @default(uuid())
+  score     Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId Int
+  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, articleId]) // Egy felhasználó csak egyszer értékelhet egy adott cikket
+  @@index([userId])
 }

@@ -170,6 +170,7 @@ import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
+import { $api } from "~/utils/api";
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -225,7 +226,7 @@ const finalizeOnboarding = async () => {
     agentStore.topInterests = structuredInterests;
 
     // 3. Backend Save
-    await $fetch("/api/user/finalize-onboarding", {
+    await $api("/api/user/finalize-onboarding", {
       method: "POST",
       body: {
         region: agentStore.primaryRegion,
