@@ -7,9 +7,9 @@
         <div class="w-16 h-16 rounded-full bg-primary-container/10 flex items-center justify-center mx-auto mb-4 border border-primary-container/20">
           <span class="material-symbols-outlined text-primary-container text-3xl">language</span>
         </div>
-        <h3 class="font-headline text-2xl font-bold text-white mb-2 tracking-tight">Select Region Interface</h3>
+        <h3 class="font-headline text-2xl font-bold text-white mb-2 tracking-tight">Select Language</h3>
         <p class="text-on-surface-variant text-sm font-body">
-          Choose your preferred language for the NuSift intelligence platform.
+          Choose your preferred language, please.
         </p>
       </div>
       

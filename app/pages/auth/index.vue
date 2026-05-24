@@ -27,10 +27,10 @@
       >
         {{
           isResettingPassword
-            ? "Authorizing Protocol..."
+            ? $t('auth.loading.resetting')
             : isRegistering
-              ? "Forging Sovereign Identity..."
-              : "Initializing Secure Handshake..."
+              ? $t('auth.loading.registering') 
+              : $t('auth.loading.initializing')
         }}
       </p>
     </div>
@@ -55,24 +55,12 @@
         <h1
           class="font-headline text-3xl font-bold tracking-tight text-on-surface text-center transition-all duration-500"
         >
-          {{
-            isResettingPassword
-              ? "Secure Recovery"
-              : isRegistering
-                ? "Registration"
-                : "Welcome Back"
-          }}
+          {{ isResettingPassword ? $t('auth.heading.reset') : isRegistering ? $t('auth.heading.register') : $t('auth.heading.login') }}
         </h1>
         <p
           class="text-[11px] text-on-surface-variant mt-2 font-label uppercase tracking-[0.25em] text-center opacity-80"
         >
-          {{
-            isResettingPassword
-              ? "Authorize password reset"
-              : isRegistering
-                ? "Unlock your daily news"
-                : "Your personalized news awaits"
-          }}
+          {{ isResettingPassword ? $t('auth.subheading.reset') : isRegistering ? $t('auth.subheading.register') : $t('auth.subheading.login') }}
         </p>
       </section>
 
@@ -91,9 +79,9 @@
         <form @submit.prevent="handleAuth" class="space-y-4">
           <BaseInput
             v-model="email"
-            label="Email Address"
+            :label="$t('auth.form.email_label')"
             type="email"
-            placeholder="engineer@company.com"
+            :placeholder="$t('auth.form.email_placeholder')"
             :error="emailError"
             class="standard-field"
             @blur="validateEmailField"
@@ -102,9 +90,9 @@
           <BaseInput
             v-if="!isResettingPassword"
             v-model="password"
-            label="Password"
+            :label="$t('auth.form.password_label')"
             type="password"
-            placeholder="••••••••••••"
+            :placeholder="$t('auth.form.password_placeholder')"
             :error="passwordError"
             class="standard-field"
             @blur="validatePasswordField"
@@ -115,7 +103,7 @@
                 type="button"
                 class="text-[11px] font-label text-primary-container hover:underline uppercase font-bold tracking-tighter"
               >
-                Forgot?
+                {{ $t('auth.form.forgot_password') }}
               </button>
             </template>
             <template v-if="isRegistering" #help-text>
@@ -123,7 +111,7 @@
                 v-if="!passwordError"
                 class="text-[11px] text-zinc-500 ml-1 italic mt-1.5 leading-tight"
               >
-                Min 12 characters, mix of cases and symbols.
+                {{ $t('auth.form.password_hint') }}
               </p>
             </template>
           </BaseInput>
@@ -141,10 +129,10 @@
           >
             {{
               isResettingPassword
-                ? "Send Reset Link"
+                ? $t('auth.buttons.send_reset')
                 : isRegistering
-                  ? "Register Identity"
-                  : "Authenticate"
+                  ? $t('auth.buttons.register_identity')
+                  : $t('auth.buttons.authenticate')
             }}
           </button>
         </form>
@@ -156,8 +144,8 @@
           >
             {{
               isRegistering
-                ? "Already have an account?"
-                : "Don't have an account yet?"
+                ? $t('auth.prompts.already_have_account')
+                : $t('auth.prompts.dont_have_account')
             }}
           </p>
           <button
@@ -166,7 +154,7 @@
             type="button"
             class="text-[18px] font-headline font-bold text-primary-container hover:text-primary underline underline-offset-4 transition-colors"
           >
-            {{ isRegistering ? "Login" : "Register Identity" }}
+            {{ isRegistering ? $t('auth.prompts.login_link') : $t('auth.prompts.registration_link') }}
           </button>
 
           <button
@@ -175,7 +163,7 @@
             type="button"
             class="text-xs font-label mt-2 text-on-surface-variant hover:text-white transition-colors uppercase tracking-widest"
           >
-            Back to Login
+            {{ $t('auth.buttons.back_to_login') }}
           </button>
         </div>
 
@@ -186,8 +174,9 @@
           <div class="flex-grow border-t border-outline-variant/15"></div>
           <span
             class="flex-shrink mx-4 text-[9px] font-label font-bold text-zinc-500 tracking-[0.4em] uppercase"
-            >Social Gate</span
-          >
+            >
+            {{ $t('auth.prompts.divider_label') }}
+          </span>
           <div class="flex-grow border-t border-outline-variant/15"></div>
         </div>
       </section>
@@ -216,7 +205,7 @@
               fill="#EA4335"
             ></path>
           </svg>
-          Continue with Google
+          {{ $t('auth.buttons.continue_google') }}
         </button>
         <button
           @click="handleOAuth('Apple')"
@@ -228,7 +217,7 @@
               d="M17.05 20.28c-.98.95-2.05 1.78-3.3 1.78-1.2 0-1.57-.75-3.04-.75-1.47 0-1.92.73-3.04.75-1.22.02-2.33-.9-3.3-1.8-1.98-1.86-3.5-5.25-3.5-8.43 0-3.15 1.63-4.83 3.19-4.83 1.15 0 2.04.74 2.84.74.78 0 1.9-.84 3.33-.84.9 0 2.13.33 3.04 1.25-.13.1-.9.84-.9 2.22 0 1.67 1.15 2.23 1.38 2.33-.1.3-.43.8-.9 1.43-.53.75-.95 1.4-1.3 1.7zm-2.84-15.82c.6-.74.98-1.74.98-2.73 0-.15-.02-.3-.04-.44-.92.04-2.03.62-2.7 1.4-.53.6-.98 1.62-.98 2.6.14.02.28.03.44.03.88 0 1.78-.45 2.3-1.12z"
             ></path>
           </svg>
-          Continue with Apple
+          {{ $t('auth.buttons.continue_apple') }}
         </button>
       </section>
 
@@ -236,29 +225,14 @@
         <p
           class="text-[10px] text-zinc-500 font-label uppercase tracking-[0.4em] mb-2 font-bold opacity-70"
         >
-          Sovereign-Grade Encryption
+          {{ $t('footer.encryption_label') }}
         </p>
         <div
           class="flex justify-center space-x-8 text-[11px] text-on-surface-variant font-bold font-label"
         >
-          <a
-            href="#"
-            @click.prevent="activeModal = 'terms'"
-            class="hover:text-primary transition-all duration-300"
-            >Terms</a
-          >
-          <a
-            href="#"
-            @click.prevent="activeModal = 'privacy'"
-            class="hover:text-primary transition-all duration-300"
-            >Privacy</a
-          >
-          <a
-            href="#"
-            @click.prevent="activeModal = 'help'"
-            class="hover:text-primary transition-all duration-300"
-            >Help</a
-          >
+          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'terms'">{{ $t('footer.terms') }}</a>
+          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'privacy'">{{ $t('footer.privacy') }}</a>
+          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'help'">{{ $t('footer.help') }}</a>
         </div>
       </footer>
     </main>
@@ -284,18 +258,50 @@
           <h3
             class="font-headline text-2xl font-bold text-primary-container uppercase tracking-tight"
           >
-            Terms of Sovereignty
+            {{ $t('modal.terms_title') }}
           </h3>
           <div
             class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
           >
             <p>
-              By initializing this node, you agree to the decentralized
-              governance protocols of NuSift.
+              {{ $t('modal.terms_p1') }}
             </p>
             <p>
-              User data is encrypted locally; NuSift never holds your private
-              keys.
+              {{ $t('modal.terms_p2') }}
+            </p>
+          </div>
+        </div>
+        <div v-if="activeModal === 'privacy'" class="space-y-4 text-left">
+          <h3
+            class="font-headline text-2xl font-bold text-primary-container uppercase tracking-tight"
+          >
+            {{ $t('modal.privacy_title') }}
+          </h3>
+          <div
+            class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
+          >
+            <p>
+              {{ $t('modal.privacy_p1') }}
+            </p>
+            <p>
+              {{ $t('modal.privacy_p2') }}
+            </p>
+          </div>
+        </div>
+        <div v-if="activeModal === 'help'" class="space-y-4 text-left">
+          <h3
+            class="font-headline text-2xl font-bold text-primary-container uppercase tracking-tight"
+          >
+            {{ $t('modal.help_title') }}
+          </h3>
+          <div
+            class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
+          >
+            <p>
+              {{ $t('modal.help_p1') }}
+            </p>
+            <p>
+              {{ $t('modal.help_p2') }}
             </p>
           </div>
         </div>
@@ -303,7 +309,7 @@
           @click="activeModal = null"
           class="w-full mt-8 py-4 bg-primary-container text-on-primary-container font-headline font-bold rounded-xl active:scale-95 transition-all uppercase tracking-[0.2em] text-xs"
         >
-          Acknowledge
+          {{ $t('modal.acknowledge') }}
         </button>
       </div>
     </div>
@@ -317,7 +323,7 @@ import { useHead } from "#imports";
 import { useAuthStore } from "~/stores/auth";
 import { $api } from "~/utils/api";
 
-
+const { t } = useI18n()
 const authStore = useAuthStore();
 const router = useRouter();
 

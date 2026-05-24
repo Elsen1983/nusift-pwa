@@ -18,13 +18,32 @@ export default defineNuxtConfig({
   // hard-reloading the browser during development.
   vite: {
     optimizeDeps: {
-      include: ["@vue/devtools-core", "@vue/devtools-kit", "workbox-window", '@nuxtjs/i18n'],
+      include: ["@vue/devtools-core", "@vue/devtools-kit", "workbox-window"],
       // 'vue-i18n', 'vue-i18n-bridge', 'vue-i18n-legacy', 'vue-i18n-composable'
     },
   },
 
   // ANCHOR MODULE-REGISTRATION
-  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt", ],
+  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt", "@nuxtjs/i18n"],
+
+  // ANCHOR I18N-CONFIGURATION
+  // ts-ignore is used to bypass a type error in the i18n module configuration, which is a known issue with the current version of @nuxtjs/i18n. This allows us to maintain type safety for the rest of the configuration while still using the i18n module effectively.
+  
+  i18n: {
+    strategy: 'prefix_except_default',
+    defaultLocale: 'en',
+    restructureDir: '.',
+    langDir: 'app/locales',
+    detectBrowserLanguage: false, // Letiltva, hogy a saját UI Modalunk irányítson
+    locales: [
+      { code: 'en', iso: 'en-GB', name: 'English', file: 'en.json' },
+      { code: 'hu', iso: 'hu-HU', name: 'Magyar', file: 'hu.json' },
+      { code: 'fr', iso: 'fr-FR', name: 'Français', file: 'fr.json' },
+      { code: 'de', iso: 'de-DE', name: 'Deutsch', file: 'de.json' },
+      { code: 'pl', iso: 'pl-PL', name: 'Polski', file: 'pl.json' },
+      { code: 'es', iso: 'es-ES', name: 'Español', file: 'es.json' }
+    ]
+  },
 
   // ANCHOR ALIAS-CONFIGURATION
   alias: {
