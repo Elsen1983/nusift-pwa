@@ -225,14 +225,14 @@
         <p
           class="text-[10px] text-zinc-500 font-label uppercase tracking-[0.4em] mb-2 font-bold opacity-70"
         >
-          {{ $t('footer.encryption_label') }}
+          {{ $t('auth.footer.encryption_label') }}
         </p>
         <div
           class="flex justify-center space-x-8 text-[11px] text-on-surface-variant font-bold font-label"
         >
-          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'terms'">{{ $t('footer.terms') }}</a>
-          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'privacy'">{{ $t('footer.privacy') }}</a>
-          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'help'">{{ $t('footer.help') }}</a>
+          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'terms'">{{ $t('auth.footer.terms') }}</a>
+          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'privacy'">{{ $t('auth.footer.privacy') }}</a>
+          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'help'">{{ $t('auth.footer.help') }}</a>
         </div>
       </footer>
     </main>
@@ -258,16 +258,16 @@
           <h3
             class="font-headline text-2xl font-bold text-primary-container uppercase tracking-tight"
           >
-            {{ $t('modal.terms_title') }}
+            {{ $t('auth.modal.terms_title') }}
           </h3>
           <div
             class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
           >
             <p>
-              {{ $t('modal.terms_p1') }}
+              {{ $t('auth.modal.terms_p1') }}
             </p>
             <p>
-              {{ $t('modal.terms_p2') }}
+              {{ $t('auth.modal.terms_p2') }}
             </p>
           </div>
         </div>
@@ -275,16 +275,16 @@
           <h3
             class="font-headline text-2xl font-bold text-primary-container uppercase tracking-tight"
           >
-            {{ $t('modal.privacy_title') }}
+            {{ $t('auth.modal.privacy_title') }}
           </h3>
           <div
             class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
           >
             <p>
-              {{ $t('modal.privacy_p1') }}
+              {{ $t('auth.modal.privacy_p1') }}
             </p>
             <p>
-              {{ $t('modal.privacy_p2') }}
+              {{ $t('auth.modal.privacy_p2') }}
             </p>
           </div>
         </div>
@@ -292,16 +292,16 @@
           <h3
             class="font-headline text-2xl font-bold text-primary-container uppercase tracking-tight"
           >
-            {{ $t('modal.help_title') }}
+            {{ $t('auth.modal.help_title') }}
           </h3>
           <div
             class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
           >
             <p>
-              {{ $t('modal.help_p1') }}
+              {{ $t('auth.modal.help_p1') }}
             </p>
             <p>
-              {{ $t('modal.help_p2') }}
+              {{ $t('auth.modal.help_p2') }}
             </p>
           </div>
         </div>
@@ -309,7 +309,7 @@
           @click="activeModal = null"
           class="w-full mt-8 py-4 bg-primary-container text-on-primary-container font-headline font-bold rounded-xl active:scale-95 transition-all uppercase tracking-[0.2em] text-xs"
         >
-          {{ $t('modal.acknowledge') }}
+          {{ $t('auth.modal.acknowledge') }}
         </button>
       </div>
     </div>

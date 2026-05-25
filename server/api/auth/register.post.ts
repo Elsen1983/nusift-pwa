@@ -5,11 +5,29 @@ import crypto from 'crypto';
 
 const resend = new Resend(process.env.RESEND_API_KEY); // Replace with your actual Resend API key
 
+// ANCHOR: Backend Micro-Dictionary for different languages (for future localization of email content)
+const emailDictionaries = {
+  en: {
+    subject: "Verify your NuSift Identity",
+    title: "Forging Sovereign Identity",
+    body: "A new Neural Node requires your authorization. Click the secure link below to verify your identity and enter the horizon:",
+    button: "Verify My Identity",
+    footer: "If you didn't request this, safely ignore this email."
+  },
+  hu: {
+    subject: "Erősítsd meg a NuSift személyazonosságod",
+    title: "Személyazonosság Hitelesítése",
+    body: "Egy új Neurális Csomópont engedélyezésre vár. Kattints az alábbi biztonságos linkre a személyazonosságod megerősítéséhez és a belépéshez:",
+    button: "Személyazonosság Megerősítése",
+    footer: "Ha nem te kérted ezt, kérlek biztonságosan hagyd figyelmen kívül ezt az e-mailt."
+  }
+};
+
 export default defineEventHandler(async (event) => {
   try {
     // 1. Kinyerjük a frontendről küldött adatokat a kérés törzséből (body)
     const body = await readBody(event);
-    const { email, password, language } = body;
+    const { email, password, language = 'en' } = body;
 
     // 2. Alapvető validáció a szerver oldalon is (Sovereign-Grade védelem)
     if (!email || !password || password.length < 12) {
@@ -51,19 +69,25 @@ export default defineEventHandler(async (event) => {
     // 6. We send a verification email using Resend (you can customize the email content as needed)
     const config = useRuntimeConfig();
     const appUrl = config.public.appUrl || 'http://localhost:3000';
-    const verifyLink = `${appUrl}/verify?token=${verificationToken}`;
+    const langPrefix = language === 'en' ? '' : `/${language}`;
+    const verifyLink = `${appUrl}${langPrefix}/verify?token=${verificationToken}`;
+
+    // ANCHOR: SELECT TRANSLATION
+    // Fallback to English if the requested language doesn't exist in the dictionary
+    type SupportedLang = keyof typeof emailDictionaries;
+    const t = emailDictionaries[language as SupportedLang] || emailDictionaries['en'];
 
     // 7. Send verification email using Resend
     await resend.emails.send({
-      from: 'NuSift Sovereign <onboarding@nusift.com>',
-      to: email, // For testing, replace with the actual recipient email
-      subject: 'Initialize Your Neural Node - Verification Required',
+      from: 'NuSift Protocol <onboarding@nusift.com>',
+      to: email,
+      subject: t.subject,
       html: `
-        <div style="font-family: sans-serif; color: #131313; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #333; border-radius: 12px; background-color: #1a1a1a;">
-          <h2 style="color: #00E5FF;">Forging Sovereign Identity</h2>
-          <p style="color: #ccc;">A new Neural Node requires your authorization. Click the secure link below to verify your identity and enter the horizon:</p>
-          <a href="${verifyLink}" style="display: inline-block; padding: 12px 24px; background-color: #00E5FF; color: #131313; font-weight: bold; text-decoration: none; border-radius: 8px; margin-top: 20px;">Verify My Identity</a>
-          <p style="color: #666; font-size: 11px; margin-top: 30px;">If you didn't request this, safely ignore this email.</p>
+        <div style="font-family: 'Courier New', Courier, monospace; background-color: #131313; padding: 40px; text-align: center; border-radius: 12px; border: 1px solid #1a1a1a;">
+          <h2 style="color: #00E5FF; font-size: 24px;">${t.title}</h2>
+          <p style="color: #ccc; font-size: 16px; line-height: 1.5; max-width: 400px; margin: 0 auto;">${t.body}</p>
+          <a href="${verifyLink}" style="display: inline-block; padding: 14px 28px; background-color: #00E5FF; color: #131313; font-weight: bold; text-decoration: none; border-radius: 8px; margin-top: 30px; letter-spacing: 1px;">${t.button}</a>
+          <p style="color: #666; font-size: 12px; margin-top: 40px; border-top: 1px solid #333; padding-top: 20px;">${t.footer}</p>
         </div>
       `
     });

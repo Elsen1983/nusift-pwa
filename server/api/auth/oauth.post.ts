@@ -6,6 +6,20 @@ import { prisma } from '../../utils/prisma';
 
 const resend = new Resend(process.env.RESEND_API_KEY); 
 
+// ANCHOR: Backend Micro-Dictionary for different languages (for future localization of email content)
+const welcomeDictionaries = {
+  en: {
+    subject: "Welcome to your Sovereign-Grade Intelligence Platform",
+    title: "Node Activated",
+    body: "Success! Your NuSift node is ready for calibration. Return to the application to forge your intelligence horizon."
+  },
+  hu: {
+    subject: "Üdvözlünk a Szuverén Intelligencia Platformodon",
+    title: "Csomópont Aktiválva",
+    body: "Siker! A NuSift csomópontod készen áll a kalibrációra. Térj vissza az alkalmazásba az intelligencia-horizontod formálásához."
+  }
+};
+
 export default defineEventHandler(async (event) => {
   const body = await readBody(event);
   const { token, provider, language } = body; 
@@ -67,12 +81,23 @@ export default defineEventHandler(async (event) => {
         }
       });
 
+      // ANCHOR: DYNAMIC WELCOME EMAIL
       try {
+        // Fallback angolra, ha a kért nyelv nem létezik a szótárban
+        type SupportedLang = keyof typeof welcomeDictionaries;
+        const t = welcomeDictionaries[(language as SupportedLang)] || welcomeDictionaries['en'];
+
         await resend.emails.send({
-          from: 'NuSift <welcome@nusift.com>',
-          to: [verifiedEmail],
-          subject: 'Welcome to your Sovereign-Grade Intelligence Platform',
-          html: '<strong>Success! Your NuSift node is ready for calibration.</strong>',
+          // Teszteléshez a resend.dev domaint használjuk, hogy ne kapj domain verification errort
+          from: 'NuSift Protocol <onboarding@resend.dev>',
+          to: verifiedEmail,
+          subject: t.subject,
+          html: `
+            <div style="font-family: 'Courier New', Courier, monospace; background-color: #131313; padding: 40px; text-align: center; border-radius: 12px; border: 1px solid #1a1a1a;">
+              <h2 style="color: #00E5FF; font-size: 24px;">${t.title}</h2>
+              <p style="color: #ccc; font-size: 16px; line-height: 1.5; max-width: 400px; margin: 0 auto;">${t.body}</p>
+            </div>
+          `
         });
       } catch (e) {
         console.error("Welcome email failed, but account created:", e);

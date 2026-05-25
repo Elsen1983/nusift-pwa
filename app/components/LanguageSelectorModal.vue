@@ -8,10 +8,10 @@
           <span class="material-symbols-outlined text-primary-container text-3xl">language</span>
         </div>
         <h3 class="font-headline text-2xl font-bold text-white mb-2 tracking-tight">
-          {{ $t('modal.language_selection_title') || 'Select Interface' }}
+          {{ $t('auth.modal.language_selection_title') || 'Select Interface' }}
         </h3>
         <p class="text-on-surface-variant text-sm font-body">
-          {{ $t('modal.language_selection_subtitle') || 'Choose your preferred language protocol.' }}
+          {{ $t('auth.modal.language_selection_subtitle') || 'Choose your preferred language protocol.' }}
         </p>
       </div>
       

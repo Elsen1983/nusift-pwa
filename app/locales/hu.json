@@ -5,6 +5,20 @@
             "registering": "Szuverén identitás létrehozása...",
             "initializing": "Biztonságos kapcsolat inicializálása..."
         },
+        "pwa": {
+            "install_prompt": "Telepíted a NuSift-et az eszközödre?",
+            "buttons": {
+                "install": "Telepítés",
+                "not_now": "Most nem",
+                "got_it": "Értem"
+            },
+            "firefox_instructions": "A Firefoxban való telepítéshez nyisd meg a böngésző menüjét, és válaszd a {action1} vagy a {action2} lehetőséget.",
+            "firefox_action1": "\"Telepítés\"",
+            "firefox_action2": "\"Hozzáadás az alkalmazástárhoz\"",
+            "ios_instructions": "A telepítéshez bökj a {action1} → {action2} gombra a Safariban.",
+            "ios_action1": "Megosztás",
+            "ios_action2": "Főképernyőhöz adás"
+        },
         "heading": {
             "reset": "Biztonsági helyreállítás",
             "register": "Regisztráció",
@@ -37,43 +51,80 @@
             "login_link": "Bejelentkezés",
             "registration_link": "Regisztráció",
             "divider_label": "Social Kapu"
+        },
+        "footer": {
+            "encryption_label": "Szuverén szintű titkosítás",
+            "terms": "Felhasználási feltételek",
+            "privacy": "Adatvédelem",
+            "help": "Segítség"
+        },
+        "modal": {
+            "language_selection_title": "Interfész kiválasztása",
+            "language_selection_subtitle": "Válaszd ki a preferált nyelvi protokollt.",
+            "terms_title": "Szuverenitási feltételek",
+            "terms_p1": "Ezen csomópont inicializálásával elfogadod a NuSift decentralizált irányítási protokolljait.",
+            "terms_p2": "A felhasználói adatok helyileg titkosítottak; a NuSift soha nem tárolja a privát kulcsaidat.",
+            "acknowledge": "Tudomásul veszem",
+            "privacy_title": "Adatvédelmi tájékoztató",
+            "privacy_p1": "A NuSift zéró tudású (zero-knowledge) architektúrán működik. Nem gyűjtünk és nem tárolunk semmilyen személyes azonosításra alkalmas adatot. Minden felhasználói adat az eszközödön titkosított, és soha nem továbbítjuk azokat szervereinkre.",
+            "privacy_p2": "A NuSift használatával elfogadod az ebben a tájékoztatóban leírt adatvédelmi gyakorlatunkat.",
+            "privacy_acknowledge": "Megértettem",
+            "help_title": "Segítségre van szükséged?",
+            "help_p1": "Ha problémákat tapasztalsz a hitelesítés során, vagy kérdéseid vannak a fiókoddal kapcsolatban, kérjük, vedd fel a kapcsolatot támogató csapatunkkal.",
+            "help_p2": "Email: support\\@ceg.hu",
+            "help_acknowledge": "Kapcsolatfelvétel"
+        },
+        "validation": {
+            "invalid_email": "Érvénytelen formátum.",
+            "password_too_short": "Biztonsági hiba: Minimum 12 karakter szükséges."
+        },
+        "errors": {
+            "unexpected": "Váratlan hiba történt.",
+            "auth_failure": "Hitelesítési hiba.",
+            "request_failed": "A kérés feldolgozása sikertelen.",
+            "oauth_cancelled": "A felhasználó megszakította a hitelesítést.",
+            "oauth_timeout": "A hitelesítési ablak túl sokáig válaszolt. Kérlek, próbáld újra.",
+            "oauth_failed": "Sikertelen hitelesítés ezzel: {provider}.",
+            "oauth_missing_id": "Konfigurációs hiba: A Google Client ID hiányzik.",
+            "oauth_not_init": "Kézfogás sikertelen: Az identitás-szolgáltató még nem inicializált.",
+            "handshake_failed": "{provider} kézfogás sikertelen."
         }
     },
-    "footer": {
-        "encryption_label": "Szuverén szintű titkosítás",
-        "terms": "Felhasználási feltételek",
-        "privacy": "Adatvédelem",
-        "help": "Segítség"
+    "verifyEmail": {
+        "loading": {
+            "syncing": "Hitelesítő adatok szinkronizálása...",
+            "confirmed": "Személyazonosság megerősítve. Horizont formálása...",
+            "verifying": "Kapcsolat állapotának ellenőrzése...",
+            "dispatching": "Biztonságos csomag továbbítása..."
+        },
+        "title": "Ellenőrizd a beérkező leveleket",
+        "description": "Küldtünk egy megerősítő linket az e-mail címedre. Kattints a levélben található linkre a fiókod automatikus megerősítéséhez.",
+        "awaiting": "Várakozás az automatikus megerősítésre...",
+        "fallback_title": "Tartalék protokoll",
+        "buttons": {
+            "verified_login": "Megerősítettem az e-mailt. Bejelentkezés.",
+            "resend": "Megerősítő link újraküldése",
+            "resend_wait": "Újraküldés {seconds}mp múlva"
+        },
+        "messages": {
+            "session_expired": "A munkamenet lejárt. Kérlek, térj vissza a bejelentkezési oldalra, és próbáld újra.",
+            "resend_success": "Új megerősítő link továbbítva. Ellenőrizd a beérkező leveleket.",
+            "resend_error": "Hiba történt a link újraküldése közben. Kérlek, próbáld újra később."
+        }
     },
-    "modal": {
-        "language_selection_title": "Interfész kiválasztása",
-        "language_selection_subtitle": "Válaszd ki a preferált nyelvi protokollt.",
-        "terms_title": "Szuverenitási feltételek",
-        "terms_p1": "Ezen csomópont inicializálásával elfogadod a NuSift decentralizált irányítási protokolljait.",
-        "terms_p2": "A felhasználói adatok helyileg titkosítottak; a NuSift soha nem tárolja a privát kulcsaidat.",
-        "acknowledge": "Tudomásul veszem",
-        "privacy_title": "Adatvédelmi tájékoztató",
-        "privacy_p1": "A NuSift zéró tudású (zero-knowledge) architektúrán működik. Nem gyűjtünk és nem tárolunk semmilyen személyes azonosításra alkalmas adatot. Minden felhasználói adat az eszközödön titkosított, és soha nem továbbítjuk azokat szervereinkre.",
-        "privacy_p2": "A NuSift használatával elfogadod az ebben a tájékoztatóban leírt adatvédelmi gyakorlatunkat.",
-        "privacy_acknowledge": "Megértettem",
-        "help_title": "Segítségre van szükséged?",
-        "help_p1": "Ha problémákat tapasztalsz a hitelesítés során, vagy kérdéseid vannak a fiókoddal kapcsolatban, kérjük, vedd fel a kapcsolatot támogató csapatunkkal.",
-        "help_p2": "Email: support\\@ceg.hu",
-        "help_acknowledge": "Kapcsolatfelvétel"
+    "emailVerify": {
+        "title_success": "Személyazonosság megerősítve",
+        "title_loading": "Hozzáférési link dekódolása...",
+        "description": "A hitelesítés sikeresen befejeződött. Biztonságosan bezárhatod ezt a lapot, és visszatérhetsz az eredeti NuSift ablakba a folytatáshoz.",
+        "buttons": {
+            "continue": "Vagy folytatás itt"
+        },
+        "messages": {
+            "missing_signature": "Hiányzó hitelesítési aláírás.",
+            "verification_failed": "A hitelesítés sikertelen. A link érvényessége lejárt, vagy már felhasználták."
+        }
     },
-    "validation": {
-        "invalid_email": "Érvénytelen formátum.",
-        "password_too_short": "Biztonsági hiba: Minimum 12 karakter szükséges."
-    },
-    "errors": {
-        "unexpected": "Váratlan hiba történt.",
-        "auth_failure": "Hitelesítési hiba.",
-        "request_failed": "A kérés feldolgozása sikertelen.",
-        "oauth_cancelled": "A felhasználó megszakította a hitelesítést.",
-        "oauth_timeout": "A hitelesítési ablak túl sokáig válaszolt. Kérlek, próbáld újra.",
-        "oauth_failed": "Sikertelen hitelesítés ezzel: {provider}.",
-        "oauth_missing_id": "Konfigurációs hiba: A Google Client ID hiányzik.",
-        "oauth_not_init": "Kézfogás sikertelen: Az identitás-szolgáltató még nem inicializált.",
-        "handshake_failed": "{provider} kézfogás sikertelen."
-    }
+    "regionCalibration": {},
+    "sourceCalibration": {},
+    "interestCalibration": {}
 }

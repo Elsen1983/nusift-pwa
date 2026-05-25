@@ -43,17 +43,28 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   // ANCHOR ACTIONS
-  const registerIdentity = async (emailPayload: string, passwordPayload: string, language?: string) => {
+  const registerIdentity = async (emailPayload: string, passwordPayload: string, language: string = 'en') => {
     isLoading.value = true;
     authError.value = null;
+
+    // console.log("Initiating registration for email:", emailPayload);
+    // BIZTONSÁGI PROTOKOLL: Regisztráció előtt kiirtjuk a beragadt "szellem" sütiket,
+    // hogy a verify-email ne találhasson régi session nyomokat.
+    if (import.meta.client) {
+      // console.log("Clearing auth cookies before registration attempt");
+      document.cookie = "session_status=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+      document.cookie = "auth_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+    }
 
     try {
       await $fetch("/api/auth/register", {
         method: "POST",
-        body: { email: emailPayload, password: passwordPayload, language: language || "en" },
+        body: { email: emailPayload, password: passwordPayload, language: language },
       });
+      // console.log("Registration successful, verification email sent");
       return true;
     } catch (error: any) {
+      // console.error("Registration failed", error);
       authError.value = error.data?.statusMessage || "Registration failed.";
       return false;
     } finally {
@@ -64,7 +75,6 @@ export const useAuthStore = defineStore("auth", () => {
   const loginIdentity = async (emailPayload: string, passwordPayload: string) => {
     isLoading.value = true;
     authError.value = null;
-
     try {
       const response: any = await $fetch("/api/auth/login", {
         method: "POST",
@@ -84,9 +94,11 @@ export const useAuthStore = defineStore("auth", () => {
       }
       return true;
     } catch (error: any) {
+      // console.error("Authentication failed", error);
       authError.value = error.data?.statusMessage || "Authentication failure.";
       return false;
     } finally {
+      // console.log("Login attempt completed");
       isLoading.value = false;
     }
   };
@@ -125,6 +137,7 @@ export const useAuthStore = defineStore("auth", () => {
 
       return true;
     } catch (error: any) {
+      // console.error("OAuth handshake failed", error);
       authError.value = error.data?.statusMessage || "OAuth handshake failed.";
       return false;
     } finally {
@@ -139,7 +152,7 @@ export const useAuthStore = defineStore("auth", () => {
       $reset();
       return true;
     } catch (error) {
-      console.error("Logout API failed", error);
+      // console.error("Logout API failed", error);
       // Hiba esetén is kényszerítjük a lokális resetet
       $reset();
       return false;

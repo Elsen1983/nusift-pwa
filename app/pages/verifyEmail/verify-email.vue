@@ -53,13 +53,12 @@
 
         <div class="space-y-4 mb-5">
           <h1 class="font-lg text-4xl font-bold tracking-tight text-on-surface">
-            Check your inbox
+            {{ $t('verifyEmail.title') }}
           </h1>
           <p
             class="font-body text-medium text-on-surface-variant leading-relaxed max-w-sm mx-auto px-2"
           >
-            We've sent a Verification Link to your email. Click the link in the
-            email to automatically confirm your account.
+            {{ $t('verifyEmail.description') }}
           </p>
         </div>
 
@@ -76,8 +75,7 @@
           </div>
           <span
             class="text-sm font-label font-medium text-on-surface-variant tracking-wide"
-            >Awaiting automatic verification...</span
-          >
+            >{{ $t('verifyEmail.awaiting') }}</span>
         </div>
 
         <div class="w-full space-y-6">
@@ -85,7 +83,7 @@
             <p
               class="text-[10px] text-outline font-label font-bold uppercase tracking-[0.2em]"
             >
-              Fallback Options
+              {{ $t('verifyEmail.fallback_title') }}
             </p>
 
             <transition name="fade">
@@ -111,7 +109,7 @@
               :disabled="isLoading"
               class="w-full bg-primary-container text-on-primary-container font-headline font-bold py-4 rounded-xl shadow-lg hover:brightness-110 active:scale-[0.97] transition-all disabled:opacity-50 disabled:cursor-not-allowed text-base mt-4 uppercase tracking-widest"
             >
-              I've Verified My Email. Login Here.
+              {{ $t('verifyEmail.buttons.verified_login') }}
             </button>
           </div>
 
@@ -124,8 +122,8 @@
               <span class="material-symbols-outlined text-[18px]">refresh</span>
               {{
                 resendCooldown > 0
-                  ? `Wait ${resendCooldown}s to Resend`
-                  : "Resend Verification Link"
+                  ? $t('verifyEmail.buttons.resend_wait', { seconds: resendCooldown })
+                  : $t('verifyEmail.buttons.resend')
               }}
             </button>
           </div>
@@ -140,59 +138,82 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { useRouter, useCookie } from "nuxt/app";
 import { $api } from "~/utils/api";
 
+type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
+const { t, setLocale } = useI18n();
 const router = useRouter();
 const isLoading = ref(false);
-const loadingText = ref("Synchronizing Credentials...");
+const loadingText = ref(t('verifyEmail.loading.syncing'));
 const errorMsg = ref("");
 const successMsg = ref("");
 const resendCooldown = ref(0);
 
 let pollingInterval: NodeJS.Timeout | null = null;
 
-// Helper: Direkt olvasás a böngésző natív süti-tárolójából
-const checkCookieExists = () => {
-  return document.cookie
-    .split(";")
-    .some((item) => item.trim().startsWith("session_status="));
+// 1. ANCHOR: ROBUST COOKIE DETECTION
+// Use Nuxt's built-in composable instead of raw document.cookie parsing.
+// This guarantees we are reading the actual parsed cookie value safely.
+const sessionCookie = useCookie('session_status');
+
+// const checkCookieExists = () => {
+//   return document.cookie
+//     .split(";")
+//     .some((item) => item.trim().startsWith("session_status="));
+// };
+
+const checkSessionActive = () => {
+  console.log("[Verification Protocol] Current session status:", sessionCookie.value);
+  return sessionCookie.value === 'active';
 };
 
 onMounted(() => {
+  console.log("Checking for saved language preference...");
+  const savedLang = localStorage.getItem('nusift_preferred_language');
+  if (savedLang) {
+    setLocale(savedLang as AvailableLocales);
+    loadingText.value = t('verifyEmail.loading.syncing'); 
+  }
+
+  // 2. ANCHOR: THE POLLING INTERVAL
   pollingInterval = setInterval(() => {
-    if (checkCookieExists()) {
+    // We now use the reactive Nuxt cookie checker
+    if (checkSessionActive()) {
+      console.log("Verification confirmed via Nuxt cookie check. Redirecting...");
       if (pollingInterval) clearInterval(pollingInterval);
       isLoading.value = true;
-      loadingText.value = "Identity Confirmed. Forging Horizon...";
-      
-      // Instead of using router.replace, we directly set window.location.href to ensure the new session cookie is recognized in the next page load
-      setTimeout(() => window.location.href = "/", 1500); 
+      loadingText.value = t('verifyEmail.loading.confirmed');
+      setTimeout(() => {
+        if (checkSessionActive()) {
+          router.push("/");
+        } else {
+          successMsg.value = t('verifyEmail.messages.check_email') || t('verifyEmail.messages.session_expired') || 'Verification pending. Please check your email.';
+        }
+      }, 1500);
     }
   }, 1500);
 });
 
+// Clear interval on unmount to prevent memory leaks
+onUnmounted(() => {
+  if (pollingInterval) clearInterval(pollingInterval);
+});
+
 const handleManualVerification = async () => {
   isLoading.value = true;
-  loadingText.value = "Verifying connection state...";
+  loadingText.value = t('verifyEmail.loading.verifying');
   errorMsg.value = "";
   successMsg.value = "";
 
   await new Promise((resolve) => setTimeout(resolve, 800));
 
-  if (checkCookieExists()) {
-    // 1. Eset: Ugyanabban a böngészőben (PWA-ban) kattintott a linkre.
-    window.location.href = "/"; 
-  } else {
-    // 2. Eset: Másik böngészőben verifikált. 
-    // Nincs süti, tehát kényszerítjük a biztonságos jelszavas belépést.
+  // Use the robust check here too
+  if (checkSessionActive()) {
     isLoading.value = false;
-    
-    // Kényszerítjük az Auth oldalt, hogy a REGISZTRÁCIÓ helyett a LOGIN-t mutassa
+    router.push("/"); 
+  } else {
+    isLoading.value = false;
     localStorage.setItem("nusift_visited", "true");
-    
-    // A függőben lévő email azonosítót biztonságosan kitakaríthatjuk
     localStorage.removeItem("nusift_pending_email");
-    
-    // Visszaküldjük a főoldalra, ahol a main-guard be fogja dobni az /auth képernyőre
-    window.location.href = "/"; 
+    successMsg.value = t('verifyEmail.messages.manual_check') || t('verifyEmail.messages.session_expired') || 'Verification pending. Please check your email.';
   }
 };
 
@@ -204,13 +225,12 @@ const resendEmail = async () => {
   const pendingEmail = localStorage.getItem("nusift_pending_email");
 
   if (!pendingEmail) {
-    errorMsg.value =
-      "Session expired. Please return to the login page and try again.";
+    errorMsg.value = t('verifyEmail.messages.session_expired');
     return;
   }
 
   isLoading.value = true;
-  loadingText.value = "Dispatching secure packet...";
+  loadingText.value = t('verifyEmail.loading.dispatching');
 
   try {
     const response = await $api("/api/auth/resend", {
@@ -218,7 +238,7 @@ const resendEmail = async () => {
       body: { email: pendingEmail },
     });
 
-    successMsg.value = "New verification link dispatched. Check your inbox.";
+    successMsg.value = t('verifyEmail.messages.resend_success');
 
     // Cooldown védelem a spam ellen (60 másodperc)
     resendCooldown.value = 60;
@@ -228,7 +248,7 @@ const resendEmail = async () => {
     }, 1000);
   } catch (error: any) {
     errorMsg.value =
-      error.statusMessage || "Failed to resend email. Please try again later.";
+      error.statusMessage || t('verifyEmail.messages.resend_error');
   } finally {
     isLoading.value = false;
   }

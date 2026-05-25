@@ -9,12 +9,12 @@
     </div>
     
     <h1 class="font-headline text-xl mb-2 transition-colors duration-500" :class="isSuccess ? 'text-green-400' : 'text-primary'">
-      {{ isSuccess ? 'Identity Verified' : 'Decrypting Access Link...' }}
+      {{ isSuccess ? $t('emailVerify.title_success') : $t('emailVerify.title_loading') }}
     </h1>
     
     <div v-if="isSuccess" class="flex flex-col items-center mt-4">
       <p class="text-on-surface-variant font-body text-center max-w-sm px-4 leading-relaxed mb-6">
-        Authentication complete. You can safely close this tab and return to your original NuSift window to proceed.
+        {{ $t('emailVerify.description') }}
       </p>
       
       <!-- Hibrid Webview Mentőöv -->
@@ -22,7 +22,7 @@
         @click="continueInThisTab"
         class="text-xs font-label uppercase tracking-widest text-primary border border-primary/30 px-6 py-3 rounded-lg hover:bg-primary/10 transition-colors"
       >
-        Or Continue Here
+        {{ $t('emailVerify.buttons.continue') }}
       </button>
     </div>
 
@@ -37,6 +37,7 @@ import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'nuxt/app';
 import { $api } from "~/utils/api";
 
+const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const errorMsg = ref('');
@@ -45,7 +46,7 @@ const isSuccess = ref(false);
 onMounted(async () => {
   const token = route.query.token;
   if (!token) {
-    errorMsg.value = 'Missing verification signature.';
+    errorMsg.value = t('emailVerify.messages.missing_signature');
     return;
   }
 
@@ -58,7 +59,7 @@ onMounted(async () => {
       isSuccess.value = true;
     }
   } catch (err: any) {
-    errorMsg.value = err.statusMessage || 'Verification failed. Link may be expired or already used.';
+    errorMsg.value = err.statusMessage || t('emailVerify.messages.verification_failed');
   }
 });
 

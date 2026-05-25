@@ -5,6 +5,20 @@
             "registering": "Forging Sovereign Identity...",
             "initializing": "Initializing Secure Handshake..."
         },
+        "pwa": {
+            "install_prompt": "Install NuSift on your device?",
+            "buttons": {
+                "install": "Install",
+                "not_now": "Not now",
+                "got_it": "Got it"
+            },
+            "firefox_instructions": "To install this app in Firefox, open the browser menu and select {action1} or {action2}.",
+            "firefox_action1": "\"Install\"",
+            "firefox_action2": "\"Add to App Library\"",
+            "ios_instructions": "To install this app, tap {action1} → {action2} in Safari.",
+            "ios_action1": "Share",
+            "ios_action2": "Add to Home Screen"
+        },
         "heading": {
             "reset": "Secure Recovery",
             "register": "Registration",
@@ -37,43 +51,80 @@
             "login_link": "Login",
             "registration_link": "Register Identity",
             "divider_label": "Social Gate"
+        },
+        "footer": {
+            "encryption_label": "Sovereign-Grade Encryption",
+            "terms": "Terms",
+            "privacy": "Privacy",
+            "help": "Help"
+        },
+        "modal": {
+            "language_selection_title": "Select Interface",
+            "language_selection_subtitle": "Choose your preferred language protocol.",
+            "terms_title": "Terms of Sovereignty",
+            "terms_p1": "By initializing this node, you agree to the decentralized governance protocols of NuSift.",
+            "terms_p2": "User data is encrypted locally; NuSift never holds your private keys.",
+            "acknowledge": "Acknowledge",
+            "privacy_title": "Privacy Notice",
+            "privacy_p1": "NuSift operates on a zero-knowledge architecture. We do not collect or store any personally identifiable information. All user data is encrypted on-device and never transmitted to our servers.",
+            "privacy_p2": "By using NuSift, you consent to our privacy practices as outlined in this notice.",
+            "privacy_acknowledge": "I Understand",
+            "help_title": "Need Assistance?",
+            "help_p1": "If you're experiencing issues with authentication or have questions about your account, please reach out to our support team.",
+            "help_p2": "Email:  support\\@company.com",
+            "help_acknowledge": "Contact Support"
+        },
+        "validation": {
+            "invalid_email": "Invalid identity format.",
+            "password_too_short": "Security fail: Minimum 12 characters."
+        },
+        "errors": {
+            "unexpected": "An unexpected error occurred.",
+            "auth_failure": "Authentication failure.",
+            "request_failed": "Failed to process request.",
+            "oauth_cancelled": "Authentication cancelled by user.",
+            "oauth_timeout": "The authentication window took too long to respond. Please try again.",
+            "oauth_failed": "Failed to authenticate with {provider}.",
+            "oauth_missing_id": "Configuration Error: Google Client ID is missing.",
+            "oauth_not_init": "Handshake failed: Identity provider not initialized yet.",
+            "handshake_failed": "{provider} handshake failed."
         }
     },
-    "footer": {
-        "encryption_label": "Sovereign-Grade Encryption",
-        "terms": "Terms",
-        "privacy": "Privacy",
-        "help": "Help"
+    "verifyEmail": {
+        "loading": {
+            "syncing": "Synchronizing Credentials...",
+            "confirmed": "Identity Confirmed. Forging Horizon...",
+            "verifying": "Verifying connection state...",
+            "dispatching": "Dispatching secure packet..."
+        },
+        "title": "Check your inbox",
+        "description": "We've sent a Verification Link to your email. Click the link in the email to automatically confirm your account.",
+        "awaiting": "Awaiting automatic verification...",
+        "fallback_title": "Fallback Options",
+        "buttons": {
+            "verified_login": "I've Verified My Email. Login Here.",
+            "resend": "Resend Verification Link",
+            "resend_wait": "Wait {seconds}s to Resend"
+        },
+        "messages": {
+            "session_expired": "Session expired. Please return to the login page and try again.",
+            "resend_success": "New verification link dispatched. Check your inbox.",
+            "resend_error": "Failed to resend email. Please try again later."
+        }
     },
-    "modal": {
-        "language_selection_title": "Select Interface",
-        "language_selection_subtitle": "Choose your preferred language protocol.",
-        "terms_title": "Terms of Sovereignty",
-        "terms_p1": "By initializing this node, you agree to the decentralized governance protocols of NuSift.",
-        "terms_p2": "User data is encrypted locally; NuSift never holds your private keys.",
-        "acknowledge": "Acknowledge",
-        "privacy_title": "Privacy Notice",
-        "privacy_p1": "NuSift operates on a zero-knowledge architecture. We do not collect or store any personally identifiable information. All user data is encrypted on-device and never transmitted to our servers.",
-        "privacy_p2": "By using NuSift, you consent to our privacy practices as outlined in this notice.",
-        "privacy_acknowledge": "I Understand",
-        "help_title": "Need Assistance?",
-        "help_p1": "If you're experiencing issues with authentication or have questions about your account, please reach out to our support team.",
-        "help_p2": "Email:  support\\@company.com",
-        "help_acknowledge": "Contact Support"
+    "emailVerify": {
+        "title_success": "Identity Verified",
+        "title_loading": "Decrypting Access Link...",
+        "description": "Authentication complete. You can safely close this tab and return to your original NuSift window to proceed.",
+        "buttons": {
+            "continue": "Or Continue Here"
+        },
+        "messages": {
+            "missing_signature": "Missing verification signature.",
+            "verification_failed": "Verification failed. Link may be expired or already used."
+        }
     },
-    "validation": {
-        "invalid_email": "Invalid identity format.",
-        "password_too_short": "Security fail: Minimum 12 characters."
-    },
-    "errors": {
-        "unexpected": "An unexpected error occurred.",
-        "auth_failure": "Authentication failure.",
-        "request_failed": "Failed to process request.",
-        "oauth_cancelled": "Authentication cancelled by user.",
-        "oauth_timeout": "The authentication window took too long to respond. Please try again.",
-        "oauth_failed": "Failed to authenticate with {provider}.",
-        "oauth_missing_id": "Configuration Error: Google Client ID is missing.",
-        "oauth_not_init": "Handshake failed: Identity provider not initialized yet.",
-        "handshake_failed": "{provider} handshake failed."
-    }
+    "regionCalibration": {},
+    "sourceCalibration": {},
+    "interestCalibration": {}
 }

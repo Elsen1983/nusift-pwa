@@ -29,12 +29,18 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
   const INTEREST_CALIBRATION = "/interest-calibration";
   const DASHBOARD_PATH = "/dashboard";
 
-  const PUBLIC_ROUTES = [AUTH_PATH, "/verify-email", "/verify", "/reset-password"];
-  const isPublicRoute = PUBLIC_ROUTES.includes(to.path);
-
   const authStore = useAuthStore();
   const tokenCookie = useCookie("auth_token");     
   const sessionStatus = useCookie("session_status"); 
+
+  // 1. ANCHOR: i18n PATH NORMALIZATION
+  // Strip the language prefix (e.g., '/hu', '/en') so the guard logic works universally
+  const cleanPath = to.path.replace(/^\/(en|hu|fr|de|pl|es)(?=\/|$)/, '') || '/';
+  const PUBLIC_ROUTES = [AUTH_PATH, "/verify-email", "/verify", "/reset-password"];
+  // 2. Use cleanPath instead of to.path
+  const isPublicRoute = PUBLIC_ROUTES.includes(cleanPath);
+
+  
 
   let hasActiveSession = import.meta.server ? !!tokenCookie.value : !!sessionStatus.value;
 
@@ -97,12 +103,12 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
   // 4. ANCHOR REDIRECT-LOGIC (Tightened)
   
   // If authenticated, NEVER allow access to /auth - send to current onboarding step or dashboard
-  if (isAuthenticated && to.path === AUTH_PATH) {
+  if (isAuthenticated && cleanPath === AUTH_PATH) {
     return navigateTo(targetPath);
   }
 
   // Handle Root Path
-  if (to.path === ROOT_PATH) {
+  if (cleanPath === ROOT_PATH) {
     return navigateTo(isAuthenticated ? targetPath : AUTH_PATH);
   }
 
@@ -127,17 +133,17 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
 
   const isFullyOnboarded = currentStep >= 3;
 
-  if (isFullyOnboarded && LOCKED_ONBOARDING_ROUTES.includes(to.path)) {
+  if (isFullyOnboarded && LOCKED_ONBOARDING_ROUTES.includes(cleanPath)) {
     return navigateTo(DASHBOARD_PATH, { replace: true });
   }
 
   if (
     isAuthenticated &&
     !isFullyOnboarded &&
-    to.path !== targetPath &&
+    cleanPath !== targetPath &&
     !isPublicRoute &&
-    to.path !== DASHBOARD_PATH &&
-    !ALL_TRANSITIONAL_ROUTES.includes(to.path)
+    cleanPath !== DASHBOARD_PATH &&
+    !ALL_TRANSITIONAL_ROUTES.includes(cleanPath)
   ) {
     return navigateTo(targetPath, { replace: true });
   }

@@ -1,6 +1,6 @@
 <template>
   <div>
-  <!-- <div class="pwa-toast" style="bottom: auto; top: 1rem; border-color: red;">
+    <!-- <div class="pwa-toast" style="bottom: auto; top: 1rem; border-color: red;">
     <p>PwaInstall mounted</p>
     <p>isInstallable (hook): {{ isInstallable }}</p>
     <p>$pwa plugin (vite-pwa): {{ $pwa?.showInstallPrompt }}</p>
@@ -8,68 +8,83 @@
     <p>isInStandalone: {{ isInStandalone }}</p>
     <p>showInstallUI: {{ showInstallUI }}</p>
   </div> -->
-  <transition name="fade">
-    <div v-if="showInstallUI" class="pwa-toast glass-panel">
-      <p
-        class="mb-4 font-headline text-sm font-bold text-on-surface uppercase tracking-wide"
-      >
-        Install NuSift on your device?
-      </p>
-      <div class="flex justify-center gap-3">
-        <button
-          class="min-btn-width bg-primary-container/10 hover:bg-primary-container/20 text-primary-container font-headline text-[11px] font-bold uppercase tracking-widest px-4 py-3 rounded-lg transition-colors border border-primary-container/30"
-          @click="installApp"
+    <transition name="fade">
+      <div v-if="showInstallUI" class="pwa-toast glass-panel">
+        <p
+          class="mb-4 font-headline text-sm font-bold text-on-surface uppercase tracking-wide"
         >
-          Install
-        </button>
+          {{ $t('pwa.install_prompt') }}
+        </p>
+        <div class="flex justify-center gap-3">
+          <button
+            class="min-btn-width bg-primary-container/10 hover:bg-primary-container/20 text-primary-container font-headline text-[11px] font-bold uppercase tracking-widest px-4 py-3 rounded-lg transition-colors border border-primary-container/30"
+            @click="installApp"
+          >
+            {{ $t('pwa.buttons.install') }}
+          </button>
+          <button
+            class="min-btn-width bg-surface-container hover:bg-surface-container-high text-on-surface-variant font-headline text-[11px] font-bold uppercase tracking-widest px-4 py-3 rounded-lg transition-colors border border-outline-variant/30"
+            @click="dismiss"
+          >
+            {{ $t('pwa.buttons.not_now') }}
+          </button>
+        </div>
+      </div>
+    </transition>
+
+    <transition name="fade">
+      <div
+        v-if="isFirefox && !isInStandalone && !dismissedThisMonth"
+        class="pwa-toast glass-panel"
+      >
+        <i18n-t
+          keypath="auth.pwa.firefox_instructions"
+          tag="p"
+          class="font-body text-sm text-on-surface mb-4"
+        >
+          <template #action1>
+            <strong class="text-primary-container">{{ $t('auth.pwa.firefox_action1') }}</strong>
+          </template>
+          <template #action2>
+            <strong class="text-primary-container">{{ $t('auth.pwa.firefox_action2') }}</strong>
+          </template>
+        </i18n-t>
+        
         <button
-          class="min-btn-width bg-surface-container hover:bg-surface-container-high text-on-surface-variant font-headline text-[11px] font-bold uppercase tracking-widest px-4 py-3 rounded-lg transition-colors border border-outline-variant/30"
+          class="w-full py-3 bg-surface text-on-surface font-label text-xs uppercase tracking-widest rounded-lg border border-outline-variant/50 hover:bg-surface-container-high transition-colors"
           @click="dismiss"
         >
-          Not now
+          {{ $t('auth.pwa.buttons.got_it') }}
         </button>
       </div>
-    </div>
-  </transition>
+    </transition>
 
-  <transition name="fade">
-    <div
-      v-if="isFirefox && !isInStandalone && !dismissedThisMonth"
-      class="pwa-toast glass-panel"
-    >
-      <p class="font-body text-sm text-on-surface mb-4">
-        To install this app in Firefox, open the browser menu and select
-        <strong class="text-primary-container">"Install"</strong> or
-        <strong class="text-primary-container">"Add to App Library"</strong>.
-      </p>
-      <button
-        class="w-full py-3 bg-surface text-on-surface font-label text-xs uppercase tracking-widest rounded-lg border border-outline-variant/50 hover:bg-surface-container-high transition-colors"
-        @click="dismiss"
+    <transition name="fade">
+      <div
+        v-if="!showInstallUI && isIOS && !isInStandalone && !dismissedThisMonth"
+        class="pwa-toast glass-panel"
       >
-        Got it
-      </button>
-    </div>
-  </transition>
+        <i18n-t
+          keypath="auth.pwa.ios_instructions"
+          tag="p"
+          class="font-body text-sm text-on-surface mb-4"
+        >
+          <template #action1>
+            <strong class="text-primary-container">{{ $t('auth.pwa.ios_action1') }}</strong>
+          </template>
+          <template #action2>
+            <strong class="text-primary-container">{{ $t('auth.pwa.ios_action2') }}</strong>
+          </template>
+        </i18n-t>
 
-  <transition name="fade">
-    <div
-      v-if="!showInstallUI && isIOS && !isInStandalone && !dismissedThisMonth"
-      class="pwa-toast glass-panel"
-    >
-      <p class="font-body text-sm text-on-surface mb-4">
-        To install this app, tap
-        <strong class="text-primary-container">Share</strong> →
-        <strong class="text-primary-container">Add to Home Screen</strong> in
-        Safari.
-      </p>
-      <button
-        class="w-full py-3 bg-surface text-on-surface font-label text-xs uppercase tracking-widest rounded-lg border border-outline-variant/50 hover:bg-surface-container-high transition-colors"
-        @click="dismiss"
-      >
-        Got it
-      </button>
-    </div>
-  </transition>
+        <button
+          class="w-full py-3 bg-surface text-on-surface font-label text-xs uppercase tracking-widest rounded-lg border border-outline-variant/50 hover:bg-surface-container-high transition-colors"
+          @click="dismiss"
+        >
+          {{ $t('auth.pwa.buttons.got_it') }}
+        </button>
+      </div>
+    </transition>
   </div>
 </template>
 
