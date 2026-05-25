@@ -111,7 +111,7 @@
               :disabled="isLoading"
               class="w-full bg-primary-container text-on-primary-container font-headline font-bold py-4 rounded-xl shadow-lg hover:brightness-110 active:scale-[0.97] transition-all disabled:opacity-50 disabled:cursor-not-allowed text-base mt-4 uppercase tracking-widest"
             >
-              I've Verified My Email
+              I've Verified My Email. Login Here.
             </button>
           </div>
 
@@ -171,19 +171,28 @@ onMounted(() => {
 
 const handleManualVerification = async () => {
   isLoading.value = true;
-  loadingText.value = "Verifying connection...";
+  loadingText.value = "Verifying connection state...";
   errorMsg.value = "";
   successMsg.value = "";
 
   await new Promise((resolve) => setTimeout(resolve, 800));
 
   if (checkCookieExists()) {
-    // router.replace("/");
-    window.location.href = "/"; // This forces a full page reload, ensuring the new session cookie is recognized immediately
+    // 1. Eset: Ugyanabban a böngészőben (PWA-ban) kattintott a linkre.
+    window.location.href = "/"; 
   } else {
+    // 2. Eset: Másik böngészőben verifikált. 
+    // Nincs süti, tehát kényszerítjük a biztonságos jelszavas belépést.
     isLoading.value = false;
-    errorMsg.value =
-      "Verification incomplete. Please make sure you clicked the link in your email.";
+    
+    // Kényszerítjük az Auth oldalt, hogy a REGISZTRÁCIÓ helyett a LOGIN-t mutassa
+    localStorage.setItem("nusift_visited", "true");
+    
+    // A függőben lévő email azonosítót biztonságosan kitakaríthatjuk
+    localStorage.removeItem("nusift_pending_email");
+    
+    // Visszaküldjük a főoldalra, ahol a main-guard be fogja dobni az /auth képernyőre
+    window.location.href = "/"; 
   }
 };
 
