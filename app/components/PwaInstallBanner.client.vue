@@ -13,20 +13,20 @@
         <p
           class="mb-4 font-headline text-sm font-bold text-on-surface uppercase tracking-wide"
         >
-          {{ $t('pwa.install_prompt') }}
+          {{ $t('auth.pwa.install_prompt') }}
         </p>
         <div class="flex justify-center gap-3">
           <button
             class="min-btn-width bg-primary-container/10 hover:bg-primary-container/20 text-primary-container font-headline text-[11px] font-bold uppercase tracking-widest px-4 py-3 rounded-lg transition-colors border border-primary-container/30"
             @click="installApp"
           >
-            {{ $t('pwa.buttons.install') }}
+            {{ $t('auth.pwa.buttons.install') }}
           </button>
           <button
             class="min-btn-width bg-surface-container hover:bg-surface-container-high text-on-surface-variant font-headline text-[11px] font-bold uppercase tracking-widest px-4 py-3 rounded-lg transition-colors border border-outline-variant/30"
             @click="dismiss"
           >
-            {{ $t('pwa.buttons.not_now') }}
+            {{ $t('auth.pwa.buttons.not_now') }}
           </button>
         </div>
       </div>

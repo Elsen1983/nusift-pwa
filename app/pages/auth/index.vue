@@ -318,13 +318,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
-import { useRouter } from "nuxt/app";
 import { useHead } from "#imports";
 import { useAuthStore } from "~/stores/auth";
 import { $api } from "~/utils/api";
 
 const authStore = useAuthStore();
-const router = useRouter();
+const navigate = useSovereignNavigate();
 
 type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
 const { t, setLocale } = useI18n();
@@ -482,7 +481,7 @@ const handleAuth = async () => {
     if (success) {
       localStorage.setItem("nusift_visited", "true");
       localStorage.setItem("nusift_pending_email", email.value);
-      router.push("/verify-email");
+      navigate.push("/verify-email");
     } else {
       emailError.value = authStore.authError || "An unexpected error occurred.";
     }
@@ -494,9 +493,9 @@ const handleAuth = async () => {
         authStore.user?.onboardingStep !== undefined &&
         authStore.user.onboardingStep >= 3
       ) {
-        router.push("/dashboard");
+        navigate.push("/dashboard");
       } else {
-        router.replace("/preloader-page");
+        navigate.replace("/preloader-page");
       }
     } else {
       emailError.value = authStore.authError || "Authentication failure.";
@@ -592,9 +591,9 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
       authStore.user?.onboardingStep !== undefined &&
       authStore.user.onboardingStep >= 3
     ) {
-      router.push("/dashboard");
+      navigate.push("/dashboard");
     } else {
-      router.replace("/preloader-page");
+      navigate.replace("/preloader-page");
     }
   } else {
     emailError.value =

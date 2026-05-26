@@ -31,7 +31,7 @@
         },
         "form": {
             "email_label": "Email Address",
-            "email_placeholder": "engineer\\@company.com",
+            "email_placeholder": "johndoe\\@gmail.com",
             "password_label": "Password",
             "password_placeholder": "••••••••••••",
             "forgot_password": "Forgot?",
@@ -71,7 +71,7 @@
             "privacy_acknowledge": "I Understand",
             "help_title": "Need Assistance?",
             "help_p1": "If you're experiencing issues with authentication or have questions about your account, please reach out to our support team.",
-            "help_p2": "Email:  support\\@company.com",
+            "help_p2": "Email:  support\\@nusift.com",
             "help_acknowledge": "Contact Support"
         },
         "validation": {
@@ -109,7 +109,9 @@
         "messages": {
             "session_expired": "Session expired. Please return to the login page and try again.",
             "resend_success": "New verification link dispatched. Check your inbox.",
-            "resend_error": "Failed to resend email. Please try again later."
+            "resend_error": "Failed to resend email. Please try again later.",
+            "check_email": "Verification pending. Please check your email.",
+            "manual_check": "Manual verification complete. Redirecting to secure login..."
         }
     },
     "emailVerify": {
@@ -123,6 +125,25 @@
             "missing_signature": "Missing verification signature.",
             "verification_failed": "Verification failed. Link may be expired or already used."
         }
+    },
+    "preloaderFirst": {
+        "system_init": "System Initialization",
+        "processing": "Processing...",
+        "curating": "Curating your informational horizon...",
+        "version": "Version 2.4.0-Alpha",
+        "footer": "Securing your digital sovereignty",
+        "quotes": [
+            { "text": "In a time of deceit, telling the truth is a revolutionary act.", "author": "George Orwell" },
+            { "text": "The truth is rarely pure and never simple.", "author": "Oscar Wilde" },
+            { "text": "Information is the currency of democracy.", "author": "Thomas Jefferson" },
+            { "text": "A lie can travel half way around the world while the truth is putting on its shoes.", "author": "Mark Twain" }
+        ]
+    },
+    "preloaderSecond": {
+        "forging": "FORGING INTELLIGENCE HORIZON...",
+        "quotes": [
+            { "text": "When you sift through the noise, you don't just find information; you find clarity. And in clarity, you find your own path.", "author": "" }
+        ]
     },
     "regionCalibration": {},
     "sourceCalibration": {},

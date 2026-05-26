@@ -31,7 +31,7 @@
         },
         "form": {
             "email_label": "Email cím",
-            "email_placeholder": "mernok\\@ceg.hu",
+            "email_placeholder": "kovacsbela\\@freemail.hu",
             "password_label": "Jelszó",
             "password_placeholder": "••••••••••••",
             "forgot_password": "Elfelejtetted?",
@@ -71,7 +71,7 @@
             "privacy_acknowledge": "Megértettem",
             "help_title": "Segítségre van szükséged?",
             "help_p1": "Ha problémákat tapasztalsz a hitelesítés során, vagy kérdéseid vannak a fiókoddal kapcsolatban, kérjük, vedd fel a kapcsolatot támogató csapatunkkal.",
-            "help_p2": "Email: support\\@ceg.hu",
+            "help_p2": "Email: support\\@nusift.com",
             "help_acknowledge": "Kapcsolatfelvétel"
         },
         "validation": {
@@ -109,7 +109,9 @@
         "messages": {
             "session_expired": "A munkamenet lejárt. Kérlek, térj vissza a bejelentkezési oldalra, és próbáld újra.",
             "resend_success": "Új megerősítő link továbbítva. Ellenőrizd a beérkező leveleket.",
-            "resend_error": "Hiba történt a link újraküldése közben. Kérlek, próbáld újra később."
+            "resend_error": "Hiba történt a link újraküldése közben. Kérlek, próbáld újra később.",
+            "check_email": "Megerősítés folyamatban. Kérlek, ellenőrizd az e-mail fiókod.",
+            "manual_check": "Kézi ellenőrzés befejezve. Átirányítás a bejelentkezéshez..."
         }
     },
     "emailVerify": {
@@ -123,6 +125,25 @@
             "missing_signature": "Hiányzó hitelesítési aláírás.",
             "verification_failed": "A hitelesítés sikertelen. A link érvényessége lejárt, vagy már felhasználták."
         }
+    },
+    "preloaderFirst": {
+        "system_init": "Rendszer inicializálása",
+        "processing": "Feldolgozás...",
+        "curating": "Információs horizontod kurálása...",
+        "version": "Verzió 2.4.0-Alpha",
+        "footer": "Digitális szuverenitásod biztosítása",
+        "quotes": [
+            { "text": "A megtévesztés korában az igazmondás forradalmi cselekedet.", "author": "George Orwell" },
+            { "text": "Az igazság ritkán tiszta és sosem egyszerű.", "author": "Oscar Wilde" },
+            { "text": "Az információ a demokrácia valutája.", "author": "Thomas Jefferson" },
+            { "text": "Egy hazugság bejárja a fél világot, míg az igazság a cipőjét húzza.", "author": "Mark Twain" }
+        ]
+    },
+    "preloaderSecond": {
+        "forging": "INTELLIGENCIA HORIZONT FORMÁLÁSA...",
+        "quotes": [
+            { "text": "Amikor átszűröd a zajt, nem csak információt találsz; tisztaságot is. És a tisztaságban megtalálod a saját utadat.", "author": "" }
+        ]
     },
     "regionCalibration": {},
     "sourceCalibration": {},

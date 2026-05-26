@@ -35,11 +35,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'nuxt/app';
-import { $api } from "~/utils/api";
 
 const { t } = useI18n();
+const navigate = useSovereignNavigate();
 const route = useRoute();
-const router = useRouter();
 const errorMsg = ref('');
 const isSuccess = ref(false);
 
@@ -51,7 +50,7 @@ onMounted(async () => {
   }
 
   try {
-    const response = await $api<any>('/api/auth/verify', {
+    const response = await $fetch<any>('/api/auth/verify', {
       method: 'POST',
       body: { token }
     });
@@ -65,7 +64,7 @@ onMounted(async () => {
 
 const continueInThisTab = () => {
   // A Guard automatikusan meglátja a sütit és a kalibrációra dob
-  // router.replace('/'); 
-  window.location.href = "/"; // This forces a full page reload, ensuring the new session cookie is recognized immediately
+  // ANCHOR: Language-aware hard reload
+  navigate.hardRedirect("/");
 };
 </script>

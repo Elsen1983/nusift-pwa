@@ -135,12 +135,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
-import { useRouter, useCookie } from "nuxt/app";
+import { useCookie } from "nuxt/app";
 import { $api } from "~/utils/api";
 
 type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
 const { t, setLocale } = useI18n();
-const router = useRouter();
+const navigate = useSovereignNavigate();
 const isLoading = ref(false);
 const loadingText = ref(t('verifyEmail.loading.syncing'));
 const errorMsg = ref("");
@@ -154,12 +154,6 @@ let pollingInterval: NodeJS.Timeout | null = null;
 // This guarantees we are reading the actual parsed cookie value safely.
 const sessionCookie = useCookie('session_status');
 
-// const checkCookieExists = () => {
-//   return document.cookie
-//     .split(";")
-//     .some((item) => item.trim().startsWith("session_status="));
-// };
-
 const checkSessionActive = () => {
   console.log("[Verification Protocol] Current session status:", sessionCookie.value);
   return sessionCookie.value === 'active';
@@ -171,6 +165,9 @@ onMounted(() => {
   if (savedLang) {
     setLocale(savedLang as AvailableLocales);
     loadingText.value = t('verifyEmail.loading.syncing'); 
+    console.log(`Language set to ${savedLang} based on saved preference.`);
+  } else{
+    console.warn("No saved language preference found. Defaulting to English.");
   }
 
   // 2. ANCHOR: THE POLLING INTERVAL
@@ -183,7 +180,7 @@ onMounted(() => {
       loadingText.value = t('verifyEmail.loading.confirmed');
       setTimeout(() => {
         if (checkSessionActive()) {
-          router.push("/");
+          navigate.hardRedirect("/preloader-page");
         } else {
           successMsg.value = t('verifyEmail.messages.check_email') || t('verifyEmail.messages.session_expired') || 'Verification pending. Please check your email.';
         }
@@ -195,6 +192,7 @@ onMounted(() => {
 // Clear interval on unmount to prevent memory leaks
 onUnmounted(() => {
   if (pollingInterval) clearInterval(pollingInterval);
+  console.warn("Verification component unmounted, polling stopped.");
 });
 
 const handleManualVerification = async () => {
@@ -203,17 +201,27 @@ const handleManualVerification = async () => {
   errorMsg.value = "";
   successMsg.value = "";
 
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  console.warn("Manual verification triggered by user. Checking session cookie status...");
 
   // Use the robust check here too
   if (checkSessionActive()) {
+    console.warn("Manual verification successful. Redirecting to secure login...");
     isLoading.value = false;
-    router.push("/"); 
+    navigate.hardRedirect("/"); 
   } else {
     isLoading.value = false;
     localStorage.setItem("nusift_visited", "true");
     localStorage.removeItem("nusift_pending_email");
-    successMsg.value = t('verifyEmail.messages.manual_check') || t('verifyEmail.messages.session_expired') || 'Verification pending. Please check your email.';
+    successMsg.value = t('verifyEmail.messages.manual_check');
+    console.warn("Manual verification attempted, but session cookie is not active. User may need to check their email or wait a moment before trying again.");
+    console.log(t('verifyEmail.messages.manual_check'));
+
+    setTimeout(() => {
+      // window.location.href = "/";
+      navigate.hardRedirect("/preloader-page"); // This will trigger a full page reload, ensuring the new session cookie is recognized immediately 
+    }, 3000);
   }
 };
 

@@ -37,7 +37,7 @@
           <span
             class="font-headline text-[10px] tracking-[0.3em] text-primary mb-4 uppercase"
           >
-            FORGING INTELLIGENCE HORIZON...
+            {{ $t("preloaderSecond.forging") }}
           </span>
 
           <div
@@ -63,13 +63,13 @@
               <p
                 class="font-body text-base text-on-surface-variant leading-relaxed italic"
               >
-                “{{ currentQuote.text }}”
+                “{{ $t(`preloaderSecond.quotes.${currentQuoteIndex}.text`) }}”
               </p>
               <p
-                v-if="currentQuote.author"
+                v-if="$t(`preloaderSecond.quotes.${currentQuoteIndex}.author`)"
                 class="font-label text-[11px] uppercase tracking-widest text-primary/70"
               >
-                — {{ currentQuote.author }}
+                — {{ $t(`preloaderSecond.quotes.${currentQuoteIndex}.author`) }}
               </p>
             </div>
           </transition>
@@ -80,10 +80,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
-import { useRouter } from "vue-router";
-
-const router = useRouter();
+import { ref, onMounted, onBeforeUnmount } from "vue";
+const navigate = useSovereignNavigate();
 
 interface Quote {
   text: string;
@@ -112,10 +110,7 @@ onMounted(() => {
   }
 
   setTimeout(() => {
-    console.log(
-      "Preloader véget ért, továbbirányítás a dashboard-initiate oldalra...",
-    );
-    router.replace("/dashboard-initiate");
+    navigate.replace("/dashboard-initiate"); // ANCHOR: Updated
   }, 3500);
 });
 
@@ -125,7 +120,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-/* NEW: CSS Classes mapping to the keyframes */
 .animate-ring-1 {
   animation: pulse-ring 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
@@ -142,7 +136,6 @@ onBeforeUnmount(() => {
   animation: progress-loading 2.5s infinite linear;
 }
 
-/* Original Keyframes */
 @keyframes pulse-ring {
   0% {
     transform: scale(0.95);

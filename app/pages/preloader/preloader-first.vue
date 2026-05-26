@@ -29,32 +29,22 @@
             />
           </div>
         </div>
-
-        <!-- <div class="marquee-container mb-2">
-          <div class="marquee-content">
-            <span class="marquee-item">Crystal Clear Insights</span>
-            <span class="marquee-item">Sovereign Truth</span>
-            <span class="marquee-item">Unbiased Information</span>
-            <span class="marquee-item">The Future of Curation</span>
-            <span class="marquee-item">Verified Knowledge</span>
-          </div>
-        </div> -->
       </div>
 
       <div
         class="w-full min-h-[140px] flex items-center justify-center mb-8 px-4 relative"
       >
         <transition name="quote" mode="out-in">
-          <div :key="currentQuote.text" class="absolute w-full">
+          <div :key="currentQuoteIndex" class="absolute w-full">
             <p
               class="font-headline text-lg italic text-on-surface-variant leading-relaxed"
             >
-              "{{ currentQuote.text }}"
+              ""{{ $t(`preloaderFirst.quotes.${currentQuoteIndex}.text`) }}""
             </p>
             <p
               class="font-label text-[11px] uppercase tracking-widest mt-3 text-primary-container/80"
             >
-              — {{ currentQuote.author }}
+              — {{ $t(`preloaderFirst.quotes.${currentQuoteIndex}.author`) }}
             </p>
           </div>
         </transition>
@@ -73,12 +63,12 @@
             <span
               class="font-label text-[10px] uppercase tracking-[0.2em] text-on-surface-variant/60"
             >
-              System Initialization
+              {{ $t("preloaderFirst.system_init") }}
             </span>
             <span
               class="font-label text-[10px] uppercase tracking-[0.2em] text-primary-container"
             >
-              Processing...
+              {{ $t("preloaderFirst.processing") }}
             </span>
           </div>
         </div>
@@ -87,14 +77,14 @@
           <p
             class="font-headline text-lg md:text-xl font-light text-on-surface tracking-wide leading-relaxed"
           >
-            Curating your informational horizon...
+            {{ $t("preloaderFirst.curating") }}
           </p>
           <div class="flex items-center justify-center gap-4 opacity-40">
             <div class="h-px w-8 bg-outline-variant"></div>
             <span
               class="font-label text-[9px] uppercase tracking-[0.4em] text-on-surface-variant"
             >
-              Version 2.4.0-Alpha
+              {{ $t('preloaderFirst.version') }}
             </span>
             <div class="h-px w-8 bg-outline-variant"></div>
           </div>
@@ -112,7 +102,7 @@
         <p
           class="font-label text-[11px] uppercase tracking-widest text-on-surface-variant"
         >
-          Securing your digital sovereignty
+          {{ $t("preloaderFirst.footer") }}
         </p>
       </div>
     </footer>
@@ -124,45 +114,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, onMounted, onBeforeUnmount } from "vue";
 import { useAuthStore } from "~/stores/auth";
-import { useRouter } from "vue-router";
 
-const router = useRouter();
 const authStore = useAuthStore();
+const navigate = useSovereignNavigate();
 
-interface Quote {
-  text: string;
-  author: string;
-}
-
-const quotes: Quote[] = [
-  {
-    text: "In a time of deceit, telling the truth is a revolutionary act.",
-    author: "George Orwell",
-  },
-  { text: "The truth is rarely pure and never simple.", author: "Oscar Wilde" },
-  {
-    text: "Information is the currency of democracy.",
-    author: "Thomas Jefferson",
-  },
-  {
-    text: "A lie can travel half way around the world while the truth is putting on its shoes.",
-    author: "Mark Twain",
-  },
-];
-
+// Hardcoded idézetek helyett csak az elérhető idézetek számát definiáljuk
+const quoteCount = 4;
 const currentQuoteIndex = ref(0);
 let quoteInterval: ReturnType<typeof setInterval> | null = null;
-
-const currentQuote = computed<Quote>(() => {
-  return quotes[currentQuoteIndex.value] ?? (quotes[0] as Quote);
-});
 
 onMounted(() => {
   // Idézetek váltakozása
   quoteInterval = setInterval(() => {
-    currentQuoteIndex.value = (currentQuoteIndex.value + 1) % quotes.length;
+    currentQuoteIndex.value = (currentQuoteIndex.value + 1) % quoteCount;
   }, 4000);
 
   // Preloader animáció futása
@@ -171,19 +137,18 @@ onMounted(() => {
 
     // Routing az állapot alapján
     if (step === 0) {
-      router.replace("/region-calibration");
+      navigate.replace("/region-calibration");
     } else if (step === 1) {
-      router.replace("/interest-calibration");
+      navigate.replace("/interest-calibration");
     } else if (step === 2) {
-      router.replace("/source-calibration");
+      navigate.replace("/source-calibration");
     } else if (step >= 3) {
-      router.replace("/dashboard");
+      navigate.replace("/dashboard");
     } else {
-      // Fallback
-      router.replace("/region-calibration");
+      navigate.replace("/region-calibration");
     }
-  }, 3500); // <-- FIX: Properly closing the setTimeout with 3.5s delay
-}); // <-- FIX: Properly closing onMounted
+  }, 3500); 
+});
 
 onBeforeUnmount(() => {
   if (quoteInterval) clearInterval(quoteInterval);

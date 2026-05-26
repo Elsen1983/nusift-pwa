@@ -11,9 +11,8 @@ Kodolassal kapcsolatban:
 
 
 TODO:
-- ha felinstallalom az appot chrome-bol (de nem az a fo bongeszom) akkor ha email+password-el regisztralok, akkor az email-t masik bongeszobe megnyitva 
-nem talalja meg az installalt appot, es hiaba verifikalom az email-t ott, az I have verified my email gom-ra kattintva errort dob
-
+- pwainstaller-ben a locales rootja hibas
+- Chrome-ba hianyzo pwainstaller (Androidon megjelenik)
 
 
 // parancsok:
