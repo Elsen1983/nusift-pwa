@@ -39,7 +39,7 @@
             <p
               class="font-headline text-lg italic text-on-surface-variant leading-relaxed"
             >
-              ""{{ $t(`preloaderFirst.quotes.${currentQuoteIndex}.text`) }}""
+              "{{ $t(`preloaderFirst.quotes.${currentQuoteIndex}.text`) }}"
             </p>
             <p
               class="font-label text-[11px] uppercase tracking-widest mt-3 text-primary-container/80"

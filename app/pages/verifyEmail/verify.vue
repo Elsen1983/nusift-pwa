@@ -65,6 +65,6 @@ onMounted(async () => {
 const continueInThisTab = () => {
   // A Guard automatikusan meglátja a sütit és a kalibrációra dob
   // ANCHOR: Language-aware hard reload
-  navigate.hardRedirect("/");
+  navigate.hardRedirect("/preloader-page");
 };
 </script>

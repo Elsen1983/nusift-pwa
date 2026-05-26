@@ -16,7 +16,7 @@
       >
         <div
           class="flex items-center gap-3 cursor-pointer group"
-          @click="router.replace('/source-calibration')"
+          @click="goBackToSource"
         >
           <span
             class="material-symbols-outlined text-[#00E5FF] group-hover:-translate-x-1 transition-transform"
@@ -25,13 +25,13 @@
           <h1
             class="font-headline tracking-tighter text-[#00E5FF] group-hover:text-white transition-colors"
           >
-            Back to Source Calibration
+            {{ $t("interestCalibration.back_link") }}
           </h1>
         </div>
         <div class="hidden md:flex flex-col items-end">
           <span
             class="text-[10px] text-on-surface-variant font-label uppercase tracking-[0.2em]"
-            >Step 03/03</span
+            >{{ $t("interestCalibration.step_indicator") }}</span
           >
           <div
             class="w-32 h-1 bg-surface-container-highest rounded-full mt-1 overflow-hidden"
@@ -51,26 +51,25 @@
         >
           <span
             class="text-[10px] font-label font-bold text-primary tracking-widest uppercase"
-            >Interest Selection Phase</span
+            >{{ $t("interestCalibration.badge_selection") }}</span
           >
         </div>
         <h1
           class="font-headline text-3xl md:text-4xl font-bold text-primary leading-tight tracking-tight mb-4"
         >
-          Map Your Horizon
+          {{ $t("interestCalibration.title") }}
         </h1>
         <p class="text-on-surface-variant text-[14px] leading-relaxed">
-          Select the thematic pillars of your intelligence feed. You can
-          fine-tune these later in your Profile Audit.
+          {{ $t("interestCalibration.description") }}
         </p>
         <div class="flex items-center justify-between pt-4">
           <h3
             class="font-headline text-medium md:text-xl text-primary font-medium"
           >
-            Categories
+            {{ $t("interestCalibration.categories_title") }}
           </h3>
           <span class="text-on-surface-variant font-label text-[12px]">
-            {{ selected.length }}/20 Selected
+            {{ selected.length }}/20 {{ $t("interestCalibration.selected_count") }}
           </span>
         </div>
       </section>
@@ -120,7 +119,7 @@
                     : 'text-on-surface',
                 ]"
               >
-                {{ cat.name }}
+                {{ $t('interestCalibration.categories.' + cat.i18nKey) }}
               </h3>
               <span
                 v-if="selected.includes(cat.name)"
@@ -138,8 +137,8 @@
           :disabled="selected.length === 0 || isInitializing"
           class="flex items-center gap-3 px-6 py-2 rounded-xl transition-all group bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] disabled:opacity-50 disabled:grayscale disabled:cursor-not-allowed"
         >
-          <span class="font-headline font-bold">
-            {{ isInitializing ? "Finalizing..." : "Next: Build My Feed" }}
+          <span class="font-headline text-[15px] font-bold">
+            {{ isInitializing ? $t('interestCalibration.btn_finalizing') : $t('interestCalibration.btn_next') }}
           </span>
 
           <span
@@ -167,36 +166,49 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
-import { useRouter } from "vue-router";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
 import { $api } from "~/utils/api";
 
-const router = useRouter();
+const navigate = useSovereignNavigate();
 const authStore = useAuthStore();
 const agentStore = useAgentStore();
 const isInitializing = ref(false);
 const selected = ref<string[]>([]);
 
+const goBackToSource = async () => {
+  if (isInitializing.value) return;
+
+  // Downgrade the onboarding step to 1 (Source Calibration)
+  if (authStore.user) {
+    authStore.user.onboardingStep = 1;
+    if (!import.meta.server) {
+      localStorage.setItem("nusift_pwa_profile", JSON.stringify(authStore.user));
+    }
+  }
+  
+  navigate.replace("/source-calibration");
+};
+
 const availableCategories = [
-  { name: "Politics", icon: "policy" },
-  { name: "Economy", icon: "payments" },
-  { name: "Technology", icon: "memory" },
-  { name: "Science", icon: "science" },
-  { name: "Health", icon: "health_and_safety" },
-  { name: "Environment", icon: "eco" },
-  { name: "Entertainment", icon: "movie" },
-  { name: "Culture", icon: "museum" },
-  { name: "Sports", icon: "sports_soccer" },
-  { name: "Society", icon: "public" },
-  { name: "Transport", icon: "directions_car" },
-  { name: "Lifestyle", icon: "style" },
-  { name: "Gastronomy", icon: "restaurant" },
-  { name: "Real Estate", icon: "home" },
-  { name: "Gardening", icon: "yard" },
-  { name: "Travel", icon: "flight" },
-  { name: "Hobbies", icon: "sports_esports" },
-  { name: "Education", icon: "school" },
+ { name: "Politics", i18nKey: "politics", icon: "policy" },
+  { name: "Economy", i18nKey: "economy", icon: "payments" },
+  { name: "Technology", i18nKey: "technology", icon: "memory" },
+  { name: "Science", i18nKey: "science", icon: "science" },
+  { name: "Health", i18nKey: "health", icon: "health_and_safety" },
+  { name: "Environment", i18nKey: "environment", icon: "eco" },
+  { name: "Entertainment", i18nKey: "entertainment", icon: "movie" },
+  { name: "Culture", i18nKey: "culture", icon: "museum" },
+  { name: "Sports", i18nKey: "sports", icon: "sports_soccer" },
+  { name: "Society", i18nKey: "society", icon: "public" },
+  { name: "Transport", i18nKey: "transport", icon: "directions_car" },
+  { name: "Lifestyle", i18nKey: "lifestyle", icon: "style" },
+  { name: "Gastronomy", i18nKey: "gastronomy", icon: "restaurant" },
+  { name: "Real Estate", i18nKey: "real_estate", icon: "home" },
+  { name: "Gardening", i18nKey: "gardening", icon: "yard" },
+  { name: "Travel", i18nKey: "travel", icon: "flight" },
+  { name: "Hobbies", i18nKey: "hobbies", icon: "sports_esports" },
+  { name: "Education", i18nKey: "education", icon: "school" },
 ];
 
 const toggleCategory = (name: string) => {
@@ -248,7 +260,7 @@ const finalizeOnboarding = async () => {
     }
 
     setTimeout(() => {
-      router.replace("/initialization-preloader-page");
+      navigate.replace("/initialization-preloader-page");
     }, 2000);
   } catch (error) {
     console.error("Hiba az onboarding véglegesítése során:", error);

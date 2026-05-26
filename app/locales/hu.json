@@ -145,7 +145,82 @@
             { "text": "Amikor átszűröd a zajt, nem csak információt találsz; tisztaságot is. És a tisztaságban megtalálod a saját utadat.", "author": "" }
         ]
     },
-    "regionCalibration": {},
-    "sourceCalibration": {},
-    "interestCalibration": {}
+    "regionCalibration": {
+        "back_link": "Vissza a bejelentkezéshez",
+        "step_indicator": "Lépés 01/03.",
+        "badge_init": "Régió Inicializálása",
+        "title": "Elsődleges Régió Kiválasztása",
+        "description": "Állítsd be az információgyűjtés alaprégióját. Ez segít kalibrálni a kezdeti hírforrásokat. Ne aggódj – később a világ bármely pontjáról hozzáadhatsz egyéni domaineket, ahogy adatbázisunk bővül.",
+        "current_location": "Jelenlegi Helyzet",
+        "set_primary": "Beállítás elsődleges forrásként",
+        "global_db": "Globális Adatbázis",
+        "search_placeholder": "Gépelj egy ország kereséséhez...",
+        "info_text": "A régióválasztás a NuSift ügynököd számára a gyorsaságot és a relevanciát helyezi előtérbe. A kalibrálás után a hírfolyamod ezekről a domainekről kezdi el lekérni a történelmi adatpontokat a kezdeti tudásgráfod felépítéséhez.",
+        "btn_next": "Tovább: Források Inicializálása",
+        "btn_finalizing": "Véglegesítés..."
+    },
+    "sourceCalibration": {
+        "back_link": "Vissza a Régió Kalibrálásához",
+        "step_indicator": "Lépés 02/03.",
+        "badge_deploy": "Forrás(ok) Inicializálása",
+        "title": "Válaszd ki a forrást",
+        "description": "Add meg azokat a domaineket vagy oldalneveket, amelyeket a NuSift-nek előtérbe kell helyeznie. Hírszerző hálózatunk azonnal ellenőrzi az ismert forrásokat.",
+        "manual_entry": "Manuális Domain Megadás",
+        "input_placeholder": "Illeszd be az URL-t (pl. techcrunch.com)...",
+        "default_error": "Kérlek, adj meg egy érvényes domain formátumot.",
+        "btn_add": "Hozzáadás a Forrás Listához",
+        "active_list": "Aktív Forrás Lista",
+        "nodes_count": "Forrás(ok)",
+        "empty_state": "Még nincsenek források hozzáadva. Kezdésként adj meg egy domaint fentebb.",
+        "root_domain": "Fő Domain",
+        "modal_title": "Eltávolítod ezt a forrást?",
+        "modal_cancel": "Mégsem",
+        "modal_remove": "Eltávolítás",
+        "btn_next": "Tovább: Érdeklődési Kategóriák",
+        "btn_finalizing": "Véglegesítés...",
+        "badges": {
+            "verified": "Hitelesített Forrás",
+            "rss_fast": "Gyors RSS Szinkronizáció",
+            "unknown": "Ismeretlen Forrás",
+            "pending": "AI Ellenőrzés Függőben",
+            "direct_crawl": "Közvetlen Feltérképezés"
+        },
+        "errors": {
+            "duplicate": "Ez a forrás már szerepel a figyelési listádon.",
+            "invalid": "Érvénytelen forrás domain.",
+            "network": "Hiba történt a hálózati ellenőrzés során.",
+            "save_failed": "Sikertelen folytatás. Kérlek, ellenőrizd a hálózatot és próbáld újra."
+        }
+    },
+    "interestCalibration": {
+        "back_link": "Vissza a Forrás Kalibrálásához",
+        "step_indicator": "Lépés 03/03.",
+        "badge_selection": "Érdeklődési Kategóriák Kiválasztása",
+        "title": "Érdeklődési Horizontod Feltérképezése",
+        "description": "Válaszd ki az intelligens hírfolyamod tematikus pilléreit. Ezeket később megváltoztathatod vagy finomhangolhatod a Profil Auditban.",
+        "categories_title": "Kategóriák",
+        "selected_count": "Kiválasztva",
+        "categories": {
+            "politics": "Politika",
+            "economy": "Gazdaság",
+            "technology": "Technológia",
+            "science": "Tudomány",
+            "health": "Egészségügy",
+            "environment": "Környezet",
+            "entertainment": "Szórakozás",
+            "culture": "Kultúra",
+            "sports": "Sport",
+            "society": "Társadalom",
+            "transport": "Közlekedés",
+            "lifestyle": "Életmód",
+            "gastronomy": "Gasztronómia",
+            "real_estate": "Ingatlan",
+            "gardening": "Kertészkedés",
+            "travel": "Utazás",
+            "hobbies": "Hobbik",
+            "education": "Oktatás"
+        },
+        "btn_next": "Tovább: Hírfolyam Felépítése",
+        "btn_finalizing": "Véglegesítés..."
+    }
 }

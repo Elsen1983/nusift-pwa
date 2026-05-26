@@ -11,8 +11,8 @@ Kodolassal kapcsolatban:
 
 
 TODO:
-- pwainstaller-ben a locales rootja hibas
-- Chrome-ba hianyzo pwainstaller (Androidon megjelenik)
+region calibration: a const countries kiszervezese kulon file-ba, es nyelvi lokalizacio alkalmazasa
+sources calibration-nel ha kitorlom az utolso domain-t, akkor is aktiv marad a Next gomb (biztos?)
 
 
 // parancsok:

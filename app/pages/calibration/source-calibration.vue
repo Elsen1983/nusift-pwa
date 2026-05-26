@@ -9,11 +9,13 @@
         <div class="flex items-center gap-3 cursor-pointer group" @click="goBackToRegion">
           <span class="material-symbols-outlined text-[#00E5FF] group-hover:-translate-x-1 transition-transform">arrow_back</span>
           <h1 class="font-headline tracking-tighter text-[#00E5FF] group-hover:text-white transition-colors">
-            Back to Region Calibration
+            {{ $t("sourceCalibration.back_link") }}
           </h1>
         </div>
         <div class="hidden md:flex flex-col items-end">
-          <span class="text-[10px] text-on-surface-variant font-label uppercase tracking-[0.2em]">Step 02/03</span>
+          <span class="text-[10px] text-on-surface-variant font-label uppercase tracking-[0.2em]">
+            {{ $t("sourceCalibration.step_indicator") }}
+          </span>
           <div class="w-32 h-1 bg-surface-container-highest rounded-full mt-1 overflow-hidden">
             <div class="h-full w-[66%] bg-primary-container shadow-[0_0_8px_rgba(0,229,255,0.5)]"></div>
           </div>
@@ -24,31 +26,31 @@
     <main class="mt-12 pt-6 pb-2 px-6 max-w-4xl mx-auto flex flex-col">
       <section class="mb-4">
         <div class="inline-block px-2 py-1 bg-surface-container-highest rounded-lg mb-2">
-          <span class="text-[10px] font-label font-bold text-primary tracking-widest uppercase">Agent Deployment Phase</span>
+          <span class="text-[10px] font-label font-bold text-primary tracking-widest uppercase">{{ $t("sourceCalibration.badge_deploy") }}</span>
         </div>
         <h2 class="font-headline text-3xl md:text-4xl font-bold text-primary leading-tight tracking-tight mb-4">
-          Deploy Your Agents
+          {{ $t("sourceCalibration.title") }}
         </h2>
         <p class="text-on-surface-variant text-[14px] leading-relaxed">
-          Enter the domains or site names you want NuSift to prioritize. Our intelligence network will instantly verify known sources.
+          {{ $t("sourceCalibration.description") }}
         </p>
       </section>
 
       <section class="mb-8 space-y-6">
         <div class="relative group">
-          <label class="block text-[13px] font-label uppercase tracking-widest text-on-surface-variant mb-2 ml-1">Manual Domain Entry</label>
+          <label class="block text-[13px] font-label uppercase tracking-widest text-on-surface-variant mb-2 ml-1">{{ $t("sourceCalibration.manual_entry") }}</label>
           <div class="bg-surface-container-low p-1 rounded-xl transition-all duration-300 focus-within:shadow-[0_0_20px_rgba(0,229,255,0.05)]">
             <input
               v-model="urlInput"
               :disabled="isSaving || isAdding"
               @keyup.enter="addSource"
               class="w-full bg-surface-container-highest border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-primary-fixed/30 font-body h-[52px] text-[14px] font-bold px-4 disabled:opacity-50"
-              placeholder="Paste URL (e.g., techcrunch.com)..."
+              :placeholder="$t('sourceCalibration.input_placeholder')"
               type="url"
             />
           </div>
           <p v-if="showUrlError" class="text-error text-[12px] font-label mt-1 ml-1 leading-tight text-red-500">
-            {{ serverErrorMsg ? serverErrorMsg : "Please enter a valid domain format." }}
+            {{ serverErrorMsg ? serverErrorMsg : $t('sourceCalibration.default_error') }}
           </p>
         </div>
         
@@ -60,20 +62,20 @@
           >
             <span v-if="!isAdding" class="material-symbols-outlined text-xl">add</span>
             <span v-else class="animate-spin h-5 w-5 border-2 border-[#131313] border-t-transparent rounded-full"></span>
-            <span>Add to Monitoring List</span>
+            <span>{{ $t("sourceCalibration.btn_add") }}</span>
           </button>
         </div>
       </section>
 
       <section>
         <div class="flex items-center justify-between mb-6">
-          <h3 class="font-headline text-medium md:text-xl text-primary font-medium">Active Monitoring List</h3>
-          <span class="text-on-surface-variant font-label text-[12px]">{{ sources.length }} Nodes</span>
+          <h3 class="font-headline text-medium md:text-xl text-primary font-medium">{{ $t("sourceCalibration.active_list") }}</h3>
+          <span class="text-on-surface-variant font-label text-[12px]">{{ sources.length }} {{ $t("sourceCalibration.nodes_count") }}</span>
         </div>
 
         <div v-if="sources.length === 0" class="p-4 border-2 border-dashed border-outline-variant/30 rounded-2xl flex flex-col items-center text-center">
           <span class="material-symbols-outlined text-outline-variant text-4xl mb-3">cloud_off</span>
-          <p class="text-on-surface-variant font-body">No sources added yet. Enter a domain above to begin.</p>
+          <p class="text-on-surface-variant font-body">{{ $t("sourceCalibration.empty_state") }}</p>
         </div>
 
         <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -86,7 +88,7 @@
                 <div>
                   <h4 class="font-bold text-primary text-sm md:text-base">{{ source.name }}</h4>
                   <p class="text-[10px] text-on-surface-variant font-label uppercase tracking-wider truncate max-w-[150px]">
-                    {{ getPath(source.url) || 'Root Domain' }}
+                    {{ getPath(source.url) || $t('sourceCalibration.root_domain') }}
                   </p>
                 </div>
               </div>
@@ -115,8 +117,8 @@
           :disabled="sources.length === 0 || isSaving"
           class="flex items-center gap-3 px-6 py-2 rounded-xl transition-all group bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] disabled:opacity-50 disabled:grayscale disabled:cursor-not-allowed"
         >
-          <span class="font-headline font-bold">
-            {{ isSaving ? "Finalizing..." : "Next: Map My Interests" }}
+          <span class="font-headline text-[15px] font-bold">
+            {{ isSaving ? $t("sourceCalibration.btn_finalizing") : $t("sourceCalibration.btn_next") }}
           </span>
           <span class="material-symbols-outlined transition-transform" :class="{'animate-spin': isSaving, 'group-hover:translate-x-1': !isSaving}">
             {{ isSaving ? "sync" : "arrow_forward" }}
@@ -127,10 +129,10 @@
 
     <div v-if="showModal" class="fixed inset-0 z-[100] flex items-center justify-center px-6 bg-surface/80 backdrop-blur-sm">
       <div class="bg-surface-container p-6 rounded-2xl w-full max-w-sm border border-outline-variant/20 shadow-2xl">
-        <h4 class="font-headline text-xl text-primary font-bold mb-2">Remove this source?</h4>
+        <h4 class="font-headline text-xl text-primary font-bold mb-2">{{ $t("sourceCalibration.modal_title") }}</h4>
         <div class="flex gap-3 mt-6">
-          <button @click="showModal = false" class="flex-1 py-3 rounded-xl border border-outline-variant text-on-surface hover:bg-surface-bright">Cancel</button>
-          <button @click="confirmDelete" class="flex-1 py-3 rounded-xl bg-error text-on-error font-bold hover:brightness-110">Remove</button>
+          <button @click="showModal = false" class="flex-1 py-3 rounded-xl border border-outline-variant text-on-surface hover:bg-surface-bright">{{ $t("sourceCalibration.modal_cancel") }}</button>
+          <button @click="confirmDelete" class="flex-1 py-3 rounded-xl bg-error text-on-error font-bold hover:brightness-110">{{ $t("sourceCalibration.modal_remove") }}</button>
         </div>
       </div>
     </div>
@@ -139,7 +141,6 @@
 
 <script setup lang="ts">
 import { ref, computed } from "vue";
-import { useRouter } from "vue-router";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
 import { $api } from "~/utils/api";
@@ -150,7 +151,8 @@ interface SourceItem {
   status: string;
 }
 
-const router = useRouter();
+const navigate = useSovereignNavigate();
+const { t } = useI18n();
 const authStore = useAuthStore();
 const agentStore = useAgentStore();
 
@@ -177,7 +179,7 @@ const goBackToRegion = async () => {
       localStorage.setItem("nusift_pwa_profile", JSON.stringify(authStore.user));
     }
   }
-  router.replace("/region-calibration");
+  navigate.replace("/region-calibration");
 };
 
 const addSource = async () => {
@@ -186,7 +188,7 @@ const addSource = async () => {
   // Duplikáció szűrése a kliens oldalon
   const targetUrl = urlInput.value.trim();
   if (sources.value.some(s => s.url === targetUrl || s.url === `https://${targetUrl}`)) {
-    serverErrorMsg.value = "This source is already in your monitoring list.";
+    serverErrorMsg.value = t("sourceCalibration.errors.duplicate");
     return;
   }
 
@@ -209,10 +211,10 @@ const addSource = async () => {
       });
       urlInput.value = "";
     } else {
-      serverErrorMsg.value = response.message || "Invalid source domain.";
+      serverErrorMsg.value = response.message || t("sourceCalibration.errors.invalid");
     }
   } catch (err) {
-    serverErrorMsg.value = "An error occurred during network validation.";
+    serverErrorMsg.value = t("sourceCalibration.errors.network");
   } finally {
     isAdding.value = false;
   }
@@ -252,9 +254,9 @@ const saveAndContinue = async () => {
       }
     }
 
-    await router.replace("/interest-calibration");
+    await navigate.replace("/interest-calibration");
   } catch (error) {
-    saveErrorMsg.value = "Failed to continue. Please check your network and try again.";
+    saveErrorMsg.value = t("sourceCalibration.errors.save_failed");
     isSaving.value = false;
   }
 };
@@ -273,17 +275,18 @@ const getBadges = (status: string) => {
 
   switch(status) {
     case 'ACTIVE':
-      badges.push({ label: 'Verified Network', icon: 'verified_user', classes: 'bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]', iconClasses: '' });
-      badges.push({ label: 'RSS Fast-Sync', icon: 'bolt', classes: 'bg-[#00363d]/40 text-neon-cyan outline-[#00363d]', iconClasses: '' });
+      // Changed $t to t
+      badges.push({ label: t("sourceCalibration.badges.verified"), icon: 'verified_user', classes: 'bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]', iconClasses: '' });
+      badges.push({ label: t("sourceCalibration.badges.rss_fast"), icon: 'bolt', classes: 'bg-[#00363d]/40 text-neon-cyan outline-[#00363d]', iconClasses: '' });
       break;
     case 'PENDING_DISCOVERY':
-      badges.push({ label: 'Unknown Source', icon: 'travel_explore', classes: 'bg-surface-variant/50 text-on-surface-variant outline-outline-variant', iconClasses: '' });
-      badges.push({ label: 'Pending AI Scan', icon: 'hourglass_empty', classes: 'bg-[#3a3002]/40 text-tertiary-fixed outline-[#3a3002]', iconClasses: 'animate-spin-slow' });
+      badges.push({ label: t("sourceCalibration.badges.unknown"), icon: 'travel_explore', classes: 'bg-surface-variant/50 text-on-surface-variant outline-outline-variant', iconClasses: '' });
+      badges.push({ label: t("sourceCalibration.badges.pending"), icon: 'hourglass_empty', classes: 'bg-[#3a3002]/40 text-tertiary-fixed outline-[#3a3002]', iconClasses: 'animate-spin-slow' });
       break;
     case 'NO_RSS_FOUND':
     case 'FAILED':
-      badges.push({ label: 'Verified Network', icon: 'verified_user', classes: 'bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]', iconClasses: '' });
-      badges.push({ label: 'Direct Crawl', icon: 'public', classes: 'bg-surface-variant/50 text-on-surface-variant outline-outline-variant', iconClasses: '' });
+      badges.push({ label: t("sourceCalibration.badges.verified"), icon: 'verified_user', classes: 'bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]', iconClasses: '' });
+      badges.push({ label: t("sourceCalibration.badges.direct_crawl"), icon: 'public', classes: 'bg-surface-variant/50 text-on-surface-variant outline-outline-variant', iconClasses: '' });
       break;
   }
   return badges;

@@ -145,7 +145,82 @@
             { "text": "When you sift through the noise, you don't just find information; you find clarity. And in clarity, you find your own path.", "author": "" }
         ]
     },
-    "regionCalibration": {},
-    "sourceCalibration": {},
-    "interestCalibration": {}
+    "regionCalibration": {
+        "back_link": "Back to Login",
+        "step_indicator": "Step 01/03",
+        "badge_init": "Region Initialization Phase",
+        "title": "Select Primary Region",
+        "description": "Set the baseline region for your intelligence gathering. This helps us calibrate your initial news sources. Don't worry—you can still add custom domains from anywhere in the world later as our database expands.",
+        "current_location": "Current Location",
+        "set_primary": "Set as primary source",
+        "global_db": "Global Database",
+        "search_placeholder": "Type to search for a country...",
+        "info_text": "Region selection prioritizes latency and relevance for your NuSift agent. Once calibrated, your feed will begin fetching historical data points from these domains to build your initial knowledge graph.",
+        "btn_next": "Next: Initialize Sources",
+        "btn_finalizing": "Finalizing..."
+    },
+    "sourceCalibration": {
+        "back_link": "Back to Region Calibration",
+        "step_indicator": "Step 02/03",
+        "badge_deploy": "Source(s) Initialization Phase",
+        "title": "Select Source",
+        "description": "Enter the domains or site names you want NuSift to prioritize. Our intelligence network will instantly verify known sources.",
+        "manual_entry": "Manual Domain Entry",
+        "input_placeholder": "Paste URL (e.g., techcrunch.com)...",
+        "default_error": "Please enter a valid domain format.",
+        "btn_add": "Add to Source List",
+        "active_list": "Active Source List",
+        "nodes_count": "Source(s)",
+        "empty_state": "No sources added yet. Enter a domain above to begin.",
+        "root_domain": "Main Domain",
+        "modal_title": "Remove this source?",
+        "modal_cancel": "Cancel",
+        "modal_remove": "Remove",
+        "btn_next": "Next: Map My Interests",
+        "btn_finalizing": "Finalizing...",
+        "badges": {
+            "verified": "Verified Network",
+            "rss_fast": "RSS Fast-Sync",
+            "unknown": "Unknown Source",
+            "pending": "Pending AI Scan",
+            "direct_crawl": "Direct Crawl"
+        },
+        "errors": {
+            "duplicate": "This source is already in your monitoring list.",
+            "invalid": "Invalid source domain.",
+            "network": "An error occurred during network validation.",
+            "save_failed": "Failed to continue. Please check your network and try again."
+        }
+    },
+    "interestCalibration": {
+        "back_link": "Back to Source Calibration",
+        "step_indicator": "Step 03/03",
+        "badge_selection": "Interest Category Selection",
+        "title": "Map Your Interest Horizon",
+        "description": "Select the thematic pillars of your intelligence feed. You can fine-tune these later in your Profile Audit.",
+        "categories_title": "Categories",
+        "selected_count": "Selected",
+        "categories": {
+            "politics": "Politics",
+            "economy": "Economy",
+            "technology": "Technology",
+            "science": "Science",
+            "health": "Health",
+            "environment": "Environment",
+            "entertainment": "Entertainment",
+            "culture": "Culture",
+            "sports": "Sports",
+            "society": "Society",
+            "transport": "Transport",
+            "lifestyle": "Lifestyle",
+            "gastronomy": "Gastronomy",
+            "real_estate": "Real Estate",
+            "gardening": "Gardening",
+            "travel": "Travel",
+            "hobbies": "Hobbies",
+            "education": "Education"
+        },
+        "btn_next": "Next: Build My Feed",
+        "btn_finalizing": "Finalizing..."
+    }
 }

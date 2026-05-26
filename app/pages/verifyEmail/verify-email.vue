@@ -182,7 +182,7 @@ onMounted(() => {
         if (checkSessionActive()) {
           navigate.hardRedirect("/preloader-page");
         } else {
-          successMsg.value = t('verifyEmail.messages.check_email') || t('verifyEmail.messages.session_expired') || 'Verification pending. Please check your email.';
+          successMsg.value = t('verifyEmail.messages.check_email') || t('verifyEmail.messages.session_expired');
         }
       }, 1500);
     }
@@ -207,10 +207,13 @@ const handleManualVerification = async () => {
 
   // Use the robust check here too
   if (checkSessionActive()) {
+    // SCENARIO 1: Same Browser. Session exists. Proceed to onboarding.
     console.warn("Manual verification successful. Redirecting to secure login...");
     isLoading.value = false;
-    navigate.hardRedirect("/"); 
+    navigate.hardRedirect("/preloader-page"); 
   } else {
+    // SCENARIO 2: Different Browser. No local session. 
+    // They must log in manually to get their cookies on this device.
     isLoading.value = false;
     localStorage.setItem("nusift_visited", "true");
     localStorage.removeItem("nusift_pending_email");
@@ -220,7 +223,7 @@ const handleManualVerification = async () => {
 
     setTimeout(() => {
       // window.location.href = "/";
-      navigate.hardRedirect("/preloader-page"); // This will trigger a full page reload, ensuring the new session cookie is recognized immediately 
+      navigate.hardRedirect("/"); // This will trigger a full page reload, ensuring the new session cookie is recognized immediately 
     }, 3000);
   }
 };

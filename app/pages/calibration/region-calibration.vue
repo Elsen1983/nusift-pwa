@@ -25,13 +25,13 @@
           <h1
             class="font-headline tracking-tighter text-[#00E5FF] group-hover:text-white transition-colors"
           >
-            Back to Login
+            {{ $t("regionCalibration.back_link") }}
           </h1>
         </div>
         <div class="hidden md:flex flex-col items-end">
           <span
             class="text-[10px] text-on-surface-variant font-label uppercase tracking-[0.2em]"
-            >Step 01/03</span
+            >{{ $t("regionCalibration.step_indicator") }}</span
           >
           <div
             class="w-32 h-1 bg-surface-container-highest rounded-full mt-1 overflow-hidden"
@@ -51,19 +51,16 @@
         >
           <span
             class="text-[10px] font-label font-bold text-primary tracking-widest uppercase"
-            >Agent Initialization</span
+            >{{ $t("regionCalibration.badge_init") }}</span
           >
         </div>
         <h2
           class="font-headline text-3xl md:text-4xl font-bold text-primary leading-tight tracking-tight mb-4"
         >
-          Select Primary Region
+          {{ $t("regionCalibration.title") }}
         </h2>
         <p class="text-on-surface-variant text-[14px] leading-relaxed">
-          Set the baseline region for your intelligence gathering. This helps us
-          calibrate your initial news sources. Don't worry—you can still add
-          custom domains from anywhere in the world later as our database
-          expands.
+          {{ $t("regionCalibration.description") }}
         </p>
       </section>
 
@@ -71,7 +68,7 @@
         <div v-if="detectedCountry" class="mb-8">
           <label
             class="block text-[13px] font-label uppercase tracking-widest text-on-surface-variant mb-2 ml-1"
-            >Current Location</label
+            >{{ $t("regionCalibration.current_location") }}</label
           >
           <button
             @click="selectCountry(detectedCountryCode, detectedCountry)"
@@ -97,7 +94,7 @@
               <p
                 class="text-[10px] text-on-surface-variant font-label uppercase tracking-wider mt-0.5"
               >
-                Set as primary source
+                {{ $t("regionCalibration.set_primary") }}
               </p>
             </div>
             <span
@@ -115,7 +112,7 @@
         <div class="relative group" id="autocomplete-wrapper">
           <label
             class="block text-[13px] font-label uppercase tracking-widest text-on-surface-variant mb-2 ml-1"
-            >Global Database</label
+            >{{ $t("regionCalibration.global_db") }}</label
           >
           <div
             class="bg-surface-container-low p-1 rounded-xl transition-all duration-300 focus-within:shadow-[0_0_20px_rgba(0,229,255,0.05)] relative z-20"
@@ -164,10 +161,7 @@
             >info</span
           >
           <p>
-            Region selection prioritizes latency and relevance for your NuSift
-            agent. Once calibrated, your feed will begin fetching historical
-            data points from these domains to build your initial knowledge
-            graph.
+            {{ $t("regionCalibration.info_text") }}
           </p>
         </div>
       </section>
@@ -178,8 +172,8 @@
           :disabled="!selectedCountry || isSaving"
           class="flex items-center gap-3 px-6 py-2 rounded-xl transition-all group bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] disabled:opacity-50 disabled:grayscale disabled:cursor-not-allowed"
         >
-          <span class="font-headline font-bold">
-            {{ isSaving ? "Finalizing..." : "Next: Calibrate Sources" }}
+          <span class="font-headline text-[15px] font-bold">
+            {{ isSaving ? $t("regionCalibration.btn_finalizing") : $t("regionCalibration.btn_next") }}
           </span>
           <span
             class="material-symbols-outlined transition-transform"
@@ -198,12 +192,11 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { useRouter } from "vue-router";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
 import { $api } from "~/utils/api";
 
-const router = useRouter();
+const navigate = useSovereignNavigate();
 const authStore = useAuthStore();
 const agentStore = useAgentStore();
 
@@ -502,31 +495,8 @@ onUnmounted(() => {
 const logoutAndGoBack = async () => {
   if (isSaving.value) return;
   await authStore.logoutIdentity();
-  router.replace("/auth");
+  navigate.hardRedirect("/");
 };
-
-// const saveAndContinue = async () => {
-//   if (!selectedCountry.value || isSaving.value) return;
-
-//   isSaving.value = true;
-
-//   try {
-//     agentStore.primaryRegion = selectedCountry.value;
-//     await new Promise(resolve => setTimeout(resolve, 800));
-
-//     if (authStore.user) {
-//       authStore.user.onboardingStep = 1;
-//       if (!import.meta.server) {
-//         localStorage.setItem('nusift_pwa_profile', JSON.stringify(authStore.user));
-//       }
-//     }
-
-//     await router.push("/source-calibration");
-//   } catch (error) {
-//     console.error("Navigation error:", error);
-//     isSaving.value = false;
-//   }
-// };
 
 const saveAndContinue = async () => {
   if (!selectedCountry.value || isSaving.value) return;
@@ -563,7 +533,7 @@ const saveAndContinue = async () => {
     }
 
     // 5. Tovább a következő oldalra
-    await router.replace("/source-calibration");
+    navigate.push("/source-calibration");
   } catch (error) {
     console.error("Navigation error:", error);
     isSaving.value = false;
