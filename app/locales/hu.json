@@ -315,5 +315,27 @@
                 "law_&_crime": "Jog és Bűnügy"
             }
         }
+    },
+    "newsCard": {
+        "key_signals": "Összefoglalt Tartalom",
+        "paywall": "Fizetős",
+        "read_now": "Olvasás",
+        "ai_reasoning": "AI Érvelés",
+        "menu": {
+            "view_signals": "Összefoglaló",
+            "save_favourite": "Mentés Kedvencként",
+            "read_later": "Olvasás Később",
+            "share": "Megosztás",
+            "not_interested": "Nem Érdekel",
+            "personal_rating": "Személyes Értékelés"
+        }
+    },
+
+
+    "logoutModal": {
+        "title": "Munkamenet Befejezése?",
+        "description": "Biztosan be akarod fejezni a biztonságos munkamenetet? Minden nem mentett ügynök-konfiguráció vagy kalibrációs adat elveszhet.",
+        "btn_cancel": "Mégsem",
+        "btn_terminate": "Kilépés"
     }
 }

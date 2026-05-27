@@ -216,32 +216,32 @@
         "categories_title": "Categories",
         "selected_count": "Selected",
         "categories": {
-                "politics": "Politics",
-                "technology": "Technology",
-                "economy": "Economy",
-                "health": "Health",
-                "science": "Science",
-                "sports": "Sports",
-                "entertainment": "Entertainment",
-                "world": "World",
-                "environment": "Environment",
-                "lifestyle": "Lifestyle",
-                "culture": "Culture",
-                "society": "Society",
-                "transport": "Transport",
-                "gastronomy": "Gastronomy",
-                "real_estate": "Real Estate",
-                "gardening": "Gardening",
-                "travel": "Travel",
-                "hobbies": "Hobbies",
-                "education": "Education",
-                "business": "Business",
-                "art_&_culture": "Art & Culture",
-                "food_&_drink": "Food & Drink",
-                "gaming": "Gaming",
-                "automotive": "Automotive",
-                "law_&_crime": "Law & Crime"
-            },
+            "politics": "Politics",
+            "technology": "Technology",
+            "economy": "Economy",
+            "health": "Health",
+            "science": "Science",
+            "sports": "Sports",
+            "entertainment": "Entertainment",
+            "world": "World",
+            "environment": "Environment",
+            "lifestyle": "Lifestyle",
+            "culture": "Culture",
+            "society": "Society",
+            "transport": "Transport",
+            "gastronomy": "Gastronomy",
+            "real_estate": "Real Estate",
+            "gardening": "Gardening",
+            "travel": "Travel",
+            "hobbies": "Hobbies",
+            "education": "Education",
+            "business": "Business",
+            "art_&_culture": "Art & Culture",
+            "food_&_drink": "Food & Drink",
+            "gaming": "Gaming",
+            "automotive": "Automotive",
+            "law_&_crime": "Law & Crime"
+        },
         "btn_next": "Next: Build My Feed",
         "btn_finalizing": "Finalizing..."
     },
@@ -315,5 +315,28 @@
                 "law_&_crime": "Law & Crime"
             }
         }
+    },
+    "newsCard": {
+        "key_signals": "Summary Content",
+        "paywall": "Paywall",
+        "read_now": "Read Now",
+        "ai_reasoning": "AI Reasoning",
+        "menu": {
+            "view_signals": "Summary",
+            "save_favourite": "Save as Favourite",
+            "read_later": "Read Later",
+            "share": "Share",
+            "not_interested": "Not Interested",
+            "personal_rating": "Personal Rating"
+        }
+    },
+
+
+
+    "logoutModal": {
+        "title": "Terminate Session?",
+        "description": "Are you sure you want to end your secure session? Any unsaved agent configurations or calibration data might be lost.",
+        "btn_cancel": "Cancel",
+        "btn_terminate": "Quit"
     }
 }

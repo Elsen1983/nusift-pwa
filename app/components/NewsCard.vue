@@ -1,6 +1,6 @@
 <template>
   <article
-    class="bg-surface-container rounded-2xl p-3.5 relative group transition-all hover:bg-surface-container-high overflow-visible"
+    class="bg-surface-container rounded-2xl p-2.5 relative group transition-all hover:bg-surface-container-high overflow-visible outline outline-1 outline-[#00E5FF]/20"
   >
     <div
       v-if="activeOverlay === article.id"
@@ -9,7 +9,7 @@
       <h3
         class="font-headline text-[#00E5FF] font-bold text-sm mb-3 uppercase tracking-wider border-b border-[#00E5FF]/20 pb-2"
       >
-        Key Signal Points
+        {{ $t("newsCard.key_signals") }}
       </h3>
       <ul class="space-y-2.5">
         <li
@@ -33,46 +33,46 @@
     <div class="flex items-center justify-between mb-1.5">
       <div class="flex items-center gap-3">
         <span
-          class="font-label text-[9px] uppercase tracking-widest text-on-surface-variant"
+          class="font-label text-[10px] uppercase tracking-widest text-on-surface-variant"
           >{{ article.date }}</span
         >
         <div
           class="flex items-center gap-1 bg-tertiary-container/10 px-1.5 py-0.5 rounded-full"
         >
           <span
-            class="material-symbols-outlined text-[10px] text-tertiary-container"
+            class="material-symbols-outlined text-[12px] text-tertiary-container"
             :style="{ fontVariationSettings: '\'FILL\' 1' }"
             >star</span
           >
-          <span class="font-label text-[9px] font-bold text-tertiary-container"
+          <span class="font-label text-[11px] font-bold text-tertiary-container"
             >{{ article.score }}/10</span
           >
         </div>
         <div
           v-if="article.isPaywall"
-          class="flex items-center gap-1 bg-surface-container-highest px-1.5 py-0.5 rounded-full ml-1 border border-primary-container/20"
+          class="flex items-center gap-1 bg-surface-container-highest px-1.5 py-0.5 rounded-full mr-1 border border-primary-container/20"
         >
           <span
-            class="material-symbols-outlined text-[10px] text-primary-container"
+            class="material-symbols-outlined text-[12px] text-primary-container"
             :style="{ fontVariationSettings: '\'FILL\' 1' }"
             >lock</span
           >
           <span
-            class="font-label text-[8px] font-bold text-primary-container uppercase tracking-tighter"
-            >Paywall</span
+            class="font-label text-[10px] font-bold text-primary-container uppercase tracking-tighter"
+            >{{ $t("newsCard.paywall") }}</span
           >
         </div>
       </div>
       <div class="flex items-center gap-3">
         <button
           @click="$emit('readNow', article)"
-          class="text-primary-container font-bold text-[10px] uppercase tracking-wider hover:underline"
+          class="text-primary-container font-bold text-[12px] uppercase tracking-wider hover:underline"
         >
-          Read Now
+          {{ $t("newsCard.read_now") }}
         </button>
         <button
           @click.stop="$emit('toggleMenu', article.id)"
-          class="material-symbols-outlined text-on-surface-variant text-base bg-[#353534]/50 rounded-full flex items-center justify-center hover:bg-surface-bright transition-colors w-8 h-8 p-0 relative z-[65]"
+          class="material-symbols-outlined text-base bg-[#353534]/50 rounded-full flex items-center justify-center hover:bg-surface-bright transition-colors w-8 h-8 p-0 relative z-[65] border border-solid border-white/50"
         >
           {{ activeOverlay === article.id ? "close" : "more_vert" }}
         </button>
@@ -80,40 +80,40 @@
     </div>
 
     <h2
-      class="font-headline font-bold text-on-surface leading-tight mb-2 text-base"
+      class="font-headline font-bold text-on-surface leading-tight mb-1 text-base"
     >
       {{ article.title }}
     </h2>
 
     <div
-      class="flex items-end justify-between gap-4 pt-2 border-t border-outline-variant/10"
+      class="flex items-end justify-between gap-4 border-t border-outline-variant/10"
     >
       <div class="w-full">
         <span
-          class="text-[10px] font-label text-outline uppercase tracking-wider mb-1 block"
+          class="text-[12px] font-label text-outline uppercase tracking-wider mb-1 block"
           >{{ article.source }}</span
         >
         <div class="flex items-center justify-between w-full mb-0.5">
           <h4
-            class="text-[10px] font-bold text-ai-reasoning-blue uppercase tracking-wider flex items-center gap-1"
+            class="text-[12px] font-bold text-ai-reasoning-blue uppercase tracking-wider flex items-center gap-1"
           >
             <span class="material-symbols-outlined text-[11px]"
               >auto_awesome</span
             >
-            AI Reasoning
+            {{ $t("newsCard.ai_reasoning") }}
           </h4>
           <div class="flex flex-wrap justify-end gap-1.5">
             <button
               v-for="tag in article.tags"
               :key="tag"
-              class="px-2 py-0.5 bg-surface-container-highest rounded text-[10px] font-bold text-ai-reasoning-blue hover:bg-surface-bright transition-colors uppercase"
+              class="px-1 py-0 pt-0.5 bg-surface-container-highest rounded text-[10px] text-ai-reasoning-blue hover:bg-surface-bright transition-colors uppercase"
             >
               {{ tag }}
             </button>
           </div>
         </div>
         <p
-          class="text-[11px] font-body text-on-surface-variant leading-tight line-clamp-2"
+          class="text-[12px] font-body text-on-surface-variant leading-tight line-clamp-2"
         >
           {{ article.reasoning }}
         </p>
@@ -129,74 +129,80 @@
         class="flex items-center gap-4 px-4 py-2 hover:bg-surface-bright transition-colors text-left w-full group"
       >
         <span
-          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-primary-container"
+          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-[#00E5FF] transition-colors"
           >format_list_bulleted</span
         >
         <span
-          class="text-xs font-medium text-on-surface-variant group-hover:text-primary-container"
-          >View Signal Points</span
+          class="text-xs font-bold text-on-surface-variant group-hover:text-white transition-colors"
+          >{{ $t("newsCard.menu.view_signals") }}</span
         >
       </button>
+
       <button
         class="flex items-center gap-4 px-4 py-2 hover:bg-surface-bright transition-colors text-left w-full group"
       >
         <span
-          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-primary-container"
+          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-[#00E5FF] transition-colors"
           >star</span
         >
         <span
-          class="text-xs font-medium text-on-surface-variant group-hover:text-primary-container"
-          >Save as Favourite</span
+          class="text-xs font-bold text-on-surface-variant group-hover:text-white transition-colors"
+          >{{ $t("newsCard.menu.save_favourite") }}</span
         >
       </button>
+
       <button
         class="flex items-center gap-4 px-4 py-2 hover:bg-surface-bright transition-colors text-left w-full group"
       >
         <span
-          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-primary-container"
+          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-[#00E5FF] transition-colors"
           >schedule</span
         >
         <span
-          class="text-xs font-medium text-on-surface-variant group-hover:text-primary-container"
-          >Read Later</span
+          class="text-xs font-bold text-on-surface-variant group-hover:text-white transition-colors"
+          >{{ $t("newsCard.menu.read_later") }}</span
         >
       </button>
+
       <button
         class="flex items-center gap-4 px-4 py-2 hover:bg-surface-bright transition-colors text-left w-full group"
       >
         <span
-          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-primary-container"
+          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-[#00E5FF] transition-colors"
           >share</span
         >
         <span
-          class="text-xs font-medium text-on-surface-variant group-hover:text-primary-container"
-          >Share</span
+          class="text-xs font-bold text-on-surface-variant group-hover:text-white transition-colors"
+          >{{ $t("newsCard.menu.share") }}</span
         >
       </button>
-      <div class="h-px bg-outline-variant/20 w-full my-1"></div>
-      <button
-        class="flex items-center gap-4 px-4 py-2 hover:bg-surface-bright transition-colors text-left w-full group"
-      >
-        <span
-          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-primary-container"
-          >block</span
-        >
-        <span
-          class="text-xs font-medium text-on-surface-variant group-hover:text-primary-container"
-          >Not Interested</span
-        >
-      </button>
+
       <button
         @click.stop="$emit('openRating', article.id)"
         class="flex items-center gap-4 px-4 py-2 hover:bg-surface-bright transition-colors text-left w-full group"
       >
         <span
-          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-primary-container"
+          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-[#00E5FF] transition-colors"
           >reviews</span
         >
         <span
-          class="text-xs font-medium text-on-surface-variant group-hover:text-primary-container"
-          >Personal Rating</span
+          class="text-xs font-bold text-on-surface-variant group-hover:text-white transition-colors"
+          >{{ $t("newsCard.menu.personal_rating") }}</span
+        >
+      </button>
+
+      <div class="h-px bg-outline-variant/40 w-full my-1"></div>
+
+      <button
+        class="flex items-center gap-4 px-4 py-2 hover:bg-error/10 transition-colors text-left w-full group"
+      >
+        <span
+          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-error transition-colors"
+          >block</span
+        >
+        <span
+          class="text-xs font-bold text-on-surface-variant group-hover:text-error transition-colors"
+          >{{ $t("newsCard.menu.not_interested") }}</span
         >
       </button>
     </div>

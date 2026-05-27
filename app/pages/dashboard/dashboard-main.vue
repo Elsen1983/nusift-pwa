@@ -15,7 +15,7 @@
             >
             <div
               @click="toggleDateDropdown"
-              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px]"
+              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px] border border-solid border-[#00E5FF]/20 outline outline-1 outline-[#00E5FF]/20"
             >
               <div class="flex flex-col w-full h-full justify-center min-w-0">
                 <div class="flex justify-between items-center w-full min-w-0">
@@ -70,7 +70,7 @@
             >
             <div
               @click="toggleCategoryDropdown"
-              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px]"
+              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px] border border-solid border-[#00E5FF]/20 outline outline-1 outline-[#00E5FF]/20"
             >
               <div class="flex flex-col w-full h-full justify-center min-w-0">
                 <div class="flex justify-between items-center w-full min-w-0">
