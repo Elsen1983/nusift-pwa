@@ -133,16 +133,31 @@
         "version": "Verzió 2.4.0-Alpha",
         "footer": "Digitális szuverenitásod biztosítása",
         "quotes": [
-            { "text": "A megtévesztés korában az igazmondás forradalmi cselekedet.", "author": "George Orwell" },
-            { "text": "Az igazság ritkán tiszta és sosem egyszerű.", "author": "Oscar Wilde" },
-            { "text": "Az információ a demokrácia valutája.", "author": "Thomas Jefferson" },
-            { "text": "Egy hazugság bejárja a fél világot, míg az igazság a cipőjét húzza.", "author": "Mark Twain" }
+            {
+                "text": "A megtévesztés korában az igazmondás forradalmi cselekedet.",
+                "author": "George Orwell"
+            },
+            {
+                "text": "Az igazság ritkán tiszta és sosem egyszerű.",
+                "author": "Oscar Wilde"
+            },
+            {
+                "text": "Az információ a demokrácia valutája.",
+                "author": "Thomas Jefferson"
+            },
+            {
+                "text": "Egy hazugság bejárja a fél világot, míg az igazság a cipőjét húzza.",
+                "author": "Mark Twain"
+            }
         ]
     },
     "preloaderSecond": {
         "forging": "INTELLIGENCIA HORIZONT FORMÁLÁSA...",
         "quotes": [
-            { "text": "Amikor átszűröd a zajt, nem csak információt találsz; tisztaságot is. És a tisztaságban megtalálod a saját utadat.", "author": "" }
+            {
+                "text": "Amikor átszűröd a zajt, nem csak információt találsz; tisztaságot is. És a tisztaságban megtalálod a saját utadat.",
+                "author": ""
+            }
         ]
     },
     "regionCalibration": {
@@ -202,25 +217,103 @@
         "selected_count": "Kiválasztva",
         "categories": {
             "politics": "Politika",
-            "economy": "Gazdaság",
-            "technology": "Technológia",
-            "science": "Tudomány",
-            "health": "Egészségügy",
-            "environment": "Környezet",
-            "entertainment": "Szórakozás",
-            "culture": "Kultúra",
-            "sports": "Sport",
-            "society": "Társadalom",
-            "transport": "Közlekedés",
-            "lifestyle": "Életmód",
-            "gastronomy": "Gasztronómia",
-            "real_estate": "Ingatlan",
-            "gardening": "Kertészkedés",
-            "travel": "Utazás",
-            "hobbies": "Hobbik",
-            "education": "Oktatás"
+                "technology": "Technológia",
+                "economy": "Gazdaság",
+                "health": "Egészségügy",
+                "science": "Tudomány",
+                "sports": "Sport",
+                "entertainment": "Szórakozás",
+                "world": "Világ",
+                "environment": "Környezet",
+                "lifestyle": "Életmód",
+                "culture": "Kultúra",
+                "society": "Társadalom",
+                "transport": "Közlekedés",
+                "gastronomy": "Gasztronómia",
+                "real_estate": "Ingatlan",
+                "gardening": "Kertészkedés",
+                "travel": "Utazás",
+                "hobbies": "Hobbik",
+                "education": "Oktatás",
+                "business": "Üzlet",
+                "art_&_culture": "Művészet és Kultúra",
+                "food_&_drink": "Étel és Ital",
+                "gaming": "Játékok",
+                "automotive": "Autóipar",
+                "law_&_crime": "Jog és Bűnügy"
         },
         "btn_next": "Tovább: Hírfolyam Felépítése",
         "btn_finalizing": "Véglegesítés..."
+    },
+    "dashboardInitiate": {
+        "header": {
+            "slogan_line1": "AI Keresés és Szűrés.",
+            "slogan_line2": "A Te Irányításoddal."
+        },
+        "content": {
+            "title": "A Hírfolyamod Készen Áll.",
+            "description": "Ügynökeidet telepítettük, és feltérképeztük az érdeklődési köreidet. Kattints az alábbi gombra az első keresés végrehajtásához és a személyre szabott hírfolyamod legenerálásához.",
+            "btn_initiate": "Első Szűrés Indítása"
+        }
+    },
+    "appLayout": {
+        "header": {
+            "slogan_line1": "AI Keresés és Szűrés.",
+            "slogan_line2": "A Te Irányításoddal."
+        },
+        "profileMenu": {
+            "my_profile": "Profilom",
+            "agent_fine_tuning": "Ügynök Finomhangolása",
+            "source_manager": "Forráskezelő",
+            "logout": "Kijelentkezés"
+        },
+        "navigation": {
+            "feed": "Hírfolyam",
+            "saved": "Mentve",
+            "shared": "Megosztva",
+            "trends": "Trendek"
+        }
+    },
+    "dashboard": {
+        "header": {
+            "date_label": "Dátum",
+            "categories_label": "Kategóriák",
+            "all_categories": "Összes Kategória"
+        },
+        "filters": {
+            "dates": {
+                "today": "Mai nap",
+                "last_48h": "Elmúlt 48 óra",
+                "last_1w": "Elmúlt 1 Hét (Pro)",
+                "last_2w": "Elmúlt 2 Hét (Pro)"
+            },
+            "categories": {
+                "politics": "Politika",
+                "technology": "Technológia",
+                "economy": "Gazdaság",
+                "health": "Egészségügy",
+                "science": "Tudomány",
+                "sports": "Sport",
+                "entertainment": "Szórakozás",
+                "world": "Világ",
+                "environment": "Környezet",
+                "lifestyle": "Életmód",
+                "culture": "Kultúra",
+                "society": "Társadalom",
+                "transport": "Közlekedés",
+                "gastronomy": "Gasztronómia",
+                "real_estate": "Ingatlan",
+                "gardening": "Kertészkedés",
+                "travel": "Utazás",
+                "hobbies": "Hobbik",
+                "education": "Oktatás",
+                "business": "Üzlet",
+                "art_&_culture": "Művészet és Kultúra",
+                "food_&_drink": "Étel és Ital",
+                "gaming": "Játékok",
+                "automotive": "Autóipar",
+                "law_&_crime": "Jog és Bűnügy"
+            }
+        }
     }
 }

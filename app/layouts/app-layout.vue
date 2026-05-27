@@ -9,9 +9,9 @@
         <header
           class="flex justify-between items-center px-6 py-3 w-full h-[60px]"
         >
-          <NuxtLink
-            to="/dashboard"
-            class="flex items-center group transition-all duration-300"
+          <button
+            @click="navigate.push('/dashboard')"
+            class="flex items-center group transition-all duration-300 text-left"
           >
             <img
               alt="NuSift Logo"
@@ -22,10 +22,12 @@
               <span
                 class="text-[#00E5FF] font-label text-[9px] uppercase tracking-[0.15em] leading-tight block opacity-80 group-hover:opacity-100 transition-opacity"
               >
-                AI Filtering.<br />Guided by Your Hand.
+                {{ $t("appLayout.header.slogan_line1") }}<br />{{
+                  $t("appLayout.header.slogan_line2")
+                }}
               </span>
             </div>
-          </NuxtLink>
+          </button>
 
           <div
             class="flex items-center gap-4 relative"
@@ -51,47 +53,44 @@
                 v-if="isProfileMenuOpen"
                 class="absolute top-12 right-0 w-60 bg-[#1A1A1A] border border-white/10 rounded-2xl shadow-2xl py-2 z-[110] backdrop-blur-2xl"
               >
-                <NuxtLink
-                  to="/profile"
-                  @click="isProfileMenuOpen = false"
-                  class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group"
+                <button
+                  @click="handleMenuNavigation('/profile')"
+                  class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group w-full text-left"
                 >
                   <span
                     class="material-symbols-outlined text-primary-container text-[20px]"
                     >account_circle</span
                   >
-                  <span class="text-xs font-medium text-on-surface"
-                    >My Profile</span
-                  >
-                </NuxtLink>
+                  <span class="text-xs font-medium text-on-surface">{{
+                    $t("appLayout.profileMenu.my_profile")
+                  }}</span>
+                </button>
 
-                <NuxtLink
-                  to="/audit/profile-fine-tuning"
-                  @click="isProfileMenuOpen = false"
-                  class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group"
+                <button
+                  @click="handleMenuNavigation('/audit/profile-fine-tuning')"
+                  class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group w-full text-left"
                 >
                   <span
                     class="material-symbols-outlined text-primary-container text-[20px]"
                     >tune</span
                   >
-                  <span class="text-xs font-medium text-on-surface"
-                    >Agent Fine-Tuning</span
-                  >
-                </NuxtLink>
+                  <span class="text-xs font-medium text-on-surface">{{
+                    $t("appLayout.profileMenu.agent_fine_tuning")
+                  }}</span>
+                </button>
 
-                <NuxtLink
-                  to="/audit/source-manager"
-                  @click="isProfileMenuOpen = false"
-                  class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group"
+                <button
+                  @click="handleMenuNavigation('/audit/source-manager')"
+                  class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group w-full text-left"
                 >
                   <span
                     class="material-symbols-outlined text-primary-container text-[20px]"
                     >hub</span
                   >
-                  <span class="text-xs font-medium text-on-surface"
-                    >Source Manager</span
-                  >
-                </NuxtLink>
+                  <span class="text-xs font-medium text-on-surface">{{
+                    $t("appLayout.profileMenu.source_manager")
+                  }}</span>
+                </button>
 
                 <div class="h-px bg-white/5 w-full my-1"></div>
 
@@ -102,7 +101,9 @@
                   <span class="material-symbols-outlined text-[20px]"
                     >logout</span
                   >
-                  <span class="text-xs font-medium">Logout</span>
+                  <span class="text-xs font-medium">{{
+                    $t("appLayout.profileMenu.logout")
+                  }}</span>
                 </button>
               </div>
             </transition>
@@ -118,33 +119,27 @@
         class="fixed bottom-0 inset-x-0 mx-auto w-full max-w-2xl bg-[#131313]/95 backdrop-blur-xl border-t border-white/5 z-[100] pb-safe"
       >
         <div class="flex justify-around items-center h-16 w-full px-2">
-          <NuxtLink
+          <button
             v-for="item in navItems"
             :key="item.path"
-            :to="item.path"
-            class="flex flex-col items-center gap-1 group py-1"
-            active-class="text-primary-container"
+            @click="navigate.push(item.path)"
+            class="flex flex-col items-center justify-center w-full h-full gap-1 transition-colors"
+            :class="[
+              route.path.includes(item.path)
+                ? 'text-[#00E5FF]'
+                : 'text-on-surface-variant hover:text-white',
+            ]"
           >
             <span
               class="material-symbols-outlined text-[24px]"
-              :class="{
-                'text-primary-container drop-shadow-[0_0_8px_rgba(0,229,255,0.4)]':
-                  $route.path === item.path,
-                'text-on-surface-variant': $route.path !== item.path,
-              }"
+              :class="{ 'text-[28px]': route.path.includes(item.path) }"
             >
               {{ item.icon }}
             </span>
-            <span
-              class="text-[10px] font-bold uppercase tracking-tighter"
-              :class="{
-                'text-primary-container': $route.path === item.path,
-                'text-on-surface-variant': $route.path !== item.path,
-              }"
-            >
+            <span class="text-[10px] font-medium tracking-wide">
               {{ item.label }}
             </span>
-          </NuxtLink>
+          </button>
         </div>
       </nav>
 
@@ -158,12 +153,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
 import defaultAvatar from "~/assets/images/default_avatar.png";
 import { $api } from "~/utils/api";
+import { useI18n } from "vue-i18n";
 
+const { t } = useI18n();
+const route = useRoute();
+const navigate = useSovereignNavigate();
 const userAvatar = ref(defaultAvatar);
 
 const authStore = useAuthStore();
@@ -172,12 +171,25 @@ const agentStore = useAgentStore();
 const isProfileMenuOpen = ref(false);
 const isLogoutModalOpen = ref(false);
 
-const navItems = [
-  { label: "Feed", icon: "auto_awesome_motion", path: "/dashboard" },
-  { label: "Saved", icon: "bookmark", path: "/saved" },
-  { label: "Shared", icon: "share", path: "/shared" },
-  { label: "Trends", icon: "insights", path: "/trends" },
-];
+const navItems = computed(() => [
+  {
+    label: t("appLayout.navigation.feed"),
+    icon: "auto_awesome_motion",
+    path: "/dashboard",
+  },
+  { label: t("appLayout.navigation.saved"), icon: "bookmark", path: "/saved" },
+  { label: t("appLayout.navigation.shared"), icon: "share", path: "/shared" },
+  {
+    label: t("appLayout.navigation.trends"),
+    icon: "insights",
+    path: "/trends",
+  },
+]);
+
+const handleMenuNavigation = (path: string) => {
+  isProfileMenuOpen.value = false;
+  navigate.push(path);
+};
 
 const openLogoutModal = () => {
   isProfileMenuOpen.value = false;
@@ -187,7 +199,7 @@ const openLogoutModal = () => {
 const handleSecureLogout = async () => {
   // 1. Megkérjük a szervert, hogy semmisítse meg a HttpOnly sütiket
   try {
-    await $api('/api/auth/logout', { method: 'POST' });
+    await $api("/api/auth/logout", { method: "POST" });
   } catch (error) {
     console.error("Sovereign Shield: Logout API hívás sikertelen", error);
   }
@@ -209,7 +221,7 @@ const handleSecureLogout = async () => {
   if (process.client) {
     localStorage.removeItem("nusift_visited");
     sessionStorage.clear();
-    
+
     // Hard-redirect a bejelentkező oldalra
     window.location.href = "/auth";
   }

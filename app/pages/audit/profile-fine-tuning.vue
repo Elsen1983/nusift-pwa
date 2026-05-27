@@ -213,10 +213,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from "vue";
 import { useAgentStore } from "~/stores/agent";
+import { useAuthStore } from "~/stores/auth";
 definePageMeta({ layout: "app-layout" });
 import { $api } from "~/utils/api";
 
 const agentStore = useAgentStore();
+const authStore = useAuthStore();
 const globalHasChanges = ref(false); // Tracks if there are unsaved changes globally
 const isSavingGlobal = ref(false);   // Tracks API call state
 const isActiveSectionOpen = ref(true);
@@ -475,12 +477,26 @@ const saveAllChanges = async () => {
       chips: cat.chips
     }));
 
+    // 1. Update Agent Store
     agentStore.topInterests = structuredInterests;
 
+    // 2. Persist to Backend
     await $api("/api/user/update-interests", {
       method: "POST",
       body: { interests: structuredInterests }
     });
+
+    // 3. ANCHOR: Synchronize Auth Store & Local Storage
+    if (authStore.user) {
+      authStore.user.topInterests = structuredInterests; 
+      
+      if (!import.meta.server) {
+        localStorage.setItem(
+          "nusift_pwa_profile", 
+          JSON.stringify(authStore.user)
+        );
+      }
+    }
 
     globalHasChanges.value = false;
     

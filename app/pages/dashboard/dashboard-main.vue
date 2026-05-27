@@ -11,7 +11,7 @@
           >
             <span
               class="font-label text-[10px] uppercase tracking-wider font-bold text-on-surface-variant"
-              >Date</span
+              >{{ $t("dashboard.header.date_label") }}</span
             >
             <div
               @click="toggleDateDropdown"
@@ -21,7 +21,9 @@
                 <div class="flex justify-between items-center w-full min-w-0">
                   <span
                     class="font-label font-medium text-on-surface-variant truncate"
-                    >{{ currentSelectedDate }}</span
+                    >{{
+                      $t("dashboard.filters.dates." + currentSelectedDateKey)
+                    }}</span
                   >
                   <span
                     class="material-symbols-outlined text-[18px] text-primary-container flex-shrink-0 ml-2"
@@ -36,11 +38,24 @@
             >
               <div
                 v-for="option in dateOptions"
-                :key="option"
-                @click="selectDate(option)"
-                class="text-[13px] text-on-surface-variant/70 hover:text-primary-container transition-colors py-1 cursor-pointer"
+                :key="option.key"
+                @click="
+                  !(option.isPro && isUserFreeTier) && selectDate(option.key)
+                "
+                :class="[
+                  'text-[13px] font-bold transition-colors py-1',
+                  option.isPro && isUserFreeTier
+                    ? 'text-on-surface-variant/30 cursor-not-allowed italic'
+                    : 'text-on-surface-variant/90 hover:text-primary-container cursor-pointer',
+                ]"
               >
-                {{ option }}
+                {{ $t("dashboard.filters.dates." + option.key) }}
+                <span
+                  v-if="option.isPro && isUserFreeTier"
+                  class="material-symbols-outlined text-[12px] ml-1 align-text-bottom"
+                >
+                  lock
+                </span>
               </div>
             </div>
           </div>
@@ -51,7 +66,7 @@
           >
             <span
               class="font-label text-[10px] uppercase tracking-wider font-bold text-on-surface-variant"
-              >Categories</span
+              >{{ $t("dashboard.header.categories_label") }}</span
             >
             <div
               @click="toggleCategoryDropdown"
@@ -64,8 +79,8 @@
                   >
                     {{
                       selectedCategories.length > 0
-                        ? selectedCategories.join(", ")
-                        : "All Categories"
+                        ? localizedSelectedCategories
+                        : $t("dashboard.header.all_categories")
                     }}
                   </span>
                   <span
@@ -82,26 +97,26 @@
               <div
                 @click="selectCategory('All Categories')"
                 :class="[
-                  'text-[13px] hover:text-primary-container transition-colors py-0.5 cursor-pointer',
+                  'text-[13px] font-bold hover:text-primary-container transition-colors py-0.5 cursor-pointer',
                   selectedCategories.length === 0
                     ? 'text-[#00E5FF]'
-                    : 'text-on-surface-variant/70',
+                    : 'text-on-surface-variant/100',
                 ]"
               >
-                All Categories
+                {{ $t("dashboard.header.all_categories") }}
               </div>
               <div
                 v-for="cat in availableCategories"
-                :key="cat"
-                @click="selectCategory(cat)"
+                :key="cat.key"
+                @click="selectCategory(cat.value)"
                 :class="[
-                  'text-[13px] hover:text-primary-container transition-colors py-0.5 cursor-pointer',
-                  selectedCategories.includes(cat)
+                  'text-[13px] font-bold hover:text-primary-container transition-colors py-0.5 cursor-pointer',
+                  selectedCategories.includes(cat.value)
                     ? 'text-[#00E5FF]'
-                    : 'text-on-surface-variant/70',
+                    : 'text-on-surface-variant/90',
                 ]"
               >
-                {{ cat }}
+                {{ $t("dashboard.filters.categories." + cat.key) }}
               </div>
             </div>
           </div>
@@ -150,9 +165,17 @@
         <div class="flex items-center gap-3 text-xs font-medium">
           <button class="text-[#00E5FF] font-bold transition-colors">1</button>
           <span class="text-outline-variant/30 text-[10px]">|</span>
-          <button class="text-on-surface-variant hover:text-[#00E5FF] transition-colors">2</button>
+          <button
+            class="text-on-surface-variant hover:text-[#00E5FF] transition-colors"
+          >
+            2
+          </button>
           <span class="text-outline-variant/30 text-[10px]">|</span>
-          <button class="text-on-surface-variant hover:text-[#00E5FF] transition-colors">3</button>
+          <button
+            class="text-on-surface-variant hover:text-[#00E5FF] transition-colors"
+          >
+            3
+          </button>
         </div>
       </section>
 
@@ -180,14 +203,30 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
+import { useAuthStore } from "~/stores/auth";
 import { $api } from "~/utils/api";
 
-// Define the layout constraint
+const { t } = useI18n();
+const authStore = useAuthStore();
+
+const isUserFreeTier = computed(() => {
+  // Replace 'tier' with the actual property name if different in your UserProfile interface
+  return !authStore.user?.tier || authStore.user.tier === "FREE";
+});
+
 definePageMeta({
   layout: "app-layout",
 });
 
-// 1. Explicitly define the shape of your data
+// Define the shape of the data coming from the database/Pinia
+interface InterestNode {
+  id: string;
+  name: string;
+  weight?: number;
+  prompt?: string;
+  chips?: any[];
+}
+
 interface Article {
   id: number;
   title: string;
@@ -200,7 +239,6 @@ interface Article {
   signals: string[];
 }
 
-// --- Directives ---
 const vClickOutside = {
   mounted(el: any, binding: any) {
     el.clickOutsideEvent = function (event: Event) {
@@ -215,7 +253,6 @@ const vClickOutside = {
   },
 };
 
-// --- Mock Data ---
 const articles = ref<Article[]>([
   {
     id: 1,
@@ -297,46 +334,71 @@ const articles = ref<Article[]>([
   },
 ]);
 
-// --- Filter State ---
+// Decoupled Option Arrays
 const dateOptions = [
-  "Today",
-  "Last 48h (Free)",
-  "Last 1 Week (Pro)",
-  "Last 2 Week (Pro)",
+  { key: "today", value: "Today", isPro: false },
+  { key: "last_48h", value: "Last 48h (Free)", isPro: false },
+  { key: "last_1w", value: "Last 1 Week (Pro)", isPro: true },
+  { key: "last_2w", value: "Last 2 Week (Pro)", isPro: true },
 ];
-const availableCategories = [
-  "Politics",
-  "Technology",
-  "Economy",
-  "Health",
-  "Science",
-  "Sports",
-  "Entertainment",
-  "World",
-  "Environment",
-  "Lifestyle",
-];
+
+// ANCHOR: Dynamic Category Mapping from Pinia
+const availableCategories = computed<{ key: string; value: string }[]>(() => {
+  // Fallback to empty array if user data isn't loaded yet
+  if (!authStore.user?.topInterests) return [];
+
+  // Define a local type for clarity
+  type CategoryOption = { key: string; value: string };
+
+  // 1. Map the DB structure to the UI structure and explicitly cast the array type
+  const mappedCategories: CategoryOption[] = authStore.user.topInterests.map((interest: InterestNode) => ({
+    key: interest.id,
+    value: interest.name
+  }));
+
+  // 2. Sort alphabetically with strictly typed parameters
+  return mappedCategories.sort((a: CategoryOption, b: CategoryOption) => {
+    const translatedA = t(`dashboard.filters.categories.${a.key}`);
+    const translatedB = t(`dashboard.filters.categories.${b.key}`);
+    
+    return translatedA.localeCompare(translatedB);
+  });
+});
 
 const isDateDropdownOpen = ref(false);
 const isCategoryDropdownOpen = ref(false);
 
-const currentSelectedDate = ref("Today");
+const currentSelectedDateKey = ref("today");
 const selectedCategories = ref<string[]>([]);
 
-// Applied states for the refresh button logic
-const appliedSelectedDate = ref("Today");
+const appliedSelectedDateKey = ref("today");
 const appliedSelectedCategories = ref<string[]>([]);
 const isRefreshing = ref(false);
 
+// Format the selected categories string using the translated values
+const localizedSelectedCategories = computed(() => {
+  return selectedCategories.value
+    .map((val) => {
+      // ANCHOR: Added .value to availableCategories
+      const matchedCategory = availableCategories.value.find(
+        (c: { key: string; value: string }) => c.value === val,
+      );
+      return matchedCategory
+        ? t(`dashboard.filters.categories.${matchedCategory.key}`)
+        : val;
+    })
+    .join(", ");
+});
+
 const hasPendingFilters = computed(() => {
-  const dateChanged = currentSelectedDate.value !== appliedSelectedDate.value;
+  const dateChanged =
+    currentSelectedDateKey.value !== appliedSelectedDateKey.value;
   const catChanged =
     JSON.stringify(selectedCategories.value) !==
     JSON.stringify(appliedSelectedCategories.value);
   return dateChanged || catChanged;
 });
 
-// --- Filter Methods ---
 const toggleDateDropdown = () => {
   isDateDropdownOpen.value = !isDateDropdownOpen.value;
   isCategoryDropdownOpen.value = false;
@@ -347,23 +409,18 @@ const toggleCategoryDropdown = () => {
   isDateDropdownOpen.value = false;
 };
 
-const closeAllDropdowns = () => {
-  isDateDropdownOpen.value = false;
-  isCategoryDropdownOpen.value = false;
-};
-
-const selectDate = (option: string) => {
-  currentSelectedDate.value = option;
+const selectDate = (key: string) => {
+  currentSelectedDateKey.value = key;
   isDateDropdownOpen.value = false;
 };
 
-const selectCategory = (cat: string) => {
-  if (cat === "All Categories") {
+const selectCategory = (catValue: string) => {
+  if (catValue === "All Categories") {
     selectedCategories.value = [];
   } else {
-    const index = selectedCategories.value.indexOf(cat);
+    const index = selectedCategories.value.indexOf(catValue);
     if (index === -1) {
-      selectedCategories.value.push(cat);
+      selectedCategories.value.push(catValue);
     } else {
       selectedCategories.value.splice(index, 1);
     }
@@ -374,15 +431,13 @@ const applyFilters = () => {
   if (!hasPendingFilters.value || isRefreshing.value) return;
 
   isRefreshing.value = true;
-  // Simulate API call for filtering
   setTimeout(() => {
-    appliedSelectedDate.value = currentSelectedDate.value;
+    appliedSelectedDateKey.value = currentSelectedDateKey.value;
     appliedSelectedCategories.value = [...selectedCategories.value];
     isRefreshing.value = false;
   }, 600);
 };
 
-// --- Article Interaction State ---
 const activeActionMenu = ref<number | null>(null);
 const activeOverlay = ref<number | null>(null);
 
@@ -406,7 +461,6 @@ const openOverlay = (id: number) => {
   activeOverlay.value = id;
 };
 
-// --- Modal & Reader State ---
 const showPaywallModal = ref(false);
 const showReaderModal = ref(false);
 const activeArticleData = ref<any>(null);
@@ -446,84 +500,50 @@ const openReaderFromModal = () => {
   }, 300);
 };
 
-const closeReader = () => {
-  showReaderModal.value = false;
-  setTimeout(() => {
-    document.body.style.overflow = "";
-    activeArticleData.value = null;
-  }, 300);
-};
-
 const openInBrowser = () => {
   alert("Opening in system default browser...");
   showPaywallModal.value = false;
 };
 
-// Computes the correct initial score to pass down to the slider
 const activeRatingInitialScore = computed(() => {
   if (!activeRatingArticleId.value) return 0;
-  const article = articles.value.find(a => a.id === activeRatingArticleId.value);
+  const article = articles.value.find(
+    (a) => a.id === activeRatingArticleId.value,
+  );
   return article ? article.score : 0;
 });
 
-// Opens the modal and closes the action menu on the card
 const openRatingModal = (id: number) => {
   activeRatingArticleId.value = id;
   showRatingModal.value = true;
-  activeActionMenu.value = null; // Close the 3-dot dropdown
+  activeActionMenu.value = null;
 };
 
-// Receives the payload from the RatingModal and updates the specific article
 const handleConfirmRating = (newScore: number) => {
-  const articleIndex = articles.value.findIndex(a => a.id === activeRatingArticleId.value);
-  
+  const articleIndex = articles.value.findIndex(
+    (a) => a.id === activeRatingArticleId.value,
+  );
   if (articleIndex !== -1) {
-    // 1. Extract the specific article into a variable
     const targetArticle = articles.value[articleIndex];
-    
-    // 2. Explicitly check if it exists to satisfy TypeScript
     if (targetArticle) {
-      // 3. Mutate the property
       targetArticle.score = newScore;
     }
   }
 };
 
-// const handleConfirmRating = async (newScore: number) => {
-//   const articleIndex = articles.value.findIndex(a => a.id === activeRatingArticleId.value);
-  
-//   if (articleIndex !== -1) {
-//     const targetArticle = articles.value[articleIndex];
-//     if (targetArticle) {
-//       try {
-//         // HÍVD MEG AZ API-T AZ ÚJ $api KLISENSSEL
-//         await $api('/api/user/rate-article', {
-//           method: 'POST',
-//           body: { id: targetArticle.id, score: newScore }
-//         });
-        
-//         // Csak sikeres mentés után frissítjük a lokális UI-t
-//         targetArticle.score = newScore;
-//       } catch (error) {
-//         console.error("Failed to sync rating:", error);
-//         // Itt nem kell manuálisan redirectelni, az $api interceptor automatikusan megteszi 401 esetén
-//       }
-//     }
-//   }
-// };
-
-// Ez a blokk automatikusan kezeli a görgetést
-watch([showPaywallModal, showReaderModal, showRatingModal], ([newPaywall, newReader, newRating]) => {
-  if (newPaywall || newReader || newRating) {
-    document.body.style.overflow = 'hidden';
-  } else {
-    document.body.style.overflow = '';
-  }
-});
+watch(
+  [showPaywallModal, showReaderModal, showRatingModal],
+  ([newPaywall, newReader, newRating]) => {
+    if (newPaywall || newReader || newRating) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+  },
+);
 </script>
 
 <style scoped>
-/* Hide scrollbar for category dropdown */
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
 }

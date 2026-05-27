@@ -133,16 +133,31 @@
         "version": "Version 2.4.0-Alpha",
         "footer": "Securing your digital sovereignty",
         "quotes": [
-            { "text": "In a time of deceit, telling the truth is a revolutionary act.", "author": "George Orwell" },
-            { "text": "The truth is rarely pure and never simple.", "author": "Oscar Wilde" },
-            { "text": "Information is the currency of democracy.", "author": "Thomas Jefferson" },
-            { "text": "A lie can travel half way around the world while the truth is putting on its shoes.", "author": "Mark Twain" }
+            {
+                "text": "In a time of deceit, telling the truth is a revolutionary act.",
+                "author": "George Orwell"
+            },
+            {
+                "text": "The truth is rarely pure and never simple.",
+                "author": "Oscar Wilde"
+            },
+            {
+                "text": "Information is the currency of democracy.",
+                "author": "Thomas Jefferson"
+            },
+            {
+                "text": "A lie can travel half way around the world while the truth is putting on its shoes.",
+                "author": "Mark Twain"
+            }
         ]
     },
     "preloaderSecond": {
         "forging": "FORGING INTELLIGENCE HORIZON...",
         "quotes": [
-            { "text": "When you sift through the noise, you don't just find information; you find clarity. And in clarity, you find your own path.", "author": "" }
+            {
+                "text": "When you sift through the noise, you don't just find information; you find clarity. And in clarity, you find your own path.",
+                "author": ""
+            }
         ]
     },
     "regionCalibration": {
@@ -201,26 +216,104 @@
         "categories_title": "Categories",
         "selected_count": "Selected",
         "categories": {
-            "politics": "Politics",
-            "economy": "Economy",
-            "technology": "Technology",
-            "science": "Science",
-            "health": "Health",
-            "environment": "Environment",
-            "entertainment": "Entertainment",
-            "culture": "Culture",
-            "sports": "Sports",
-            "society": "Society",
-            "transport": "Transport",
-            "lifestyle": "Lifestyle",
-            "gastronomy": "Gastronomy",
-            "real_estate": "Real Estate",
-            "gardening": "Gardening",
-            "travel": "Travel",
-            "hobbies": "Hobbies",
-            "education": "Education"
-        },
+                "politics": "Politics",
+                "technology": "Technology",
+                "economy": "Economy",
+                "health": "Health",
+                "science": "Science",
+                "sports": "Sports",
+                "entertainment": "Entertainment",
+                "world": "World",
+                "environment": "Environment",
+                "lifestyle": "Lifestyle",
+                "culture": "Culture",
+                "society": "Society",
+                "transport": "Transport",
+                "gastronomy": "Gastronomy",
+                "real_estate": "Real Estate",
+                "gardening": "Gardening",
+                "travel": "Travel",
+                "hobbies": "Hobbies",
+                "education": "Education",
+                "business": "Business",
+                "art_&_culture": "Art & Culture",
+                "food_&_drink": "Food & Drink",
+                "gaming": "Gaming",
+                "automotive": "Automotive",
+                "law_&_crime": "Law & Crime"
+            },
         "btn_next": "Next: Build My Feed",
         "btn_finalizing": "Finalizing..."
+    },
+    "dashboardInitiate": {
+        "header": {
+            "slogan_line1": "AI Search and Filtering.",
+            "slogan_line2": "Guided by Your Hand."
+        },
+        "content": {
+            "title": "Your News Horizon is Ready.",
+            "description": "Your agents have been deployed and your interests mapped. Click the button below to perform your first deep search and generate your curated feed.",
+            "btn_initiate": "Initiate First Sift"
+        }
+    },
+    "appLayout": {
+        "header": {
+            "slogan_line1": "AI Search and Filtering.",
+            "slogan_line2": "Guided by Your Hand."
+        },
+        "profileMenu": {
+            "my_profile": "My Profile",
+            "agent_fine_tuning": "Agent Fine-Tuning",
+            "source_manager": "Source Manager",
+            "logout": "Logout"
+        },
+        "navigation": {
+            "feed": "Feed",
+            "saved": "Saved",
+            "shared": "Shared",
+            "trends": "Trends"
+        }
+    },
+    "dashboard": {
+        "header": {
+            "date_label": "Date",
+            "categories_label": "Categories",
+            "all_categories": "All Categories"
+        },
+        "filters": {
+            "dates": {
+                "today": "Today",
+                "last_48h": "Last 48h",
+                "last_1w": "Last 1 Week (Pro)",
+                "last_2w": "Last 2 Week (Pro)"
+            },
+            "categories": {
+                "politics": "Politics",
+                "technology": "Technology",
+                "economy": "Economy",
+                "health": "Health",
+                "science": "Science",
+                "sports": "Sports",
+                "entertainment": "Entertainment",
+                "world": "World",
+                "environment": "Environment",
+                "lifestyle": "Lifestyle",
+                "culture": "Culture",
+                "society": "Society",
+                "transport": "Transport",
+                "gastronomy": "Gastronomy",
+                "real_estate": "Real Estate",
+                "gardening": "Gardening",
+                "travel": "Travel",
+                "hobbies": "Hobbies",
+                "education": "Education",
+                "business": "Business",
+                "art_&_culture": "Art & Culture",
+                "food_&_drink": "Food & Drink",
+                "gaming": "Gaming",
+                "automotive": "Automotive",
+                "law_&_crime": "Law & Crime"
+            }
+        }
     }
 }

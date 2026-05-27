@@ -19,7 +19,7 @@
               <span
                 class="text-[#00E5FF] font-label text-[9px] uppercase tracking-[0.15em] leading-tight block opacity-80 group-hover:opacity-100 transition-opacity"
               >
-                AI Filtering.<br />Guided by Your Hand.
+                {{ $t('dashboardInitiate.header.slogan_line1') }}<br />{{ $t('dashboardInitiate.header.slogan_line2') }}
               </span>
             </div>
           </div>
@@ -64,14 +64,12 @@
           <h1
             class="font-headline font-bold text-3xl text-[#00E5FF] leading-tight"
           >
-            Your Horizon is Ready.
+            {{ $t('dashboardInitiate.content.title') }}
           </h1>
           <p
             class="text-sm font-body text-on-surface-variant leading-relaxed max-w-md mx-auto"
           >
-            Your agents have been deployed and your interests mapped. Click the
-            button below to perform your first deep sift and generate your
-            curated feed.
+            {{ $t('dashboardInitiate.content.description') }}
           </p>
           <button
             @click="initiateSift"
@@ -89,7 +87,7 @@
               class="animate-spin h-4 w-4 border-2 border-[#131313] border-t-transparent rounded-full"
             ></span>
             <span class="uppercase tracking-wider text-sm"
-              >Initiate First Sift</span
+              >{{ $t('dashboardInitiate.content.btn_initiate') }}</span
             >
           </button>
         </section>
@@ -100,11 +98,10 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
-import { useRouter } from "vue-router";
 import defaultAvatar from "~/assets/images/default_avatar.png";
 
 const isDisabled = ref(true);
-const router = useRouter();
+const navigate = useSovereignNavigate();
 const userAvatar = ref(defaultAvatar);
 const isSifting = ref(false);
 
@@ -115,7 +112,7 @@ const initiateSift = () => {
 
   setTimeout(() => {
     isSifting.value = false;
-    router.replace("/dashboard");
+    navigate.replace("/dashboard");
   }, 2500);
 };
 </script>

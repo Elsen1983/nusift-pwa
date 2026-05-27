@@ -16,6 +16,7 @@ interface UserProfile {
   preferredLanguage?: string;
   topSources: string[];
   topInterests: any; 
+  tier: string;
 }
 
 export const useAuthStore = defineStore("auth", () => {
