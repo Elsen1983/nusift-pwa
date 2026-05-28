@@ -217,30 +217,30 @@
         "selected_count": "Kiválasztva",
         "categories": {
             "politics": "Politika",
-                "technology": "Technológia",
-                "economy": "Gazdaság",
-                "health": "Egészségügy",
-                "science": "Tudomány",
-                "sports": "Sport",
-                "entertainment": "Szórakozás",
-                "world": "Világ",
-                "environment": "Környezet",
-                "lifestyle": "Életmód",
-                "culture": "Kultúra",
-                "society": "Társadalom",
-                "transport": "Közlekedés",
-                "gastronomy": "Gasztronómia",
-                "real_estate": "Ingatlan",
-                "gardening": "Kertészkedés",
-                "travel": "Utazás",
-                "hobbies": "Hobbik",
-                "education": "Oktatás",
-                "business": "Üzlet",
-                "art_&_culture": "Művészet és Kultúra",
-                "food_&_drink": "Étel és Ital",
-                "gaming": "Játékok",
-                "automotive": "Autóipar",
-                "law_&_crime": "Jog és Bűnügy"
+            "technology": "Technológia",
+            "economy": "Gazdaság",
+            "health": "Egészségügy",
+            "science": "Tudomány",
+            "sports": "Sport",
+            "entertainment": "Szórakozás",
+            "world": "Világ",
+            "environment": "Környezet",
+            "lifestyle": "Életmód",
+            "culture": "Kultúra",
+            "society": "Társadalom",
+            "transport": "Közlekedés",
+            "gastronomy": "Gasztronómia",
+            "real_estate": "Ingatlan",
+            "gardening": "Kertészkedés",
+            "travel": "Utazás",
+            "hobbies": "Hobbik",
+            "education": "Oktatás",
+            "business": "Üzlet",
+            "art_&_culture": "Művészet és Kultúra",
+            "food_&_drink": "Étel és Ital",
+            "gaming": "Játékok",
+            "automotive": "Autóipar",
+            "law_&_crime": "Jog és Bűnügy"
         },
         "btn_next": "Tovább: Hírfolyam Felépítése",
         "btn_finalizing": "Véglegesítés..."
@@ -263,7 +263,7 @@
         },
         "profileMenu": {
             "my_profile": "Profilom",
-            "agent_fine_tuning": "Ügynök Finomhangolása",
+            "agent_fine_tuning": "Kategóriák Beállítása",
             "source_manager": "Forráskezelő",
             "logout": "Kijelentkezés"
         },
@@ -330,8 +330,67 @@
             "personal_rating": "Személyes Értékelés"
         }
     },
-
-
+    "paywallModal": {
+        "title": "Fizetős Tartalom",
+        "description": "Ez a cikk fizetőfal mögött található. Használd a biztonságos protokollunkat, vagy nyisd meg a böngészőben.",
+        "btn_browser": "Megnyitás Böngészőben",
+        "btn_read": "Olvasás NuSift-ben",
+        "btn_cancel": "Mégsem"
+    },
+    "articleReaderModal": {
+        "badge_preview": "Cikk Tartalma",
+        "paywall_title": "Olvasd Tovább a Kiadó Oldalán",
+        "btn_browser": "Megnyitás Böngészőben"
+    },
+    "personalRatingModal": {},
+    "notInterestedModal": {},
+    "readLaterModal": {},
+    "saveFavouriteModal": {},
+    "shareModal": {},
+    "categoriesSetup": {
+        "badge": "A Te Hírfolyamod, A Te Szabályaid",
+        "title": "Mond meg az AI-nak, mi érdekel",
+        "description": "Eleged van a zajból? Itt te irányítasz. Válaszd ki a fő témáidat, adj meg specifikus kulcsszavakat, és mondd el az AI asszisztensednek, pontosan milyen híreket szeretnél látni. Mi kiszűrjük a felesleget, hogy csak azt lásd, amit keresel. Minél jobban finomhangolod ezeket a beállításokat, annál jobb lesz a hírfolyamod.",
+        "active_title": "Aktív Kategóriák",
+        "active_count": "{count} Aktív",
+        "inactive_title": "Inaktív Kategóriák",
+        "danger_zone": {
+            "badge": "Veszélyzóna",
+            "export": "Érdeklődési Gráf Exportálása",
+            "reset": "AI Memória Törlése"
+        },
+        "save_btn": {
+            "saving": "MENTÉS FOLYAMATBAN...",
+            "save": "ÖSSZES VÁLTOZÁS MENTÉSE"
+        },
+        "categories": {
+            "politics": "Politika",
+            "technology": "Technológia",
+            "economy": "Gazdaság",
+            "health": "Egészségügy",
+            "science": "Tudomány",
+            "sports": "Sport",
+            "entertainment": "Szórakozás",
+            "world": "Világ",
+            "environment": "Környezet",
+            "lifestyle": "Életmód",
+            "culture": "Kultúra",
+            "society": "Társadalom",
+            "transport": "Közlekedés",
+            "gastronomy": "Gasztronómia",
+            "real_estate": "Ingatlan",
+            "gardening": "Kertészkedés",
+            "travel": "Utazás",
+            "hobbies": "Hobbik",
+            "education": "Oktatás",
+            "business": "Üzlet",
+            "art_&_culture": "Művészet és Kultúra",
+            "food_&_drink": "Étel és Ital",
+            "gaming": "Játékok",
+            "automotive": "Autóipar",
+            "law_&_crime": "Jog és Bűnügy"
+        }
+    },
     "logoutModal": {
         "title": "Munkamenet Befejezése?",
         "description": "Biztosan be akarod fejezni a biztonságos munkamenetet? Minden nem mentett ügynök-konfiguráció vagy kalibrációs adat elveszhet.",

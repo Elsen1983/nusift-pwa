@@ -263,7 +263,7 @@
         },
         "profileMenu": {
             "my_profile": "My Profile",
-            "agent_fine_tuning": "Agent Fine-Tuning",
+            "agent_fine_tuning": "Categories Setup",
             "source_manager": "Source Manager",
             "logout": "Logout"
         },
@@ -330,6 +330,70 @@
             "personal_rating": "Personal Rating"
         }
     },
+    "paywallModal": {
+        "title": "Paywall Detected",
+        "description": "This article is published behind a paywall. Use our secure protocol or open in browser.",
+        "btn_browser": "Open in Browser",
+        "btn_read": "Read in NuSift",
+        "btn_cancel": "Cancel"
+    },
+    "articleReaderModal": {
+        "badge_preview": "Article Content",
+        "paywall_title": "Continue Reading on Publisher's Site",
+        "btn_browser": "Open in Browser"
+    },
+    "personalRatingModal": {},
+    "notInterestedModal": {},
+    "readLaterModal": {},
+    "saveFavouriteModal": {},
+    "shareModal": {},
+    
+    
+    "categoriesSetup": {
+        "badge": "Your Feed, Your Rules",
+        "title": "Tell your AI what you care about",
+        "description": "Tired of the noise? You are the boss. Choose your main topics, add specific keywords, and tell your AI assistant exactly what kind of news you want to see. We will filter out the junk, showing you only what you are looking for. The more you tweak these settings, the better your feed gets.",
+        "active_title": "Active Categories",
+        "active_count": "{count} Active",
+        "inactive_title": "Inactive Categories",
+        "danger_zone": {
+            "badge": "System Danger Zone",
+            "export": "Export Interest Graph",
+            "reset": "Reset Agent Memory"
+        },
+        "save_btn": {
+            "saving": "SAVING CHANGES...",
+            "save": "SAVE ALL CHANGES"
+        },
+        "categories": {
+            "politics": "Politics",
+            "technology": "Technology",
+            "economy": "Economy",
+            "health": "Health",
+            "science": "Science",
+            "sports": "Sports",
+            "entertainment": "Entertainment",
+            "world": "World",
+            "environment": "Environment",
+            "lifestyle": "Lifestyle",
+            "culture": "Culture",
+            "society": "Society",
+            "transport": "Transport",
+            "gastronomy": "Gastronomy",
+            "real_estate": "Real Estate",
+            "gardening": "Gardening",
+            "travel": "Travel",
+            "hobbies": "Hobbies",
+            "education": "Education",
+            "business": "Business",
+            "art_&_culture": "Art & Culture",
+            "food_&_drink": "Food & Drink",
+            "gaming": "Gaming",
+            "automotive": "Automotive",
+            "law_&_crime": "Law & Crime"
+        }
+    },
+
 
 
 

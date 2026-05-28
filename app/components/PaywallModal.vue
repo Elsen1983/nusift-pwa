@@ -14,21 +14,27 @@
           <div class="w-14 h-14 bg-[#201f1f] rounded-full flex items-center justify-center mb-5 border border-[#40484a]/20 shadow-inner">
             <span class="material-symbols-outlined text-[28px] text-[#9ecfd8]" :style="{ fontVariationSettings: '\'FILL\' 1' }">lock</span>
           </div>
-          <h3 class="font-headline text-[#e5e2e1] font-bold text-lg mb-3 leading-tight tracking-tight">Paywall Detected</h3>
-          <p class="text-xs font-body text-[#c0c8ca] leading-relaxed mb-8 px-2">
-            This article is published behind a paywall. Use our secure protocol or open in browser.
+          <h3 class="font-headline text-[#e5e2e1] font-bold text-lg mb-3 leading-tight tracking-tight">
+            {{ $t('paywallModal.title') }}
+          </h3>
+          <p class="text-[14px] font-body text-[#c0c8ca] leading-relaxed mb-8 px-2">
+            {{ $t('paywallModal.description') }}
           </p>
           <div class="flex flex-col gap-3 w-full">
-            <button @click="$emit('browser')" class="w-full h-11 bg-[#201f1f] border border-[#40484a]/30 text-[#e5e2e1] font-label text-xs font-bold rounded-full flex items-center justify-center gap-2 hover:bg-[#393939]">
-              <span class="material-symbols-outlined text-[18px]">open_in_browser</span> Open in Browser
+            <button @click="$emit('browser')" class="w-full h-11 bg-[#201f1f] border border-[#40484a]/30 text-[#e5e2e1] font-label text-xs font-bold rounded-full flex items-center justify-center gap-2 hover:bg-[#393939] transition-colors">
+              <span class="material-symbols-outlined text-[18px]">open_in_browser</span> 
+              {{ $t('paywallModal.btn_browser') }}
             </button>
             <button @click="$emit('read')" class="w-full h-11 relative overflow-hidden rounded-full font-label text-xs font-bold tracking-wider uppercase group">
               <div class="absolute inset-0 bg-gradient-to-r from-[#ffffff] to-[#b9ebf5] opacity-90 group-hover:opacity-100 transition-opacity"></div>
               <span class="relative z-10 text-[#001f24] flex items-center justify-center gap-2">
-                <span class="material-symbols-outlined text-[18px]" :style="{ fontVariationSettings: '\'FILL\' 1' }">menu_book</span> Read in NuSift
+                <span class="material-symbols-outlined text-[18px]" :style="{ fontVariationSettings: '\'FILL\' 1' }">menu_book</span> 
+                {{ $t('paywallModal.btn_read') }}
               </span>
             </button>
-            <button @click="$emit('update:modelValue', false)" class="mt-2 text-[10px] font-label text-[#c0c8ca]/70 hover:text-[#e5e2e1] py-2 uppercase tracking-wider font-bold">Cancel</button>
+            <button @click="$emit('update:modelValue', false)" class="mt-2 text-[14px] font-label text-[#c0c8ca]/70 hover:text-[#e5e2e1] py-2 uppercase tracking-wider font-bold transition-colors">
+              {{ $t('paywallModal.btn_cancel') }}
+            </button>
           </div>
         </div>
       </div>

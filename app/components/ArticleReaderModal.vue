@@ -16,20 +16,24 @@
         </div>
         <div class="px-6 pb-24 pt-2 flex-1 flex flex-col relative">
           <div class="flex items-center gap-2 mb-4">
-            <span class="font-label text-[10px] uppercase tracking-widest text-[#00E5FF] font-bold">Article Preview</span>
+            <span class="font-label text-[10px] uppercase tracking-widest text-[#00E5FF] font-bold">
+              {{ $t('articleReaderModal.badge_preview') }}
+            </span>
           </div>
           <h1 class="font-headline text-2xl md:text-3xl font-bold text-[#e5e2e1] mb-6 leading-tight">{{ article.title }}</h1>
           
           <div class="font-body text-sm md:text-base text-[#c0c8ca] leading-relaxed space-y-5" v-html="content"></div>
           
           <div v-if="article.isPaywall" class="absolute bottom-0 left-0 w-full h-[400px] bg-gradient-to-t from-[#131313] via-[#131313]/95 to-transparent flex flex-col items-center justify-end pb-12 px-6 z-10">
-            <div class="pointer-events-auto flex flex-col items-center w-full">
+            <div class="pointer-events-auto flex flex-col items-center w-full pb-12">
               <div class="w-14 h-14 bg-[#201f1f] rounded-full flex items-center justify-center mb-5 border border-[#40484a]/20">
                 <span class="material-symbols-outlined text-[28px] text-[#9ecfd8]" :style="{ fontVariationSettings: '\'FILL\' 1' }">lock</span>
               </div>
-              <h3 class="font-headline text-[#e5e2e1] font-bold text-lg mb-2 text-center">Continue Reading on Publisher's Site</h3>
-              <button @click="$emit('browser')" class="w-full max-w-[280px] py-3 px-4 bg-gradient-to-r from-[#c3f5ff] to-[#00e5ff] text-[#131313] font-bold rounded-xl text-xs uppercase tracking-wider shadow-[0_4px_12px_rgba(0,229,255,0.2)]">
-                Open in Browser
+              <h3 class="font-headline text-[#e5e2e1] font-bold text-[16px] mb-2 text-center">
+                {{ $t('articleReaderModal.paywall_title') }}
+              </h3>
+              <button @click="$emit('browser')" class="w-full max-w-[280px] py-3 px-4 bg-gradient-to-r from-[#c3f5ff] to-[#00e5ff] text-[#131313] font-bold rounded-xl text-[14px] uppercase tracking-wider shadow-[0_4px_12px_rgba(0,229,255,0.2)]">
+                {{ $t('articleReaderModal.btn_browser') }}
               </button>
             </div>
           </div>

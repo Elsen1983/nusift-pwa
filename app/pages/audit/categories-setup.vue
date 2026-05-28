@@ -11,25 +11,23 @@
         >
           <span
             class="text-[10px] font-label font-bold text-primary tracking-widest uppercase"
-            >Profile Synthesis Audit</span
+            >{{ $t('categoriesSetup.badge') }}</span
           >
         </div>
         <h2
           class="font-lg text-3xl md:text-5xl font-bold text-primary leading-tight tracking-tight mb-4 text-white"
         >
-          Fine-Tune Your Intelligence
+          {{ $t('categoriesSetup.title') }}
         </h2>
         <p
-          class="text-on-surface-variant text-[12px] max-w-2xl leading-relaxed font-body"
+          class="text-on-surface-variant text-[13px] max-w-2xl leading-relaxed font-body"
         >
-          Refine how your AI Agent prioritizes information. Adjust weights,
-          provide specific technical instructions, and audit the curated
-          sub-nodes.
+          {{ $t('categoriesSetup.description') }}
         </p>
       </section>
 
       <section class="flex flex-col items-center justify-center py-0">
-        <div class="relative w-64 h-64 md:w-80 md:h-80">
+        <div class="relative w-48 h-48 md:w-80 md:h-80">
           <svg viewBox="0 0 100 100" class="w-full h-full transform -rotate-90">
             <path
               v-for="(slice, index) in pieSlices"
@@ -58,7 +56,7 @@
             <span
               class="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant"
             >
-              {{ cat.name }}
+              {{ $t('categoriesSetup.categories.' + getCatKey(cat.name)) }}
             </span>
           </div>
         </div>
@@ -73,12 +71,12 @@
             class="w-full flex items-center justify-between p-4 bg-surface-container-low/50 cursor-pointer hover:bg-surface-container-low/80 transition-colors select-none"
           >
             <h2 class="font-headline text-[16px] font-bold text-white">
-              Active Horizon
+              {{ $t('categoriesSetup.active_title') }}
             </h2>
             <div class="flex items-center gap-3">
               <span
                 class="bg-surface-container-highest px-3 py-1 rounded-full text-[12px] font-label font-bold text-primary"
-                >{{ activeCategories.length }} Active</span
+                >{{ $t('categoriesSetup.active_count', { count: activeCategories.length }) }}</span
               >
               <span
                 class="material-symbols-outlined text-on-surface-variant transition-transform duration-300"
@@ -100,7 +98,7 @@
             >
               <ActiveCategoryCard
                 :id="cat.id"
-                :title="cat.name"
+                :title="$t('categoriesSetup.categories.' + getCatKey(cat.name))"
                 :icon="cat.icon"
                 :initial-weight="cat.weight"
                 :initial-prompt="cat.initialPrompt"
@@ -126,7 +124,7 @@
             class="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-container-low/50 transition-colors select-none"
           >
             <h2 class="font-headline text-[16px] font-bold text-white">
-              Inactive Categories
+              {{ $t('categoriesSetup.inactive_title') }}
             </h2>
             <div class="flex items-center gap-3">
               <span
@@ -153,7 +151,7 @@
               )"
               :key="cat.name"
               :id="cat.name.toLowerCase().replace(/\s+/g, '_')"
-              :title="cat.name"
+              :title="$t('categoriesSetup.categories.' + getCatKey(cat.name))"
               :icon="cat.icon"
               :theme-color="cat.color"
               @add="addCategory(cat)"
@@ -161,36 +159,33 @@
           </div>
         </div>
       </section>
-      <!-- System Danger Zone (Szín-korrigált verzió) -->
+      
       <section class="flex flex-col items-center py-12">
-        <!-- A konténer: Sötét, meleg árnyalat, diszkrét lazac keret -->
         <div class="w-full max-w-md border border-error/20 rounded-2xl p-8 space-y-6 relative bg-[#181515]">
-          <!-- A fejléc: Sötét háttéren vágja el a keretet -->
           <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#181515] px-4 text-[#ffb4ab] font-label text-[10px] uppercase tracking-[0.2em] whitespace-nowrap">
-            System Danger Zone
+            {{ $t('categoriesSetup.danger_zone.badge') }}
           </div>
           
           <div class="grid grid-cols-1 gap-4">
-            <!-- 1. Gomb: Export (Semleges szürke) -->
             <button class="w-full py-4 px-6 rounded-xl border border-outline-variant/30 bg-[#1e1e1e] hover:bg-surface-container-highest transition-all flex items-center justify-between group">
               <div class="flex items-center gap-4">
                 <span class="material-symbols-outlined text-[#c0c8ca] text-xl transition-colors">cloud_download</span>
-                <span class="font-headline text-sm font-semibold text-[#e5e2e1]">Export Interest Graph</span>
+                <span class="font-headline text-sm font-semibold text-[#e5e2e1]">{{ $t('categoriesSetup.danger_zone.export') }}</span>
               </div>
               <span class="material-symbols-outlined text-on-surface-variant/30 text-sm">chevron_right</span>
             </button>
             
-            <!-- 2. Gomb: Reset (Lazac / Error szín) -->
             <button class="w-full py-4 px-6 rounded-xl border border-error/30 bg-[#1e1e1e] hover:bg-error/10 transition-all flex items-center justify-between group">
               <div class="flex items-center gap-4">
                 <span class="material-symbols-outlined text-[#ffb4ab] text-xl">delete_sweep</span>
-                <span class="font-headline text-sm font-semibold text-[#ffb4ab]">Reset Agent Memory</span>
+                <span class="font-headline text-sm font-semibold text-[#ffb4ab]">{{ $t('categoriesSetup.danger_zone.reset') }}</span>
               </div>
               <span class="material-symbols-outlined text-error/40 text-sm">chevron_right</span>
             </button>
           </div>
         </div>
       </section>
+      
       <section class="flex justify-center w-full pt-8 pb-12 px-4">
         <button 
           id="global-save-btn"
@@ -200,23 +195,23 @@
         >
           <span v-if="!isSavingGlobal" class="material-symbols-outlined">save</span>
           <span v-else class="material-symbols-outlined animate-spin">progress_activity</span>
-          {{ isSavingGlobal ? 'SAVING CHANGES...' : 'SAVE ALL CHANGES' }}
+          {{ isSavingGlobal ? $t('categoriesSetup.save_btn.saving') : $t('categoriesSetup.save_btn.save') }}
         </button>
       </section>
       <div class="h-10"></div>
-      
     </main>
-    
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from "vue";
+import { useI18n } from "vue-i18n";
 import { useAgentStore } from "~/stores/agent";
 import { useAuthStore } from "~/stores/auth";
 definePageMeta({ layout: "app-layout" });
 import { $api } from "~/utils/api";
 
+const { t } = useI18n();
 const agentStore = useAgentStore();
 const authStore = useAuthStore();
 const globalHasChanges = ref(false); // Tracks if there are unsaved changes globally
@@ -225,6 +220,11 @@ const isActiveSectionOpen = ref(true);
 const isInactiveSectionOpen = ref(true);
 // NEW: Tick system to broadcast successful saves to all cards
 const globalSaveTick = ref(0);
+
+// Helper function to map complex names to simple JSON keys
+const getCatKey = (name: string) => {
+  return name.toLowerCase().replace(/\s+/g, '_');
+};
 
 const availableCategories = [
   { name: "Politics", icon: "policy", color: "#FFFFFF" },
@@ -258,48 +258,7 @@ interface ActiveCategory {
   isNew?: boolean; // AZ OPCIONÁLIS MEZŐ, ami miatt nem lesz több hiba!
 }
 
-const activeCategories = ref<ActiveCategory[]>([
-  // {
-  //   id: "ai_strategy",
-  //   name: "Technology",
-  //   weight: 85,
-  //   icon: "memory",
-  //   color: "#00E5FF",
-  //   prompt:
-  //     "Focus exclusively on architectural advancements, LLM scaling laws, and decentralized infrastructure.",
-  //   chips: ["LLMs", "Rust", "Web3"],
-  // },
-  // {
-  //   id: "market_analysis",
-  //   name: "Economy",
-  //   weight: 60,
-  //   icon: "monitoring",
-  //   color: "#fec931",
-  //   prompt:
-  //     "Filter out clickbait. Prioritize institutional reports, macro trends, and deep quantitative analysis.",
-  //   chips: ["Macro", "Venture Capital"],
-  // },
-  // {
-  //   id: "geopolitics",
-  //   name: "Politics",
-  //   weight: 45,
-  //   icon: "public",
-  //   color: "#FFFFFF",
-  //   prompt:
-  //     "Track EU tech regulations, AI governance acts, and global trade shifts affecting the semiconductor supply chain.",
-  //   chips: ["EU Regs", "Supply Chain"],
-  // },
-  // {
-  //   id: "science",
-  //   name: "Science",
-  //   weight: 30,
-  //   icon: "science",
-  //   color: "#00626e",
-  //   prompt:
-  //     "Focus on quantum computing breakthroughs and material sciences relevant to clean energy.",
-  //   chips: ["Quantum", "Clean Energy"],
-  // },
-]);
+const activeCategories = ref<ActiveCategory[]>([]);
 
 // Hydrate from Pinia on mount
 onMounted(() => {

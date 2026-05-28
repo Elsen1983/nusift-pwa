@@ -67,7 +67,7 @@
                 </button>
 
                 <button
-                  @click="handleMenuNavigation('/audit/profile-fine-tuning')"
+                  @click="handleMenuNavigation('/audit/categories-setup')"
                   class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group w-full text-left"
                 >
                   <span
