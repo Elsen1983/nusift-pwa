@@ -25,16 +25,17 @@
       <button
         @click="$emit('deactivate', id)"
         class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-red-500/10 text-on-surface-variant hover:text-red-400 transition-colors"
-        title="Deactivate Category"
+        :title="$t('activeCategoryCard.deactivate')"
       >
         <span class="material-symbols-outlined text-lg">close</span>
       </button>
     </div>
 
     <div class="space-y-2">
-      <div class="space-y-2 relative">
+      <!-- Fixed Mobile Safe-Zone CSS -->
+      <div class="space-y-2 relative max-w-[80%] md:max-w-full">
         <div class="flex justify-between text-[10px] text-on-surface-variant uppercase font-label font-bold tracking-wider">
-          <span>Priority Weight</span>
+          <span>{{ $t('activeCategoryCard.priority_weight') }}</span>
           <span :class="hasWeightChanged ? 'text-[#fec931]' : 'text-primary'">
             <template v-if="hasWeightChanged">
               {{ isLocallyNew ? 0 : originalWeight }}% 
@@ -45,28 +46,31 @@
           </span>
         </div>
         
-        <div v-if="hasWeightChanged" class="absolute h-1 bg-[#fec931]/30 rounded-lg pointer-events-none" 
+        <div v-if="hasWeightChanged" class="absolute h-1 bg-[#fec931]/60 rounded-lg pointer-events-none" 
              :style="sliderDiffStyle"></div>
         
-        <!-- Re-added @input for silent background syncing -->
         <input 
           type="range" min="0" max="100" 
           v-model.number="localWeight"
           @input="syncToParent"
-          class="w-full h-1 bg-surface-container-highest rounded-lg appearance-none cursor-pointer accent-[#00E5FF] relative z-10" 
+          class="w-full h-1 rounded-lg appearance-none cursor-pointer accent-[#00E5FF] relative z-10" 
+          :style="{
+            background: `linear-gradient(to right, rgba(0, 229, 255, 0.25) ${localWeight}%, rgba(255, 255, 255, 0.05) ${localWeight}%)`
+          }"
         />
       </div>
 
       <div class="relative pt-4">
-        <span class="absolute top-0 right-0 text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">(PRO User Option)</span>
+        <span class="absolute top-0 right-0 text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">
+          {{ $t('activeCategoryCard.pro_option') }}
+        </span>
         <div class="relative">
-          <!-- Re-added @input for silent background syncing -->
           <textarea 
             v-model="localPrompt"
             @input="syncToParent"
             maxlength="500"
             class="w-full bg-surface-container-highest/50 border-none rounded-xl p-2 text-sm font-body text-on-surface focus:ring-1 focus:ring-primary/40 min-h-[65px] resize-none"
-            placeholder="Fine-tune agent focus..."
+            :placeholder="$t('activeCategoryCard.placeholder')"
           ></textarea>
         </div>
         <div class="text-[10px] font-medium text-right pr-1 transition-colors duration-300" :class="localPrompt.length >= 500 ? 'text-red-400 font-bold' : 'text-on-surface-variant/60'">
@@ -74,14 +78,16 @@
         </div>
       </div>
 
-      <p class="text-[12px] text-on-surface-variant italic opacity-70">AI-curated sub-nodes based on calibration.</p>
+      <p class="text-[12px] text-on-surface-variant italic opacity-70">
+        {{ $t('activeCategoryCard.sub_nodes_info') }}
+      </p>
 
       <div v-if="chips && chips.length > 0" class="flex flex-wrap gap-2 transition-all duration-300">
         <span v-for="chip in visibleChips" :key="chip" class="bg-surface-container-highest text-primary-fixed-dim text-[#00E5FF] px-3 py-1 rounded-full text-[10px] font-medium border border-outline-variant/10">
           {{ chip }}
         </span>
         <button v-if="chips.length > 3" @click="isExpanded = !isExpanded" class="bg-surface-container-highest/50 border border-outline-variant/30 text-on-surface-variant px-3 py-1 rounded-full text-[10px] font-medium hover:bg-surface-container-high transition-colors">
-          {{ isExpanded ? "Show less" : `+${chips.length - 3} more` }}
+          {{ isExpanded ? $t('activeCategoryCard.show_less') : $t('activeCategoryCard.show_more', { count: chips.length - 3 }) }}
         </button>
       </div>
 
@@ -90,7 +96,7 @@
         @click="$emit('scroll-to-global')"
         class="w-full mt-4 py-2 bg-[#fec931] text-black text-on-tertiary-fixed font-bold rounded-lg text-xs uppercase tracking-widest hover:bg-[#fec931]/90 transition-all active:scale-[0.98]"
       >
-        Save Changes
+        {{ $t('activeCategoryCard.save_changes') }}
       </button>
     </div>
   </div>
@@ -98,6 +104,9 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
+import { useI18n } from "vue-i18n";
+
+const { t } = useI18n();
 
 const props = defineProps<{
   id: string;
@@ -106,23 +115,20 @@ const props = defineProps<{
   initialWeight: number;
   initialPrompt: string;
   chips: string[];
-  isNew?: boolean; // ÚJ: Érzékeljük, ha frissen aktivált
+  isNew?: boolean; 
   globalSaveTick: number;
 }>();
 
-const emit = defineEmits(["update", "deactivate", "scroll-to-global"]); // ÚJ: deactivate regisztrálása
+const emit = defineEmits(["update", "deactivate", "scroll-to-global"]); 
 
-// Ha új, akkor 100%-ról indul a csúszka, egyébként a meglévő súlyról
 const localWeight = ref(props.isNew ? 100 : props.initialWeight);
 const localPrompt = ref(props.initialPrompt || "");
 const isExpanded = ref(false);
 
-// NEW: Static baseline states that do NOT react to the parent prop updates
 const originalWeight = ref(props.initialWeight);
 const originalPrompt = ref(props.initialPrompt || "");
 const isLocallyNew = ref(props.isNew);
 
-// Emit the data silently to the parent so it's ready for the global API call
 const syncToParent = () => {
   emit("update", { id: props.id, weight: localWeight.value, prompt: localPrompt.value });
 };
@@ -151,7 +157,6 @@ const sliderDiffStyle = computed(() => {
   };
 });
 
-// NEW: Watch for the Global Save success signal to reset the card to a neutral state
 watch(() => props.globalSaveTick, () => {
   originalWeight.value = localWeight.value;
   originalPrompt.value = localPrompt.value;

@@ -347,8 +347,6 @@
     "readLaterModal": {},
     "saveFavouriteModal": {},
     "shareModal": {},
-    
-    
     "categoriesSetup": {
         "badge": "Your Feed, Your Rules",
         "title": "Tell your AI what you care about",
@@ -393,10 +391,78 @@
             "law_&_crime": "Law & Crime"
         }
     },
-
-
-
-
+    "activeCategoryCard": {
+        "priority_weight": "Priority Weight",
+        "pro_option": "(PRO User Option)",
+        "placeholder": "Fine-tune agent focus...",
+        "sub_nodes_info": "AI-curated sub-nodes based on calibration.",
+        "show_less": "Show less",
+        "show_more": "+{count} more",
+        "save_changes": "Save Changes",
+        "deactivate": "Deactivate Category"
+    },
+    "inactiveCategoryCard": {
+        "btn_activate": "Activate",
+        "weight": "Priority Weight"
+    },
+    "sourceManager": {
+        "header": {
+            "badge": "Source Network Manager",
+            "title": "Control Your Data Streams",
+            "description": "Curate the exact nodes and feeds your AI Agent monitors. Add new sources, manage your tier quotas, and suspend or remove streams to maintain a clean, sovereign intelligence feed."
+        },
+        "quota": {
+            "tier_status_label": "Network Capacity Tier",
+            "tier_free": "Standard Free",
+            "tier_pro": "Sovereign Pro",
+            "quota_label": "Active Node Allocation",
+            "upgrade_btn_title": "Upgrade to Pro",
+            "upgrade_btn_sub": "(Max 15 active sources)"
+        },
+        "input": {
+            "label": "Ingestion Hub",
+            "placeholder": "Enter source URL (e.g. bloomberg.com/tech)...",
+            "error_format": "Please enter a valid domain format.",
+            "btn_add": "Add New Source"
+        },
+        "active_zone": {
+            "title": "Active Data Streams",
+            "empty": "No active data streams. Add a source above to begin routing data.",
+            "btn_suspend": "Suspend",
+            "btn_delete": "Delete",
+            "btn_activate": "Activate"
+        },
+        "suspended_zone": {
+            "title": "Suspended Zone",
+            "empty": "Your suspended zone is empty.",
+            "btn_rediscover": "Re-Discovery",
+            "quota_full": "Suspend an active source to free up space.",
+            "btn_activate": "Activate"
+        },
+        "toasts": {
+            "duplicate": "This source is already in your network.",
+            "fetch_logic_error": "Failed to retrieve source data from the server.",
+            "fetch_network_error": "Failed to load data. Please refresh.",
+            "invalid_domain": "Invalid domain.",
+            "add_success": "Source successfully added and activated.",
+            "add_suspended": "Source added to Suspended Zone (Quota limit reached).",
+            "add_failed": "Failed to add source",
+            "toggle_failed": "Failed to toggle source state",
+            "delete_failed": "Failed to delete source",
+            "discovery_init": "Initializing AI discovery scan...",
+            "discovery_success": "Source verified successfully. Updating network...",
+            "discovery_failed": "Discovery failed. Still no valid feeds found.",
+            "discovery_error": "Network error during discovery phase."
+        },
+        "badges": {
+            "verified": "Verified Network",
+            "rss": "RSS Fast-Sync",
+            "unknown": "Unknown Source",
+            "pending": "Pending AI Scan",
+            "direct": "Direct Crawl",
+            "error": "Connection Error"
+        }
+    },
     "logoutModal": {
         "title": "Terminate Session?",
         "description": "Are you sure you want to end your secure session? Any unsaved agent configurations or calibration data might be lost.",

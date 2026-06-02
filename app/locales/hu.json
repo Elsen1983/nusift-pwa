@@ -350,7 +350,7 @@
     "categoriesSetup": {
         "badge": "A Te Hírfolyamod, A Te Szabályaid",
         "title": "Mond meg az AI-nak, mi érdekel",
-        "description": "Eleged van a zajból? Itt te irányítasz. Válaszd ki a fő témáidat, adj meg specifikus kulcsszavakat, és mondd el az AI asszisztensednek, pontosan milyen híreket szeretnél látni. Mi kiszűrjük a felesleget, hogy csak azt lásd, amit keresel. Minél jobban finomhangolod ezeket a beállításokat, annál jobb lesz a hírfolyamod.",
+        "description": "Eleged van a zajból? Itt te irányítasz. Válaszd ki a fő témáidat, adj meg specifikus kulcsszavakat, és mondd el az AI asszisztensednek, pontosan milyen híreket szeretnél látni. Ezután az AI kiszűri a felesleget, hogy csak azt lásd, amit keresel. Minél jobban finomhangolod ezeket a beállításokat, annál jobb lesz a hírfolyamod.",
         "active_title": "Aktív Kategóriák",
         "active_count": "{count} Aktív",
         "inactive_title": "Inaktív Kategóriák",
@@ -361,7 +361,7 @@
         },
         "save_btn": {
             "saving": "MENTÉS FOLYAMATBAN...",
-            "save": "ÖSSZES VÁLTOZÁS MENTÉSE"
+            "save": "MINDEN VÁLTOZÁS MENTÉSE"
         },
         "categories": {
             "politics": "Politika",
@@ -389,6 +389,78 @@
             "gaming": "Játékok",
             "automotive": "Autóipar",
             "law_&_crime": "Jog és Bűnügy"
+        }
+    },
+    "activeCategoryCard": {
+        "priority_weight": "Prioritás Mértéke",
+        "pro_option": "(PRO Felhasználói Opció)",
+        "placeholder": "Ügynök fókuszának finomhangolása...",
+        "sub_nodes_info": "AI által válogatott alcímkék a kalibráció alapján.",
+        "show_less": "Kevesebb",
+        "show_more": "+{count} további",
+        "save_changes": "Változások Mentése",
+        "deactivate": "Kategória Kikapcsolása"
+    },
+    "inactiveCategoryCard": {
+        "btn_activate": "Aktiválás",
+        "weight": "Prioritás Mértéke"
+    },
+    "sourceManager": {
+        "header": {
+            "badge": "Forráshálózat Kezelő",
+            "title": "Adatfolyamok Irányítása",
+            "description": "Válogasd össze pontosan azokat a forrásokat, amelyeket az AI ügynököd figyel. Adj hozzá új forrásokat, kezeld a kvótáidat, és függeszd fel vagy töröld az adatfolyamokat a tiszta információs bázis fenntartása érdekében."
+        },
+        "quota": {
+            "tier_status_label": "Előfizetés típusa",
+            "tier_free": "Ingyenes",
+            "tier_pro": "Pro",
+            "quota_label": "Aktiválható Források Száma",
+            "upgrade_btn_title": "Frissítés Pro-ra",
+            "upgrade_btn_sub": "(15 aktív forrás)"
+        },
+        "input": {
+            "label": "Forrás URL",
+            "placeholder": "Forrás URL megadása (pl. telex.hu/tech)...",
+            "error_format": "Kérlek, valós domain formátumot adj meg.",
+            "btn_add": "Új Forrás Felvétele"
+        },
+        "active_zone": {
+            "title": "Aktív Források",
+            "empty": "Nincsenek aktív adatfolyamok. Adj hozzá egy forrást az adatok útválasztásához.",
+            "btn_suspend": "Felfüggesztés",
+            "btn_delete": "Törlés",
+            "btn_activate": "Aktiválás"
+        },
+        "suspended_zone": {
+            "title": "Felfüggesztett Zóna",
+            "empty": "A felfüggesztett zónád üres.",
+            "btn_rediscover": "Újrafelfedezés",
+            "quota_full": "Függessz fel egy aktív forrást hely felszabadításához.",
+            "btn_activate": "Aktiválás"
+        },
+        "toasts": {
+            "duplicate": "Ez a forrás már szerepel a hálózatodban.",
+            "fetch_logic_error": "Nem sikerült lekérni a forrásadatokat a szerverről.",
+            "fetch_network_error": "Hiba az adatok betöltésekor. Kérlek, frissíts.",
+            "invalid_domain": "Érvénytelen domain.",
+            "add_success": "Forrás sikeresen hozzáadva és aktiválva.",
+            "add_suspended": "Forrás hozzáadva a Felfüggesztett Zónához (Kvótakorlát elérve).",
+            "add_failed": "Nem sikerült hozzáadni a forrást",
+            "toggle_failed": "Nem sikerült átállítani a forrás állapotát",
+            "delete_failed": "Nem sikerült törölni a forrást",
+            "discovery_init": "AI felfedező szkennelés inicializálása...",
+            "discovery_success": "Forrás sikeresen validálva. Hálózat frissítése...",
+            "discovery_failed": "Felfedezés sikertelen. Továbbra sincs érvényes feed.",
+            "discovery_error": "Hálózati hiba a felfedezési fázis alatt."
+        },
+        "badges": {
+            "verified": "Ellenőrzött Forrás",
+            "rss": "Gyors RSS-Szinkron",
+            "unknown": "Ismeretlen Forrás",
+            "pending": "AI Szkennelés Alatt",
+            "direct": "Direkt Kaparás",
+            "error": "Kapcsolati Hiba"
         }
     },
     "logoutModal": {

@@ -6,7 +6,7 @@
       <div class="relative bg-[#1A1A1A] border border-white/10 w-full max-w-sm rounded-3xl p-8 shadow-[0_20px_50px_rgba(0,0,0,0.5)] animate-in fade-in zoom-in duration-300">
         <div class="flex flex-col items-center text-center">
           <div class="w-16 h-16 rounded-full bg-error/10 flex items-center justify-center mb-6 border border-error/20">
-            <span class="material-symbols-outlined text-error text-3xl">logout</span>
+            <span class="material-symbols-outlined text-texterror text-3xl">logout</span>
           </div>
           
           <h3 class="font-headline text-xl font-bold text-white mb-2 uppercase tracking-tight">{{ $t('logoutModal.title') }}</h3>

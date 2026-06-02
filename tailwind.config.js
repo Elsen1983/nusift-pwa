@@ -51,6 +51,12 @@ export default {
         "tertiary-container": "#f5e2a3",
         "on-tertiary-container": "#716431",
 
+        // Error State Colors
+        error: "#ff435994",
+        "on-error": "#ffffff",
+
+        "texterror": "#fd8896b0",
+
         // Specialty token for AI engine feedback
         "ai-reasoning-blue": "#40c4ff",
       },

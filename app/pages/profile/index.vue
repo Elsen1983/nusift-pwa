@@ -53,8 +53,8 @@
     </section>
 
     <button @click="handleLogout" 
-            class="w-full py-4 rounded-2xl bg-error/5 text-error font-bold flex items-center justify-center gap-3 hover:bg-error/10 transition-all border border-error/20 group">
-      <span class="material-symbols-outlined group-hover:rotate-180 transition-transform duration-500">logout</span>
+            class="w-full py-4 rounded-2xl bg-error/5 text-texterror font-bold flex items-center justify-center gap-3 hover:bg-error/10 transition-all border border-error/20 group">
+      <span class="material-symbols-outlined  group-hover:rotate-180 transition-transform duration-500">logout</span>
       TERMINATE SECURE SESSION
     </button>
   </div>

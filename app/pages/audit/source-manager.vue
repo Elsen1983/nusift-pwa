@@ -7,315 +7,313 @@
       class="fixed bottom-[-10%] left-[-10%] w-[500px] h-[500px] bg-secondary-container/10 blur-[140px] rounded-full -z-10 pointer-events-none"
     ></div>
 
-    <main class="pt-5 pb-12 px-4 max-w-5xl mx-auto space-y-4 relative z-10">
-      <section class="mb-2 px-3">
+    <main class="pt-5 pb-12 px-4 max-w-5xl mx-auto relative z-10">
+      <!-- 1. HEADER SECTION -->
+      <section class="mb-6 px-3">
         <div
           class="inline-block px-3 py-1 bg-surface-container-highest rounded-lg mb-2"
         >
           <span
             class="text-[10px] font-label font-bold text-primary tracking-widest uppercase"
-            >Source Network Manager</span
           >
+            {{ $t("sourceManager.header.badge") }}
+          </span>
         </div>
         <h2
           class="font-lg text-3xl md:text-5xl font-bold text-primary leading-tight tracking-tight mb-4 text-white"
         >
-          Control Your Data Streams
+          {{ $t("sourceManager.header.title") }}
         </h2>
         <p
-          class="text-on-surface-variant text-[12px] max-w-2xl leading-relaxed font-body"
+          class="text-on-surface-variant text-[13px] max-w-2xl leading-relaxed font-body"
         >
-          Curate the exact nodes and feeds your AI Agent monitors. Add new
-          sources, manage your tier quotas, and suspend or remove streams to
-          maintain a clean, sovereign intelligence feed.
+          {{ $t("sourceManager.header.description") }}
         </p>
       </section>
 
-      <section class="space-y-2 px-3">
+      <!-- 2. QUOTA SECTION -->
+      <section class="mb-8 px-3">
         <div
-          class="flex flex-col md:flex-row md:items-center justify-between gap-4"
+          class="bg-surface-container-low border border-outline-variant/15 rounded-2xl p-4 md:p-5 flex flex-col gap-4 shadow-[0_4px_12px_rgba(0,0,0,0.2)] w-full"
         >
-          <h2
-            class="font-headline text-lg font-semibold tracking-tight text-on-surface flex items-center gap-2"
-          >
-            Active Nodes: {{ activeSources.length }}/{{ quota.limit }}
-            <span class="text-on-surface-variant text-sm font-normal"
-              >({{ quota.tier === "PRO" ? "Pro" : "Free" }} Tier)</span
-            >
-          </h2>
-
-          <button
-            v-if="quota.tier === 'FREE'"
-            class="bg-surface-container-high hover:bg-surface-container-highest transition-colors px-4 py-1 rounded-full flex items-center gap-2 group outline outline-1 outline-outline-variant/30 border border-outline-variant/50 hover:border-neon-cyan/70 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
+          <div class="flex flex-row items-baseline gap-2 w-full">
             <span
-              class="font-label text-[12px] text-neon-cyan group-hover:drop-shadow-[0_0_8px_rgba(0,229,255,0.8)] transition-all"
-              >Upgrade to Pro (15 max)? Click here.</span
+              class="text-[11px] font-label font-bold text-on-surface-variant uppercase tracking-widest"
             >
-            <span class="material-symbols-outlined text-neon-cyan text-sm"
-              >rocket_launch</span
+              {{ $t("sourceManager.quota.tier_status_label") }}:
+            </span>
+            <span
+              class="text-[12px] font-label tracking-wide"
+              :class="quota.tier === 'PRO' ? 'text-[#fec931]' : 'text-white'"
             >
-          </button>
-        </div>
-
-        <div
-          class="h-2 w-full bg-surface-container-low rounded-full overflow-hidden"
-        >
-          <div
-            class="h-full bg-gradient-to-r from-neon-cyan to-[#9cf0ff] rounded-full relative transition-all duration-500"
-            :style="{ width: `${progressPercentage}%` }"
-          >
-            <div class="absolute inset-0 bg-white/20 animate-pulse"></div>
-          </div>
-        </div>
-      </section>
-
-      <section
-        class="bg-surface-container rounded-2xl p-3 shadow-[0_0_24px_0_rgba(0,229,255,0.08)] outline outline-1 outline-outline-variant/15 relative overflow-hidden mx-2"
-      >
-        <div class="relative z-10 space-y-4">
-          <div class="relative group">
-            <label
-              for="source-url-input"
-              class="block text-[13px] font-label uppercase tracking-widest text-on-surface-variant mb-2 ml-1"
-            >
-              Ingestion Hub
-            </label>
-            <div
-              class="bg-surface-container-low p-1 rounded-xl transition-all duration-300 focus-within:shadow-[0_0_20px_rgba(0,229,255,0.05)]"
-            >
-              <input
-                id="source-url-input"
-                v-model="newSourceUrl"
-                @keyup.enter="addNewSource"
-                class="w-full bg-surface-container-highest border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-neon-cyan/30 font-body h-[52px] text-[14px] font-bold px-4 disabled:opacity-50 outline-none"
-                placeholder="Enter source URL (e.g. bloomberg.com/tech)..."
-                type="text"
-                :disabled="isProcessing"
-              />
-            </div>
-            <p
-              v-if="newSourceUrl && !isValidUrl"
-              class="text-error text-[12px] font-label mt-1 ml-1 leading-tight text-red-500"
-            >
-              Please enter a valid domain format.
-            </p>
+              {{
+                quota.tier === "PRO"
+                  ? $t("sourceManager.quota.tier_pro")
+                  : $t("sourceManager.quota.tier_free")
+              }}
+            </span>
           </div>
 
-          <div class="flex justify-end mr-1">
-            <button
-              @click="addNewSource"
-              :disabled="!newSourceUrl || !isValidUrl || isProcessing"
-              class="bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] font-bold px-6 rounded-xl flex items-center gap-1 hover:scale-[1.02] active:scale-95 transition-all shadow-[0_8px_20px_rgba(0,229,255,0.15)] group py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
+          <div class="flex flex-col gap-2 w-full">
+            <span
+              class="text-[11px] font-label font-bold text-on-surface-variant uppercase tracking-widest"
             >
+              {{ $t("sourceManager.quota.quota_label") }}:
               <span
-                v-if="!isProcessing"
-                class="material-symbols-outlined text-xl"
-                >add</span
+                class="text-[12px] font-label tracking-wide text-neon-cyan ml-1"
+                >{{ activeSources.length }}/{{ quota.limit }}</span
               >
-              <span
-                v-else
-                class="animate-spin h-5 w-5 border-2 border-[#131313] border-t-transparent rounded-full"
-              ></span>
-              <span class="text-[16px]">Add New Source</span>
+            </span>
+            <div
+              class="h-1.5 w-full md:w-1/2 bg-surface-container-highest rounded-full overflow-hidden flex"
+            >
+              <div
+                class="h-full bg-gradient-to-r from-[#00E5FF] to-[#9cf0ff] rounded-full transition-all duration-500"
+                :style="{ width: `${progressPercentage}%` }"
+              ></div>
+            </div>
+          </div>
+
+          <div v-if="quota.tier === 'FREE'" class="w-full pt-2">
+            <button
+              class="w-full sm:w-max md:w-1/2 bg-surface-container-high hover:bg-surface-container-highest transition-colors px-6 py-3 rounded-xl flex items-center justify-between sm:justify-center gap-5 border border-outline-variant/80 hover:border-neon-cyan disabled:opacity-50 disabled:cursor-not-allowed group"
+            >
+              <div class="flex flex-col items-start text-left">
+                <span
+                  class="font-label text-[13px] font-bold text-neon-cyan uppercase tracking-wider leading-tight group-hover:drop-shadow-[0_0_8px_rgba(0,229,255,0.8)] transition-all"
+                >
+                  {{ $t("sourceManager.quota.upgrade_btn_title") }}
+                </span>
+                <span
+                  class="font-label text-[10px] text-neon-cyan/70 uppercase tracking-widest leading-tight mt-0.5"
+                >
+                  {{ $t("sourceManager.quota.upgrade_btn_sub") }}
+                </span>
+              </div>
+              <span class="material-symbols-outlined text-neon-cyan text-[22px]"
+                >rocket_launch</span
+              >
             </button>
           </div>
         </div>
-
-        <Transition name="fade">
-          <div
-            v-if="toast.show"
-            :class="[
-              'mt-5 flex items-center gap-2 text-sm font-label px-4 py-2 rounded-lg inline-flex outline outline-1 transition-all relative z-10',
-              toast.type === 'warning'
-                ? 'text-tertiary-fixed bg-tertiary-fixed/10 outline-tertiary-fixed/20'
-                : toast.type === 'error'
-                  ? 'text-error bg-error/10 outline-error/20'
-                  : 'text-neon-cyan bg-neon-cyan/10 outline-neon-cyan/20',
-            ]"
-          >
-            <span class="material-symbols-outlined text-sm">
-              {{
-                toast.type === "warning"
-                  ? "info"
-                  : toast.type === "error"
-                    ? "error"
-                    : "check_circle"
-              }}
-            </span>
-            {{ toast.message }}
-          </div>
-        </Transition>
       </section>
 
-      <section class="space-y-6 px-3">
-        <h2
-          class="font-headline text-lg font-semibold tracking-tight text-on-surface flex items-center gap-2"
+      <!-- 3. INPUT HUB SECTION -->
+      <section class="mb-10 px-3">
+        <div
+          class="bg-surface-container rounded-2xl p-4 md:p-5 shadow-[0_0_24px_0_rgba(0,229,255,0.08)] outline outline-1 outline-outline-variant/15 relative overflow-hidden w-full"
         >
-          Active Data Streams
-        </h2>
-
-        <div class="grid grid-cols-1 gap-4" v-if="activeSources.length > 0">
-          <div
-            v-for="source in activeSources"
-            :key="source.id"
-            class="bg-surface-container-low hover:bg-surface-container transition-colors rounded-xl p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 outline outline-1 outline-outline-variant/15 group"
-          >
-            <div class="flex-grow space-y-1">
-              <h4 class="font-body font-bold text-on-surface text-lg">
-                {{ source.name || getDomain(source.url) }}
-              </h4>
-              <p
-                class="font-label text-xs text-on-surface-variant flex items-center gap-2"
-                v-if="getPath(source.url)"
+          <div class="relative z-10 space-y-4">
+            <div class="relative group">
+              <label
+                for="source-url-input"
+                class="block text-[13px] font-label uppercase tracking-widest text-on-surface-variant mb-2 ml-1"
               >
-                {{ getPath(source.url) }}
-              </p>
-
-              <div class="flex gap-2 mt-3">
-                <span
-                  v-for="(badge, index) in getBadges(source.validationStatus)"
-                  :key="index"
-                  :class="[
-                    'inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-label outline outline-1',
-                    badge.classes,
-                  ]"
-                >
-                  <span
-                    class="material-symbols-outlined text-[12px]"
-                    :class="badge.iconClasses"
-                    >{{ badge.icon }}</span
-                  >
-                  {{ badge.label }}
-                </span>
+                {{ $t("sourceManager.input.label") }}
+              </label>
+              <div
+                class="bg-surface-container-low p-1 rounded-xl transition-all duration-300 focus-within:shadow-[0_0_20px_rgba(0,229,255,0.05)]"
+              >
+                <input
+                  id="source-url-input"
+                  v-model="newSourceUrl"
+                  @keyup.enter="addNewSource"
+                  class="w-full bg-surface-container-highest border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-neon-cyan/30 font-body h-[52px] text-[14px] font-bold px-4 disabled:opacity-50 outline-none"
+                  :placeholder="$t('sourceManager.input.placeholder')"
+                  type="text"
+                  :disabled="isProcessing"
+                />
               </div>
+              <p
+                v-if="newSourceUrl && !isValidUrl"
+                class="text-texterror text-[12px] font-label mt-1 ml-1 leading-tight text-red-500"
+              >
+                {{ $t("sourceManager.input.error_format") }}
+              </p>
             </div>
 
-            <div class="flex items-center gap-2">
+            <div class="flex justify-end">
               <button
-                @click="toggleSourceState(source.id, false)"
-                :disabled="isProcessing"
-                class="p-2 text-on-surface-variant hover:text-on-surface bg-surface-container-highest rounded-full transition-colors flex items-center justify-center outline outline-1 outline-transparent hover:outline-outline-variant/30 disabled:opacity-50"
-                title="Suspend Stream"
+                @click="addNewSource"
+                :disabled="!newSourceUrl || !isValidUrl || isProcessing"
+                class="bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] font-bold px-6 py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-95 transition-all shadow-[0_8px_20px_rgba(0,229,255,0.15)] group w-full sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <span
-                  class="material-symbols-outlined text-sm"
-                  :style="{ fontVariationSettings: `'FILL' 1` }"
+                  v-if="!isProcessing"
+                  class="material-symbols-outlined text-xl"
+                  >add</span
                 >
-                  pause
-                </span>
-              </button>
-              <button
-                @click="deleteSource(source.id)"
-                :disabled="isProcessing"
-                class="p-2 text-error/70 hover:text-error hover:bg-error/10 rounded-full transition-colors flex items-center justify-center disabled:opacity-50"
-                title="Delete Source"
-              >
-                <span class="material-symbols-outlined text-sm">delete</span>
+                <span
+                  v-else
+                  class="animate-spin h-5 w-5 border-2 border-[#131313] border-t-transparent rounded-full"
+                ></span>
+                <span class="text-[14px] uppercase tracking-wider">{{
+                  $t("sourceManager.input.btn_add")
+                }}</span>
               </button>
             </div>
           </div>
-        </div>
-        <div v-else class="text-center py-8 text-on-surface-variant font-body">
-          No active data streams. Add a source above to begin routing data.
+
+          <Transition name="fade">
+            <div
+              v-if="toast.show"
+              :class="[
+                'mt-5 flex items-center gap-2 text-sm font-label px-4 py-3 rounded-lg inline-flex outline outline-1 transition-all relative z-10',
+                toast.type === 'warning'
+                  ? 'text-tertiary-fixed bg-tertiary-fixed/10 outline-tertiary-fixed/20'
+                  : toast.type === 'error'
+                    ? 'text-texterror bg-error/10 outline-error/20'
+                    : 'text-neon-cyan bg-neon-cyan/10 outline-neon-cyan/20',
+              ]"
+            >
+              <span class="material-symbols-outlined text-sm">
+                {{
+                  toast.type === "warning"
+                    ? "info"
+                    : toast.type === "error"
+                      ? "error"
+                      : "check_circle"
+                }}
+              </span>
+              {{ toast.message }}
+            </div>
+          </Transition>
         </div>
       </section>
 
-      <section
-        class="space-y-6 px-3 opacity-80 hover:opacity-100 transition-opacity"
-      >
-        <h3
-          class="font-headline text-xl font-medium text-on-surface-variant flex items-center gap-2"
+      <!-- 4. ACTIVE SOURCES SECTION (COLLAPSIBLE) -->
+      <section class="mb-10 px-3">
+        <div
+          class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/10 shadow-lg"
         >
-          <span class="material-symbols-outlined text-xl">inventory_2</span>
-          Suspended Zone
-        </h3>
-
-        <div class="grid grid-cols-1 gap-4" v-if="suspendedSources.length > 0">
           <div
-            v-for="source in suspendedSources"
-            :key="source.id"
-            class="bg-surface-container-lowest rounded-xl p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 outline outline-1 outline-outline-variant/20 border-l-2 border-l-outline-variant"
+            @click="isActiveSectionOpen = !isActiveSectionOpen"
+            class="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-container-low/80 transition-colors select-none"
+          >
+            <h2
+              class="font-headline text-[16px] font-bold text-white flex items-center gap-2"
+            >
+              {{ $t("sourceManager.active_zone.title") }}
+            </h2>
+            <div class="flex items-center gap-3">
+              <span
+                class="bg-surface-container-highest px-3 py-1 rounded-full text-[12px] font-label font-bold text-neon-cyan"
+              >
+                {{ activeSources.length }} / {{ quota.limit }}
+              </span>
+              <span
+                class="material-symbols-outlined text-on-surface-variant transition-transform duration-300"
+                :class="{ 'rotate-180': isActiveSectionOpen }"
+              >
+                expand_more
+              </span>
+            </div>
+          </div>
+
+          <div
+            v-show="isActiveSectionOpen"
+            class="p-3 md:p-5 border-t border-outline-variant/10 bg-surface-container-low/30"
+          >
+            <div class="grid grid-cols-1 gap-4" v-if="activeSources.length > 0">
+              <ActiveSourceCard
+                v-for="source in activeSources"
+                :key="source.id"
+                :source="source"
+                :is-processing="isProcessing"
+                @suspend="toggleSourceState($event, false)"
+                @delete="deleteSource($event)"
+              />
+            </div>
+            <div
+              v-else
+              class="text-center py-8 text-on-surface-variant font-body bg-surface-container-lowest rounded-xl outline outline-1 outline-outline-variant/10"
+            >
+              {{ $t("sourceManager.active_zone.empty") }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. SUSPENDED SOURCES SECTION (COLLAPSIBLE) -->
+      <section
+        class="mb-6 px-3 opacity-80 hover:opacity-100 transition-opacity"
+      >
+        <div
+          class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/10 shadow-lg"
+        >
+          <div
+            @click="isSuspendedSectionOpen = !isSuspendedSectionOpen"
+            class="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-container-low/80 transition-colors select-none"
+          >
+            <h3
+              class="font-headline text-[16px] font-bold text-on-surface-variant flex items-center gap-2"
+            >
+              <span class="material-symbols-outlined text-xl">inventory_2</span>
+              {{ $t("sourceManager.suspended_zone.title") }}
+            </h3>
+            <div class="flex items-center gap-3">
+              <span
+                class="bg-surface-container-highest px-3 py-1 rounded-full text-[12px] font-label font-bold text-on-surface-variant"
+              >
+                {{ suspendedSources.length }}
+              </span>
+              <span
+                class="material-symbols-outlined text-on-surface-variant transition-transform duration-300"
+                :class="{ 'rotate-180': isSuspendedSectionOpen }"
+              >
+                expand_more
+              </span>
+            </div>
+          </div>
+
+          <div
+            v-show="isSuspendedSectionOpen"
+            class="p-3 md:p-5 border-t border-outline-variant/10 bg-surface-container-low/30"
           >
             <div
-              class="flex-grow space-y-1 opacity-60 grayscale group-hover:grayscale-0 transition-all"
+              class="grid grid-cols-1 gap-4"
+              v-if="suspendedSources.length > 0"
             >
-              <h4 class="font-body font-bold text-on-surface-variant text-lg">
-                {{ source.name || getDomain(source.url) }}
-              </h4>
-              <p
-                class="font-label text-xs text-outline flex items-center gap-2"
-                v-if="getPath(source.url)"
-              >
-                {{ getPath(source.url) }}
-              </p>
-              <div class="flex gap-2 mt-3">
-                <span
-                  v-for="(badge, index) in getBadges(source.validationStatus)"
-                  :key="index"
-                  :class="[
-                    'inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-label outline outline-1',
-                    badge.classes,
-                  ]"
-                >
-                  <span
-                    class="material-symbols-outlined text-[12px]"
-                    :class="badge.iconClasses"
-                    >{{ badge.icon }}</span
-                  >
-                  {{ badge.label }}
-                </span>
-              </div>
+              <SuspendedSourceCard
+                v-for="source in suspendedSources"
+                :key="source.id"
+                :source="source"
+                :is-processing="isProcessing"
+                :is-quota-full="isQuotaFull"
+                @activate="toggleSourceState($event, true)"
+                @delete="deleteSource($event)"
+                @rediscover="triggerReDiscovery($event)"
+              />
+
               <button
-                v-if="
-                  source.validationStatus === 'FAILED' ||
-                  source.validationStatus === 'NO_RSS_FOUND'
-                "
-                @click="triggerReDiscovery(source.url)"
-                :disabled="isProcessing"
-                class="mt-4 flex items-center gap-1 text-[10px] font-label tracking-wider text-neon-cyan/70 hover:text-neon-cyan transition-colors uppercase outline outline-1 outline-neon-cyan/30 hover:outline-neon-cyan/80 px-2 py-1 rounded-md w-max disabled:opacity-50"
+                v-if="isQuotaFull && quota.tier === 'FREE'"
+                class="w-full mt-5 sm:w-max md:w-1/2 bg-surface-container-high hover:bg-surface-container-highest transition-colors px-6 py-3 rounded-xl flex items-center justify-between sm:justify-center gap-5 border border-yellow-100 border-outline-variant/80 hover:border-neon-cyan disabled:opacity-50 disabled:cursor-not-allowed group"
               >
+                <div class="flex flex-col items-start text-left">
+                  <span
+                    class="font-label text-[13px] font-bold text-neon-cyan uppercase tracking-wider leading-tight transition-all"
+                  >
+                    {{ $t("sourceManager.quota.upgrade_btn_title") }}
+                  </span>
+                  <span
+                    class="font-label text-[10px] text-neon-cyan/70 uppercase tracking-widest leading-tight mt-0.5"
+                  >
+                    {{ $t("sourceManager.quota.upgrade_btn_sub") }}
+                  </span>
+                </div>
                 <span
-                  class="material-symbols-outlined text-[12px]"
-                  :class="{ 'animate-spin': isProcessing }"
-                  >sync</span
+                  class="material-symbols-outlined text-neon-cyan text-[22px]"
+                  >rocket_launch</span
                 >
-                Trigger Re-Discovery
               </button>
             </div>
-
-            <div class="flex items-center gap-2 relative group">
-              <div
-                v-if="isQuotaFull"
-                class="absolute bottom-full right-0 mb-2 w-max bg-surface-bright text-on-surface text-[10px] font-label px-3 py-2 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20"
-              >
-                Suspend an active source to free up space.
-              </div>
-
-              <button
-                @click="toggleSourceState(source.id, true)"
-                :disabled="isQuotaFull || isProcessing"
-                class="p-2 text-on-surface-variant bg-surface-container-low rounded-full flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed hover:bg-neon-cyan/20 hover:text-neon-cyan"
-              >
-                <span
-                  class="material-symbols-outlined text-sm"
-                  :style="{ fontVariationSettings: `'FILL' 1` }"
-                  >play_arrow</span
-                >
-              </button>
-
-              <button
-                @click="deleteSource(source.id)"
-                :disabled="isProcessing"
-                class="p-2 text-error/50 hover:text-error hover:bg-error/10 rounded-full transition-colors flex items-center justify-center z-10 relative cursor-pointer disabled:opacity-30"
-              >
-                <span class="material-symbols-outlined text-sm">delete</span>
-              </button>
+            <div
+              v-else
+              class="text-center py-8 text-outline font-body text-sm bg-surface-container-lowest/50 rounded-xl"
+            >
+              {{ $t("sourceManager.suspended_zone.empty") }}
             </div>
           </div>
-        </div>
-        <div v-else class="text-center py-4 text-outline font-body text-sm">
-          Your suspended zone is empty.
         </div>
       </section>
     </main>
@@ -324,13 +322,23 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
+import { useI18n } from "vue-i18n";
+import { useAgentStore } from "~/stores/agent";
+import { useAuthStore } from "~/stores/auth";
 
 definePageMeta({ layout: "app-layout" });
+
+const { t } = useI18n();
+const agentStore = useAgentStore();
+const authStore = useAuthStore();
 
 // --- STATE ---
 const newSourceUrl = ref("");
 const isProcessing = ref(false);
 const toast = ref({ show: false, message: "", type: "success" });
+
+const isActiveSectionOpen = ref(true);
+const isSuspendedSectionOpen = ref(true);
 
 const sources = ref<any[]>([]);
 const quota = ref({
@@ -348,23 +356,37 @@ const isValidUrl = computed(() => {
   return domainRegex.test(newSourceUrl.value.trim());
 });
 
-// Enforce max 15 display limit on the frontend just to be absolutely certain
-const activeSources = computed(() =>
-  sources.value.filter((s) => s.isActive).slice(0, 15),
-);
-const suspendedSources = computed(() =>
-  sources.value.filter((s) => !s.isActive),
-);
+const activeSources = computed(() => {
+  return sources.value
+    .filter((s) => s.isActive)
+    .sort((a, b) => {
+      const nameA = (a.name || getDomain(a.url)).toLowerCase();
+      const nameB = (b.name || getDomain(b.url)).toLowerCase();
+      return nameA.localeCompare(nameB);
+    })
+    .slice(0, 15);
+});
+
+const suspendedSources = computed(() => {
+  return sources.value
+    .filter((s) => !s.isActive)
+    .sort((a, b) => {
+      const nameA = (a.name || getDomain(a.url)).toLowerCase();
+      const nameB = (b.name || getDomain(b.url)).toLowerCase();
+      return nameA.localeCompare(nameB);
+    });
+});
 const isQuotaFull = computed(
   () => activeSources.value.length >= quota.value.limit,
 );
 
+// Enforced strict mathematical boundary to ensure reactive rendering scales correctly
 const progressPercentage = computed(() => {
-  const limit = quota.value?.limit;
-  if (!limit || limit <= 0) {
-    return 0;
-  }
-  return (activeSources.value.length / limit) * 100;
+  const currentLimit = quota.value?.limit || 5;
+  const currentActive = activeSources.value.length;
+
+  if (currentLimit <= 0) return 0;
+  return Math.min((currentActive / currentLimit) * 100, 100);
 });
 
 // --- METHODS ---
@@ -378,24 +400,36 @@ const fetchSourceData = async () => {
     const response: any = await $fetch("/api/user/sources");
 
     if (response && response.success) {
+      // 1. Update local component UI state
       sources.value = response.sources;
       quota.value = response.quota;
+
+      // 2. Update Agent Store (The runtime memory for the AI feed)
+      agentStore.topSources = response.sources;
+
+      // 3. Update Auth Store & PWA LocalStorage (For persistence across reloads)
+      if (authStore.user) {
+        authStore.user.topSources = response.sources;
+
+        if (!import.meta.server) {
+          localStorage.setItem(
+            "nusift_pwa_profile",
+            JSON.stringify(authStore.user),
+          );
+        }
+      }
     } else {
-      // Handle HTTP 200 OK responses where the API reports a logical failure
       console.warn("API responded with a logical failure state:", response);
       showToast(
-        response?.message || "Failed to retrieve source data from the server.",
+        response?.message || t("sourceManager.toasts.fetch_logic_error"),
         "error",
       );
-
-      // Optional: Reset local state if data integrity is critical upon failure
-      // sources.value = [];
     }
   } catch (error: any) {
-    // Handle actual network errors or HTTP 4xx/5xx status codes
     console.error("Failed to load sources", error);
     showToast(
-      error?.data?.statusMessage || "Failed to load data. Please refresh.",
+      error?.data?.statusMessage ||
+        t("sourceManager.toasts.fetch_network_error"),
       "error",
     );
   }
@@ -405,32 +439,32 @@ const addNewSource = async () => {
   if (!newSourceUrl.value || !isValidUrl.value || isProcessing.value) return;
 
   const targetUrl = newSourceUrl.value.trim();
-
-  // Local Duplicate Check
   const normalizedTarget = targetUrl
     .replace(/^https?:\/\//, "")
     .replace(/^www\./, "");
+
   if (sources.value.some((s) => s.url.includes(normalizedTarget))) {
-    showToast("This source is already in your network.", "warning");
+    showToast(t("sourceManager.toasts.duplicate"), "warning");
     return;
   }
 
   isProcessing.value = true;
 
   try {
-    // 1. Verify against the global intelligence database
     const checkResponse = await $fetch<any>("/api/util/check-source", {
       method: "POST",
       body: { url: targetUrl },
     });
 
     if (!checkResponse.success) {
-      showToast(checkResponse.message || "Invalid domain.", "error");
+      showToast(
+        checkResponse.message || t("sourceManager.toasts.invalid_domain"),
+        "error",
+      );
       isProcessing.value = false;
       return;
     }
 
-    // 2. Pass enriched data to the user's specific source manager endpoint
     const response: any = await $fetch("/api/user/sources/add", {
       method: "POST",
       body: {
@@ -443,13 +477,12 @@ const addNewSource = async () => {
     if (response.success) {
       if (response.activated) {
         showToast(
-          response.message || "Source successfully added and activated.",
+          response.message || t("sourceManager.toasts.add_success"),
           "success",
         );
       } else {
         showToast(
-          response.message ||
-            "Source added to Suspended Zone (Quota limit reached).",
+          response.message || t("sourceManager.toasts.add_suspended"),
           "warning",
         );
       }
@@ -459,7 +492,10 @@ const addNewSource = async () => {
     }
   } catch (error: any) {
     console.error(error);
-    showToast(error.data?.statusMessage || "Failed to add source", "error");
+    showToast(
+      error.data?.statusMessage || t("sourceManager.toasts.add_failed"),
+      "error",
+    );
   } finally {
     isProcessing.value = false;
   }
@@ -481,7 +517,7 @@ const toggleSourceState = async (id: string, activate: boolean) => {
   } catch (error: any) {
     console.error("Failed to toggle state", error);
     showToast(
-      error.data?.statusMessage || "Failed to toggle source state",
+      error.data?.statusMessage || t("sourceManager.toasts.toggle_failed"),
       "error",
     );
   } finally {
@@ -501,7 +537,10 @@ const deleteSource = async (id: string) => {
     }
   } catch (error: any) {
     console.error("Failed to delete source", error);
-    showToast(error.data?.statusMessage || "Failed to delete source", "error");
+    showToast(
+      error.data?.statusMessage || t("sourceManager.toasts.delete_failed"),
+      "error",
+    );
   } finally {
     isProcessing.value = false;
   }
@@ -511,7 +550,7 @@ const triggerReDiscovery = async (url: string) => {
   if (isProcessing.value) return;
   isProcessing.value = true;
 
-  showToast("Initializing AI discovery scan...", "warning");
+  showToast(t("sourceManager.toasts.discovery_init"), "warning");
 
   try {
     const response: any = await $fetch("/api/util/verify-source", {
@@ -520,18 +559,17 @@ const triggerReDiscovery = async (url: string) => {
     });
 
     if (response.success) {
-      showToast("Source verified successfully. Updating network...", "success");
-      // Sikeres validáció után frissítjük a UI-t, hogy eltűnjön a gomb és frissüljenek a badge-ek
+      showToast(t("sourceManager.toasts.discovery_success"), "success");
       await fetchSourceData();
     } else {
       showToast(
-        response.message || "Discovery failed. Still no valid feeds found.",
+        response.message || t("sourceManager.toasts.discovery_failed"),
         "error",
       );
     }
   } catch (error: any) {
     console.error("Re-Discovery error:", error);
-    showToast("Network error during discovery phase.", "error");
+    showToast(t("sourceManager.toasts.discovery_error"), "error");
   } finally {
     isProcessing.value = false;
   }
@@ -553,76 +591,6 @@ const getDomain = (url: string) => {
     return url;
   }
 };
-
-const getPath = (url: string) => {
-  try {
-    const path = new URL(url).pathname;
-    return path === "/" ? "" : path.substring(1).replace(/\//g, " > ");
-  } catch {
-    return "";
-  }
-};
-
-const getBadges = (status: string) => {
-  const badges = [];
-
-  switch (status) {
-    case "ACTIVE":
-      badges.push({
-        label: "Verified Network",
-        icon: "verified_user",
-        classes: "bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]",
-        iconClasses: "",
-      });
-      badges.push({
-        label: "RSS Fast-Sync",
-        icon: "bolt",
-        classes: "bg-[#00363d]/40 text-neon-cyan outline-[#00363d]",
-        iconClasses: "",
-      });
-      break;
-    case "PENDING_DISCOVERY":
-      badges.push({
-        label: "Unknown Source",
-        icon: "travel_explore",
-        classes:
-          "bg-surface-variant/50 text-on-surface-variant outline-outline-variant",
-        iconClasses: "",
-      });
-      badges.push({
-        label: "Pending AI Scan",
-        icon: "hourglass_empty",
-        classes: "bg-[#3a3002]/40 text-tertiary-fixed outline-[#3a3002]",
-        iconClasses: "animate-spin-slow",
-      });
-      break;
-    case "NO_RSS_FOUND":
-      badges.push({
-        label: "Verified Network",
-        icon: "verified_user",
-        classes: "bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]",
-        iconClasses: "",
-      });
-      badges.push({
-        label: "Direct Crawl",
-        icon: "public",
-        classes:
-          "bg-surface-variant/50 text-on-surface-variant outline-outline-variant",
-        iconClasses: "",
-      });
-      break;
-    case "FAILED":
-    case "DOMAIN_DEAD":
-      badges.push({
-        label: "Connection Error",
-        icon: "error",
-        classes: "bg-error/20 text-error outline-error/40",
-        iconClasses: "",
-      });
-      break;
-  }
-  return badges;
-};
 </script>
 
 <style scoped>
@@ -639,5 +607,8 @@ const getBadges = (status: string) => {
 }
 .animate-spin-slow {
   animation: spin 3s linear infinite;
+}
+.rotate-180 {
+  transform: rotate(180deg);
 }
 </style>

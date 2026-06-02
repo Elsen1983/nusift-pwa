@@ -197,11 +197,11 @@
         class="flex items-center gap-4 px-4 py-2 hover:bg-error/10 transition-colors text-left w-full group"
       >
         <span
-          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-error transition-colors"
+          class="material-symbols-outlined text-on-surface-variant text-[20px] group-hover:text-texterror transition-colors"
           >block</span
         >
         <span
-          class="text-xs font-bold text-on-surface-variant group-hover:text-error transition-colors"
+          class="text-xs font-bold text-on-surface-variant group-hover:text-texterror transition-colors"
           >{{ $t("newsCard.menu.not_interested") }}</span
         >
       </button>

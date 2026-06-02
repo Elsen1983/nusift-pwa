@@ -160,7 +160,7 @@
         </div>
       </section>
       
-      <section class="flex flex-col items-center py-12">
+      <!-- <section class="flex flex-col items-center py-12">
         <div class="w-full max-w-md border border-error/20 rounded-2xl p-8 space-y-6 relative bg-[#181515]">
           <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#181515] px-4 text-[#ffb4ab] font-label text-[10px] uppercase tracking-[0.2em] whitespace-nowrap">
             {{ $t('categoriesSetup.danger_zone.badge') }}
@@ -184,7 +184,7 @@
             </button>
           </div>
         </div>
-      </section>
+      </section> -->
       
       <section class="flex justify-center w-full pt-8 pb-12 px-4">
         <button 

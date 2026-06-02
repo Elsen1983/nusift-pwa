@@ -1,0 +1,56 @@
+NuSift Project Architecture & Technical Specification
+1. Executive Summary
+
+NuSift is a high-fidelity Progressive Web Application (PWA) designed as a "Sovereign-Grade Intelligence Platform." It focuses on automated news filtering, localization, and personalized intelligence gathering. The system is built with a strong emphasis on robust security, high-performance edge/serverless compatibility, and a premium "neural" user interface.
+2. Technical Stack
+
+    Frontend Framework: Nuxt 4 (via compatibilityVersion: 4), utilizing Vue 3.5 with the Composition API.
+
+    State Management: Pinia (modularized into stores like authStore and agentStore).
+
+    Database & ORM: PostgreSQL managed via Prisma, utilizing the @prisma/adapter-pg and native pg drivers optimized for serverless environments (Vercel).
+
+    Styling & UI: Tailwind CSS implementing a custom Material Design 3 (MD3) "Sovereign" dark-mode theme.
+
+    PWA Integration: Comprehensive @vite-pwa/nuxt integration with custom service worker hydration and lifecycle detection.
+
+    Localization: @nuxtjs/i18n configured for multiple languages (English, Hungarian, French, German, Polish, Spanish).
+
+3. Core Systems & Architecture
+Security & Authentication ("Sovereign Shield")
+
+    Dual-Token System: Utilizes an HTTP-Only cookie (auth_token) for secure server-side verification and a separate standard cookie (session_status) for client-side routing visibility.
+
+    Dynamic Expiration: JWT lifespans adjust based on the user's onboarding progress (1 hour during initial setup, 7 days upon full calibration).
+
+    OAuth Integration: Supports Google and Apple Sign-In alongside standard email/password registration encrypted via bcrypt.
+
+    Ghost-Session Prevention: Global middleware (main-guard.global.ts) intercepts navigation, verifying cryptographic signatures and forcefully terminating hijacked or orphaned client states.
+
+    Transactional Emails: Resend API integration for dispatching verification codes and password reset links, featuring anti-enumeration safety gates.
+
+AI & Content Engine Infrastructure
+
+    Intelligence Calibration: A rigid, multi-step onboarding pipeline that configures the user's Primary Region, News Sources, and weighted Content Interests (e.g., "AI & Tech Strategy", "Geopolitics").
+
+    Source Verification Pipeline: Validates requested news URLs through a three-tier heuristic system: User-Generated Content blacklist, native HTML/DNS fetching, and external fallback via the GDELT API.
+
+    Regional Discovery: Asynchronous background seeding utilizing the Newsdata.io API to construct localized source whitelists based on Edge-detected IP countries.
+
+4. Database Schema (Prisma Models)
+
+    User Profiles: Tracks Sovereign IDs, tier limits (Free/Pro), onboarding integers, and JSON-based weighted interest nodes.
+
+    Source Management: Manages NewsSource entries and specific SourceCategory endpoints (e.g., tracking a root domain vs. a specific tech sub-folder).
+
+    Subscription Architecture: UserSourceSubscription and UserCategorySubscription junction tables handle user quotas, allowing users to toggle active/inactive states without destroying the relational data.
+
+    Article Storage: Stores parsed articles containing PostgreSQL-native scalar string arrays for tags and AI-generated signals, alongside a relational ArticleRating table for personalized feed weighting.
+
+5. UI/UX Design System
+
+    Sovereign Aesthetic: A highly customized Tailwind palette featuring deep backgrounds (#131313), varying elevation containers (surface-container-high), and neon accents (#00e5ff) representing data streams.
+
+    Glassmorphism & Modals: Extensive use of CSS backdrop-blur and complex z-index layering for components like the ArticleReaderModal, PaywallModal, and RatingModal.
+
+    Preloading & Hydration: Orchestrated CSS keyframe animations (pulse rings, tech-pulses, loading-bars) mask heavy client-side hydration periods during routing and initialization.
