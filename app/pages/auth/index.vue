@@ -327,7 +327,7 @@ const navigate = useSovereignNavigate();
 const localePath = useLocalePath();
 
 type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
-const { t, setLocale } = useI18n();
+const { t, setLocale, locale } = useI18n();
 
 /** ANCHOR SDK-INJECTION */
 useHead({
@@ -482,7 +482,24 @@ const handleAuth = async () => {
     if (success) {
       localStorage.setItem("nusift_visited", "true");
       localStorage.setItem("nusift_pending_email", email.value);
-      navigate.push("/verify-email");
+
+      // 1. Establish Target Language for Registration
+      const targetLang = activeLanguage.value as AvailableLocales;
+
+      // 2. CRITICAL FIX: Force the JSON download before navigating
+      if (locale.value !== targetLang) {
+        try {
+          await setLocale(targetLang);
+        } catch (e) {
+          // Safe to ignore router cancellation warnings
+        }
+      }
+
+      // 3. Named Route Generation & Native Navigation
+      const verifyRoute = localePath({ name: 'verify-email-custom' }, targetLang);
+      return navigateTo(verifyRoute);
+
+
     } else {
       emailError.value = authStore.authError || "An unexpected error occurred.";
     }
@@ -494,13 +511,24 @@ const handleAuth = async () => {
       // PRIORITIZE DB LANGUAGE: Use the newly fetched user preference, fallback to activeLanguage
       const targetLang = (authStore.user?.preferredLanguage || activeLanguage.value) as AvailableLocales;
 
+      if (locale.value !== targetLang) {
+        try {
+          await setLocale(targetLang);
+        } catch (e) {
+          // Safe to ignore router cancellation warnings
+        }
+      }
+
+      const dashboardRoute = localePath({ name: 'dashboard-custom' }, targetLang);
+      const preloaderRoute = localePath({ name: 'preloader-custom' }, targetLang);
+
       if (
         authStore.user?.onboardingStep !== undefined &&
         authStore.user.onboardingStep >= 3
       ) {
-        navigate.push(localePath("/dashboard", targetLang));
+        return navigateTo(dashboardRoute);
       } else {
-        navigate.replace(localePath("/preloader-page", targetLang));
+        return navigateTo(preloaderRoute);
       }
     } else {
       emailError.value = authStore.authError || "Authentication failure.";
@@ -591,16 +619,35 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
   const success = await authStore.oauthIdentity(rawToken, providerName, activeLanguage.value);
 
   if (success) {
-    // PRIORITIZE DB LANGUAGE: Use the newly fetched user preference, fallback to activeLanguage
+    // 1. Establish the Target Language (Source of Truth)
     const targetLang = (authStore.user?.preferredLanguage || activeLanguage.value) as AvailableLocales;
 
+    // If we don't await this, the router outruns the network request.
+    if (locale.value !== targetLang) {
+      try {
+        await setLocale(targetLang);
+      } catch (e) {
+        // Safe to ignore: The global guard may hijack this transition mid-flight,
+        // throwing a standard Vue Router cancellation warning.
+      }
+    }
+    // 2. Generate the paths using EXACT Route Names from nuxt.config.ts
+    // This forces i18n to find the '___hu' or '___en' variant of the extended route
+    const dashboardRoute = localePath({ name: 'dashboard-custom' }, targetLang);
+    const preloaderRoute = localePath({ name: 'preloader-custom' }, targetLang);
+
+    // Optional: Keep this to verify the prefix is now attached
+    console.log("Resolved Dashboard Path:", dashboardRoute);
+    console.log("Post-OAuth User Language:", authStore.user?.preferredLanguage, "Active Language:", activeLanguage.value, "Target Language for Navigation:", targetLang);
+    // 3. Execute Navigation
+    // 2. Use Nuxt's native navigateTo to safely execute the final jump
     if (
       authStore.user?.onboardingStep !== undefined &&
       authStore.user.onboardingStep >= 3
     ) {
-      navigate.push(localePath("/dashboard", targetLang));
+      return navigateTo(dashboardRoute);
     } else {
-      navigate.replace(localePath("/preloader-page", targetLang));
+      return navigateTo(preloaderRoute);
     }
   } else {
     emailError.value =

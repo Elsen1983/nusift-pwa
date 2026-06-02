@@ -67,13 +67,14 @@ export default defineEventHandler(async (event) => {
     });
 
     if (!user) {
+      // NEW USER: Create account and apply the language from the payload
       user = await prisma.user.create({
         data: {
           email: verifiedEmail,
           isVerified: true,
           oauthProvider: provider,
           oauthId: verifiedProviderId,
-          preferredLanguage: language || "en",
+          preferredLanguage: language || "en", 
         },
         include: {
           sourceSubscriptions: { include: { newsSource: true } },
@@ -83,12 +84,10 @@ export default defineEventHandler(async (event) => {
 
       // ANCHOR: DYNAMIC WELCOME EMAIL
       try {
-        // Fallback angolra, ha a kért nyelv nem létezik a szótárban
         type SupportedLang = keyof typeof welcomeDictionaries;
         const t = welcomeDictionaries[(language as SupportedLang)] || welcomeDictionaries['en'];
 
         await resend.emails.send({
-          // Teszteléshez a resend.dev domaint használjuk, hogy ne kapj domain verification errort
           from: 'NuSift Protocol <onboarding@resend.dev>',
           to: verifiedEmail,
           subject: t.subject,
@@ -101,6 +100,27 @@ export default defineEventHandler(async (event) => {
         });
       } catch (e) {
         console.error("Welcome email failed, but account created:", e);
+      }
+
+    } else {
+      // EXISTING USER: Link the OAuth account if it is missing
+      // We explicitly DO NOT update preferredLanguage to protect the DB state
+      if (!user.oauthProvider || !user.oauthId) {
+        user = await prisma.user.update({
+          where: { email: verifiedEmail },
+          data: {
+            oauthProvider: provider,
+            oauthId: verifiedProviderId,
+          },
+          include: {
+            sourceSubscriptions: { include: { newsSource: true } },
+            categorySubscriptions: { include: { category: true } }
+          }
+        });
+      } else if (user.oauthProvider !== provider || user.oauthId !== verifiedProviderId) {
+        throw new Error("Identity verification failed: Account conflict.");
+      } else {
+        console.log("OAuth login: Existing account verified for", verifiedEmail);
       }
     }
 

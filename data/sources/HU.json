@@ -1,11 +1,13 @@
 {
   "region": "HU",
-  "lastUpdated": "2026-05-26T16:44:55.521Z",
-  "sourceCount": 121,
+  "lastUpdated": "2026-06-02T20:09:30.509Z",
+  "sourceCount": 124,
   "domains": [
     "150sec.com",
+    "24.hu",
     "444.hu",
     "ado.hu",
+    "agoravox.it",
     "alfahir.hu",
     "alquds.co.uk",
     "arabic.euronews.com",
@@ -123,6 +125,7 @@
     "velvet.hu",
     "veol.hu",
     "vezess.hu",
+    "vg.hu",
     "vietatoparlare.it"
   ]
 }

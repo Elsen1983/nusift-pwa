@@ -94,10 +94,6 @@ export const useAuthStore = defineStore("auth", () => {
         if (response.user.preferredLanguage && import.meta.client) {
           // 1. Overwrite localStorage with the preferred language from the backend
           localStorage.setItem("nusift_preferred_language", response.user.preferredLanguage);
-          
-          // 2. Immediate UI translation through the Nuxt context
-          const nuxtApp = useNuxtApp();
-          nuxtApp.$i18n.setLocale(response.user.preferredLanguage);
         }
 
       if (!import.meta.server) {
@@ -146,10 +142,6 @@ export const useAuthStore = defineStore("auth", () => {
       if (response.user.preferredLanguage && import.meta.client) {
         // 1. Overwrite localStorage with the preferred language from the backend
         localStorage.setItem("nusift_preferred_language", response.user.preferredLanguage);
-        
-        // 2. Immediate UI translation through the Nuxt context
-        const nuxtApp = useNuxtApp();
-        nuxtApp.$i18n.setLocale(response.user.preferredLanguage);
       }
 
       if (!import.meta.server) {
