@@ -412,21 +412,21 @@
             "description": "Curate the exact nodes and feeds your AI Agent monitors. Add new sources, manage your tier quotas, and suspend or remove streams to maintain a clean, sovereign intelligence feed."
         },
         "quota": {
-            "tier_status_label": "Network Capacity Tier",
-            "tier_free": "Standard Free",
-            "tier_pro": "Sovereign Pro",
-            "quota_label": "Active Node Allocation",
+            "tier_status_label": "Subscription Tier",
+            "tier_free": "Free",
+            "tier_pro": "Pro",
+            "quota_label": "Active Sources",
             "upgrade_btn_title": "Upgrade to Pro",
             "upgrade_btn_sub": "(Max 15 active sources)"
         },
         "input": {
-            "label": "Ingestion Hub",
+            "label": "Source URL",
             "placeholder": "Enter source URL (e.g. bloomberg.com/tech)...",
-            "error_format": "Please enter a valid domain format.",
+            "error_format": "Please enter a valid URL format.",
             "btn_add": "Add New Source"
         },
         "active_zone": {
-            "title": "Active Data Streams",
+            "title": "Active Sources",
             "empty": "No active data streams. Add a source above to begin routing data.",
             "btn_suspend": "Suspend",
             "btn_delete": "Delete",

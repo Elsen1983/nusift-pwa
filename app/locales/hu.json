@@ -422,7 +422,7 @@
         "input": {
             "label": "Forrás URL",
             "placeholder": "Forrás URL megadása (pl. telex.hu/tech)...",
-            "error_format": "Kérlek, valós domain formátumot adj meg.",
+            "error_format": "Kérlek, valós URL formátumot adj meg.",
             "btn_add": "Új Forrás Felvétele"
         },
         "active_zone": {

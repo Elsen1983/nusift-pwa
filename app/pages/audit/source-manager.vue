@@ -3,13 +3,13 @@
     <div
       class="fixed top-0 right-0 w-[500px] h-[500px] bg-neon-cyan/5 blur-[120px] rounded-full -z-10 pointer-events-none"
     ></div>
-    <div
+    <!-- <div
       class="fixed bottom-[-10%] left-[-10%] w-[500px] h-[500px] bg-secondary-container/10 blur-[140px] rounded-full -z-10 pointer-events-none"
-    ></div>
+    ></div> -->
 
-    <main class="pt-5 pb-12 px-4 max-w-5xl mx-auto relative z-10">
+    <main class="pt-5 pb-5 px-4 max-w-5xl mx-auto space-y-4 relative z-10">
       <!-- 1. HEADER SECTION -->
-      <section class="mb-6 px-3">
+      <section class="mb-6 px-2">
         <div
           class="inline-block px-3 py-1 bg-surface-container-highest rounded-lg mb-2"
         >
@@ -32,7 +32,7 @@
       </section>
 
       <!-- 2. QUOTA SECTION -->
-      <section class="mb-8 px-3">
+      <section class="mb-8">
         <div
           class="bg-surface-container-low border border-outline-variant/15 rounded-2xl p-4 md:p-5 flex flex-col gap-4 shadow-[0_4px_12px_rgba(0,0,0,0.2)] w-full"
         >
@@ -99,7 +99,7 @@
       </section>
 
       <!-- 3. INPUT HUB SECTION -->
-      <section class="mb-10 px-3">
+      <section class="mb-10">
         <div
           class="bg-surface-container rounded-2xl p-4 md:p-5 shadow-[0_0_24px_0_rgba(0,229,255,0.08)] outline outline-1 outline-outline-variant/15 relative overflow-hidden w-full"
         >
@@ -182,7 +182,7 @@
       </section>
 
       <!-- 4. ACTIVE SOURCES SECTION (COLLAPSIBLE) -->
-      <section class="mb-10 px-3">
+      <section class="mb-10">
         <div
           class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/10 shadow-lg"
         >
@@ -236,7 +236,7 @@
 
       <!-- 5. SUSPENDED SOURCES SECTION (COLLAPSIBLE) -->
       <section
-        class="mb-6 px-3 opacity-80 hover:opacity-100 transition-opacity"
+        class="mb-6 px-2 opacity-80 hover:opacity-100 transition-opacity"
       >
         <div
           class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/10 shadow-lg"
@@ -246,7 +246,7 @@
             class="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-container-low/80 transition-colors select-none"
           >
             <h3
-              class="font-headline text-[16px] font-bold text-on-surface-variant flex items-center gap-2"
+              class="font-headline text-[16px] font-bold text-white flex items-center gap-2"
             >
               <span class="material-symbols-outlined text-xl">inventory_2</span>
               {{ $t("sourceManager.suspended_zone.title") }}

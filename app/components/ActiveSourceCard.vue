@@ -1,6 +1,6 @@
 <template>
   <div
-    class="glass-card rounded-2xl p-4 flex flex-col space-y-3 border-2 transition-all relative"
+    class="glass-card rounded-2xl p-3 flex flex-col space-y-3 border-2 transition-all relative"
     :style="{
       borderColor: 'rgba(0, 229, 255, 0.1)',
       boxShadow: '0 0 10px rgba(0, 229, 255, 0.15)',

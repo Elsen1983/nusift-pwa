@@ -1,5 +1,5 @@
 <template>
-  <div class="bg-surface-container-lowest rounded-xl p-4 md:p-5 flex flex-col gap-4 outline outline-2 outline-outline-variant/80 w-full">
+  <div class="bg-surface-container-lowest rounded-xl p-3 md:p-5 flex flex-col gap-4 outline outline-2 outline-outline-variant/80 w-full">
     <div class="flex-grow space-y-1 opacity-60 grayscale hover:grayscale-0 transition-all">
       <h4 class="font-body font-bold text-on-surface-variant text-lg">
         {{ source.name || getDomain(source.url) }}
