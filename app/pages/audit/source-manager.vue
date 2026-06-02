@@ -236,7 +236,7 @@
 
       <!-- 5. SUSPENDED SOURCES SECTION (COLLAPSIBLE) -->
       <section
-        class="mb-6 px-2 opacity-80 hover:opacity-100 transition-opacity"
+        class="mb-6 opacity-80 hover:opacity-100 transition-opacity"
       >
         <div
           class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/10 shadow-lg"

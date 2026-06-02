@@ -22,7 +22,7 @@
     </div>
 
     <div class="flex items-center gap-2 justify-end w-full mt-2 relative group">
-      <div v-if="isQuotaFull" class="absolute bottom-full right-0 mb-2 w-max bg-surface-bright text-on-surface text-[10px] font-label px-3 py-2 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
+      <div v-if="isQuotaFull" class="absolute bottom-full right-0 mb-2 w-max max-w-[220px] sm:max-w-xs bg-surface-bright text-on-surface text-[10px] font-label px-3 py-2 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20 text-center text-wrap break-words">
         {{ $t("sourceManager.suspended_zone.quota_full") }}
       </div>
 
