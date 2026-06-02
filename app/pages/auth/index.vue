@@ -324,6 +324,7 @@ import { $api } from "~/utils/api";
 
 const authStore = useAuthStore();
 const navigate = useSovereignNavigate();
+const localePath = useLocalePath();
 
 type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
 const { t, setLocale } = useI18n();
@@ -341,7 +342,7 @@ useHead({
 });
 
 /** ANCHOR UI-STATES */
-const activeLanguage = ref('en'); // Local state for the chosen language payload
+const activeLanguage = ref<AvailableLocales>('en'); // Local state for the chosen language payload
 const isLanguageReady = ref(false);
 const isRegistering = ref(false);
 const isResettingPassword = ref(false);
@@ -402,7 +403,7 @@ onMounted(() => {
   // Retrieve the language if it was already selected previously
   const savedLang = localStorage.getItem('nusift_preferred_language');
   if (savedLang) {
-    activeLanguage.value = savedLang;
+    activeLanguage.value = savedLang as AvailableLocales;
     setLocale(savedLang as AvailableLocales);
     // Gate Open: The user already selected a language in a previous session
     isLanguageReady.value = true;
@@ -439,7 +440,7 @@ const cancelResetMode = () => {
 
 /** ANCHOR HANDLERS */
 const handleLanguageSelection = (langCode: string) => {
-  activeLanguage.value = langCode;
+  activeLanguage.value = langCode as AvailableLocales;
   setLocale(langCode as AvailableLocales);
   // Gate Open: The user just clicked a language button (User Interaction!)
   isLanguageReady.value = true;
@@ -493,9 +494,9 @@ const handleAuth = async () => {
         authStore.user?.onboardingStep !== undefined &&
         authStore.user.onboardingStep >= 3
       ) {
-        navigate.push("/dashboard");
+        navigate.push(localePath("/dashboard", activeLanguage.value));
       } else {
-        navigate.replace("/preloader-page");
+        navigate.replace(localePath("/preloader-page", activeLanguage.value));
       }
     } else {
       emailError.value = authStore.authError || "Authentication failure.";
@@ -591,9 +592,9 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
       authStore.user?.onboardingStep !== undefined &&
       authStore.user.onboardingStep >= 3
     ) {
-      navigate.push("/dashboard");
+      navigate.push(localePath("/dashboard", activeLanguage.value));
     } else {
-      navigate.replace("/preloader-page");
+      navigate.replace(localePath("/preloader-page", activeLanguage.value));
     }
   } else {
     emailError.value =

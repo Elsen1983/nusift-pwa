@@ -32,6 +32,7 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
   const authStore = useAuthStore();
   const tokenCookie = useCookie("auth_token");     
   const sessionStatus = useCookie("session_status"); 
+  const localePath = useLocalePath();
 
   // 1. ANCHOR: i18n PATH NORMALIZATION
   // Strip the language prefix (e.g., '/hu', '/en') so the guard logic works universally
@@ -77,6 +78,8 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
         primaryRegion: null,
         topSources: [],
         topInterests: [],
+        tier: payload.tier || "free",
+        preferredLanguage: payload.preferredLanguage || "en",
       };
     }
   }
@@ -88,6 +91,12 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
 
   const isAuthenticated = authStore.user !== null && hasActiveSession;
   const currentStep = authStore.user?.onboardingStep || 0;
+
+ // Define the exact literal types allowed by your i18n config
+  type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
+  
+  // Cast the extracted string to the strict type
+  const userLang = (authStore.user?.preferredLanguage || 'en') as AvailableLocales;
 
   const getOnboardingTarget = (step: number) => {
     switch (step) {
@@ -104,17 +113,17 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
   
   // If authenticated, NEVER allow access to /auth - send to current onboarding step or dashboard
   if (isAuthenticated && cleanPath === AUTH_PATH) {
-    return navigateTo(targetPath);
+    return navigateTo(localePath(targetPath, userLang));
   }
 
   // Handle Root Path
   if (cleanPath === ROOT_PATH) {
-    return navigateTo(isAuthenticated ? targetPath : AUTH_PATH);
+    return navigateTo(localePath(isAuthenticated ? targetPath : AUTH_PATH, userLang));
   }
 
   // Protect private routes
   if (!isAuthenticated && !isPublicRoute) {
-    return navigateTo(AUTH_PATH, { replace: true });
+    return navigateTo(localePath(AUTH_PATH, userLang), { replace: true });
   }
 
   // --- Onboarding Flow Lockdown ---
@@ -134,7 +143,7 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
   const isFullyOnboarded = currentStep >= 3;
 
   if (isFullyOnboarded && LOCKED_ONBOARDING_ROUTES.includes(cleanPath)) {
-    return navigateTo(DASHBOARD_PATH, { replace: true });
+    return navigateTo(localePath(DASHBOARD_PATH, userLang), { replace: true });
   }
 
   if (
@@ -145,6 +154,6 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
     cleanPath !== DASHBOARD_PATH &&
     !ALL_TRANSITIONAL_ROUTES.includes(cleanPath)
   ) {
-    return navigateTo(targetPath, { replace: true });
+    return navigateTo(localePath(targetPath, userLang), { replace: true });
   }
 });
