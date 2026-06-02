@@ -21,20 +21,35 @@
       </button>
     </div>
 
-    <div class="flex items-center gap-2 justify-end w-full mt-2 relative group">
-      <div v-if="isQuotaFull" class="absolute bottom-full right-0 mb-2 w-max max-w-[220px] sm:max-w-xs bg-surface-bright text-on-surface text-[10px] font-label px-3 py-2 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20 text-center text-wrap break-words">
-        {{ $t("sourceManager.suspended_zone.quota_full") }}
+    <div class="flex items-center gap-1 justify-end w-full">
+      
+      <div class="relative group">
+        <div 
+          v-if="isQuotaFull" 
+          class="absolute bottom-full right-0 mb-2 w-max max-w-[220px] sm:max-w-xs bg-surface-bright text-on-surface text-[10px] font-label px-3 py-2 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20 text-center text-wrap break-words"
+        >
+          {{ $t("sourceManager.suspended_zone.quota_full") }}
+        </div>
+
+        <button 
+          @click="$emit('activate', source.id)" 
+          :disabled="isQuotaFull || isProcessing" 
+          class="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-primary-container/30 bg-primary-container/10 text-primary-container text-[10px] font-bold uppercase tracking-widest hover:bg-primary-container/20 hover:shadow-[0_0_10px_rgba(0,229,255,0.2)] transition-all duration-300 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <span class="material-symbols-outlined text-[16px]" :style="{ fontVariationSettings: `'FILL' 1` }">play_arrow</span>
+          <span>{{ $t('sourceManager.suspended_zone.btn_activate') }}</span>
+        </button>
       </div>
 
-      <button @click="$emit('activate', source.id)" :disabled="isQuotaFull || isProcessing" class="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-primary-container/30 bg-primary-container/10 text-primary-container text-[10px] font-bold uppercase tracking-widest hover:bg-primary-container/20 hover:shadow-[0_0_10px_rgba(0,229,255,0.2)] transition-all duration-300 disabled:opacity-30 disabled:cursor-not-allowed">
-        <span class="material-symbols-outlined text-[16px]" :style="{ fontVariationSettings: `'FILL' 1` }">play_arrow</span>
-        <span>{{ $t('sourceManager.suspended_zone.btn_activate') }}</span>
-      </button>
-
-      <button @click="$emit('delete', source.id)" :disabled="isProcessing" class="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-error/50 bg-error/5 text-error text-[10px] font-bold uppercase tracking-widest hover:bg-error/15 hover:border-error/40 transition-all duration-300 disabled:opacity-50 shadow-[0_0_10px_rgba(251,0,31,0.25)]">
+      <button 
+        @click="$emit('delete', source.id)" 
+        :disabled="isProcessing" 
+        class="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-error/50 bg-error/5 text-error text-[10px] font-bold uppercase tracking-widest hover:bg-error/15 hover:border-error/40 transition-all duration-300 disabled:opacity-50 shadow-[0_0_10px_rgba(251,0,31,0.25)]"
+      >
         <span class="material-symbols-outlined text-[16px]">delete</span>
         <span>{{ $t('sourceManager.active_zone.btn_delete') }}</span>
       </button>
+
     </div>
   </div>
 </template>

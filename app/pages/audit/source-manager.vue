@@ -34,53 +34,55 @@
       <!-- 2. QUOTA SECTION -->
       <section class="mb-8">
         <div
-          class="bg-surface-container-low border border-outline-variant/15 rounded-2xl p-4 md:p-5 flex flex-col gap-4 shadow-[0_4px_12px_rgba(0,0,0,0.2)] w-full"
+          class="bg-surface-container-low border border-outline-variant/15 rounded-2xl p-4 md:p-5 flex flex-col md:flex-row md:items-center md:justify-between gap-6 shadow-[0_4px_12px_rgba(0,0,0,0.2)] w-full"
         >
-          <div class="flex flex-row items-baseline gap-2 w-full">
-            <span
-              class="text-[11px] font-label font-bold text-on-surface-variant uppercase tracking-widest"
-            >
-              {{ $t("sourceManager.quota.tier_status_label") }}:
-            </span>
-            <span
-              class="text-[12px] font-label tracking-wide"
-              :class="quota.tier === 'PRO' ? 'text-[#fec931]' : 'text-white'"
-            >
-              {{
-                quota.tier === "PRO"
-                  ? $t("sourceManager.quota.tier_pro")
-                  : $t("sourceManager.quota.tier_free")
-              }}
-            </span>
-          </div>
-
-          <div class="flex flex-col gap-2 w-full">
-            <span
-              class="text-[11px] font-label font-bold text-on-surface-variant uppercase tracking-widest"
-            >
-              {{ $t("sourceManager.quota.quota_label") }}:
+          <div class="flex flex-col gap-4 w-full md:flex-1 md:pr-4">
+            <div class="flex flex-row items-baseline gap-2 w-full">
               <span
-                class="text-[12px] font-label tracking-wide text-neon-cyan ml-1"
-                >{{ activeSources.length }}/{{ quota.limit }}</span
+                class="text-[11px] font-label font-bold text-on-surface-variant uppercase tracking-widest"
               >
-            </span>
-            <div
-              class="h-1.5 w-full md:w-1/2 bg-surface-container-highest rounded-full overflow-hidden flex"
-            >
+                {{ $t("sourceManager.quota.tier_status_label") }}:
+              </span>
+              <span
+                class="text-[12px] font-label tracking-wide"
+                :class="quota.tier === 'PRO' ? 'text-[#fec931]' : 'text-white'"
+              >
+                {{
+                  quota.tier === "PRO"
+                    ? $t("sourceManager.quota.tier_pro")
+                    : $t("sourceManager.quota.tier_free")
+                }}
+              </span>
+            </div>
+
+            <div class="flex flex-col gap-2 w-full">
+              <span
+                class="text-[11px] font-label font-bold text-on-surface-variant uppercase tracking-widest"
+              >
+                {{ $t("sourceManager.quota.quota_label") }}:
+                <span
+                  class="text-[12px] font-label tracking-wide text-neon-cyan ml-1"
+                  >{{ activeSources.length }}/{{ quota.limit }}</span
+                >
+              </span>
               <div
-                class="h-full bg-gradient-to-r from-[#00E5FF] to-[#9cf0ff] rounded-full transition-all duration-500"
-                :style="{ width: `${progressPercentage}%` }"
-              ></div>
+                class="h-1.5 w-full bg-surface-container-highest rounded-full overflow-hidden flex"
+              >
+                <div
+                  class="h-full bg-gradient-to-r from-[#00E5FF] to-[#9cf0ff] rounded-full transition-all duration-500"
+                  :style="{ width: `${progressPercentage}%` }"
+                ></div>
+              </div>
             </div>
           </div>
 
-          <div v-if="quota.tier === 'FREE'" class="w-full pt-2">
+          <div v-if="quota.tier === 'FREE'" class="w-full md:w-auto shrink-0 flex justify-end">
             <button
-              class="w-full sm:w-max md:w-1/2 bg-surface-container-high hover:bg-surface-container-highest transition-colors px-6 py-3 rounded-xl flex items-center justify-between sm:justify-center gap-5 border border-outline-variant/80 hover:border-neon-cyan disabled:opacity-50 disabled:cursor-not-allowed group"
+              class="w-full sm:w-max bg-surface-container-high hover:bg-surface-container-highest transition-colors px-6 py-3 rounded-xl flex items-center justify-between sm:justify-center gap-5 border border-yellow-100 border-outline-variant/80 hover:border-neon-cyan disabled:opacity-50 disabled:cursor-not-allowed group"
             >
               <div class="flex flex-col items-start text-left">
                 <span
-                  class="font-label text-[13px] font-bold text-neon-cyan uppercase tracking-wider leading-tight group-hover:drop-shadow-[0_0_8px_rgba(0,229,255,0.8)] transition-all"
+                  class="font-label text-[13px] font-bold text-neon-cyan uppercase tracking-wider leading-tight"
                 >
                   {{ $t("sourceManager.quota.upgrade_btn_title") }}
                 </span>
@@ -101,24 +103,24 @@
       <!-- 3. INPUT HUB SECTION -->
       <section class="mb-10">
         <div
-          class="bg-surface-container rounded-2xl p-4 md:p-5 shadow-[0_0_24px_0_rgba(0,229,255,0.08)] outline outline-1 outline-outline-variant/15 relative overflow-hidden w-full"
+          class="bg-surface-container rounded-2xl p-4 md:p-5 shadow-[0_0_24px_0_rgba(0,229,255,0.08)] border border-primary-container/50 relative overflow-hidden w-full"
         >
           <div class="relative z-10 space-y-4">
             <div class="relative group">
               <label
                 for="source-url-input"
-                class="block text-[13px] font-label uppercase tracking-widest text-on-surface-variant mb-2 ml-1"
+                class="block text-[13px] font-label uppercase tracking-widest text-white mb-2 ml-1"
               >
                 {{ $t("sourceManager.input.label") }}
               </label>
               <div
-                class="bg-surface-container-low p-1 rounded-xl transition-all duration-300 focus-within:shadow-[0_0_20px_rgba(0,229,255,0.05)]"
+                class="bg-surface-container-low p-1 rounded-xl transition-all duration-300 focus-within:shadow-[0_0_20px_rgba(0,229,255,0.05)] outline outline-1 outline-white/50"
               >
                 <input
                   id="source-url-input"
                   v-model="newSourceUrl"
                   @keyup.enter="addNewSource"
-                  class="w-full bg-surface-container-highest border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-neon-cyan/30 font-body h-[52px] text-[14px] font-bold px-4 disabled:opacity-50 outline-none"
+                  class="w-full bg-surface-container-highest focus:bg-surface-bright transition-colors duration-300 border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-neon-cyan/30 font-body h-[52px] text-[16px] font-bold px-4 disabled:opacity-50 outline-none"
                   :placeholder="$t('sourceManager.input.placeholder')"
                   type="text"
                   :disabled="isProcessing"
@@ -214,7 +216,7 @@
             v-show="isActiveSectionOpen"
             class="p-3 md:p-5 border-t border-outline-variant/10 bg-surface-container-low/30"
           >
-            <div class="grid grid-cols-1 gap-4" v-if="activeSources.length > 0">
+            <div class="grid grid-cols-1 gap-3" v-if="activeSources.length > 0">
               <ActiveSourceCard
                 v-for="source in activeSources"
                 :key="source.id"
@@ -271,7 +273,7 @@
             class="p-3 md:p-5 border-t border-outline-variant/10 bg-surface-container-low/30"
           >
             <div
-              class="grid grid-cols-1 gap-4"
+              class="grid grid-cols-1 gap-3"
               v-if="suspendedSources.length > 0"
             >
               <SuspendedSourceCard

@@ -90,6 +90,16 @@ export const useAuthStore = defineStore("auth", () => {
         agentStore.topInterests = (response.user.topInterests || []) as any;
       }
 
+      // ANCHOR LANGUAGE-HYDRATION: DB -> Client synchronization immediately after login
+        if (response.user.preferredLanguage && import.meta.client) {
+          // 1. Overwrite localStorage with the preferred language from the backend
+          localStorage.setItem("nusift_preferred_language", response.user.preferredLanguage);
+          
+          // 2. Immediate UI translation through the Nuxt context
+          const nuxtApp = useNuxtApp();
+          nuxtApp.$i18n.setLocale(response.user.preferredLanguage);
+        }
+
       if (!import.meta.server) {
         localStorage.setItem("nusift_pwa_profile", JSON.stringify(response.user));
       }
@@ -130,6 +140,16 @@ export const useAuthStore = defineStore("auth", () => {
         agentStore.primaryRegion = response.user.primaryRegion || null;
         agentStore.topSources = response.user.topSources || [];
         agentStore.topInterests = (response.user.topInterests || []) as any;
+      }
+
+      // ANCHOR LANGUAGE-HYDRATION: DB -> Client synchronization immediately after OAuth login
+      if (response.user.preferredLanguage && import.meta.client) {
+        // 1. Overwrite localStorage with the preferred language from the backend
+        localStorage.setItem("nusift_preferred_language", response.user.preferredLanguage);
+        
+        // 2. Immediate UI translation through the Nuxt context
+        const nuxtApp = useNuxtApp();
+        nuxtApp.$i18n.setLocale(response.user.preferredLanguage);
       }
 
       if (!import.meta.server) {
