@@ -4,14 +4,14 @@
   >
     <div
       v-if="activeOverlay === article.id"
-      class="absolute inset-0 bg-[#1c1b1b]/95 backdrop-blur-sm z-[60] rounded-2xl p-5 flex flex-col justify-center transition-opacity duration-200"
+      class="absolute inset-0 bg-[#1c1b1b]/95 backdrop-blur-sm z-[60] rounded-2xl p-5 pt-2 mt-0 flex flex-col justify-center transition-opacity duration-200"
     >
       <h3
-        class="font-headline text-[#00E5FF] font-bold text-sm mb-3 uppercase tracking-wider border-b border-[#00E5FF]/20 pb-2"
+        class="relative pb-1 mb-2 text-sm font-bold uppercase font-headline text-[#00E5FF] after:content-[''] after:absolute after:bottom-0 after:left-0 after:w-[75%] after:h-[1px] after:bg-[#00E5FF]/30"
       >
         {{ $t("newsCard.key_signals") }}
       </h3>
-      <ul class="space-y-2.5">
+      <ul class="space-y-1">
         <li
           v-for="point in article.signals"
           :key="point"

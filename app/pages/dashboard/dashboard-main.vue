@@ -268,6 +268,8 @@ const articles = ref<Article[]>([
       "Significant shift in renewable energy policy in the EU.",
       "New funding for decentralized grid infrastructure projects.",
       "Potential for cross-border energy trading protocols.",
+      "Increased investment in smart grid technologies by major utilities.",
+      "Emergence of community energy projects in key regions.",
     ],
   },
   {
