@@ -76,7 +76,11 @@
         },
         "validation": {
             "invalid_email": "Invalid identity format.",
-            "password_too_short": "Security fail: Minimum 12 characters."
+            "password_too_short": "Minimum 12 characters.",
+            "password_no_uppercase": "Must contain at least one uppercase letter.",
+            "password_no_lowercase": "Must contain at least one lowercase letter.",
+            "password_no_special": "Must contain at least one special character.",
+            "password_no_number": "Must contain at least one number."
         },
         "errors": {
             "unexpected": "An unexpected error occurred.",

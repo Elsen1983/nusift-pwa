@@ -13,7 +13,7 @@ Kodolassal kapcsolatban:
 TODO:
 region calibration: a const countries kiszervezese kulon file-ba, es nyelvi lokalizacio alkalmazasa
 
-
+FONTOS: ha nem is validaltam az email-t a regisztracio folyaman, akkor is be tudok lepni az email+jelszoval !!!!
 
 IDEAS:
 PROMPT BLUEPRINT: NuSift Jövőbeli Architektúra Fejlesztések

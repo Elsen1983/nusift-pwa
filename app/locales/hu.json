@@ -26,7 +26,7 @@
         },
         "subheading": {
             "reset": "Jelszó-helyreállítás engedélyezése",
-            "register": "Oldd fel a napi híreid",
+            "register": "Érd el a napi híreid",
             "login": "Személyre szabott híreid várnak"
         },
         "form": {
@@ -76,7 +76,11 @@
         },
         "validation": {
             "invalid_email": "Érvénytelen formátum.",
-            "password_too_short": "Biztonsági hiba: Minimum 12 karakter szükséges."
+            "password_too_short": "Minimum 12 karakter szükséges.",
+            "password_no_uppercase": "Legalább egy nagybetűt kell tartalmaznia.",
+            "password_no_lowercase": "Legalább egy kisbetűt kell tartalmaznia.",
+            "password_no_special": "Legalább egy speciális karaktert kell tartalmaznia.",
+            "password_no_number": "Legalább egy számot kell tartalmaznia."
         },
         "errors": {
             "unexpected": "Váratlan hiba történt.",

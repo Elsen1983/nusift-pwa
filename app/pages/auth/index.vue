@@ -3,7 +3,7 @@
     class="min-h-screen bg-background text-on-background font-body selection:bg-primary-container selection:text-on-primary-container relative overflow-hidden"
   >
     <ClientOnly>
-      <PwaInstallBanner v-if="isLanguageReady"/>
+      <PwaInstallBanner v-if="isLanguageReady" />
     </ClientOnly>
 
     <ClientOnly>
@@ -27,10 +27,10 @@
       >
         {{
           isResettingPassword
-            ? $t('auth.loading.resetting')
+            ? $t("auth.loading.resetting")
             : isRegistering
-              ? $t('auth.loading.registering') 
-              : $t('auth.loading.initializing')
+              ? $t("auth.loading.registering")
+              : $t("auth.loading.initializing")
         }}
       </p>
     </div>
@@ -55,12 +55,24 @@
         <h1
           class="font-headline text-3xl font-bold tracking-tight text-on-surface text-center transition-all duration-500"
         >
-          {{ isResettingPassword ? $t('auth.heading.reset') : isRegistering ? $t('auth.heading.register') : $t('auth.heading.login') }}
+          {{
+            isResettingPassword
+              ? $t("auth.heading.reset")
+              : isRegistering
+                ? $t("auth.heading.register")
+                : $t("auth.heading.login")
+          }}
         </h1>
         <p
           class="text-[11px] text-on-surface-variant mt-2 font-label uppercase tracking-[0.25em] text-center opacity-80"
         >
-          {{ isResettingPassword ? $t('auth.subheading.reset') : isRegistering ? $t('auth.subheading.register') : $t('auth.subheading.login') }}
+          {{
+            isResettingPassword
+              ? $t("auth.subheading.reset")
+              : isRegistering
+                ? $t("auth.subheading.register")
+                : $t("auth.subheading.login")
+          }}
         </p>
       </section>
 
@@ -85,8 +97,8 @@
             :error="emailError"
             class="standard-field"
             @blur="validateEmailField"
+            :disabled="isLoading" 
           />
-
           <BaseInput
             v-if="!isResettingPassword"
             v-model="password"
@@ -96,14 +108,16 @@
             :error="passwordError"
             class="standard-field"
             @blur="validatePasswordField"
+            :disabled="isLoading"
           >
             <template v-if="!isRegistering && showForgotButton" #label-right>
               <button
                 @click="triggerResetMode"
                 type="button"
-                class="text-[11px] font-label text-primary-container hover:underline uppercase font-bold tracking-tighter"
+                :disabled="isLoading"
+                class="text-[11px] font-label text-primary-container hover:underline uppercase font-bold tracking-tighter disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
               >
-                {{ $t('auth.form.forgot_password') }}
+                {{ $t("auth.form.forgot_password") }}
               </button>
             </template>
             <template v-if="isRegistering" #help-text>
@@ -111,7 +125,7 @@
                 v-if="!passwordError"
                 class="text-[11px] text-zinc-500 ml-1 italic mt-1.5 leading-tight"
               >
-                {{ $t('auth.form.password_hint') }}
+                {{ $t("auth.form.password_hint") }}
               </p>
             </template>
           </BaseInput>
@@ -129,10 +143,10 @@
           >
             {{
               isResettingPassword
-                ? $t('auth.buttons.send_reset')
+                ? $t("auth.buttons.send_reset")
                 : isRegistering
-                  ? $t('auth.buttons.register_identity')
-                  : $t('auth.buttons.authenticate')
+                  ? $t("auth.buttons.register_identity")
+                  : $t("auth.buttons.authenticate")
             }}
           </button>
         </form>
@@ -144,26 +158,31 @@
           >
             {{
               isRegistering
-                ? $t('auth.prompts.already_have_account')
-                : $t('auth.prompts.dont_have_account')
+                ? $t("auth.prompts.already_have_account")
+                : $t("auth.prompts.dont_have_account")
             }}
           </p>
           <button
             v-if="!isResettingPassword"
             @click="toggleAuthMode"
             type="button"
-            class="text-[18px] font-headline font-bold text-primary-container hover:text-primary underline underline-offset-4 transition-colors"
+            :disabled="isLoading"
+            class="text-[18px] font-headline font-bold text-primary-container hover:text-primary underline underline-offset-4 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
           >
-            {{ isRegistering ? $t('auth.prompts.login_link') : $t('auth.prompts.registration_link') }}
+            {{
+              isRegistering
+                ? $t("auth.prompts.login_link")
+                : $t("auth.prompts.registration_link")
+            }}
           </button>
 
           <button
             v-if="isResettingPassword"
             @click="cancelResetMode"
-            type="button"
-            class="text-xs font-label mt-2 text-on-surface-variant hover:text-white transition-colors uppercase tracking-widest"
+            :disabled="isLoading"
+            class="text-xs font-label mt-2 text-on-surface-variant hover:text-white transition-colors uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {{ $t('auth.buttons.back_to_login') }}
+            {{ $t("auth.buttons.back_to_login") }}
           </button>
         </div>
 
@@ -174,8 +193,8 @@
           <div class="flex-grow border-t border-outline-variant/15"></div>
           <span
             class="flex-shrink mx-4 text-[9px] font-label font-bold text-zinc-500 tracking-[0.4em] uppercase"
-            >
-            {{ $t('auth.prompts.divider_label') }}
+          >
+            {{ $t("auth.prompts.divider_label") }}
           </span>
           <div class="flex-grow border-t border-outline-variant/15"></div>
         </div>
@@ -185,7 +204,8 @@
         <button
           @click="handleOAuth('Google')"
           type="button"
-          class="flex items-center justify-center w-full bg-[#1e1e1e] hover:bg-[#252525] text-on-surface text-xs font-label font-semibold py-3 rounded-xl border border-outline-variant/10 transition-colors shadow-sm active:scale-[0.98] background-button-custom"
+          :disabled="isLoading"
+          class="flex items-center justify-center w-full bg-[#1e1e1e] hover:bg-[#252525] text-on-surface text-xs font-label font-semibold py-3 rounded-xl border border-outline-variant/10 transition-colors shadow-sm active:scale-[0.98] background-button-custom disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg class="w-5 h-5 mr-3" fill="currentColor" viewBox="0 0 24 24">
             <path
@@ -205,19 +225,19 @@
               fill="#EA4335"
             ></path>
           </svg>
-          {{ $t('auth.buttons.continue_google') }}
+          {{ $t("auth.buttons.continue_google") }}
         </button>
         <button
           @click="handleOAuth('Apple')"
-          type="button"
-          class="flex items-center justify-center w-full bg-black text-white hover:bg-zinc-900 text-xs font-label font-semibold py-3 rounded-xl transition-colors shadow-sm active:scale-[0.98]"
+          :disabled="isLoading"
+          class="flex items-center justify-center w-full bg-black text-white hover:bg-zinc-900 text-xs font-label font-semibold py-3 rounded-xl transition-colors shadow-sm active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg class="w-5 h-5 mr-3" fill="currentColor" viewBox="0 0 24 24">
             <path
               d="M17.05 20.28c-.98.95-2.05 1.78-3.3 1.78-1.2 0-1.57-.75-3.04-.75-1.47 0-1.92.73-3.04.75-1.22.02-2.33-.9-3.3-1.8-1.98-1.86-3.5-5.25-3.5-8.43 0-3.15 1.63-4.83 3.19-4.83 1.15 0 2.04.74 2.84.74.78 0 1.9-.84 3.33-.84.9 0 2.13.33 3.04 1.25-.13.1-.9.84-.9 2.22 0 1.67 1.15 2.23 1.38 2.33-.1.3-.43.8-.9 1.43-.53.75-.95 1.4-1.3 1.7zm-2.84-15.82c.6-.74.98-1.74.98-2.73 0-.15-.02-.3-.04-.44-.92.04-2.03.62-2.7 1.4-.53.6-.98 1.62-.98 2.6.14.02.28.03.44.03.88 0 1.78-.45 2.3-1.12z"
             ></path>
           </svg>
-          {{ $t('auth.buttons.continue_apple') }}
+          {{ $t("auth.buttons.continue_apple") }}
         </button>
       </section>
 
@@ -225,14 +245,32 @@
         <p
           class="text-[10px] text-zinc-500 font-label uppercase tracking-[0.4em] mb-2 font-bold opacity-70"
         >
-          {{ $t('auth.footer.encryption_label') }}
+          {{ $t("auth.footer.encryption_label") }}
         </p>
         <div
           class="flex justify-center space-x-8 text-[11px] text-on-surface-variant font-bold font-label"
         >
-          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'terms'">{{ $t('auth.footer.terms') }}</a>
-          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'privacy'">{{ $t('auth.footer.privacy') }}</a>
-          <a href="#" class="hover:text-primary transition-all duration-300" @click.prevent="activeModal = 'help'">{{ $t('auth.footer.help') }}</a>
+          <a
+            href="#"
+            :class="{ 'pointer-events-none opacity-50': isLoading }"
+            class="hover:text-primary transition-all duration-300"
+            @click.prevent="activeModal = 'terms'"
+            >{{ $t("auth.footer.terms") }}</a
+          >
+          <a
+            href="#"
+            :class="{ 'pointer-events-none opacity-50': isLoading }"
+            class="hover:text-primary transition-all duration-300"
+            @click.prevent="activeModal = 'privacy'"
+            >{{ $t("auth.footer.privacy") }}</a
+          >
+          <a
+            href="#"
+            :class="{ 'pointer-events-none opacity-50': isLoading }"
+            class="hover:text-primary transition-all duration-300"
+            @click.prevent="activeModal = 'help'"
+            >{{ $t("auth.footer.help") }}</a
+          >
         </div>
       </footer>
     </main>
@@ -258,16 +296,16 @@
           <h3
             class="font-headline text-2xl font-bold text-primary-container uppercase tracking-tight"
           >
-            {{ $t('auth.modal.terms_title') }}
+            {{ $t("auth.modal.terms_title") }}
           </h3>
           <div
             class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
           >
             <p>
-              {{ $t('auth.modal.terms_p1') }}
+              {{ $t("auth.modal.terms_p1") }}
             </p>
             <p>
-              {{ $t('auth.modal.terms_p2') }}
+              {{ $t("auth.modal.terms_p2") }}
             </p>
           </div>
         </div>
@@ -275,16 +313,16 @@
           <h3
             class="font-headline text-2xl font-bold text-primary-container uppercase tracking-tight"
           >
-            {{ $t('auth.modal.privacy_title') }}
+            {{ $t("auth.modal.privacy_title") }}
           </h3>
           <div
             class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
           >
             <p>
-              {{ $t('auth.modal.privacy_p1') }}
+              {{ $t("auth.modal.privacy_p1") }}
             </p>
             <p>
-              {{ $t('auth.modal.privacy_p2') }}
+              {{ $t("auth.modal.privacy_p2") }}
             </p>
           </div>
         </div>
@@ -292,16 +330,16 @@
           <h3
             class="font-headline text-2xl font-bold text-primary-container uppercase tracking-tight"
           >
-            {{ $t('auth.modal.help_title') }}
+            {{ $t("auth.modal.help_title") }}
           </h3>
           <div
             class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
           >
             <p>
-              {{ $t('auth.modal.help_p1') }}
+              {{ $t("auth.modal.help_p1") }}
             </p>
             <p>
-              {{ $t('auth.modal.help_p2') }}
+              {{ $t("auth.modal.help_p2") }}
             </p>
           </div>
         </div>
@@ -309,7 +347,7 @@
           @click="activeModal = null"
           class="w-full mt-8 py-4 bg-primary-container text-on-primary-container font-headline font-bold rounded-xl active:scale-95 transition-all uppercase tracking-[0.2em] text-xs"
         >
-          {{ $t('auth.modal.acknowledge') }}
+          {{ $t("auth.modal.acknowledge") }}
         </button>
       </div>
     </div>
@@ -342,7 +380,7 @@ useHead({
 });
 
 /** ANCHOR UI-STATES */
-const activeLanguage = ref<AvailableLocales>('en'); // Local state for the chosen language payload
+const activeLanguage = ref<AvailableLocales>("en"); // Local state for the chosen language payload
 const isLanguageReady = ref(false);
 const isRegistering = ref(false);
 const isResettingPassword = ref(false);
@@ -376,10 +414,37 @@ const validateEmailField = () => {
 const validatePasswordField = () => {
   passwordError.value = "";
   if (!password.value) return false;
+
+  // 1. Length Boundary Check
   if (password.value.length < 12) {
-    passwordError.value = "Security fail: Minimum 12 characters.";
+    passwordError.value = t("auth.validation.password_too_short");
     return false;
   }
+
+  // 2. Uppercase Check
+  if (!/[A-Z]/.test(password.value)) {
+    passwordError.value = t("auth.validation.password_no_uppercase");
+    return false;
+  }
+
+  // 3. Lowercase Check
+  if (!/[a-z]/.test(password.value)) {
+    passwordError.value = t("auth.validation.password_no_lowercase");
+    return false;
+  }
+
+  // 4. Number Check
+  if (!/[0-9]/.test(password.value)) {
+    passwordError.value = t("auth.validation.password_no_number");
+    return false;
+  }
+
+  // 5. Special Character Check
+  if (!/[!@#$%^&*(),.?":{}|<>\-_+=\[\]\/\\'`~]/.test(password.value)) {
+    passwordError.value = t("auth.validation.password_no_special");
+    return false;
+  }
+
   return true;
 };
 
@@ -387,11 +452,11 @@ watch(email, () => validateEmailField());
 
 watch(password, () => {
   validatePasswordField();
-  
-  // SENIOR UX FIX: 
-  // Ha a jelszót módosítják egy korábbi sikertelen bejelentkezés után, 
-  // újra kell validálni az e-mailt is, hogy a beragadt 
-  // "Authentication failure" (ami az emailError-ban van tárolva) törlődjön, 
+
+  // SENIOR UX FIX:
+  // Ha a jelszót módosítják egy korábbi sikertelen bejelentkezés után,
+  // újra kell validálni az e-mailt is, hogy a beragadt
+  // "Authentication failure" (ami az emailError-ban van tárolva) törlődjön,
   // és a gomb azonnal aktívvá váljon.
   if (!isRegistering.value) {
     validateEmailField();
@@ -401,7 +466,7 @@ watch(password, () => {
 onMounted(() => {
   if (!localStorage.getItem("nusift_visited")) isRegistering.value = true;
   // Retrieve the language if it was already selected previously
-  const savedLang = localStorage.getItem('nusift_preferred_language');
+  const savedLang = localStorage.getItem("nusift_preferred_language");
   if (savedLang) {
     activeLanguage.value = savedLang as AvailableLocales;
     setLocale(savedLang as AvailableLocales);
@@ -426,10 +491,10 @@ const triggerResetMode = () => {
   isRegistering.value = false;
   resetSuccessMessage.value = "";
   passwordError.value = "";
-  
+
   // Clear the email field and any existing email errors
   email.value = "";
-  emailError.value = ""; 
+  emailError.value = "";
 };
 
 const cancelResetMode = () => {
@@ -473,6 +538,10 @@ const handleAuth = async () => {
   const pValid = validatePasswordField();
   if (!pValid) return;
 
+  isLoading.value = true;
+  emailError.value = "";
+  passwordError.value = "";
+
   if (isRegistering.value) {
     const success = await authStore.registerIdentity(
       email.value,
@@ -496,12 +565,15 @@ const handleAuth = async () => {
       }
 
       // 3. Named Route Generation & Native Navigation
-      const verifyRoute = localePath({ name: 'verify-email-custom' }, targetLang);
+      const verifyRoute = localePath(
+        { name: "verify-email-custom" },
+        targetLang,
+      );
       return navigateTo(verifyRoute);
-
-
     } else {
       emailError.value = authStore.authError || "An unexpected error occurred.";
+      isLoading.value = false;
+      showForgotButton.value = true;
     }
   } else {
     const success = await authStore.loginIdentity(email.value, password.value);
@@ -509,7 +581,8 @@ const handleAuth = async () => {
       localStorage.setItem("nusift_visited", "true");
 
       // PRIORITIZE DB LANGUAGE: Use the newly fetched user preference, fallback to activeLanguage
-      const targetLang = (authStore.user?.preferredLanguage || activeLanguage.value) as AvailableLocales;
+      const targetLang = (authStore.user?.preferredLanguage ||
+        activeLanguage.value) as AvailableLocales;
 
       if (locale.value !== targetLang) {
         try {
@@ -519,8 +592,14 @@ const handleAuth = async () => {
         }
       }
 
-      const dashboardRoute = localePath({ name: 'dashboard-custom' }, targetLang);
-      const preloaderRoute = localePath({ name: 'preloader-custom' }, targetLang);
+      const dashboardRoute = localePath(
+        { name: "dashboard-custom" },
+        targetLang,
+      );
+      const preloaderRoute = localePath(
+        { name: "preloader-custom" },
+        targetLang,
+      );
 
       if (
         authStore.user?.onboardingStep !== undefined &&
@@ -532,6 +611,7 @@ const handleAuth = async () => {
       }
     } else {
       emailError.value = authStore.authError || "Authentication failure.";
+      isLoading.value = false;
       showForgotButton.value = true;
     }
   }
@@ -616,11 +696,16 @@ const handleOAuth = async (provider: string) => {
 
 const processOAuthLogin = async (rawToken: string, providerName: string) => {
   // const success = await authStore.oauthIdentity(rawToken, providerName);
-  const success = await authStore.oauthIdentity(rawToken, providerName, activeLanguage.value);
+  const success = await authStore.oauthIdentity(
+    rawToken,
+    providerName,
+    activeLanguage.value,
+  );
 
   if (success) {
     // 1. Establish the Target Language (Source of Truth)
-    const targetLang = (authStore.user?.preferredLanguage || activeLanguage.value) as AvailableLocales;
+    const targetLang = (authStore.user?.preferredLanguage ||
+      activeLanguage.value) as AvailableLocales;
 
     // If we don't await this, the router outruns the network request.
     if (locale.value !== targetLang) {
@@ -633,12 +718,19 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
     }
     // 2. Generate the paths using EXACT Route Names from nuxt.config.ts
     // This forces i18n to find the '___hu' or '___en' variant of the extended route
-    const dashboardRoute = localePath({ name: 'dashboard-custom' }, targetLang);
-    const preloaderRoute = localePath({ name: 'preloader-custom' }, targetLang);
+    const dashboardRoute = localePath({ name: "dashboard-custom" }, targetLang);
+    const preloaderRoute = localePath({ name: "preloader-custom" }, targetLang);
 
     // Optional: Keep this to verify the prefix is now attached
     console.log("Resolved Dashboard Path:", dashboardRoute);
-    console.log("Post-OAuth User Language:", authStore.user?.preferredLanguage, "Active Language:", activeLanguage.value, "Target Language for Navigation:", targetLang);
+    console.log(
+      "Post-OAuth User Language:",
+      authStore.user?.preferredLanguage,
+      "Active Language:",
+      activeLanguage.value,
+      "Target Language for Navigation:",
+      targetLang,
+    );
     // 3. Execute Navigation
     // 2. Use Nuxt's native navigateTo to safely execute the final jump
     if (
@@ -658,7 +750,11 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
 </script>
 <style scoped>
 /* ANCHOR CUSTOM Style */
-.background-button-custom{
-  background: linear-gradient(135deg, rgba(80, 80, 80, 0.8) 0%, rgba(121, 121, 121, 0.6) 100%) !important;
+.background-button-custom {
+  background: linear-gradient(
+    135deg,
+    rgba(80, 80, 80, 0.8) 0%,
+    rgba(121, 121, 121, 0.6) 100%
+  ) !important;
 }
 </style>
