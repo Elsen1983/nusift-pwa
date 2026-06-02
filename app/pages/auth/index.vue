@@ -490,13 +490,17 @@ const handleAuth = async () => {
     const success = await authStore.loginIdentity(email.value, password.value);
     if (success) {
       localStorage.setItem("nusift_visited", "true");
+
+      // PRIORITIZE DB LANGUAGE: Use the newly fetched user preference, fallback to activeLanguage
+      const targetLang = (authStore.user?.preferredLanguage || activeLanguage.value) as AvailableLocales;
+
       if (
         authStore.user?.onboardingStep !== undefined &&
         authStore.user.onboardingStep >= 3
       ) {
-        navigate.push(localePath("/dashboard", activeLanguage.value));
+        navigate.push(localePath("/dashboard", targetLang));
       } else {
-        navigate.replace(localePath("/preloader-page", activeLanguage.value));
+        navigate.replace(localePath("/preloader-page", targetLang));
       }
     } else {
       emailError.value = authStore.authError || "Authentication failure.";
@@ -587,14 +591,16 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
   const success = await authStore.oauthIdentity(rawToken, providerName, activeLanguage.value);
 
   if (success) {
-    localStorage.setItem("nusift_visited", "true");
+    // PRIORITIZE DB LANGUAGE: Use the newly fetched user preference, fallback to activeLanguage
+    const targetLang = (authStore.user?.preferredLanguage || activeLanguage.value) as AvailableLocales;
+
     if (
       authStore.user?.onboardingStep !== undefined &&
       authStore.user.onboardingStep >= 3
     ) {
-      navigate.push(localePath("/dashboard", activeLanguage.value));
+      navigate.push(localePath("/dashboard", targetLang));
     } else {
-      navigate.replace(localePath("/preloader-page", activeLanguage.value));
+      navigate.replace(localePath("/preloader-page", targetLang));
     }
   } else {
     emailError.value =
