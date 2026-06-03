@@ -198,11 +198,11 @@
         "btn_next": "Tovább: Érdeklődési Kategóriák",
         "btn_finalizing": "Véglegesítés...",
         "badges": {
-            "verified": "Hitelesített Forrás",
+            "verified": "Érvényes Domain",
             "rss_fast": "Gyors RSS Szinkronizáció",
             "unknown": "Ismeretlen Forrás",
             "pending": "AI Ellenőrzés Függőben",
-            "direct_crawl": "Közvetlen Feltérképezés"
+            "direct_crawl": "AI Mélyszkennelés"
         },
         "errors": {
             "duplicate": "Ez a forrás már szerepel a figyelési listádon.",
@@ -459,11 +459,11 @@
             "discovery_error": "Hálózati hiba a felfedezési fázis alatt."
         },
         "badges": {
-            "verified": "Ellenőrzött Forrás",
+            "verified": "Érvényes Domain",
             "rss": "Gyors RSS-Szinkron",
             "unknown": "Ismeretlen Forrás",
             "pending": "AI Szkennelés Alatt",
-            "direct": "Direkt Kaparás",
+            "direct": "AI Mélyszkennelés",
             "error": "Kapcsolati Hiba"
         }
     },

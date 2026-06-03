@@ -44,6 +44,13 @@ export default defineEventHandler(async (event) => {
       });
     }
 
+    if (!user.isVerified) {
+      throw createError({
+        statusCode: 403, // 403 Forbidden
+        statusMessage: 'UNVERIFIED_ACCOUNT',
+      });
+    }
+
     // 4. Verify the Password
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
 

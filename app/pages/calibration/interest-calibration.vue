@@ -259,9 +259,9 @@ const finalizeOnboarding = async () => {
       }
     }
 
-    setTimeout(() => {
+    
       navigate.replace("/initialization-preloader-page");
-    }, 2000);
+    
   } catch (error) {
     console.error("Hiba az onboarding véglegesítése során:", error);
     isInitializing.value = false;

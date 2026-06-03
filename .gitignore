@@ -29,4 +29,4 @@ logs
 
 /app/generated/prisma
 
-secrets.txt
+docs

@@ -50,7 +50,10 @@ export default defineEventHandler(async (event) => {
             pathUrl: true, 
             name: true, 
             rssStatus: true,
-            newsSource: { select: { mediaName: true } }
+            newsSource: { 
+              // CRITICAL ADDITION: Fetch the parent's rssStatus as well
+              select: { mediaName: true, rssStatus: true } 
+            }
           }
         }
       },
@@ -68,15 +71,40 @@ export default defineEventHandler(async (event) => {
         validationStatus: sub.newsSource.rssStatus,
         createdAt: sub.createdAt
       })),
-      ...categorySubscriptions.map(sub => ({
-        id: sub.id,
-        type: 'CATEGORY',
-        url: sub.category.pathUrl,
-        name: sub.customAlias || `${sub.category.newsSource.mediaName} - ${sub.category.name}`,
-        isActive: sub.isActive,
-        validationStatus: sub.category.rssStatus,
-        createdAt: sub.createdAt
-      }))
+      ...categorySubscriptions.map(sub => {
+        
+        let finalValidationStatus = sub.category.rssStatus;
+        const parentStatus = sub.category.newsSource.rssStatus;
+        
+        // --- Hierarchikus Öröklési Logika ---
+        
+        // 1. PRIORITÁS: A kategória MÁR RENDELKEZIK saját érvényes RSS-el ('ACTIVE')
+        // Ezt érintetlenül hagyjuk, így a UI megkapja a zöld villám ikont.
+        if (finalValidationStatus === 'ACTIVE') {
+          // No operation needed.
+        } 
+        // 2. PRIORITÁS: Ha nincs saját RSS, de a szülő (főoldal) érvényes hálózati végpont
+        else if (parentStatus === 'ACTIVE' || parentStatus === 'NO_RSS_FOUND') {
+          // Mivel hálózati szinten valid a szülő, kényszerítjük a 'NO_RSS_FOUND'-ot.
+          // Ez aktiválja a UI-on a "Valid Domain" és "Direct Crawl" jelvényeket.
+          finalValidationStatus = 'NO_RSS_FOUND';
+        } 
+        // 3. PRIORITÁS: Ha a szülő halott vagy meghiúsult, a kategória örökli a hibát
+        else if (parentStatus === 'FAILED' || parentStatus === 'DOMAIN_DEAD') {
+          finalValidationStatus = parentStatus;
+        }
+        // ------------------------------------
+
+        return {
+          id: sub.id,
+          type: 'CATEGORY',
+          url: sub.category.pathUrl,
+          name: sub.customAlias || `${sub.category.newsSource.mediaName} - ${sub.category.name}`,
+          isActive: sub.isActive,
+          validationStatus: finalValidationStatus,
+          createdAt: sub.createdAt
+        };
+      })
     ];
 
     // Aktív források száma

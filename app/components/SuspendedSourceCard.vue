@@ -14,11 +14,6 @@
           {{ badge.label }}
         </span>
       </div>
-
-      <button v-if="source.validationStatus === 'FAILED' || source.validationStatus === 'NO_RSS_FOUND'" @click="$emit('rediscover', source.url)" :disabled="isProcessing" class="mt-4 flex items-center gap-1 text-[10px] font-label tracking-wider text-neon-cyan/70 hover:text-neon-cyan transition-colors uppercase outline outline-1 outline-neon-cyan/30 hover:outline-neon-cyan/80 px-2 py-1 rounded-md w-max disabled:opacity-50">
-        <span class="material-symbols-outlined text-[12px]" :class="{ 'animate-spin': isProcessing }">sync</span>
-        {{ $t("sourceManager.suspended_zone.btn_rediscover") }}
-      </button>
     </div>
 
     <div class="flex items-center gap-1 justify-end w-full">

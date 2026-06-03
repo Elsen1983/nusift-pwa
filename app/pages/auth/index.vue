@@ -538,6 +538,7 @@ const handleAuth = async () => {
   const pValid = validatePasswordField();
   if (!pValid) return;
 
+  // Block the UI and reset errors before making the API call
   isLoading.value = true;
   emailError.value = "";
   passwordError.value = "";
@@ -610,9 +611,25 @@ const handleAuth = async () => {
         return navigateTo(preloaderRoute);
       }
     } else {
+      // Specific Handling for Unverified Accounts
+      if (authStore.authError === 'UNVERIFIED_ACCOUNT') {
+        localStorage.setItem("nusift_pending_email", email.value);
+        
+        const targetLang = activeLanguage.value as AvailableLocales;
+        if (locale.value !== targetLang) {
+          try { await setLocale(targetLang); } catch (e) {}
+        }
+        
+        const verifyRoute = localePath({ name: "verify-email-custom" }, targetLang);
+        return navigateTo(verifyRoute);
+      }
+
+      // Hagyományos hitelesítési hiba (pl. rossz jelszó)
       emailError.value = authStore.authError || "Authentication failure.";
-      isLoading.value = false;
       showForgotButton.value = true;
+      
+      // Hiba esetén feloldjuk a blokkolást
+      isLoading.value = false;
     }
   }
 };
