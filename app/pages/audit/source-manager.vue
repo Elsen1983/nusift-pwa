@@ -7,7 +7,7 @@
       class="fixed bottom-[-10%] left-[-10%] w-[500px] h-[500px] bg-secondary-container/10 blur-[140px] rounded-full -z-10 pointer-events-none"
     ></div> -->
 
-    <main class="pt-5 pb-5 px-4 max-w-5xl mx-auto space-y-4 relative z-10">
+    <main class="pt-5 pb-5 px-4 max-w-5xl mx-auto space-y-3 relative z-10">
       <!-- 1. HEADER SECTION -->
       <section class="mb-6 px-2">
         <div
@@ -76,7 +76,10 @@
             </div>
           </div>
 
-          <div v-if="quota.tier === 'FREE'" class="w-full md:w-auto shrink-0 flex justify-end">
+          <div
+            v-if="quota.tier === 'FREE'"
+            class="w-full md:w-auto shrink-0 flex justify-end"
+          >
             <button
               class="w-full sm:w-max bg-surface-container-high hover:bg-surface-container-highest transition-colors px-6 py-3 rounded-xl flex items-center justify-between sm:justify-center gap-5 border border-yellow-100 border-outline-variant/80 hover:border-neon-cyan disabled:opacity-50 disabled:cursor-not-allowed group"
             >
@@ -103,7 +106,7 @@
       <!-- 3. INPUT HUB SECTION -->
       <section class="mb-10">
         <div
-          class="bg-surface-container rounded-2xl p-4 md:p-5 shadow-[0_0_24px_0_rgba(0,229,255,0.08)] border border-primary-container/50 relative overflow-hidden w-full"
+          class="bg-surface-container rounded-2xl p-4 md:p-5 shadow-[0_0_24px_0_rgba(255,255,255,0.05)] border border-white/50 relative overflow-hidden w-full"
         >
           <div class="relative z-10 space-y-4">
             <div class="relative group">
@@ -186,7 +189,7 @@
       <!-- 4. ACTIVE SOURCES SECTION (COLLAPSIBLE) -->
       <section class="mb-10">
         <div
-          class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/10 shadow-lg"
+          class="bg-surface-container-low rounded-3xl overflow-hidden border border-primary-container/50 shadow-[0_0_15px_rgba(0,229,255,0.05)]"
         >
           <div
             @click="isActiveSectionOpen = !isActiveSectionOpen"
@@ -195,6 +198,10 @@
             <h2
               class="font-headline text-[16px] font-bold text-white flex items-center gap-2"
             >
+              <span
+                class="material-symbols-outlined text-xxl text-primary-container"
+                >visibility</span
+              >
               {{ $t("sourceManager.active_zone.title") }}
             </h2>
             <div class="flex items-center gap-3">
@@ -237,11 +244,9 @@
       </section>
 
       <!-- 5. SUSPENDED SOURCES SECTION (COLLAPSIBLE) -->
-      <section
-        class="mb-6 opacity-80 hover:opacity-100 transition-opacity"
-      >
+      <section class="mb-10">
         <div
-          class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/10 shadow-lg"
+          class="bg-surface-container-low rounded-3xl overflow-hidden border border-outline-variant/80 shadow-lg"
         >
           <div
             @click="isSuspendedSectionOpen = !isSuspendedSectionOpen"
@@ -250,7 +255,7 @@
             <h3
               class="font-headline text-[16px] font-bold text-white flex items-center gap-2"
             >
-              <span class="material-symbols-outlined text-xl">inventory_2</span>
+              <span class="material-symbols-outlined text-xxl text-on-surface-variant">visibility_off</span>
               {{ $t("sourceManager.suspended_zone.title") }}
             </h3>
             <div class="flex items-center gap-3">
@@ -318,6 +323,63 @@
           </div>
         </div>
       </section>
+
+      <!-- 6. RESTRICTED SOURCES SECTION (COLLAPSIBLE) -->
+      <section class="mb-10">
+        <div
+          class="bg-surface-container-low rounded-3xl overflow-hidden border border-warning/50 shadow-lg"
+        >
+          <div
+            @click="isRestrictedSectionOpen = !isRestrictedSectionOpen"
+            class="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-container-low/80 transition-colors select-none"
+          >
+            <h2
+              class="font-headline text-[16px] font-bold text-white flex items-center gap-2"
+            >
+            <span class="material-symbols-outlined text-xxl text-warning">visibility_lock</span>
+              {{ $t("sourceManager.restricted_zone.title") }}
+            </h2>
+            <div class="flex items-center gap-3">
+              <span
+                class="bg-surface-container-highest px-3 py-1 rounded-full text-[12px] font-label font-bold text-neon-cyan"
+              >
+                {{ restrictedSources.length }}
+              </span>
+              <span
+                class="material-symbols-outlined text-on-surface-variant transition-transform duration-300"
+                :class="{ 'rotate-180': isRestrictedSectionOpen }"
+              >
+                expand_more
+              </span>
+            </div>
+          </div>
+
+          <div
+            v-show="isRestrictedSectionOpen"
+            class="p-3 md:p-5 border-t border-outline-variant/10 bg-surface-container-low/30"
+          >
+            <div
+              class="grid grid-cols-1 gap-3"
+              v-if="restrictedSources.length > 0"
+            >
+              <RestrictedSourceCard
+                v-for="source in restrictedSources"
+                :key="source.id"
+                :source="source"
+                :is-processing="isProcessing"
+                @delete="deleteSource($event)"
+              />
+            </div>
+            <div
+              v-else
+              class="text-center py-8 text-on-surface-variant font-body bg-surface-container-lowest rounded-xl outline outline-1 outline-outline-variant/10"
+            >
+              {{ $t("sourceManager.restricted_zone.empty") }}
+            </div>
+          </div>
+        </div>
+      </section>
+
     </main>
   </div>
 </template>
@@ -339,8 +401,9 @@ const newSourceUrl = ref("");
 const isProcessing = ref(false);
 const toast = ref({ show: false, message: "", type: "success" });
 
-const isActiveSectionOpen = ref(true);
-const isSuspendedSectionOpen = ref(true);
+const isActiveSectionOpen = ref(false);
+const isSuspendedSectionOpen = ref(false);
+const isRestrictedSectionOpen = ref(false);
 
 const sources = ref<any[]>([]);
 const quota = ref({
@@ -358,9 +421,31 @@ const isValidUrl = computed(() => {
   return domainRegex.test(newSourceUrl.value.trim());
 });
 
+// Restricted Array
+const restrictedSources = computed(() => {
+  return sources.value
+    .filter(
+      (s) =>
+        s.validationStatus === "FAILED" || s.validationStatus === "DOMAIN_DEAD",
+    )
+    .sort((a, b) => {
+      const nameA = (a.name || getDomain(a.url)).toLowerCase();
+      const nameB = (b.name || getDomain(b.url)).toLowerCase();
+      return nameA.localeCompare(nameB);
+    });
+});
+
+console.log("Restricted Sources:", restrictedSources.value);
+
+// Filter Active (Must NOT be failed)
 const activeSources = computed(() => {
   return sources.value
-    .filter((s) => s.isActive)
+    .filter(
+      (s) =>
+        s.isActive &&
+        s.validationStatus !== "FAILED" &&
+        s.validationStatus !== "DOMAIN_DEAD",
+    )
     .sort((a, b) => {
       const nameA = (a.name || getDomain(a.url)).toLowerCase();
       const nameB = (b.name || getDomain(b.url)).toLowerCase();
@@ -371,7 +456,12 @@ const activeSources = computed(() => {
 
 const suspendedSources = computed(() => {
   return sources.value
-    .filter((s) => !s.isActive)
+    .filter(
+      (s) =>
+        !s.isActive &&
+        s.validationStatus !== "FAILED" &&
+        s.validationStatus !== "DOMAIN_DEAD",
+    )
     .sort((a, b) => {
       const nameA = (a.name || getDomain(a.url)).toLowerCase();
       const nameB = (b.name || getDomain(b.url)).toLowerCase();
@@ -477,14 +567,22 @@ const addNewSource = async () => {
     });
 
     if (response.success) {
-      if (response.activated) {
+      // 1. Intercept Restricted Domains
+      if (checkResponse.status === 'FAILED' || checkResponse.status === 'DOMAIN_DEAD') {
+        showToast(t("sourceManager.toasts.add_restricted"), "warning");
+      } 
+      // 2. Handle Normal Activated Domains
+      else if (response.activated) {
         showToast(
-          response.message || t("sourceManager.toasts.add_success"),
+          // Use translation key as primary, fallback to backend message if translation is missing
+          t("sourceManager.toasts.add_success") || response.message,
           "success",
         );
-      } else {
+      } 
+      // 3. Handle Normal Suspended Domains (Quota Full)
+      else {
         showToast(
-          response.message || t("sourceManager.toasts.add_suspended"),
+          t("sourceManager.toasts.add_suspended") || response.message,
           "warning",
         );
       }

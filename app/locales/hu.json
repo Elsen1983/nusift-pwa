@@ -429,6 +429,13 @@
             "error_format": "Kérlek, valós URL formátumot adj meg.",
             "btn_add": "Új Forrás Felvétele"
         },
+       "restricted_zone": {
+            "title": "Korlátozott Zóna",
+            "empty": "Nincsenek korlátozott források. Minden kapcsolat zavartalan.",
+            "banner_p1": "Ez a kiadó aktívan blokkolja az automatizált kapcsolatokat. A NuSift áthelyezte ezt a Korlátozott Zónába, és a következő háttérciklus során megpróbálja kinyerni a cikkeket az ",
+            "banner_highlight": "AI Mélyszkennelés",
+            "banner_p2": " segítségével."
+        },
         "active_zone": {
             "title": "Aktív Források",
             "empty": "Nincsenek aktív adatfolyamok. Adj hozzá egy forrást az adatok útválasztásához.",
@@ -456,7 +463,8 @@
             "discovery_init": "AI felfedező szkennelés inicializálása...",
             "discovery_success": "Forrás sikeresen validálva. Hálózat frissítése...",
             "discovery_failed": "Felfedezés sikertelen. Továbbra sincs érvényes feed.",
-            "discovery_error": "Hálózati hiba a felfedezési fázis alatt."
+            "discovery_error": "Hálózati hiba a felfedezési fázis alatt.",
+            "add_restricted": "Kiadó által blokkolt kapcsolat. Forrás áthelyezve a Korlátozott Zónába."
         },
         "badges": {
             "verified": "Érvényes Domain",
@@ -464,7 +472,8 @@
             "unknown": "Ismeretlen Forrás",
             "pending": "AI Szkennelés Alatt",
             "direct": "AI Mélyszkennelés",
-            "error": "Kapcsolati Hiba"
+            "error": "Kapcsolati Hiba",
+            "publisher_blocked": "Kiadó Által Blokkolt"
         }
     },
     "logoutModal": {

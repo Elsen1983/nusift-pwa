@@ -2,8 +2,8 @@
 
 generator client {
   provider = "prisma-client-js"
-  previewFeatures = ["driverAdapters"]
 }
+
 datasource db {
   provider = "postgresql"
 }
@@ -22,87 +22,167 @@ enum UserTier {
   PRO
 }
 
+enum BillingProvider {
+  NONE
+  STRIPE // Handles Visa, Mastercard, Apple Pay (Web), Google Pay (Web)
+  PAYPAL // Handles Direct PayPal Web Checkout
+  APPLE_IAP // Handles Native iOS App Store
+  GOOGLE_PLAY // Handles Native Android Play Store
+}
+
+enum SubscriptionStatus {
+  INACTIVE
+  ACTIVE // Paying and renewing
+  CANCELED // Canceled but still has access until currentPeriodEnd
+  PAST_DUE // Payment failed, in grace period
+}
+
 // ANCHOR MODELS
 model User {
-  id                    String    @id @default(uuid()) // Sovereign ID (UUID v4)
-  email                 String    @unique
-  passwordHash          String?   // MUST BE OPTIONAL (?) FOR OAUTH USERS
-  isVerified            Boolean   @default(false)
-  tier                  UserTier  @default(FREE)
-  preferredLanguage     String    @default("en") // NEW: Stores the ISO language code
-  verificationToken     String? @unique
-  resetPasswordToken    String?   @unique
-  resetPasswordExpires  DateTime?
-  onboardingStep        Int       @default(0)
-  oauthProvider         String?   // e.g., "GOOGLE" or "APPLE"
-  oauthId               String?   @unique
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  id                   String    @id @default(uuid()) // Sovereign ID (UUID v4)
+  email                String    @unique
+  passwordHash         String? // MUST BE OPTIONAL (?) FOR OAUTH USERS
+  isVerified           Boolean   @default(false)
+  tier                 UserTier  @default(FREE)
+  preferredLanguage    String    @default("en") // NEW: Stores the ISO language code
+  verificationToken    String?   @unique
+  resetPasswordToken   String?   @unique
+  resetPasswordExpires DateTime?
+  onboardingStep       Int       @default(0)
+  oauthProvider        String? // e.g., "GOOGLE" or "APPLE"
+  oauthId              String?   @unique
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  primaryRegion         String?
-  topInterests          Json      @default("[]")
+  primaryRegion String?
+  topInterests  Json    @default("[]")
 
+  // ========================================================
+  // UNIVERSAL SUBSCRIPTION STATE (The Source of Truth)
+  // ========================================================
+  billingProvider    BillingProvider    @default(NONE)
+  subscriptionStatus SubscriptionStatus @default(INACTIVE)
+  currentPeriodEnd   DateTime?
+
+  // ========================================================
+  // STRIPE (Visa, Mastercard, Web Wallets, EU Alternative)
+  // ========================================================
+  stripeCustomerId     String? @unique
+  stripeSubscriptionId String? @unique
+  stripePriceId        String?
+
+  // ========================================================
+  // PAYPAL (Direct Web Checkout)
+  // ========================================================
+  paypalSubscriptionId String? @unique
+  paypalPlanId         String?
+
+  // ========================================================
+  // APPLE IAP (App Store Native)
+  // ========================================================
+  appleTransactionId String? @unique
+  appleProductId     String?
+
+  // ========================================================
+  // GOOGLE PLAY (Play Store Native)
+  // ========================================================
+  googlePurchaseToken String? @unique
+  googleProductId     String?
+
+  // --- RELATIONS ---
+  profile               UserProfile?
   sourceSubscriptions   UserSourceSubscription[]
   categorySubscriptions UserCategorySubscription[]
   articleRatings        ArticleRating[]
+  bookmarks             Bookmark[]
+  userReadActivities    UserReadActivity[]
+}
+
+model UserProfile {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // 1:1 Relation back to User
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // --- IDENTITY & SOCIAL ---
+  nickname    String?   @unique // Public handle for sharing (e.g., "@tech_guru")
+  firstName   String?
+  lastName    String?
+  avatarUrl   String?
+  dateOfBirth DateTime?
+  phoneNumber String?
+
+  // --- PHYSICAL & BILLING ADDRESS ---
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  stateRegion  String? // County, State, or Province
+  postalCode   String? // Eircode, Zip, etc.
+  country      String? // ISO 3166-1 alpha-2 code (e.g., "IE", "HU")
+
+  // Optional: EU B2B Compliance
+  vatNumber String? // Necessary for selling PRO tiers to registered businesses
 }
 
 model NewsSource {
-  id             String   @id @default(uuid())
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  isSystemImported Boolean  @default(false)
+  isSystemImported Boolean @default(false)
 
-  mediaName      String
-  mediaType      String?
-  language       String?
-  
-  location       String?
-  continent      String?
-  countryCode    String?
+  mediaName String
+  mediaType String?
+  language  String?
 
-  frontPageUrl   String   @unique
+  location    String?
+  continent   String?
+  countryCode String?
+
+  frontPageUrl   String  @unique
   detailPageUrl  String?
   aboutPageUrl   String?
   contactPageUrl String?
 
-  contactName    String?
-  contactEmail   String?
-  contactPhone   String?
+  contactName  String?
+  contactEmail String?
+  contactPhone String?
 
   rssFeedUrl     String?
   rssStatus      RssStatus @default(PENDING_DISCOVERY)
   lastRssCheckAt DateTime?
   nextRetryAt    DateTime?
 
-  categories     SourceCategory[]
-  
-  subscribers    UserSourceSubscription[]
+  categories SourceCategory[]
+
+  subscribers UserSourceSubscription[]
 
   @@index([continent, countryCode])
   @@index([rssStatus, nextRetryAt])
 }
 
 model SourceCategory {
-  id              String   @id @default(uuid())
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  newsSourceId    String
-  newsSource      NewsSource @relation(fields: [newsSourceId], references: [id], onDelete: Cascade)
+  newsSourceId String
+  newsSource   NewsSource @relation(fields: [newsSourceId], references: [id], onDelete: Cascade)
 
   name            String
   pathUrl         String
-  isUserRequested Boolean  @default(false)
+  isUserRequested Boolean @default(false)
 
-  rssFeedUrl      String?
-  rssStatus       RssStatus @default(PENDING_DISCOVERY)
-  lastRssCheckAt  DateTime?
-  nextRetryAt     DateTime?
+  rssFeedUrl     String?
+  rssStatus      RssStatus @default(PENDING_DISCOVERY)
+  lastRssCheckAt DateTime?
+  nextRetryAt    DateTime?
 
   // ÚJ: Kapcsolat a feliratkozók felé (Explicit)
-  subscribers     UserCategorySubscription[]
+  subscribers UserCategorySubscription[]
 
   @@unique([newsSourceId, pathUrl])
   @@index([isUserRequested])
@@ -112,42 +192,42 @@ model SourceCategory {
 // --- ÚJ: EXPLICIT KAPCSOLÓTÁBLÁK (Subscription Logic) ---
 
 model UserSourceSubscription {
-  id           String     @id @default(uuid())
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  userId       String
-  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  sourceId     String
-  newsSource   NewsSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceId   String
+  newsSource NewsSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
 
   // QUOTA LOGIC: A felhasználó ki/be kapcsolhatja a csomagja limitjéig
-  isActive     Boolean    @default(true)
+  isActive Boolean @default(true)
 
   // USER PREFERENCES: Lehetőség egyedi átnevezésre a Dashboardon
-  customAlias  String?    
-  
+  customAlias String?
+
   @@unique([userId, sourceId]) // Garantálja, hogy egy user ne iratkozhasson fel kétszer ugyanarra
-  @@index([userId, isActive])  // Gyorsítja a kvóta-számláló API lekérdezéseket
+  @@index([userId, isActive]) // Gyorsítja a kvóta-számláló API lekérdezéseket
 }
 
 model UserCategorySubscription {
-  id           String         @id @default(uuid())
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  userId       String
-  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  categoryId   String
-  category     SourceCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   SourceCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
-  isActive     Boolean        @default(true)
-  customAlias  String?
+  isActive    Boolean @default(true)
+  customAlias String?
 
-  @@unique([userId, categoryId]) 
-  @@index([userId, isActive])    
+  @@unique([userId, categoryId])
+  @@index([userId, isActive])
 }
 
 // ========================================================
@@ -155,39 +235,89 @@ model UserCategorySubscription {
 // ========================================================
 
 model Article {
-  id         Int      @id @default(autoincrement()) // Numerikus ID a frontend mockup adatokhoz igazodva
-  title      String
-  source     String   // Pl. "reuters.com"
-  date       DateTime // Időbélyeg a performáns szűrésekhez (frontend string formázást igényel)
-  score      Int      @default(0)
-  isPaywall  Boolean  @default(false)
-  
-  // PostgreSQL natív skalár string tömbök (Gyors indexelés, nincs szükség plusz junction táblákra)
-  tags       String[]
-  signals    String[]
-  
-  reasoning  String?  @db.Text 
-  
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id        Int      @id @default(autoincrement()) // Numerikus ID a frontend mockup adatokhoz igazodva
+  title     String
+  source    String // Pl. "reuters.com"
+  date      DateTime // Időbélyeg a performáns szűrésekhez (frontend string formázást igényel)
+  score     Int      @default(0)
+  isPaywall Boolean  @default(false)
 
-  ratings    ArticleRating[]
+  // PostgreSQL natív skalár string tömbök (Gyors indexelés, nincs szükség plusz junction táblákra)
+  tags    String[]
+  signals String[]
+
+  reasoning String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ratings   ArticleRating[]
+  bookmarks Bookmark[]
 
   @@index([date])
 }
 
+// ========================================================
 model ArticleRating {
   id        String   @id @default(uuid())
   score     Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   articleId Int
-  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
 
   @@unique([userId, articleId]) // Egy felhasználó csak egyszer értékelhet egy adott cikket
   @@index([userId])
+}
+
+// ========================================================
+model Bookmark {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId Int
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  // Optional: Allow users to organize bookmarks into custom folders
+  folder String?
+
+  @@unique([userId, articleId])
+}
+
+// ========================================================
+model AgentScanLog {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  sourceId   String?
+  categoryId String?
+
+  status          String // "SUCCESS", "FAILED_WAF_BLOCK", "DOM_CHANGED"
+  tokensUsed      Int    @default(0)
+  executionTimeMs Int
+
+  // Helps debug why a Deep Scan failed on a specific EU news site
+  errorLog String? @db.Text
+}
+
+// ========================================================
+model UserReadActivity {
+  id        String   @id @default(uuid())
+  timestamp DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId Int
+
+  // Track how they interacted to calculate the "Fatigue" or "Interest" metrics
+  actionType  String // "IMPRESSION", "CLICKED", "READ_FULL"
+  readTimeSec Int? // How long they spent looking at it
 }

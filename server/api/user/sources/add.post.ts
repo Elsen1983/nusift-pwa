@@ -46,13 +46,30 @@ export default defineEventHandler(async (event) => {
       where: { id: userId },
       select: { tier: true },
     });
+
     const maxActiveLimit = user?.tier === "PRO" ? 15 : 5;
 
     const activeRoots = await prisma.userSourceSubscription.count({
-      where: { userId, isActive: true },
+      where: { 
+        userId, 
+        isActive: true,
+        newsSource: {
+          rssStatus: {
+            notIn: ['FAILED', 'DOMAIN_DEAD']
+          }
+        }
+      },
     });
     const activeCats = await prisma.userCategorySubscription.count({
-      where: { userId, isActive: true },
+      where: { 
+        userId, 
+        isActive: true,
+        category: {
+          rssStatus: {
+            notIn: ['FAILED', 'DOMAIN_DEAD']
+          }
+        }
+      },
     });
     const shouldBeActive = activeRoots + activeCats < maxActiveLimit;
 

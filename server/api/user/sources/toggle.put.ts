@@ -4,32 +4,75 @@ import { prisma } from '../../../utils/prisma';
 
 export default defineEventHandler(async (event) => {
   const token = getCookie(event, 'auth_token');
-  if (!token) throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
+  if (!token) {
+    throw createError({ statusCode: 401, statusMessage: "Unauthorized", message: "Nincs jogosultságod a művelethez." });
+  }
 
   const userId = (jwt.verify(token, process.env.JWT_SECRET!) as any).userId;
   const { sourceId, isActive } = await readBody(event); 
 
   if (!sourceId || typeof isActive !== 'boolean') {
-    throw createError({ statusCode: 400, statusMessage: "Missing required fields" });
+    throw createError({ statusCode: 400, statusMessage: "Bad Request", message: "Hiányzó adatok a kérésből." });
   }
 
   try {
-    // 1. KVÓTA-ŐR: Csak akkor aktiválhat, ha van még hely
+    // 1. QUOTA GUARD: Only allow activation if there is available space
     if (isActive) {
       const user = await prisma.user.findUnique({ where: { id: userId }, select: { tier: true } });
       const maxLimit = user?.tier === 'PRO' ? 15 : 5;
       
-      const activeRoots = await prisma.userSourceSubscription.count({ where: { userId, isActive: true } });
-      const activeCats = await prisma.userCategorySubscription.count({ where: { userId, isActive: true } });
+      // We must calculate the active count using the exact same inheritance logic as the GET endpoint.
+      const rootSubscriptions = await prisma.userSourceSubscription.findMany({
+        where: { userId, isActive: true },
+        include: { newsSource: { select: { rssStatus: true } } }
+      });
+
+      const categorySubscriptions = await prisma.userCategorySubscription.findMany({
+        where: { userId, isActive: true },
+        include: {
+          category: {
+            select: { 
+              rssStatus: true,
+              newsSource: { select: { rssStatus: true } } 
+            }
+          }
+        }
+      });
+
+      // Calculate Root active count
+      const activeRoots = rootSubscriptions.filter(sub => 
+        sub.newsSource.rssStatus !== 'FAILED' && 
+        sub.newsSource.rssStatus !== 'DOMAIN_DEAD'
+      ).length;
+
+      // Calculate Category active count using hierarchical logic
+      const activeCats = categorySubscriptions.filter(sub => {
+        let finalStatus = sub.category.rssStatus;
+        const parentStatus = sub.category.newsSource.rssStatus;
+
+        if (finalStatus === 'ACTIVE') {
+          // Keep as is
+        } else if (parentStatus === 'ACTIVE' || parentStatus === 'NO_RSS_FOUND') {
+          finalStatus = 'NO_RSS_FOUND' as any;
+        } else if (parentStatus === 'FAILED' || parentStatus === 'DOMAIN_DEAD') {
+          finalStatus = parentStatus;
+        }
+
+        return finalStatus !== 'FAILED' && finalStatus !== 'DOMAIN_DEAD';
+      }).length;
       
-      // Ha már elértük a limitet, ne engedjük az aktiválást
+      // If we hit the limit with true active sources, block the activation
       if (activeRoots + activeCats >= maxLimit) {
-        throw createError({ statusCode: 403, statusMessage: "Kvóta limit elérve. Előbb függessz fel egy másik forrást." });
+        throw createError({ 
+          statusCode: 403, 
+          statusMessage: "Forbidden", 
+          message: "Kvóta limit elérve. Előbb függessz fel egy másik forrást." 
+        });
       }
     }
 
-    // 2. Frissítés: Megkeressük a feliratkozást és frissítjük az isActive státuszt
-    // Főoldali (Root) forrás keresése
+    // 2. Update: Find the subscription and update the isActive status
+    // Search for Root source
     const rootSub = await prisma.userSourceSubscription.findUnique({ where: { id: sourceId } });
     
     if (rootSub && rootSub.userId === userId) {
@@ -40,7 +83,7 @@ export default defineEventHandler(async (event) => {
       return { success: true, message: isActive ? "Forrás aktiválva." : "Forrás felfüggesztve." };
     }
 
-    // Rovat (Category) forrás keresése
+    // Search for Category source
     const catSub = await prisma.userCategorySubscription.findUnique({ where: { id: sourceId } });
     
     if (catSub && catSub.userId === userId) {
@@ -51,9 +94,13 @@ export default defineEventHandler(async (event) => {
       return { success: true, message: isActive ? "Rovat aktiválva." : "Rovat felfüggesztve." };
     }
 
-    throw createError({ statusCode: 404, statusMessage: "Feliratkozás nem található." });
+    throw createError({ statusCode: 404, statusMessage: "Not Found", message: "Feliratkozás nem található a rendszerben." });
 
   } catch (error: any) {
-    throw createError({ statusCode: error.statusCode || 500, statusMessage: error.message });
+    throw createError({ 
+      statusCode: error.statusCode || 500, 
+      statusMessage: error.statusCode ? "Error" : "Internal Server Error", 
+      message: error.message 
+    });
   }
 });

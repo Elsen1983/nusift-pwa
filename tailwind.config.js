@@ -34,6 +34,7 @@ export default {
         "surface-container": "#201f1f",
         "surface-container-highest": "#353534",
         "surface-bright": "#393939",
+        "surface-container-lowest": "#0c0c0c",
 
         // ANCHOR CONTENT-COLORS
         // High-contrast tokens for text and iconography.
@@ -54,8 +55,9 @@ export default {
         // Error State Colors
         error: "#ff435994",
         "on-error": "#ffffff",
-
         "texterror": "#fd8896b0",
+
+        warning: "#f97316",
 
         // Specialty token for AI engine feedback
         "ai-reasoning-blue": "#40c4ff",

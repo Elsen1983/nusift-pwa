@@ -108,7 +108,11 @@ export default defineEventHandler(async (event) => {
     ];
 
     // Aktív források száma
-    const activeCount = formattedSources.filter(s => s.isActive).length;
+    const activeCount = formattedSources.filter(s => 
+      s.isActive && 
+      s.validationStatus !== 'FAILED' && 
+      s.validationStatus !== 'DOMAIN_DEAD'
+    ).length;
 
     return {
       success: true,

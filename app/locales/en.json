@@ -429,6 +429,13 @@
             "error_format": "Please enter a valid URL format.",
             "btn_add": "Add New Source"
         },
+        "restricted_zone": {
+            "title": "Restricted Zone",
+            "empty": "No restricted sources. All connections are healthy.",
+            "banner_p1": "This publisher actively blocks automated connections. NuSift has moved this to the Restricted Zone and will attempt to extract articles using our ",
+            "banner_highlight": "AI Deep Scan",
+            "banner_p2": " during the next background cycle."
+        },
         "active_zone": {
             "title": "Active Sources",
             "empty": "No active data streams. Add a source above to begin routing data.",
@@ -456,7 +463,8 @@
             "discovery_init": "Initializing AI discovery scan...",
             "discovery_success": "Source verified successfully. Updating network...",
             "discovery_failed": "Discovery failed. Still no valid feeds found.",
-            "discovery_error": "Network error during discovery phase."
+            "discovery_error": "Network error during discovery phase.",
+            "add_restricted": "Publisher blocked connection. Source moved to Restricted Zone."
         },
         "badges": {
             "verified": "Valid Domain",
@@ -464,7 +472,8 @@
             "unknown": "Unknown Source",
             "pending": "Pending AI Scan",
             "direct": "AI Deep Scan",
-            "error": "Connection Error"
+            "error": "Connection Error",
+            "publisher_blocked": "Publisher Blocked"
         }
     },
     "logoutModal": {
