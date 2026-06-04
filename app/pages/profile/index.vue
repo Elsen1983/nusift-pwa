@@ -1,91 +1,158 @@
 <template>
-  <div class="px-4 py-8 max-w-2xl mx-auto space-y-8">
+  <div class="px-4 py-8 max-w-2xl mx-auto space-y-8 pb-20">
     
-    <section class="bg-surface-container rounded-3xl p-6 border border-outline-variant/10 flex items-center gap-5">
-      <div class="w-20 h-20 rounded-full border-1 border-primary-container p-0 shrink-0 shadow-[0_0_15px_rgba(0,229,255,0.2)]">
+    <section class="flex items-center gap-4 px-2">
+      <div class="w-16 h-16 rounded-full border border-primary-container/30 p-0.5 shrink-0 shadow-[0_0_15px_rgba(0,229,255,0.1)]">
         <img :src="userAvatar" class="w-full h-full object-cover rounded-full" />
       </div>
       <div class="min-w-0">
         <h2 class="font-headline text-2xl font-bold text-primary truncate">
-          {{ authStore.user?.email.split('@')[0] }}
+          {{ authStore.user?.email?.split('@')[0] || 'Sovereign User' }}
         </h2>
-        <p class="text-on-surface-variant text-xs font-label mb-2">{{ authStore.user?.email }}</p>
-        <div class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-primary-container/10 border border-primary-container/20 rounded-md">
-          <span class="w-1.5 h-1.5 rounded-full bg-primary-container animate-pulse"></span>
-          <span class="text-[10px] font-bold text-primary-container uppercase tracking-widest">
-            Agent {{ agentStore.agentVersion }}
-          </span>
+        <p class="text-on-surface-variant text-sm font-label">{{ authStore.user?.email }}</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="bg-surface-container-low rounded-3xl p-5 border border-outline-variant/10 flex items-center justify-between shadow-lg relative overflow-hidden">
+        <div class="absolute -left-10 -top-10 w-40 h-40 bg-primary-container/5 blur-3xl rounded-full pointer-events-none"></div>
+
+        <div class="relative z-10">
+          <h3 class="text-on-surface font-headline font-bold mb-1">{{ $t('myProfile.quota.title') }}</h3>
+          <p class="text-on-surface-variant text-[13px] font-label mb-4">
+            <span class="text-primary-container font-bold">{{ activeCount }}</span> {{ $t('myProfile.quota.of') }} {{ limit }} {{ $t('myProfile.quota.sources') }}
+          </p>
+          <button class="px-4 py-2 bg-primary-container/10 text-primary-container border border-primary-container/30 rounded-xl text-[11px] font-bold uppercase tracking-wider hover:bg-primary-container/20 transition-colors">
+            {{ $t('myProfile.quota.upgrade') }}
+          </button>
+        </div>
+        
+        <div class="relative w-20 h-20 flex items-center justify-center shrink-0">
+          <svg class="transform -rotate-90 w-20 h-20">
+            <circle cx="40" cy="40" r="32" stroke="currentColor" stroke-width="5" fill="transparent" class="text-surface-container-highest" />
+            <circle cx="40" cy="40" r="32" stroke="currentColor" stroke-width="5" fill="transparent"
+              :stroke-dasharray="201"
+              :stroke-dashoffset="201 - (progressPercentage / 100) * 201"
+              class="text-primary-container transition-all duration-1000 ease-out"
+              stroke-linecap="round" />
+          </svg>
+          <span class="absolute text-primary text-sm font-headline font-bold">{{ progressPercentage }}%</span>
         </div>
       </div>
     </section>
 
-    <div class="grid grid-cols-2 gap-3">
-      <div v-for="stat in agentStore.stats" :key="stat.label" 
-           class="bg-surface-container-high rounded-2xl p-4 border border-outline-variant/5">
-        <span class="material-symbols-outlined text-primary-container text-xl mb-1">{{ stat.icon }}</span>
-        <div class="text-xl font-headline font-bold text-primary">{{ stat.value }}</div>
-        <div class="text-[9px] font-label text-on-surface-variant uppercase tracking-wider">{{ stat.label }}</div>
+    <section class="space-y-2">
+      <h4 class="text-[10px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4">{{ $t('myProfile.sections.account') }}</h4>
+      <div class="bg-surface-container-low rounded-3xl p-2 border border-outline-variant/10 shadow-lg">
+        
+        <button class="w-full flex items-center justify-between p-3.5 hover:bg-surface-container-highest rounded-2xl transition-colors group">
+          <div class="flex items-center gap-4 text-on-surface">
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">loyalty</span>
+            <span class="font-body text-[15px] font-medium">{{ $t('myProfile.menu.subscription') }}</span>
+          </div>
+          <span class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-colors">chevron_right</span>
+        </button>
+
+        <button class="w-full flex items-center justify-between p-3.5 hover:bg-surface-container-highest rounded-2xl transition-colors group">
+          <div class="flex items-center gap-4 text-on-surface">
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">credit_card</span>
+            <span class="font-body text-[15px] font-medium">{{ $t('myProfile.menu.billing') }}</span>
+          </div>
+          <span class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-colors">chevron_right</span>
+        </button>
+
+        <button class="w-full flex items-center justify-between p-3.5 hover:bg-surface-container-highest rounded-2xl transition-colors group">
+          <div class="flex items-center gap-4 text-on-surface">
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">manage_accounts</span>
+            <span class="font-body text-[15px] font-medium">{{ $t('myProfile.menu.settings') }}</span>
+          </div>
+          <span class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-colors">chevron_right</span>
+        </button>
+
       </div>
+    </section>
+
+    <section class="space-y-2">
+      <h4 class="text-[10px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4">{{ $t('myProfile.sections.preference') }}</h4>
+      <div class="bg-surface-container-low rounded-3xl p-2 border border-outline-variant/10 shadow-lg">
+        
+        <button class="w-full flex items-center justify-between p-3.5 hover:bg-surface-container-highest rounded-2xl transition-colors group">
+          <div class="flex items-center gap-4 text-on-surface">
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">language</span>
+            <span class="font-body text-[15px] font-medium">{{ $t('myProfile.menu.language') }}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-on-surface-variant text-[13px] font-label">English</span>
+            <span class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-colors">chevron_right</span>
+          </div>
+        </button>
+
+        <div class="w-full flex items-center justify-between p-3.5 rounded-2xl">
+          <div class="flex items-center gap-4 text-on-surface">
+            <span class="material-symbols-outlined text-on-surface-variant">dark_mode</span>
+            <span class="font-body text-[15px] font-medium">{{ $t('myProfile.menu.dark_mode') }}</span>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" v-model="isDarkMode" class="sr-only peer" disabled>
+            <div class="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container"></div>
+          </label>
+        </div>
+
+      </div>
+    </section>
+
+    <section class="space-y-2">
+      <div class="bg-surface-container-low rounded-3xl p-2 border border-outline-variant/10 shadow-lg">
+        <button class="w-full flex items-center justify-between p-3.5 hover:bg-surface-container-highest rounded-2xl transition-colors group">
+          <div class="flex items-center gap-4 text-on-surface">
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">support_agent</span>
+            <span class="font-body text-[15px] font-medium">{{ $t('myProfile.menu.help') }}</span>
+          </div>
+          <span class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-colors">chevron_right</span>
+        </button>
+      </div>
+    </section>
+
+    <div class="flex items-center justify-between px-4 pt-4">
+      <button @click="handleLogout" 
+              class="flex items-center gap-2 text-error hover:text-red-400 transition-colors font-bold text-[15px]">
+        <span class="material-symbols-outlined">logout</span>
+        {{ $t('myProfile.logout') }}
+      </button>
+      <span class="text-on-surface-variant text-xs font-label">
+        {{ $t('preloaderFirst.version') }}
+      </span>
     </div>
 
-    <section class="bg-surface-container rounded-3xl p-6 border border-outline-variant/10">
-      <div class="flex justify-between items-center mb-6">
-        <h3 class="font-headline text-sm font-bold text-primary uppercase tracking-widest">Intelligence Profile</h3>
-        <NuxtLink to="/interest-calibration" class="text-primary-container text-[10px] font-bold uppercase hover:underline">
-          Adjust Agent
-        </NuxtLink>
-      </div>
-      <div class="space-y-5">
-        <div v-for="pref in agentStore.topPreferences" :key="pref.id" class="group">
-          <div class="flex justify-between text-xs font-label mb-2">
-            <span class="text-on-surface flex items-center gap-2">
-              <span class="material-symbols-outlined text-sm opacity-50">{{ pref.icon }}</span>
-              {{ pref.name }}
-            </span>
-            <span class="text-primary-container font-bold">{{ pref.weight }}%</span>
-          </div>
-          <div class="h-1 bg-surface-container-highest rounded-full overflow-hidden">
-            <div class="h-full bg-primary-container transition-all duration-1000" 
-                 :style="{ width: pref.weight + '%' }"></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <button @click="handleLogout" 
-            class="w-full py-4 rounded-2xl bg-error/5 text-texterror font-bold flex items-center justify-center gap-3 hover:bg-error/10 transition-all border border-error/20 group">
-      <span class="material-symbols-outlined  group-hover:rotate-180 transition-transform duration-500">logout</span>
-      TERMINATE SECURE SESSION
-    </button>
   </div>
 </template>
 
 <script setup lang="ts">
+import { ref, computed } from 'vue';
 import { useAuthStore } from '~/stores/auth';
-import { useAgentStore } from '~/stores/agent';
 import defaultAvatar from '~/assets/images/default_avatar.png';
 
-// ANCHOR LAYOUT-DEFINITION
 definePageMeta({
-  layout: 'app-layout' // Ennek egyeznie kell a layouts/app-layout.vue fájlnévvel
+  layout: 'app-layout'
 });
 
 const authStore = useAuthStore();
-const agentStore = useAgentStore();
 const userAvatar = ref(defaultAvatar);
 
-/**
- * ANCHOR SECURE-LOGOUT
- * Megszakít minden folyamatot és visszadob az auth oldalra hard-reload-al.
- */
+// Mock data for UI presentation. You will wire this up to your API similar to source-manager.vue
+const activeCount = ref(4);
+const limit = ref(5);
+const isDarkMode = ref(true); // NuSift is dark-mode locked for now
+
+const progressPercentage = computed(() => {
+  if (limit.value <= 0) return 0;
+  return Math.round((activeCount.value / limit.value) * 100);
+});
+
 const handleLogout = () => {
   const token = useCookie('auth_token');
-  
-  // State tisztítása
   token.value = null;
   authStore.user = null;
-  
-  // Security Red Flag fix: Hard redirection
   window.location.href = '/auth';
 };
 </script>

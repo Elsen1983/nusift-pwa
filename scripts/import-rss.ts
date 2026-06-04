@@ -1,22 +1,19 @@
 // scripts/import-rss.ts
+// to run : `npx tsx scripts/import-rss.ts`
 import fs from 'fs';
 import path from 'path';
 import { RssStatus } from '@prisma/client';
 import 'dotenv/config'; 
 import { prisma } from '../server/utils/prisma'; 
-
 import * as isoPackage from 'i18n-iso-countries';
 import { createRequire } from 'module';
+
 const require = createRequire(import.meta.url);
 const enLocaleJson = require('i18n-iso-countries/langs/en.json');
-
 const countries = ('default' in isoPackage ? isoPackage.default : isoPackage) as any;
 const enLocale = 'default' in enLocaleJson ? enLocaleJson.default : enLocaleJson;
 countries.registerLocale(enLocale);
 
-// ==========================================
-// TISZTÍTÓ ÉS FORMÁZÓ FÜGGVÉNYEK
-// ==========================================
 const cleanField = (val: string | undefined | null) => {
   return val && val.trim() !== '' ? val.trim() : null;
 };
@@ -24,56 +21,31 @@ const cleanField = (val: string | undefined | null) => {
 const formatLocationName = (raw: string | undefined | null) => {
   if (!raw || raw.trim() === '') return null;
   let formatted = raw.trim();
-  
   if (formatted.startsWith('United_States_')) {
     formatted = formatted.replace(/^United_States_/, 'United States - ');
   }
-  
-  formatted = formatted.replace(/_/g, ' ');
-  return formatted;
+  return formatted.replace(/_/g, ' ');
 };
 
-// ==========================================
-// HÁLÓZATI VALIDÁCIÓ (PÁRHUZAMOSÍTÁSRA OPTIMALIZÁLVA)
-// ==========================================
 async function validateAndResolveUrl(rawUrl: string | undefined | null): Promise<string | null> {
   if (!rawUrl || rawUrl.trim() === '') return null;
-  
   let targetUrl = rawUrl.trim();
   if (!targetUrl.startsWith('http')) targetUrl = `https://${targetUrl}`;
-
   const TIMEOUT_MS = 3500;
-
   try {
     const controller = new AbortController();
-    const fetchPromise = fetch(targetUrl, { 
-      method: 'HEAD', 
-      signal: controller.signal 
-    });
-
-    // Golyóálló timeout: Ha a fetch beragadna (pl. DNS hiba), ez biztosan leállítja
+    const fetchPromise = fetch(targetUrl, { method: 'HEAD', signal: controller.signal });
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        controller.abort();
-        reject(new Error('Timeout'));
-      }, TIMEOUT_MS);
+      setTimeout(() => { controller.abort(); reject(new Error('Timeout')); }, TIMEOUT_MS);
     });
-
     const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
-
-    if (response && response.ok) {
-      return response.url.replace(/\/+$/, '');
-    }
+    if (response && response.ok) return response.url.replace(/\/+$/, '');
     return targetUrl.replace(/\/+$/, '');
   } catch (error) {
-    // Timeout vagy hiba esetén megtartjuk az eredeti linket
     return targetUrl.replace(/\/+$/, '');
   }
 }
 
-// ==========================================
-// KONTINENS MAPPER
-// ==========================================
 const continentGroups: Record<string, string[]> = {
   "Africa": ["AO","BF","BI","BJ","BW","CD","CF","CG","CI","CM","CV","DJ","DZ","EG","EH","ER","ET","GA","GH","GM","GN","GQ","GW","KE","KM","LR","LS","LY","MA","MG","ML","MR","MU","MW","MZ","NA","NE","NG","RW","SC","SD","SL","SN","SO","ST","SZ","TD","TG","TN","TZ","UG","ZA","ZM","ZW"],
   "Asia": ["AE","AF","AM","AZ","BD","BH","BN","BT","CN","GE","ID","IL","IN","IQ","IR","JO","JP","KG","KH","KP","KR","KW","KZ","LA","LB","LK","MM","MN","MY","OM","PH","PK","QA","SA","SY","TH","TJ","TM","TR","TW","UZ","VN","YE"],
@@ -85,29 +57,35 @@ const continentGroups: Record<string, string[]> = {
 
 const isoToContinent: Record<string, string> = {};
 for (const [continent, codes] of Object.entries(continentGroups)) {
-  for (const code of codes) {
-    isoToContinent[code] = continent;
-  }
+  for (const code of codes) { isoToContinent[code] = continent; }
 }
 
 const customIsoOverrides: Record<string, string> = {
-  'congo brazzaville': 'CG',
-  'congo kinshasa': 'CD',
-  'cote d ivoire': 'CI',
-  'guinea bissau': 'GW',
-  'holy see': 'VA',
-  'laos': 'LA',
-  'macedonia': 'MK',
-  'moldova': 'MD',
-  'swaziland': 'SZ',
-  'syria': 'SY',
-  'timor leste': 'TL'
+  'congo brazzaville': 'CG', 'congo kinshasa': 'CD', 'cote d ivoire': 'CI', 'guinea bissau': 'GW',
+  'holy see': 'VA', 'laos': 'LA', 'macedonia': 'MK', 'moldova': 'MD', 'swaziland': 'SZ', 'syria': 'SY', 'timor leste': 'TL'
 };
 
-// ==========================================
-// ASZINKRON FELDOLGOZÓ MOTOR
-// ==========================================
-async function processJson(filePath: string, defaultStatus: RssStatus) {
+interface ExtractedSourcePayload {
+  rootUrl: string;
+  fullUrl: string;
+  isCategory: boolean;
+  mediaName: string;
+  mediaType: string | null;
+  language: string | null;
+  location: string | null;
+  countryCode: string | null;
+  continent: string | null;
+  detailPageUrl: string | null;
+  aboutPageUrl: string | null;
+  contactPageUrl: string | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  rssFeedUrl: string | null;
+  rssStatus: RssStatus;
+}
+
+async function processJson(filePath: string, defaultStatus: RssStatus): Promise<ExtractedSourcePayload[]> {
   if (!fs.existsSync(filePath)) {
     console.warn(`[WARN] Fájl nem található: ${filePath}`);
     return [];
@@ -115,23 +93,12 @@ async function processJson(filePath: string, defaultStatus: RssStatus) {
 
   const rawData = fs.readFileSync(filePath, 'utf-8');
   let parsed: any = null;
-  try {
-    parsed = JSON.parse(rawData);
-  } catch (e) {
-    console.error(`[ERROR] JSON parse hiba: ${filePath}`, e);
-    return [];
-  }
+  try { parsed = JSON.parse(rawData); } catch (e) { return []; }
 
-  const sources: any[] = [];
-  const missingIsoCodes = new Set<string>();
+  const extractedPayloads: ExtractedSourcePayload[] = [];
+  if (!parsed || !parsed.locations || !Array.isArray(parsed.locations)) return [];
 
-  if (!parsed || !parsed.locations || !Array.isArray(parsed.locations)) {
-    return sources;
-  }
-
-  // 1. Lépés: Kinyerjük az összes rekordot egy lapos tömbbe
-  const allExtractedItems: any[] = [];
-
+  const rawItems: any[] = [];
   for (const locObj of parsed.locations) {
     const formattedLocation = formatLocationName(locObj.location);
     let isoCode = null;
@@ -141,112 +108,156 @@ async function processJson(filePath: string, defaultStatus: RssStatus) {
       const searchCountry = formattedLocation.split(' - ')[0] || '';
       const normalizedSearch = searchCountry.toLowerCase().trim();
       isoCode = customIsoOverrides[normalizedSearch] || countries.getAlpha2Code(searchCountry, 'en') || null;
-
-      if (isoCode) {
-        continent = isoToContinent[isoCode] || 'Unknown';
-      } else {
-        missingIsoCodes.add(searchCountry);
-      }
+      if (isoCode) continent = isoToContinent[isoCode] || 'Unknown';
     }
 
     if (!locObj.content || !Array.isArray(locObj.content)) continue;
-
     for (const item of locObj.content) {
-      allExtractedItems.push({
-        originalItem: item,
-        formattedLocation,
-        isoCode,
-        continent
-      });
+      rawItems.push({ item, formattedLocation, isoCode, continent });
     }
   }
 
-  console.log(`\n⏳ [${path.basename(filePath)}] ${allExtractedItems.length} URL hálózati ellenőrzése indul...`);
+  console.log(`\n⏳ [${path.basename(filePath)}] ${rawItems.length} rekord hálózati normalizálása indul...`);
+  const BATCH_SIZE = 50;
 
-  // 2. Lépés: Párhuzamosított hálózati ellenőrzés (Kötegekben)
-  const BATCH_SIZE = 50; // Egyszerre 50 kérést küldünk a gyorsaság érdekében
-
-  for (let i = 0; i < allExtractedItems.length; i += BATCH_SIZE) {
-    const batch = allExtractedItems.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < rawItems.length; i += BATCH_SIZE) {
+    const batch = rawItems.slice(i, i + BATCH_SIZE);
     
     await Promise.all(batch.map(async (data) => {
-      const frontUrl = await validateAndResolveUrl(data.originalItem.front_page_url);
-      if (!frontUrl) return;
+      const resolvedUrl = await validateAndResolveUrl(data.item.front_page_url);
+      if (!resolvedUrl) return;
 
-      sources.push({
-        frontPageUrl: frontUrl,
-        mediaName: cleanField(data.originalItem.media_name) || 'Unknown Media',
-        mediaType: cleanField(data.originalItem.media_type),
-        language: cleanField(data.originalItem.language),
-        location: data.formattedLocation,
-        countryCode: data.isoCode,
-        continent: data.continent,
-        detailPageUrl: cleanField(data.originalItem.detail_page_url),
-        aboutPageUrl: cleanField(data.originalItem.about_page_url),
-        contactPageUrl: cleanField(data.originalItem.contact_page_url),
-        contactName: cleanField(data.originalItem.name),
-        contactEmail: cleanField(data.originalItem.email),
-        contactPhone: cleanField(data.originalItem.phone),
-        rssFeedUrl: cleanField(data.originalItem.rss_feed_url),
-        rssStatus: defaultStatus,
-        isSystemImported: true, 
-      });
+      try {
+        const urlObj = new URL(resolvedUrl);
+        const rootUrl = `${urlObj.protocol}//${urlObj.hostname}`;
+        const isCategory = urlObj.pathname !== '/' && urlObj.pathname !== '';
+
+        extractedPayloads.push({
+          rootUrl: rootUrl.toLowerCase().trim(),
+          fullUrl: resolvedUrl,
+          isCategory,
+          mediaName: cleanField(data.item.media_name) || 'Unknown Media',
+          mediaType: cleanField(data.item.media_type),
+          language: cleanField(data.item.language),
+          location: data.formattedLocation,
+          countryCode: data.isoCode,
+          continent: data.continent,
+          detailPageUrl: cleanField(data.item.detail_page_url),
+          aboutPageUrl: cleanField(data.item.about_page_url),
+          contactPageUrl: cleanField(data.item.contact_page_url),
+          contactName: cleanField(data.item.name),
+          contactEmail: cleanField(data.item.email),
+          contactPhone: cleanField(data.item.phone),
+          rssFeedUrl: cleanField(data.item.rss_feed_url),
+          rssStatus: defaultStatus
+        });
+      } catch (e) {}
     }));
-
-    // Folyamatjelző kiírása a konzolra
-    console.log(`   ✔️ Feldolgozva: ${Math.min(i + BATCH_SIZE, allExtractedItems.length)} / ${allExtractedItems.length}`);
-  }
-  
-  if (missingIsoCodes.size > 0) {
-    console.log(`⚠️ Hiányzó ISO kódok:`, Array.from(missingIsoCodes));
+    console.log(`   ✔️ Normalizálva: ${Math.min(i + BATCH_SIZE, rawItems.length)} / ${rawItems.length}`);
   }
 
-  return sources;
+  return extractedPayloads;
 }
 
-// ==========================================
-// FŐ FUTTATÓ FÜGGVÉNY
-// ==========================================
 async function runImport() {
-  console.log('🚀 Adatbázis Importálás hálózati ellenőrzéssel (Párhuzamosítva)...');
+  console.log('🚀 Adatbázis Importálás strukturális szűréssel és optimalizált Bulk mentéssel...');
 
   const successPath = path.join(process.cwd(), 'data', 'allSuccessRss.json');
   const failedPath = path.join(process.cwd(), 'data', 'allFailedRss.json');
 
-  const successSources = await processJson(successPath, RssStatus.ACTIVE);
-  const failedSources = await processJson(failedPath, RssStatus.NO_RSS_FOUND);
+  const successPayloads = await processJson(successPath, RssStatus.ACTIVE);
+  const failedPayloads = await processJson(failedPath, RssStatus.NO_RSS_FOUND);
 
-  const allSources = [...successSources, ...failedSources];
-
-  if (allSources.length === 0) {
+  const allPayloads = [...successPayloads, ...failedPayloads];
+  if (allPayloads.length === 0) {
     console.log('❌ Nem található érvényes adat. Megszakítás.');
     return;
   }
 
-  console.log(`\n📦 ${allSources.length} ellenőrzött rekord előkészítése az adatbázisba...`);
-
-  try {
-    // NEW LOGIC: Chunk the database inserts to bypass PostgreSQL limits
-    const DB_BATCH_SIZE = 1000;
-    let totalInserted = 0;
-
-    console.log(`⏳ Adatbázisba írás indítása (${DB_BATCH_SIZE} elem/csomag)...`);
-
-    for (let i = 0; i < allSources.length; i += DB_BATCH_SIZE) {
-      const chunk = allSources.slice(i, i + DB_BATCH_SIZE);
-      
-      const result = await prisma.newsSource.createMany({
-        data: chunk,
-        skipDuplicates: true 
+  // 1. LÉPÉS: Egyedi gyökér domainek kiszűrése a memóriában
+  const uniqueRootMap = new Map<string, any>();
+  for (const p of allPayloads) {
+    if (!uniqueRootMap.has(p.rootUrl)) {
+      uniqueRootMap.set(p.rootUrl, {
+        frontPageUrl: p.rootUrl,
+        mediaName: p.isCategory ? p.rootUrl.replace(/^https?:\/\/(www\.)?/, '') : p.mediaName,
+        mediaType: p.mediaType,
+        language: p.language,
+        location: p.location,
+        countryCode: p.countryCode,
+        continent: p.continent,
+        isSystemImported: true,
+        rssStatus: p.isCategory ? RssStatus.ACTIVE : p.rssStatus
       });
-      
-      totalInserted += result.count;
-      console.log(`   💾 Sikeresen mentve: ${Math.min(i + DB_BATCH_SIZE, allSources.length)} / ${allSources.length}`);
     }
+  }
+
+  const newsSourcesToInsert = Array.from(uniqueRootMap.values());
+  console.log(`\n📦 Előkészítve: ${newsSourcesToInsert.length} egyedi főoldal (NewsSource).`);
+  
+  try {
+    // 2. LÉPÉS: Tömeges beszúrás a NewsSource táblába (Gyors és golyóálló)
+    console.log(`⏳ Főoldalak írása az adatbázisba (Bulk createMany)...`);
+    const rootResult = await prisma.newsSource.createMany({
+      data: newsSourcesToInsert,
+      skipDuplicates: true
+    });
+    console.log(`   💾 Mentve/Szinkronizálva: ${rootResult.count} új gyökér-domain.`);
+
+    // 3. LÉPÉS: Lekérjük az összes meglévő NewsSource-t az ID-k párosításához
+    console.log(`⏳ Id-k lekérése a relációk feltérképezéséhez...`);
+    const dbSources = await prisma.newsSource.findMany({
+      select: { id: true, frontPageUrl: true }
+    });
+    const urlToIdMap = new Map(dbSources.map(s => [s.frontPageUrl.toLowerCase().trim(), s.id]));
+
+    // 4. LÉPÉS: Kategóriák előkészítése a memóriában
+    const categoriesToInsert: any[] = [];
+    const uniqueCategoryCheck = new Set<string>(); // Megakadályozza a belső JSON duplikációt
+
+    for (const p of allPayloads) {
+      const parentId = urlToIdMap.get(p.rootUrl);
+      if (!parentId) continue;
+
+      if (p.isCategory) {
+        const urlObj = new URL(p.fullUrl);
+        const uniqueKey = `${parentId}_${p.fullUrl.toLowerCase().trim()}`;
+
+        if (!uniqueCategoryCheck.has(uniqueKey)) {
+          uniqueCategoryCheck.add(uniqueKey);
+          categoriesToInsert.push({
+            newsSourceId: parentId,
+            name: p.mediaName !== 'Unknown Media' ? p.mediaName : urlObj.pathname.substring(1).replace(/\//g, " - "),
+            pathUrl: p.fullUrl,
+            rssFeedUrl: p.rssFeedUrl,
+            rssStatus: p.rssStatus,
+            isUserRequested: false
+          });
+        }
+      }
+    }
+
+    // 5. LÉPÉS: Tömeges beszúrás a SourceCategory táblába (Bulk createMany)
+    console.log(`\n📦 Előkészítve: ${categoriesToInsert.length} egyedi aloldal/rovat (SourceCategory).`);
     
-    console.log(`\n✅ Importálás sikeresen befejeződött!`);
-    console.log(`📊 Újonnan beszúrt rekordok (összesen): ${totalInserted}`);
-    console.log(`⏭️ Kihagyott rekordok (Már létező domainek): ${allSources.length - totalInserted}`);
+    if (categoriesToInsert.length > 0) {
+      console.log(`⏳ Aloldalak írása az adatbázisba (Bulk createMany kötegekben)...`);
+      const CATEGORY_CHUNK_SIZE = 1000;
+      let savedCatsCount = 0;
+
+      for (let i = 0; i < categoriesToInsert.length; i += CATEGORY_CHUNK_SIZE) {
+        const chunk = categoriesToInsert.slice(i, i + CATEGORY_CHUNK_SIZE);
+        const catResult = await prisma.sourceCategory.createMany({
+          data: chunk,
+          skipDuplicates: true
+        });
+        savedCatsCount += catResult.count;
+        console.log(`   💾 Mentve: ${Math.min(i + CATEGORY_CHUNK_SIZE, categoriesToInsert.length)} / ${categoriesToInsert.length}`);
+      }
+      console.log(`   ✔️ Sikeresen létrehozva ${savedCatsCount} új egyedi SourceCategory rekord.`);
+    }
+
+    console.log(`\n✅ Szuper-gyors Bulk Import sikeresen befejeződött!`);
 
   } catch (error: any) {
     console.error('❌ Adatbázis hiba az importálás során:', error);
@@ -257,5 +268,3 @@ async function runImport() {
 }
 
 runImport();
-
-// to run: npx ts-node scripts/import-rss.ts

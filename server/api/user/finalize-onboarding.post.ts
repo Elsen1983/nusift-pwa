@@ -69,12 +69,11 @@ export default defineEventHandler(async (event) => {
       console.log(
         `[Audit][Onboarding] User ${currentUserId} submitted ${sources.length} sources for onboarding.`,
       );
-
       if (sources.length > 20) {
         console.warn(
-          `[Audit][Onboarding] User ${currentUserId} exceeded maximum source limit (Submitted: ${sources.length}). Truncating to 20.`,
+          `[Audit][Onboarding] User exceeded maximum limit. Truncating to 20.`,
         );
-        sources.splice(20); // Csak az első 20 forrást engedjük át
+        sources.splice(20);
       }
     } else {
       console.warn(
@@ -82,20 +81,24 @@ export default defineEventHandler(async (event) => {
       );
     }
 
-    // 3. Források feldolgozása, Deduplikáció és Explicit Kapcsolatok létrehozása
     const targetedSourceIds: string[] = [];
+
+    // 3. Források feldolgozása, Deduplikáció és Relációs Kapcsolatok
     if (Array.isArray(sources)) {
       for (const rawUrl of sources) {
         try {
-          // 1. Normalize the incoming URL
+          // A) URL Normalizálás
           const incomingUrlObj = new URL(rawUrl);
-          const cleanIncomingHostname = incomingUrlObj.hostname.replace(
-            /^www\./,
-            "",
-          ); // e.g., "delmagyar.hu"
+          const cleanIncomingHostname = incomingUrlObj.hostname
+            .replace(/^www\./, "")
+            .toLowerCase();
+          const incomingPath = incomingUrlObj.pathname
+            .replace(/^\/|\/$/g, "")
+            .toLowerCase();
+          const pureRootUrl = `${incomingUrlObj.protocol}//${incomingUrlObj.hostname}`;
 
-          // 2. Search for existing domains using a broad LIKE query first (for performance)
-          const potentialMatches = await prisma.newsSource.findMany({
+          // B) Keresés a meglévő szülő (Root) domainek között
+          const potentialRoots = await prisma.newsSource.findMany({
             where: {
               frontPageUrl: {
                 contains: cleanIncomingHostname,
@@ -104,12 +107,11 @@ export default defineEventHandler(async (event) => {
             },
           });
 
-          // 3. Strict JavaScript validation to prevent substring collision (e.g., 'subdelmagyar.hu')
-          const existingSource = potentialMatches.find((dbSource) => {
+          const parentRoot = potentialRoots.find((dbSource) => {
             try {
               const dbUrlObj = new URL(dbSource.frontPageUrl);
               return (
-                dbUrlObj.hostname.replace(/^www\./, "") ===
+                dbUrlObj.hostname.replace(/^www\./, "").toLowerCase() ===
                 cleanIncomingHostname
               );
             } catch {
@@ -117,112 +119,148 @@ export default defineEventHandler(async (event) => {
             }
           });
 
-          let finalSourceId = null;
-
-          if (existingSource) {
-            // 4a. RECORD EXISTS: Do NOT create a duplicate.
-            // Grab the existing ID so we can link the user to it.
-            console.log(
-              `[Deduplication] Prevented duplicate for ${rawUrl}. Using existing ID: ${existingSource.id}`,
-            );
-            finalSourceId = existingSource.id;
-
-            // Optional: If the existing source is pending, we can still queue it for discovery
-            if (existingSource.rssStatus === "PENDING_DISCOVERY") {
-              targetedSourceIds.push(finalSourceId);
-            }
-          } else {
-            // 4b. TRULY NEW RECORD: Safe to create.
-            const newSource = await prisma.newsSource.create({
-              data: {
-                frontPageUrl: rawUrl,
-                mediaName: cleanIncomingHostname,
-                rssStatus: "PENDING_DISCOVERY",
-                isSystemImported: false,
+          // C) Keresés az exakt Kategória/Rovat között (ha van path)
+          let exactCategory = null;
+          if (incomingPath !== "") {
+            const potentialCats = await prisma.sourceCategory.findMany({
+              where: {
+                pathUrl: {
+                  contains: cleanIncomingHostname,
+                  mode: "insensitive",
+                },
               },
             });
-            console.log(
-              `[Deduplication] Created new source: ${newSource.frontPageUrl}`,
-            );
-            finalSourceId = newSource.id;
-            targetedSourceIds.push(finalSourceId); // Queue for discovery
+            exactCategory = potentialCats.find((dbCat) => {
+              try {
+                const dbUrlObj = new URL(dbCat.pathUrl);
+                const dbHostname = dbUrlObj.hostname
+                  .replace(/^www\./, "")
+                  .toLowerCase();
+                const dbPath = dbUrlObj.pathname
+                  .replace(/^\/|\/$/g, "")
+                  .toLowerCase();
+                return (
+                  dbHostname === cleanIncomingHostname &&
+                  dbPath === incomingPath
+                );
+              } catch {
+                return false;
+              }
+            });
           }
 
-          // 5. Link the finalSourceId to the User via UserSourceSubscription
-          if (finalSourceId) {
-            const incomingUrlObj = new URL(rawUrl);
-            const path = incomingUrlObj.pathname;
-            const shouldBeActive = currentlyActiveCount < maxActiveLimit;
+          const shouldBeActive = currentlyActiveCount < maxActiveLimit;
 
-            if (path === "/" || path === "") {
-              // ROUTE A: Root Domain Subscription (e.g., https://444.hu/)
-              await prisma.userSourceSubscription.upsert({
+          // D) Mentési és Relációs Logika (Szétválasztva)
+          if (incomingPath === "") {
+            // --- FELHASZNÁLÓ FŐOLDALT ADOTT MEG ---
+            let rootId = null;
+            if (parentRoot) {
+              rootId = parentRoot.id;
+              console.log(`[Onboarding] Linked to existing ROOT: ${rootId}`);
+            } else {
+              const newRoot = await prisma.newsSource.create({
+                data: {
+                  frontPageUrl: pureRootUrl,
+                  mediaName: cleanIncomingHostname,
+                  rssStatus: "PENDING_DISCOVERY",
+                  isSystemImported: false,
+                },
+              });
+              rootId = newRoot.id;
+              targetedSourceIds.push(rootId);
+              console.log(
+                `[Onboarding] Created completely new ROOT: ${pureRootUrl}`,
+              );
+            }
+
+            await prisma.userSourceSubscription.upsert({
+              where: {
+                userId_sourceId: { userId: currentUserId, sourceId: rootId },
+              },
+              create: {
+                userId: currentUserId,
+                sourceId: rootId,
+                isActive: shouldBeActive,
+              },
+              update: { isActive: shouldBeActive },
+            });
+          } else {
+            // --- FELHASZNÁLÓ KATEGÓRIÁT (ALOLDALT) ADOTT MEG ---
+            if (exactCategory) {
+              console.log(
+                `[Onboarding] Linked to existing CATEGORY: ${exactCategory.id}`,
+              );
+              await prisma.userCategorySubscription.upsert({
                 where: {
-                  userId_sourceId: {
+                  userId_categoryId: {
                     userId: currentUserId,
-                    sourceId: finalSourceId,
+                    categoryId: exactCategory.id,
                   },
                 },
                 create: {
                   userId: currentUserId,
-                  sourceId: finalSourceId,
+                  categoryId: exactCategory.id,
                   isActive: shouldBeActive,
                 },
-                update: {
-                  isActive: shouldBeActive,
-                },
+                update: { isActive: shouldBeActive },
               });
-              console.log(
-                `[Onboarding] Linked ROOT source ${finalSourceId} to user (Active: ${shouldBeActive})`,
-              );
             } else {
-              // ROUTE B: Category / Sub-path Subscription (e.g., https://telex.hu/rovat/kulfold)
-              const sourceCategory = await prisma.sourceCategory.upsert({
-                where: {
-                  newsSourceId_pathUrl: {
-                    newsSourceId: finalSourceId,
-                    pathUrl: rawUrl,
+              // Nincs még ilyen kategória. Kell új szülőt csinálni?
+              let rootIdForCategory = null;
+              if (parentRoot) {
+                rootIdForCategory = parentRoot.id;
+              } else {
+                const newRoot = await prisma.newsSource.create({
+                  data: {
+                    frontPageUrl: pureRootUrl,
+                    mediaName: cleanIncomingHostname,
+                    rssStatus: "PENDING_DISCOVERY",
+                    isSystemImported: false,
                   },
-                },
-                create: {
-                  newsSourceId: finalSourceId,
-                  name: path.substring(1).replace(/\//g, " - "),
+                });
+                rootIdForCategory = newRoot.id;
+                targetedSourceIds.push(rootIdForCategory); // A szülőn futtatjuk le a discoveryt
+                console.log(
+                  `[Onboarding] Created new parent ROOT for category: ${pureRootUrl}`,
+                );
+              }
+
+              // Kategória létrehozása és összekötése
+              const newCat = await prisma.sourceCategory.create({
+                data: {
+                  newsSourceId: rootIdForCategory,
+                  name: incomingUrlObj.pathname
+                    .substring(1)
+                    .replace(/\//g, " - "),
                   pathUrl: rawUrl,
                   isUserRequested: true,
+                  rssStatus: "PENDING_DISCOVERY",
                 },
-                update: {}, // Categories are static once created
               });
 
               await prisma.userCategorySubscription.upsert({
                 where: {
                   userId_categoryId: {
                     userId: currentUserId,
-                    categoryId: sourceCategory.id,
+                    categoryId: newCat.id,
                   },
                 },
                 create: {
                   userId: currentUserId,
-                  categoryId: sourceCategory.id,
+                  categoryId: newCat.id,
                   isActive: shouldBeActive,
                 },
-                update: {
-                  isActive: shouldBeActive,
-                },
+                update: { isActive: shouldBeActive },
               });
               console.log(
-                `[Onboarding] Linked CATEGORY ${sourceCategory.id} (${rawUrl}) to user (Active: ${shouldBeActive})`,
+                `[Onboarding] Created and linked new CATEGORY: ${newCat.pathUrl}`,
               );
             }
-
-            // Increment active count regardless of whether it was a root or a category
-            if (shouldBeActive) {
-              currentlyActiveCount++;
-            }
-
-            console.log(
-              `[Onboarding] Successfully linked source ${finalSourceId} to user ${currentUserId} (Active: ${shouldBeActive})`,
-            );
           }
+
+          // Ha sikeresen létrejött egy aktív kapcsolat, növeljük a számlálót
+          if (shouldBeActive) currentlyActiveCount++;
         } catch (error) {
           console.error(
             `[Insertion Error] Failed to process URL ${rawUrl}:`,
@@ -236,7 +274,6 @@ export default defineEventHandler(async (event) => {
       console.log(
         `[Orchestrator] Dispatching non-blocking discovery for ${targetedSourceIds.length} sources.`,
       );
-
       event.waitUntil(
         executeTargetedDiscovery(targetedSourceIds).catch((err) =>
           console.error(

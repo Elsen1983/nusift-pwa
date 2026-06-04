@@ -351,6 +351,27 @@
     "readLaterModal": {},
     "saveFavouriteModal": {},
     "shareModal": {},
+    "myProfile": {
+        "quota": {
+            "title": "Available Sources",
+            "of": "of",
+            "sources": "Slots",
+            "upgrade": "Upgrade plan"
+        },
+        "sections": {
+            "account": "Account",
+            "preference": "Preference"
+        },
+        "menu": {
+            "subscription": "Subscription & Plans",
+            "billing": "Billing & Payment",
+            "settings": "Account Settings",
+            "language": "Language",
+            "dark_mode": "Dark Mode",
+            "help": "Help Center"
+        },
+        "logout": "Log Out"
+    },
     "categoriesSetup": {
         "badge": "Your Feed, Your Rules",
         "title": "Tell your AI what you care about",

@@ -351,6 +351,27 @@
     "readLaterModal": {},
     "saveFavouriteModal": {},
     "shareModal": {},
+    "myProfile": {
+        "quota": {
+            "title": "Aktív Források",
+            "of": "/",
+            "sources": "Hely",
+            "upgrade": "Csomag frissítése"
+        },
+        "sections": {
+            "account": "Fiók",
+            "preference": "Beállítások"
+        },
+        "menu": {
+            "subscription": "Előfizetés és Csomagok",
+            "billing": "Számlázás és Fizetés",
+            "settings": "Fiókbeállítások",
+            "language": "Nyelv",
+            "dark_mode": "Sötét Mód",
+            "help": "Súgóközpont"
+        },
+        "logout": "Kijelentkezés"
+    },
     "categoriesSetup": {
         "badge": "A Te Hírfolyamod, A Te Szabályaid",
         "title": "Mond meg az AI-nak, mi érdekel",
