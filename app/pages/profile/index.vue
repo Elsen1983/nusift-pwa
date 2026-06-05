@@ -1,5 +1,5 @@
 <template>
-  <div class="px-4 py-8 max-w-2xl mx-auto space-y-8 pb-20">
+  <div class="px-4 py-8 max-w-2xl mx-auto space-y-8 pb-20 overflow-hidden">
     
     <section class="flex items-center gap-4 px-2">
       <div class="w-16 h-16 rounded-full border border-primary-container/30 p-0.5 shrink-0 shadow-[0_0_15px_rgba(0,229,255,0.1)]">
@@ -10,6 +10,55 @@
           {{ authStore.user?.email?.split('@')[0] || 'Sovereign User' }}
         </h2>
         <p class="text-on-surface-variant text-sm font-label">{{ authStore.user?.email }}</p>
+      </div>
+    </section>
+
+    <!-- COMPACT IMPACT DASHBOARD -->
+    <section class="space-y-2">
+      <h4 class="text-[10px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4">
+        {{ $t('myProfile.sections.impact') }}
+      </h4>
+      <div class="bg-surface-container-low rounded-3xl p-4 border border-outline-variant/10 shadow-lg relative overflow-hidden">
+        
+        <!-- Minimal Top Glow -->
+        <div class="absolute top-0 left-1/2 -translate-x-1/2 w-1/2 h-4 bg-primary-container/20 blur-xl rounded-full pointer-events-none"></div>
+
+        <div class="grid grid-cols-3 divide-x divide-outline-variant/10 relative z-10">
+          
+          <!-- Metric 1: Time -->
+          <div class="flex flex-col items-center justify-center text-center px-1">
+            <span class="material-symbols-outlined text-primary-container text-base mb-1.5 opacity-80">timelapse</span>
+            <div class="text-on-surface font-headline font-bold text-xl leading-none mb-1">
+              {{ impactMetrics.timeSaved }}<span class="text-sm ml-0.5 text-on-surface-variant">h</span>
+            </div>
+            <p class="text-on-surface-variant text-[9px] font-label uppercase tracking-widest leading-tight">
+              {{ $t('myProfile.impact.time_short') }}
+            </p>
+          </div>
+
+          <!-- Metric 2: Data -->
+          <div class="flex flex-col items-center justify-center text-center px-1">
+            <span class="material-symbols-outlined text-primary-container text-base mb-1.5 opacity-80">data_usage</span>
+            <div class="text-on-surface font-headline font-bold text-xl leading-none mb-1">
+              {{ impactMetrics.dataSaved }}<span class="text-sm ml-0.5 text-on-surface-variant">GB</span>
+            </div>
+            <p class="text-on-surface-variant text-[9px] font-label uppercase tracking-widest leading-tight">
+              {{ $t('myProfile.impact.data_short') }}
+            </p>
+          </div>
+
+          <!-- Metric 3: AI -->
+          <div class="flex flex-col items-center justify-center text-center px-1">
+            <span class="material-symbols-outlined text-primary-container text-base mb-1.5 opacity-80">memory</span>
+            <div class="text-on-surface font-headline font-bold text-xl leading-none mb-1">
+              {{ impactMetrics.articlesScanned }}
+            </div>
+            <p class="text-on-surface-variant text-[9px] font-label uppercase tracking-widest leading-tight">
+              {{ $t('myProfile.impact.ai_work_short') }}
+            </p>
+          </div>
+
+        </div>
       </div>
     </section>
 
@@ -101,18 +150,6 @@
       </div>
     </section>
 
-    <section class="space-y-2">
-      <div class="bg-surface-container-low rounded-3xl p-2 border border-outline-variant/10 shadow-lg">
-        <button class="w-full flex items-center justify-between p-3.5 hover:bg-surface-container-highest rounded-2xl transition-colors group">
-          <div class="flex items-center gap-4 text-on-surface">
-            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">support_agent</span>
-            <span class="font-body text-[15px] font-medium">{{ $t('myProfile.menu.help') }}</span>
-          </div>
-          <span class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-colors">chevron_right</span>
-        </button>
-      </div>
-    </section>
-
     <div class="flex items-center justify-between px-4 pt-4">
       <button @click="handleLogout" 
               class="flex items-center gap-2 text-error hover:text-red-400 transition-colors font-bold text-[15px]">
@@ -120,7 +157,7 @@
         {{ $t('myProfile.logout') }}
       </button>
       <span class="text-on-surface-variant text-xs font-label">
-        {{ $t('preloaderFirst.version') }}
+        {{ $t('preloaderFirst.version') || 'Version 1.0.0' }}
       </span>
     </div>
 
@@ -139,10 +176,17 @@ definePageMeta({
 const authStore = useAuthStore();
 const userAvatar = ref(defaultAvatar);
 
-// Mock data for UI presentation. You will wire this up to your API similar to source-manager.vue
+// --- MOCK DATA --- 
+// Ezeket később egy API végpontról (`/api/user/analytics`) fogjuk behúzni
 const activeCount = ref(4);
 const limit = ref(5);
-const isDarkMode = ref(true); // NuSift is dark-mode locked for now
+const isDarkMode = ref(true);
+
+const impactMetrics = ref({
+  timeSaved: 14, // Óra ebben a hónapban
+  dataSaved: 4.2, // GB megspórolt adatforgalom
+  articlesScanned: 342 // Deep Scan által feltérképezett cikkek
+});
 
 const progressPercentage = computed(() => {
   if (limit.value <= 0) return 0;
@@ -156,3 +200,14 @@ const handleLogout = () => {
   window.location.href = '/auth';
 };
 </script>
+
+<style scoped>
+/* Horizontális görgetősáv elrejtése a karusszelnél, de görgethetőség megtartása */
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+</style>

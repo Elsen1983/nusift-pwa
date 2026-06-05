@@ -176,6 +176,11 @@ onMounted(() => {
     if (checkSessionActive()) {
       console.log("Verification confirmed via Nuxt cookie check. Redirecting...");
       if (pollingInterval) clearInterval(pollingInterval);
+
+      // Clean up local storage before redirecting
+      localStorage.setItem("nusift_visited", "true");
+      localStorage.removeItem("nusift_pending_email");
+
       isLoading.value = true;
       loadingText.value = t('verifyEmail.loading.confirmed');
       setTimeout(() => {

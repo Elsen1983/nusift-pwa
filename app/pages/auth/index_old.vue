@@ -37,7 +37,6 @@
     <main
       class="min-h-screen flex flex-col items-center justify-center px-8 py-6 max-w-md mx-auto relative z-10"
     >
-      <!-- LOGO & DYNAMIC HEADER -->
       <section class="w-full flex flex-col items-center mb-6">
         <div class="relative w-[125px] h-[125px] mb-4 shadow-xl rounded-xl">
           <div
@@ -77,135 +76,131 @@
         </p>
       </section>
 
-      <div
-        v-if="resetSuccessMessage"
-        class="w-full mb-4 p-3 bg-primary-container/10 border border-primary-container/30 rounded-xl"
-      >
-        <p class="text-xs font-label text-[#00E5FF] leading-tight text-center">
-          {{ resetSuccessMessage }}
-        </p>
-      </div>
-
-      <!-- 1. PROGRESSIVE DISCLOSURE: EMAIL FORM VS BUTTON -->
       <section class="w-full">
-        <Transition name="fade-slide" mode="out-in">
-          <!-- STATE A: EMAIL FORM EXPANDED -->
-          <div v-if="showEmailForm || isResettingPassword" class="w-full">
-            <!-- UX Escape Hatch -->
-            <button
-              v-if="!isResettingPassword"
-              @click="showEmailForm = false"
-              class="mb-4 flex items-center justify-center w-full gap-2 text-[11px] font-label font-bold text-on-surface-variant hover:text-primary-container transition-colors uppercase tracking-widest focus:outline-none"
-            >
-              <span class="material-symbols-outlined text-[14px]"
-                >arrow_back</span
-              >
-              {{ $t("auth.buttons.back_to_options", "Back to options") }}
-            </button>
+        <div
+          v-if="resetSuccessMessage"
+          class="mb-4 p-3 bg-primary-container/10 border border-primary-container/30 rounded-xl"
+        >
+          <p
+            class="text-xs font-label text-[#00E5FF] leading-tight text-center"
+          >
+            {{ resetSuccessMessage }}
+          </p>
+        </div>
 
-            <form @submit.prevent="handleAuth" class="space-y-4">
-              <BaseInput
-                v-model="email"
-                :label="$t('auth.form.email_label')"
-                type="email"
-                :placeholder="$t('auth.form.email_placeholder')"
-                :error="emailError"
-                class="standard-field"
-                @blur="validateEmailField"
-                :disabled="isLoading"
-              />
-              <BaseInput
-                v-if="!isResettingPassword"
-                v-model="password"
-                :label="$t('auth.form.password_label')"
-                type="password"
-                :placeholder="$t('auth.form.password_placeholder')"
-                :error="passwordError"
-                class="standard-field"
-                @blur="validatePasswordField"
-                :disabled="isLoading"
-              >
-                <template
-                  v-if="!isRegistering && showForgotButton"
-                  #label-right
-                >
-                  <button
-                    @click="triggerResetMode"
-                    type="button"
-                    :disabled="isLoading"
-                    class="text-[11px] font-label text-primary-container hover:underline uppercase font-bold tracking-tighter disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
-                  >
-                    {{ $t("auth.form.forgot_password") }}
-                  </button>
-                </template>
-                <template v-if="isRegistering" #help-text>
-                  <p
-                    v-if="!passwordError"
-                    class="text-[11px] text-zinc-500 ml-1 italic mt-1.5 leading-tight"
-                  >
-                    {{ $t("auth.form.password_hint") }}
-                  </p>
-                </template>
-              </BaseInput>
-
+        <form @submit.prevent="handleAuth" class="space-y-4">
+          <BaseInput
+            v-model="email"
+            :label="$t('auth.form.email_label')"
+            type="email"
+            :placeholder="$t('auth.form.email_placeholder')"
+            :error="emailError"
+            class="standard-field"
+            @blur="validateEmailField"
+            :disabled="isLoading" 
+          />
+          <BaseInput
+            v-if="!isResettingPassword"
+            v-model="password"
+            :label="$t('auth.form.password_label')"
+            type="password"
+            :placeholder="$t('auth.form.password_placeholder')"
+            :error="passwordError"
+            class="standard-field"
+            @blur="validatePasswordField"
+            :disabled="isLoading"
+          >
+            <template v-if="!isRegistering && showForgotButton" #label-right>
               <button
-                type="submit"
-                :disabled="
-                  isLoading ||
-                  !!emailError ||
-                  (!isResettingPassword && !!passwordError) ||
-                  !email ||
-                  (!isResettingPassword && !password)
-                "
-                class="w-full bg-primary-container text-on-primary-container font-headline font-bold py-3 rounded-xl shadow-lg hover:brightness-110 active:scale-[0.97] transition-all disabled:opacity-50 disabled:cursor-not-allowed text-base mt-4 uppercase tracking-widest"
+                @click="triggerResetMode"
+                type="button"
+                :disabled="isLoading"
+                class="text-[11px] font-label text-primary-container hover:underline uppercase font-bold tracking-tighter disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
               >
-                {{
-                  isResettingPassword
-                    ? $t("auth.buttons.send_reset")
-                    : isRegistering
-                      ? $t("auth.buttons.register_identity")
-                      : $t("auth.buttons.authenticate")
-                }}
+                {{ $t("auth.form.forgot_password") }}
               </button>
-            </form>
-          </div>
-
-          <!-- STATE B: CONTINUE WITH EMAIL BUTTON -->
-          <div v-else class="w-full">
-            <button
-              @click="showEmailForm = true"
-              type="button"
-              class="flex items-center justify-center w-full bg-surface-container-high hover:bg-surface-container-highest text-on-surface text-xs font-label font-semibold py-3 rounded-xl border border-outline-variant/10 transition-colors shadow-sm active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span
-                class="material-symbols-outlined w-5 h-5 mr-3 text-xl opacity-80"
-                >mail</span
+            </template>
+            <template v-if="isRegistering" #help-text>
+              <p
+                v-if="!passwordError"
+                class="text-[11px] text-zinc-500 ml-1 italic mt-1.5 leading-tight"
               >
-              {{ $t("auth.buttons.continue_email", "Continue with Email") }}
-            </button>
-          </div>
-        </Transition>
+                {{ $t("auth.form.password_hint") }}
+              </p>
+            </template>
+          </BaseInput>
+
+          <button
+            type="submit"
+            :disabled="
+              isLoading ||
+              !!emailError ||
+              (!isResettingPassword && !!passwordError) ||
+              !email ||
+              (!isResettingPassword && !password)
+            "
+            class="w-full bg-primary-container text-on-primary-container font-headline font-bold py-3 rounded-xl shadow-lg hover:brightness-110 active:scale-[0.97] transition-all disabled:opacity-50 disabled:cursor-not-allowed text-base mt-4 uppercase tracking-widest"
+          >
+            {{
+              isResettingPassword
+                ? $t("auth.buttons.send_reset")
+                : isRegistering
+                  ? $t("auth.buttons.register_identity")
+                  : $t("auth.buttons.authenticate")
+            }}
+          </button>
+        </form>
+
+        <div class="mt-4 text-center space-y-2">
+          <p
+            v-if="!isResettingPassword"
+            class="text-xs font-label text-on-surface-variant uppercase tracking-widest"
+          >
+            {{
+              isRegistering
+                ? $t("auth.prompts.already_have_account")
+                : $t("auth.prompts.dont_have_account")
+            }}
+          </p>
+          <button
+            v-if="!isResettingPassword"
+            @click="toggleAuthMode"
+            type="button"
+            :disabled="isLoading"
+            class="text-[18px] font-headline font-bold text-primary-container hover:text-primary underline underline-offset-4 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
+          >
+            {{
+              isRegistering
+                ? $t("auth.prompts.login_link")
+                : $t("auth.prompts.registration_link")
+            }}
+          </button>
+
+          <button
+            v-if="isResettingPassword"
+            @click="cancelResetMode"
+            :disabled="isLoading"
+            class="text-xs font-label mt-2 text-on-surface-variant hover:text-white transition-colors uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {{ $t("auth.buttons.back_to_login") }}
+          </button>
+        </div>
+
+        <div
+          v-if="!isResettingPassword"
+          class="relative flex items-center py-2"
+        >
+          <div class="flex-grow border-t border-outline-variant/15"></div>
+          <span
+            class="flex-shrink mx-4 text-[9px] font-label font-bold text-zinc-500 tracking-[0.4em] uppercase"
+          >
+            {{ $t("auth.prompts.divider_label") }}
+          </span>
+          <div class="flex-grow border-t border-outline-variant/15"></div>
+        </div>
       </section>
 
-      <!-- 2. DIVIDER -->
-      <div
-        v-if="!isResettingPassword && !showEmailForm"
-        class="w-full relative flex items-center py-6"
-      >
-        <div class="flex-grow border-t border-outline-variant/15"></div>
-        <span
-          class="flex-shrink mx-4 text-[9px] font-label font-bold text-zinc-500 tracking-[0.4em] uppercase"
-        >
-          {{ $t("auth.prompts.divider_label") }}
-        </span>
-        <div class="flex-grow border-t border-outline-variant/15"></div>
-      </div>
-
-      <!-- 3. OAUTH BUTTONS (At the top of the interaction zone) -->
-      <section
-        v-if="!isResettingPassword && !showEmailForm"
-        class="w-full space-y-3"
-      >
+      <section v-if="!isResettingPassword" class="w-full space-y-3">
         <button
           @click="handleOAuth('Google')"
           type="button"
@@ -246,44 +241,7 @@
         </button>
       </section>
 
-      <!-- 4. AUTH TOGGLE MODE (Already have an account? Login) -->
-      <div class="w-full mt-6 text-center space-y-2">
-        <p
-          v-if="!isResettingPassword"
-          class="text-xs font-label text-on-surface-variant uppercase tracking-widest"
-        >
-          {{
-            isRegistering
-              ? $t("auth.prompts.already_have_account")
-              : $t("auth.prompts.dont_have_account")
-          }}
-        </p>
-        <button
-          v-if="!isResettingPassword"
-          @click="toggleAuthMode"
-          type="button"
-          :disabled="isLoading"
-          class="text-[18px] font-headline font-bold text-primary-container hover:text-primary underline underline-offset-4 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
-        >
-          {{
-            isRegistering
-              ? $t("auth.prompts.login_link")
-              : $t("auth.prompts.registration_link")
-          }}
-        </button>
-
-        <button
-          v-if="isResettingPassword"
-          @click="cancelResetMode"
-          :disabled="isLoading"
-          class="text-xs font-label mt-2 text-on-surface-variant hover:text-white transition-colors uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {{ $t("auth.buttons.back_to_login") }}
-        </button>
-      </div>
-
-      <!-- 5. FOOTER -->
-      <footer class="mt-8 text-center w-full">
+      <footer class="mt-4 text-center w-full">
         <p
           class="text-[10px] text-zinc-500 font-label uppercase tracking-[0.4em] mb-2 font-bold opacity-70"
         >
@@ -317,7 +275,6 @@
       </footer>
     </main>
 
-    <!-- MODALS SECTION -->
     <div
       v-if="activeModal"
       class="fixed inset-0 z-[110] flex items-center justify-center px-4"
@@ -344,8 +301,12 @@
           <div
             class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
           >
-            <p>{{ $t("auth.modal.terms_p1") }}</p>
-            <p>{{ $t("auth.modal.terms_p2") }}</p>
+            <p>
+              {{ $t("auth.modal.terms_p1") }}
+            </p>
+            <p>
+              {{ $t("auth.modal.terms_p2") }}
+            </p>
           </div>
         </div>
         <div v-if="activeModal === 'privacy'" class="space-y-4 text-left">
@@ -357,8 +318,12 @@
           <div
             class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
           >
-            <p>{{ $t("auth.modal.privacy_p1") }}</p>
-            <p>{{ $t("auth.modal.privacy_p2") }}</p>
+            <p>
+              {{ $t("auth.modal.privacy_p1") }}
+            </p>
+            <p>
+              {{ $t("auth.modal.privacy_p2") }}
+            </p>
           </div>
         </div>
         <div v-if="activeModal === 'help'" class="space-y-4 text-left">
@@ -370,8 +335,12 @@
           <div
             class="max-h-64 overflow-y-auto pr-2 text-sm text-on-surface-variant leading-relaxed font-body space-y-3"
           >
-            <p>{{ $t("auth.modal.help_p1") }}</p>
-            <p>{{ $t("auth.modal.help_p2") }}</p>
+            <p>
+              {{ $t("auth.modal.help_p1") }}
+            </p>
+            <p>
+              {{ $t("auth.modal.help_p2") }}
+            </p>
           </div>
         </div>
         <button
@@ -398,6 +367,7 @@ const localePath = useLocalePath();
 type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
 const { t, setLocale, locale } = useI18n();
 
+/** ANCHOR SDK-INJECTION */
 useHead({
   script: [
     { src: "https://accounts.google.com/gsi/client", async: true, defer: true },
@@ -410,7 +380,7 @@ useHead({
 });
 
 /** ANCHOR UI-STATES */
-const activeLanguage = ref<AvailableLocales>("en");
+const activeLanguage = ref<AvailableLocales>("en"); // Local state for the chosen language payload
 const isLanguageReady = ref(false);
 const isRegistering = ref(false);
 const isResettingPassword = ref(false);
@@ -418,9 +388,6 @@ const isLoading = ref(false);
 const showForgotButton = ref(false);
 const activeModal = ref<null | "terms" | "privacy" | "help">(null);
 const resetSuccessMessage = ref("");
-
-// NEW STATE: Controls the visibility of the Email & Password inputs
-const showEmailForm = ref(false);
 
 /** ANCHOR FORM-MODELS */
 const email = ref("");
@@ -448,22 +415,31 @@ const validatePasswordField = () => {
   passwordError.value = "";
   if (!password.value) return false;
 
+  // 1. Length Boundary Check
   if (password.value.length < 12) {
     passwordError.value = t("auth.validation.password_too_short");
     return false;
   }
+
+  // 2. Uppercase Check
   if (!/[A-Z]/.test(password.value)) {
     passwordError.value = t("auth.validation.password_no_uppercase");
     return false;
   }
+
+  // 3. Lowercase Check
   if (!/[a-z]/.test(password.value)) {
     passwordError.value = t("auth.validation.password_no_lowercase");
     return false;
   }
+
+  // 4. Number Check
   if (!/[0-9]/.test(password.value)) {
     passwordError.value = t("auth.validation.password_no_number");
     return false;
   }
+
+  // 5. Special Character Check
   if (!/[!@#$%^&*(),.?":{}|<>\-_+=\[\]\/\\'`~]/.test(password.value)) {
     passwordError.value = t("auth.validation.password_no_special");
     return false;
@@ -476,23 +452,25 @@ watch(email, () => validateEmailField());
 
 watch(password, () => {
   validatePasswordField();
+
+  // SENIOR UX FIX:
+  // Ha a jelszót módosítják egy korábbi sikertelen bejelentkezés után,
+  // újra kell validálni az e-mailt is, hogy a beragadt
+  // "Authentication failure" (ami az emailError-ban van tárolva) törlődjön,
+  // és a gomb azonnal aktívvá váljon.
   if (!isRegistering.value) {
     validateEmailField();
   }
 });
 
 onMounted(() => {
-  // Uses existing logic: Defaults to Register if they haven't visited before
-  if (localStorage.getItem("nusift_visited")) {
-    isRegistering.value = false;
-  } else {
-    isRegistering.value = true;
-  }
-
+  if (!localStorage.getItem("nusift_visited")) isRegistering.value = true;
+  // Retrieve the language if it was already selected previously
   const savedLang = localStorage.getItem("nusift_preferred_language");
   if (savedLang) {
     activeLanguage.value = savedLang as AvailableLocales;
     setLocale(savedLang as AvailableLocales);
+    // Gate Open: The user already selected a language in a previous session
     isLanguageReady.value = true;
   }
 });
@@ -506,8 +484,6 @@ const toggleAuthMode = () => {
   emailError.value = "";
   passwordError.value = "";
   showForgotButton.value = false;
-  // NOTE: We do not set showEmailForm to false here.
-  // If they are in the email form, let them stay in the email form.
 };
 
 const triggerResetMode = () => {
@@ -515,22 +491,23 @@ const triggerResetMode = () => {
   isRegistering.value = false;
   resetSuccessMessage.value = "";
   passwordError.value = "";
+
+  // Clear the email field and any existing email errors
   email.value = "";
   emailError.value = "";
-  showEmailForm.value = true; // Ensure the form is forced open
 };
 
 const cancelResetMode = () => {
   isResettingPassword.value = false;
   resetSuccessMessage.value = "";
   emailError.value = "";
-  showEmailForm.value = false; // Collapse back to social buttons
 };
 
 /** ANCHOR HANDLERS */
 const handleLanguageSelection = (langCode: string) => {
   activeLanguage.value = langCode as AvailableLocales;
   setLocale(langCode as AvailableLocales);
+  // Gate Open: The user just clicked a language button (User Interaction!)
   isLanguageReady.value = true;
 };
 
@@ -538,6 +515,7 @@ const handleAuth = async () => {
   const eValid = validateEmailField();
   if (!eValid) return;
 
+  // -- Password Reset Flow --
   if (isResettingPassword.value) {
     isLoading.value = true;
     try {
@@ -556,9 +534,11 @@ const handleAuth = async () => {
     return;
   }
 
+  // -- Normal Login/Register Flow --
   const pValid = validatePasswordField();
   if (!pValid) return;
 
+  // Block the UI and reset errors before making the API call
   isLoading.value = true;
   emailError.value = "";
   passwordError.value = "";
@@ -570,16 +550,22 @@ const handleAuth = async () => {
       activeLanguage.value,
     );
     if (success) {
-    //   localStorage.setItem("nusift_visited", "true");
-    //   localStorage.setItem("nusift_pending_email", email.value);
+      localStorage.setItem("nusift_visited", "true");
+      localStorage.setItem("nusift_pending_email", email.value);
 
+      // 1. Establish Target Language for Registration
       const targetLang = activeLanguage.value as AvailableLocales;
+
+      // 2. CRITICAL FIX: Force the JSON download before navigating
       if (locale.value !== targetLang) {
         try {
           await setLocale(targetLang);
-        } catch (e) {}
+        } catch (e) {
+          // Safe to ignore router cancellation warnings
+        }
       }
 
+      // 3. Named Route Generation & Native Navigation
       const verifyRoute = localePath(
         { name: "verify-email-custom" },
         targetLang,
@@ -593,14 +579,18 @@ const handleAuth = async () => {
   } else {
     const success = await authStore.loginIdentity(email.value, password.value);
     if (success) {
-    //   localStorage.setItem("nusift_visited", "true");
+      localStorage.setItem("nusift_visited", "true");
 
+      // PRIORITIZE DB LANGUAGE: Use the newly fetched user preference, fallback to activeLanguage
       const targetLang = (authStore.user?.preferredLanguage ||
         activeLanguage.value) as AvailableLocales;
+
       if (locale.value !== targetLang) {
         try {
           await setLocale(targetLang);
-        } catch (e) {}
+        } catch (e) {
+          // Safe to ignore router cancellation warnings
+        }
       }
 
       const dashboardRoute = localePath(
@@ -621,23 +611,24 @@ const handleAuth = async () => {
         return navigateTo(preloaderRoute);
       }
     } else {
-      if (authStore.authError === "UNVERIFIED_ACCOUNT") {
-        // localStorage.setItem("nusift_pending_email", email.value);
+      // Specific Handling for Unverified Accounts
+      if (authStore.authError === 'UNVERIFIED_ACCOUNT') {
+        localStorage.setItem("nusift_pending_email", email.value);
+        
         const targetLang = activeLanguage.value as AvailableLocales;
         if (locale.value !== targetLang) {
-          try {
-            await setLocale(targetLang);
-          } catch (e) {}
+          try { await setLocale(targetLang); } catch (e) {}
         }
-        const verifyRoute = localePath(
-          { name: "verify-email-custom" },
-          targetLang,
-        );
+        
+        const verifyRoute = localePath({ name: "verify-email-custom" }, targetLang);
         return navigateTo(verifyRoute);
       }
 
+      // Hagyományos hitelesítési hiba (pl. rossz jelszó)
       emailError.value = authStore.authError || "Authentication failure.";
       showForgotButton.value = true;
+      
+      // Hiba esetén feloldjuk a blokkolást
       isLoading.value = false;
     }
   }
@@ -645,6 +636,7 @@ const handleAuth = async () => {
 
 /** ANCHOR OAUTH-LOGIC */
 const handleOAuth = async (provider: string) => {
+  // OAUTH LOGIC REMAINS EXACTLY THE SAME AS ORIGINAL
   isLoading.value = true;
   emailError.value = "";
 
@@ -720,6 +712,7 @@ const handleOAuth = async (provider: string) => {
 };
 
 const processOAuthLogin = async (rawToken: string, providerName: string) => {
+  // const success = await authStore.oauthIdentity(rawToken, providerName);
   const success = await authStore.oauthIdentity(
     rawToken,
     providerName,
@@ -727,26 +720,36 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
   );
 
   if (success) {
-    // Persistent flag for future sessions
-    localStorage.setItem("nusift_visited", "true");
-    
-    // Sync the live reactive state for the current SPA session
-    isRegistering.value = false;
-
+    // 1. Establish the Target Language (Source of Truth)
     const targetLang = (authStore.user?.preferredLanguage ||
       activeLanguage.value) as AvailableLocales;
 
+    // If we don't await this, the router outruns the network request.
     if (locale.value !== targetLang) {
       try {
         await setLocale(targetLang);
       } catch (e) {
-        // Intentionally left blank to swallow Vue Router cancellation warnings
+        // Safe to ignore: The global guard may hijack this transition mid-flight,
+        // throwing a standard Vue Router cancellation warning.
       }
     }
-
+    // 2. Generate the paths using EXACT Route Names from nuxt.config.ts
+    // This forces i18n to find the '___hu' or '___en' variant of the extended route
     const dashboardRoute = localePath({ name: "dashboard-custom" }, targetLang);
     const preloaderRoute = localePath({ name: "preloader-custom" }, targetLang);
 
+    // Optional: Keep this to verify the prefix is now attached
+    console.log("Resolved Dashboard Path:", dashboardRoute);
+    console.log(
+      "Post-OAuth User Language:",
+      authStore.user?.preferredLanguage,
+      "Active Language:",
+      activeLanguage.value,
+      "Target Language for Navigation:",
+      targetLang,
+    );
+    // 3. Execute Navigation
+    // 2. Use Nuxt's native navigateTo to safely execute the final jump
     if (
       authStore.user?.onboardingStep !== undefined &&
       authStore.user.onboardingStep >= 3
@@ -762,24 +765,13 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
   }
 };
 </script>
-
 <style scoped>
+/* ANCHOR CUSTOM Style */
 .background-button-custom {
   background: linear-gradient(
     135deg,
     rgba(80, 80, 80, 0.8) 0%,
     rgba(121, 121, 121, 0.6) 100%
   ) !important;
-}
-
-/* UI Transitions for Progressive Disclosure */
-.fade-slide-enter-active,
-.fade-slide-leave-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.fade-slide-enter-from,
-.fade-slide-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
 }
 </style>

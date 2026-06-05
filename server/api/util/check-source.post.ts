@@ -36,6 +36,24 @@ export default defineEventHandler(async (event) => {
 
     let finalUrl = response.url;
 
+    // --- ÚJ: CROSS-DOMAIN REDIRECT PAJZS ---
+    const originalUrlObj = new URL(targetUrl);
+    const finalUrlObj = new URL(finalUrl);
+    
+    const originalCleanHost = originalUrlObj.hostname.replace(/^www\./, "").toLowerCase();
+    const finalCleanHost = finalUrlObj.hostname.replace(/^www\./, "").toLowerCase();
+
+    // Ha a gyökér-domain megváltozott (pl. roblox.ie -> fruits.co)
+    if (originalCleanHost !== finalCleanHost && response.ok) {
+      console.warn(`[Check-Source] Cross-Domain redirect blocked: ${originalCleanHost} -> ${finalCleanHost}`);
+      throw createError({ 
+        statusCode: 400, 
+        statusMessage: "Redirect Hijack",
+        message: `Ez a domain átirányít egy másik, idegen weboldalra (${finalCleanHost}). Parkolt vagy lejárt forrás.` 
+      });
+    }
+    // ----------------------------------------
+
     // 2. Graceful WAF Handling (The Existence Proof)
     if (!response.ok) {
       if (response.status === 403 || response.status === 401 || response.status === 503) {

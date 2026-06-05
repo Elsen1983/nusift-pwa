@@ -218,8 +218,7 @@ const handleSecureLogout = async () => {
     agentStore.$reset();
   }
 
-  if (process.client) {
-    localStorage.removeItem("nusift_visited");
+  if (import.meta.client) {
     sessionStorage.clear();
 
     // Hard-redirect a bejelentkező oldalra

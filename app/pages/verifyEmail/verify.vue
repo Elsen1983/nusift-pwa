@@ -56,6 +56,12 @@ onMounted(async () => {
     });
     if (response.success) {
       isSuccess.value = true;
+
+      // Enforce local storage state upon successful external link click
+      if (import.meta.client) {
+        localStorage.setItem("nusift_visited", "true");
+        localStorage.removeItem("nusift_pending_email");
+      }
     }
   } catch (err: any) {
     errorMsg.value = err.statusMessage || t('emailVerify.messages.verification_failed');

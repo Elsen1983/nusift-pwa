@@ -63,6 +63,24 @@ export async function executeTargetedDiscovery(
         throw new Error(`HTTP Error: ${response.status}`);
       }
 
+      // --- ÚJ: CROSS-DOMAIN REDIRECT PAJZS (AGENT) ---
+      const finalUrlObj = new URL(response.url);
+      const originalUrlObj = new URL(source.frontPageUrl);
+      const finalCleanHost = finalUrlObj.hostname.replace(/^www\./, "").toLowerCase();
+      const originalCleanHost = originalUrlObj.hostname.replace(/^www\./, "").toLowerCase();
+
+      if (originalCleanHost !== finalCleanHost) {
+        console.warn(`[Targeted-Discovery] Cross-Domain Redirect blocked: ${originalCleanHost} -> ${finalCleanHost}`);
+        
+        await prisma.newsSource.update({
+          where: { id: source.id },
+          data: { rssStatus: 'DOMAIN_DEAD' } // Véglegesen halottnak jelöljük
+        });
+        
+        continue; // Ugrás a következő forrásra, a letöltést/regexet megszakítjuk
+      }
+      // ------------------------------------------------
+
       const html = await response.text();
       console.log(
         `[Targeted-Discovery][Fetch] Successfully downloaded HTML from "${source.frontPageUrl}" (${html.length} bytes). Parsing regex...`,

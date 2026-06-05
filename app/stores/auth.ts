@@ -4,18 +4,18 @@ import { ref } from "vue";
 import { useAgentStore } from "./agent";
 
 /** ANCHOR TYPE-DEFINITIONS
- * Ensures strict type-safety for user data flowing from the 
+ * Ensures strict type-safety for user data flowing from the
  * verified backend handshake to the frontend state.
  */
 interface UserProfile {
   id: string;
   email: string;
   onboardingStep: number;
-  createdAt?: string; 
+  createdAt?: string;
   primaryRegion: string | null;
   preferredLanguage?: string;
   topSources: any[];
-  topInterests: any; 
+  topInterests: any;
   tier: string;
 }
 
@@ -36,7 +36,7 @@ export const useAuthStore = defineStore("auth", () => {
     if (import.meta.client) {
       localStorage.removeItem("nusift_pwa_profile");
       sessionStorage.clear();
-      
+
       // ANCHOR COOKIE-CLEANUP
       const sessionStatus = useCookie("session_status");
       sessionStatus.value = null; // Explicitly nullify the indicator
@@ -44,7 +44,11 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   // ANCHOR ACTIONS
-  const registerIdentity = async (emailPayload: string, passwordPayload: string, language: string = 'en') => {
+  const registerIdentity = async (
+    emailPayload: string,
+    passwordPayload: string,
+    language: string = "en",
+  ) => {
     isLoading.value = true;
     authError.value = null;
 
@@ -53,16 +57,29 @@ export const useAuthStore = defineStore("auth", () => {
     // hogy a verify-email ne találhasson régi session nyomokat.
     if (import.meta.client) {
       // console.log("Clearing auth cookies before registration attempt");
-      document.cookie = "session_status=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-      document.cookie = "auth_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+      document.cookie =
+        "session_status=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+      document.cookie =
+        "auth_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
     }
 
     try {
       await $fetch("/api/auth/register", {
         method: "POST",
-        body: { email: emailPayload, password: passwordPayload, language: language },
+        body: {
+          email: emailPayload,
+          password: passwordPayload,
+          language: language,
+        },
       });
       // console.log("Registration successful, verification email sent");
+
+      // Securely set local storage immediately upon API success
+      if (import.meta.client) {
+        localStorage.setItem("nusift_visited", "true");
+        localStorage.setItem("nusift_pending_email", emailPayload);
+      }
+
       return true;
     } catch (error: any) {
       // console.error("Registration failed", error);
@@ -73,7 +90,10 @@ export const useAuthStore = defineStore("auth", () => {
     }
   };
 
-  const loginIdentity = async (emailPayload: string, passwordPayload: string) => {
+  const loginIdentity = async (
+    emailPayload: string,
+    passwordPayload: string,
+  ) => {
     isLoading.value = true;
     authError.value = null;
     try {
@@ -90,15 +110,33 @@ export const useAuthStore = defineStore("auth", () => {
         agentStore.topInterests = (response.user.topInterests || []) as any;
       }
 
-      // ANCHOR LANGUAGE-HYDRATION: DB -> Client synchronization immediately after login
-        if (response.user.preferredLanguage && import.meta.client) {
-          // 1. Overwrite localStorage with the preferred language from the backend
+      // // ANCHOR LANGUAGE-HYDRATION: DB -> Client synchronization immediately after login
+      // if (response.user.preferredLanguage && import.meta.client) {
+      //   // 1. Overwrite localStorage with the preferred language from the backend
+      //   localStorage.setItem(
+      //     "nusift_preferred_language",
+      //     response.user.preferredLanguage,
+      //   );
+      // }
+
+      // if (!import.meta.server) {
+      //   localStorage.setItem(
+      //     "nusift_pwa_profile",
+      //     JSON.stringify(response.user),
+      //   );
+      // }
+
+      if (import.meta.client) {
+        // Securely set visited flag and clean up pending emails
+        localStorage.setItem("nusift_visited", "true");
+        localStorage.removeItem("nusift_pending_email"); 
+        
+        if (response.user.preferredLanguage) {
           localStorage.setItem("nusift_preferred_language", response.user.preferredLanguage);
         }
-
-      if (!import.meta.server) {
         localStorage.setItem("nusift_pwa_profile", JSON.stringify(response.user));
       }
+
       return true;
     } catch (error: any) {
       // console.error("Authentication failed", error);
@@ -114,7 +152,11 @@ export const useAuthStore = defineStore("auth", () => {
    * NEW SIGNATURE: Accepts raw token from identity provider.
    * Trust is deferred to the backend verification logic.
    */
-  const oauthIdentity = async (rawToken: string, providerName: string, language?: string) => {
+  const oauthIdentity = async (
+    rawToken: string,
+    providerName: string,
+    language?: string,
+  ) => {
     isLoading.value = true;
     authError.value = null;
 
@@ -125,7 +167,7 @@ export const useAuthStore = defineStore("auth", () => {
         body: {
           token: rawToken,
           provider: providerName,
-          language: language || "en"
+          language: language || "en",
         },
       });
 
@@ -141,11 +183,17 @@ export const useAuthStore = defineStore("auth", () => {
       // ANCHOR LANGUAGE-HYDRATION: DB -> Client synchronization immediately after OAuth login
       if (response.user.preferredLanguage && import.meta.client) {
         // 1. Overwrite localStorage with the preferred language from the backend
-        localStorage.setItem("nusift_preferred_language", response.user.preferredLanguage);
+        localStorage.setItem(
+          "nusift_preferred_language",
+          response.user.preferredLanguage,
+        );
       }
 
       if (!import.meta.server) {
-        localStorage.setItem("nusift_pwa_profile", JSON.stringify(response.user));
+        localStorage.setItem(
+          "nusift_pwa_profile",
+          JSON.stringify(response.user),
+        );
       }
 
       return true;

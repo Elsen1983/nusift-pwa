@@ -41,6 +41,8 @@
             "send_reset": "Send Reset Link",
             "register_identity": "Register Identity",
             "authenticate": "Authenticate",
+            "continue_email": "Continue with Email",
+            "back_to_options": "Back to Options",
             "continue_google": "Continue with Google",
             "continue_apple": "Continue with Apple",
             "back_to_login": "Back to Login"
@@ -359,8 +361,14 @@
             "upgrade": "Upgrade plan"
         },
         "sections": {
+            "impact": "Your Impact & Analytics",
             "account": "Account",
             "preference": "Preference"
+        },
+        "impact": {
+            "time_short": "Time Saved",
+            "data_short": "Data Saved",
+            "ai_work_short": "AI Scans"
         },
         "menu": {
             "subscription": "Subscription & Plans",
