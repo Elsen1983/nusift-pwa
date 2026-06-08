@@ -2,6 +2,18 @@
 import { prisma } from "./prisma";
 import { RssStatus } from "@prisma/client";
 
+// ANCHOR: WAF & Paywall Trap Signatures (Ugyanaz a lista)
+const WAF_AND_PAYWALL_PATTERNS = [
+  '/cdn-cgi/challenge-platform', '/cdn-cgi/bm/cv', '/.well-known/acme-challenge',
+  '/datadome', '/geo/datadome', 'tags.datadome.co',
+  '/_px/', '/px/captcha', '/human-verification',
+  '/_incapsula_resource', '/reese84',
+  '/akamai/sps', '/sec-challenge', '/149e9513-01fa-4fb0-aa45-',
+  '/captcha', '/verify-human', '/are-you-human', '/security-check', '/browser-check',
+  '/paywall', '/subscribe', '/premium', '/subscription-required', '/digital-access', '/plans', '/membership',
+  '/login', '/signin', '/premium-login', '/auth', '/sso', '/register', '/sign-up'
+];
+
 /**
  * Célzott RSS felfedező motor.
  * Közvetlenül hívható a finalize-onboarding-ból vagy Cron jobokból.
@@ -69,17 +81,26 @@ export async function executeTargetedDiscovery(
       const finalCleanHost = finalUrlObj.hostname.replace(/^www\./, "").toLowerCase();
       const originalCleanHost = originalUrlObj.hostname.replace(/^www\./, "").toLowerCase();
 
+      // 1. PAJZS: Cross-Domain Átirányítás (Azonnali halál)
       if (originalCleanHost !== finalCleanHost) {
         console.warn(`[Targeted-Discovery] Cross-Domain Redirect blocked: ${originalCleanHost} -> ${finalCleanHost}`);
         
         await prisma.newsSource.update({
           where: { id: source.id },
-          data: { rssStatus: 'DOMAIN_DEAD' } // Véglegesen halottnak jelöljük
+          data: { rssStatus: 'DOMAIN_DEAD' }
         });
-        
-        continue; // Ugrás a következő forrásra, a letöltést/regexet megszakítjuk
+        continue; // Ugrás a következő forrásra
       }
-      // ------------------------------------------------
+
+      // 2. PAJZS: Soft WAF / Paywall csapda (Hibát dobunk, hogy a catch blokk FAILED-re tegye)
+      const isWafTrap = WAF_AND_PAYWALL_PATTERNS.some(pattern => 
+        finalUrlObj.pathname.toLowerCase().includes(pattern)
+      );
+
+      if (isWafTrap) {
+         console.warn(`[Targeted-Discovery] Soft WAF/Paywall Trap detected on ${originalCleanHost}. Path: ${finalUrlObj.pathname}`);
+         throw new Error(`WAF_BLOCKED_REDIRECT`);
+      }
 
       const html = await response.text();
       console.log(

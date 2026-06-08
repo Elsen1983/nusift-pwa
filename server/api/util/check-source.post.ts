@@ -1,6 +1,18 @@
 // server/api/util/check-source.post.ts
 import { prisma } from "../../utils/prisma";
 
+// ANCHOR: WAF & Paywall Trap Signatures
+const WAF_AND_PAYWALL_PATTERNS = [
+  '/cdn-cgi/challenge-platform', '/cdn-cgi/bm/cv', '/.well-known/acme-challenge', // Cloudflare
+  '/datadome', '/geo/datadome', 'tags.datadome.co', // DataDome
+  '/_px/', '/px/captcha', '/human-verification', // HUMAN / PerimeterX
+  '/_incapsula_resource', '/reese84', // Imperva
+  '/akamai/sps', '/sec-challenge', '/149e9513-01fa-4fb0-aa45-', // Akamai & Kasada
+  '/captcha', '/verify-human', '/are-you-human', '/security-check', '/browser-check', // Generic
+  '/paywall', '/subscribe', '/premium', '/subscription-required', '/digital-access', '/plans', '/membership', // Paywalls
+  '/login', '/signin', '/premium-login', '/auth', '/sso', '/register', '/sign-up' // Auth
+];
+
 export default defineEventHandler(async (event) => {
   const body = await readBody(event);
   const rawUrl = body.url;
@@ -43,7 +55,7 @@ export default defineEventHandler(async (event) => {
     const originalCleanHost = originalUrlObj.hostname.replace(/^www\./, "").toLowerCase();
     const finalCleanHost = finalUrlObj.hostname.replace(/^www\./, "").toLowerCase();
 
-    // Ha a gyökér-domain megváltozott (pl. roblox.ie -> fruits.co)
+    // Cross-Domain Átirányítás - Ha a gyökér-domain megváltozott (pl. roblox.ie -> fruits.co)
     if (originalCleanHost !== finalCleanHost && response.ok) {
       console.warn(`[Check-Source] Cross-Domain redirect blocked: ${originalCleanHost} -> ${finalCleanHost}`);
       throw createError({ 
@@ -53,10 +65,14 @@ export default defineEventHandler(async (event) => {
       });
     }
     // ----------------------------------------
+    // 2. PAJZS: WAF & Paywall Csapda Detektálása
+    const isWafTrap = WAF_AND_PAYWALL_PATTERNS.some(pattern => 
+      finalUrlObj.pathname.toLowerCase().includes(pattern)
+    );
 
     // 2. Graceful WAF Handling (The Existence Proof)
     if (!response.ok) {
-      if (response.status === 403 || response.status === 401 || response.status === 503) {
+      if (response.status === 403 || response.status === 401 || response.status === 503 || isWafTrap) {
         console.warn(`[Check-Source] WAF protection detected (${response.status}) for ${targetUrl}. Accepting as valid domain.`);
         finalUrl = targetUrl; // Fallback to user input since we couldn't resolve a clean redirect
       } else {
