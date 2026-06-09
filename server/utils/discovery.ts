@@ -4,15 +4,59 @@ import { RssStatus } from "@prisma/client";
 
 // ANCHOR: WAF & Paywall Trap Signatures (Ugyanaz a lista)
 const WAF_AND_PAYWALL_PATTERNS = [
-  '/cdn-cgi/challenge-platform', '/cdn-cgi/bm/cv', '/.well-known/acme-challenge',
-  '/datadome', '/geo/datadome', 'tags.datadome.co',
-  '/_px/', '/px/captcha', '/human-verification',
-  '/_incapsula_resource', '/reese84',
-  '/akamai/sps', '/sec-challenge', '/149e9513-01fa-4fb0-aa45-',
-  '/captcha', '/verify-human', '/are-you-human', '/security-check', '/browser-check',
-  '/paywall', '/subscribe', '/premium', '/subscription-required', '/digital-access', '/plans', '/membership',
-  '/login', '/signin', '/premium-login', '/auth', '/sso', '/register', '/sign-up'
+  "/cdn-cgi/challenge-platform",
+  "/cdn-cgi/bm/cv",
+  "/.well-known/acme-challenge",
+  "/datadome",
+  "/geo/datadome",
+  "tags.datadome.co",
+  "/_px/",
+  "/px/captcha",
+  "/human-verification",
+  "/_incapsula_resource",
+  "/reese84",
+  "/akamai/sps",
+  "/sec-challenge",
+  "/149e9513-01fa-4fb0-aa45-",
+  "/captcha",
+  "/verify-human",
+  "/are-you-human",
+  "/security-check",
+  "/browser-check",
+  "/paywall",
+  "/subscribe",
+  "/premium",
+  "/subscription-required",
+  "/digital-access",
+  "/plans",
+  "/membership",
+  "/login",
+  "/signin",
+  "/premium-login",
+  "/auth",
+  "/sso",
+  "/register",
+  "/sign-up",
 ];
+
+const generateAcceptLanguageHeader = (langCode?: string) => {
+  switch (langCode) {
+    case "hu":
+      return "hu-HU,hu;q=0.9,en-US;q=0.8,en;q=0.7";
+    case "en":
+      return "en-US,en;q=0.9,en-GB;q=0.8";
+    case "de":
+      return "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7";
+    case "fr":
+      return "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7";
+    case "es":
+      return "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7";
+    case "pl":
+      return "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7";
+    default:
+      return "en-US,en;q=0.9";
+  }
+};
 
 /**
  * Célzott RSS felfedező motor.
@@ -50,6 +94,10 @@ export async function executeTargetedDiscovery(
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
+      // Dinamikus fejléc generálása az adatbázisban lévő nyelv alapján
+      const acceptLangHeader = generateAcceptLanguageHeader(
+        source.language || "en",
+      );
 
       // RÉSZLETES LOG: Indul a letöltés
       console.log(
@@ -61,6 +109,7 @@ export async function executeTargetedDiscovery(
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NuSift/1.0 Sovereign-Agent",
           Accept: "text/html,application/xhtml+xml",
+          "Accept-Language": acceptLangHeader,
         },
         signal: controller.signal,
       });
@@ -70,7 +119,7 @@ export async function executeTargetedDiscovery(
       // WAF-Aware Response Handling
       if (!response.ok) {
         if (response.status === 403 || response.status === 503) {
-           throw new Error(`WAF_BLOCKED_${response.status}`); // Custom error flag
+          throw new Error(`WAF_BLOCKED_${response.status}`); // Custom error flag
         }
         throw new Error(`HTTP Error: ${response.status}`);
       }
@@ -78,28 +127,40 @@ export async function executeTargetedDiscovery(
       // --- ÚJ: CROSS-DOMAIN REDIRECT PAJZS (AGENT) ---
       const finalUrlObj = new URL(response.url);
       const originalUrlObj = new URL(source.frontPageUrl);
-      const finalCleanHost = finalUrlObj.hostname.replace(/^www\./, "").toLowerCase();
-      const originalCleanHost = originalUrlObj.hostname.replace(/^www\./, "").toLowerCase();
+      const finalCleanHost = finalUrlObj.hostname
+        .replace(/^www\./, "")
+        .toLowerCase();
+      const originalCleanHost = originalUrlObj.hostname
+        .replace(/^www\./, "")
+        .toLowerCase();
+      // Engedélyezzük, ha legitim aldomainre irányított át (pl. euronews.com -> hu.euronews.com)
+      const isSubdomainRedirect = finalCleanHost.endsWith(
+        `.${originalCleanHost}`,
+      );
 
       // 1. PAJZS: Cross-Domain Átirányítás (Azonnali halál)
-      if (originalCleanHost !== finalCleanHost) {
-        console.warn(`[Targeted-Discovery] Cross-Domain Redirect blocked: ${originalCleanHost} -> ${finalCleanHost}`);
-        
+      if (originalCleanHost !== finalCleanHost && !isSubdomainRedirect) {
+        console.warn(
+          `[Targeted-Discovery] Cross-Domain Redirect blocked: ${originalCleanHost} -> ${finalCleanHost}`,
+        );
+
         await prisma.newsSource.update({
           where: { id: source.id },
-          data: { rssStatus: 'DOMAIN_DEAD' }
+          data: { rssStatus: "DOMAIN_DEAD" },
         });
         continue; // Ugrás a következő forrásra
       }
 
       // 2. PAJZS: Soft WAF / Paywall csapda (Hibát dobunk, hogy a catch blokk FAILED-re tegye)
-      const isWafTrap = WAF_AND_PAYWALL_PATTERNS.some(pattern => 
-        finalUrlObj.pathname.toLowerCase().includes(pattern)
+      const isWafTrap = WAF_AND_PAYWALL_PATTERNS.some((pattern) =>
+        finalUrlObj.pathname.toLowerCase().includes(pattern),
       );
 
       if (isWafTrap) {
-         console.warn(`[Targeted-Discovery] Soft WAF/Paywall Trap detected on ${originalCleanHost}. Path: ${finalUrlObj.pathname}`);
-         throw new Error(`WAF_BLOCKED_REDIRECT`);
+        console.warn(
+          `[Targeted-Discovery] Soft WAF/Paywall Trap detected on ${originalCleanHost}. Path: ${finalUrlObj.pathname}`,
+        );
+        throw new Error(`WAF_BLOCKED_REDIRECT`);
       }
 
       const html = await response.text();
@@ -149,15 +210,20 @@ export async function executeTargetedDiscovery(
       );
     } catch (error: any) {
       // 2. Graceful Logging for Firewalls
-      if (error.message.includes('WAF_BLOCKED')) {
-        console.warn(`[Targeted-Discovery][Blocked] Firewall prevented scanning of "${source.frontPageUrl}". Marking as FAILED.`);
+      if (error.message.includes("WAF_BLOCKED")) {
+        console.warn(
+          `[Targeted-Discovery][Blocked] Firewall prevented scanning of "${source.frontPageUrl}". Marking as FAILED.`,
+        );
       } else {
-        console.error(`[Targeted-Discovery][Error] Critical failure scanning "${source.frontPageUrl}":`, error.message);
+        console.error(
+          `[Targeted-Discovery][Error] Critical failure scanning "${source.frontPageUrl}":`,
+          error.message,
+        );
       }
-      
+
       await prisma.newsSource.update({
         where: { id: source.id },
-        data: { rssStatus: 'FAILED' } // Safe fallback
+        data: { rssStatus: "FAILED" }, // Safe fallback
       });
     }
   }

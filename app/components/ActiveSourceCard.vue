@@ -13,7 +13,15 @@
         class="font-label text-xs text-on-surface-variant flex items-center gap-2 pb-1"
         v-if="getFullBreadcrumb(source.url)"
       >
-        URL: {{ getFullBreadcrumb(source.url) }}
+        <span>URL:</span>
+        <a 
+          :href="source.url" 
+          target="_blank" 
+          rel="noopener noreferrer"
+          class="hover:text-[#00E5FF] transition-colors underline decoration-on-surface-variant/30 underline-offset-2 hover:decoration-[#00E5FF]/50"
+        >
+          {{ getFullBreadcrumb(source.url) }}
+        </a>
       </p>
 
       <div class="flex flex-wrap gap-2 mt-3">
@@ -87,9 +95,12 @@ const getFullBreadcrumb = (url: string) => {
     const domain = parsedUrl.hostname.replace(/^www\./, "");
     const path = parsedUrl.pathname.replace(/^\/|\/$/g, "");
     if (!path) return domain;
-    return `${domain} > ${path.replace(/\//g, " > ")}`;
-  } catch {
-    return "";
+    
+    // Safely replacing the internal path slashes with spaced slashes, 
+    // and appending it to the domain with a spaced slash.
+    return `${domain} / ${path.replace(/\//g, " / ")}`;
+  } catch { 
+    return ""; 
   }
 };
 

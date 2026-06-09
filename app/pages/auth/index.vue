@@ -428,6 +428,12 @@ const password = ref("");
 const emailError = ref("");
 const passwordError = ref("");
 
+// Helper a backend/store hibaüzenetek dinamikus fordításához
+const parseApiMessage = (msg: string | null | undefined, fallbackText: string) => {
+  if (!msg) return fallbackText;
+  return msg.startsWith('api_errors.') ? t(msg) : msg; 
+};
+
 /** ANCHOR VALIDATION */
 const validateEmailField = () => {
   if (!email.value) {
@@ -437,7 +443,7 @@ const validateEmailField = () => {
   const regex =
     /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
   if (!regex.test(email.value)) {
-    emailError.value = "Invalid identity format.";
+    emailError.value = t("auth.validation.invalid_email");
     return false;
   }
   emailError.value = "";
@@ -548,8 +554,10 @@ const handleAuth = async () => {
       resetSuccessMessage.value = response.message;
       emailError.value = "";
     } catch (error: any) {
-      emailError.value =
-        error.data?.statusMessage || "Failed to process request.";
+      emailError.value = parseApiMessage(
+        error.response?._data?.normalizedMessage || error.data?.statusMessage,
+        t("auth.errors.request_failed")
+      );
     } finally {
       isLoading.value = false;
     }
@@ -586,7 +594,10 @@ const handleAuth = async () => {
       );
       return navigateTo(verifyRoute);
     } else {
-      emailError.value = authStore.authError || "An unexpected error occurred.";
+      emailError.value = parseApiMessage(
+        authStore.authError,
+        t("auth.errors.registration_failed")
+      );
       isLoading.value = false;
       showForgotButton.value = true;
     }
@@ -636,7 +647,7 @@ const handleAuth = async () => {
         return navigateTo(verifyRoute);
       }
 
-      emailError.value = authStore.authError || "Authentication failure.";
+      emailError.value = parseApiMessage(authStore.authError, t("auth.errors.auth_failure"));
       showForgotButton.value = true;
       isLoading.value = false;
     }
@@ -664,13 +675,11 @@ const handleOAuth = async (provider: string) => {
       const googleId = config.public.googleClientId;
 
       if (!googleId) {
-        throw new Error("Configuration Error: Google Client ID is missing.");
+       throw new Error(t("auth.errors.oauth_missing_id"));
       }
 
       if (!(window as any).google?.accounts?.oauth2) {
-        throw new Error(
-          "Handshake failed: Identity provider not initialized yet.",
-        );
+        throw new Error(t("auth.errors.oauth_not_init"));
       }
 
       const client = (window as any).google.accounts.oauth2.initTokenClient({
@@ -681,7 +690,7 @@ const handleOAuth = async (provider: string) => {
           if (response.error) {
             isLoading.value = false;
             if (response.error === "access_denied") {
-              emailError.value = "Authentication cancelled by user.";
+              emailError.value = t("auth.errors.oauth_cancelled");
               return;
             }
             throw new Error(response.error);
@@ -693,8 +702,7 @@ const handleOAuth = async (provider: string) => {
       safetyTimer = setTimeout(() => {
         if (isLoading.value) {
           isLoading.value = false;
-          emailError.value =
-            "The authentication window took too long to respond. Please try again.";
+          emailError.value = t("auth.errors.oauth_timeout");
           console.warn("OAuth Handshake Timed Out.");
         }
       }, OAUTH_TIMEOUT_MS);
@@ -714,7 +722,7 @@ const handleOAuth = async (provider: string) => {
   } catch (error: any) {
     clearSafetyTimer();
     console.error(`${provider} OAuth Error:`, error);
-    emailError.value = `Failed to authenticate with ${provider}.`;
+    emailError.value = t("auth.errors.oauth_failed", { provider });
     isLoading.value = false;
   }
 };
@@ -756,8 +764,10 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
       return navigateTo(preloaderRoute);
     }
   } else {
-    emailError.value =
-      authStore.authError || `${providerName} handshake failed.`;
+    emailError.value = parseApiMessage(
+      authStore.authError, 
+      t("auth.errors.handshake_failed", { provider: providerName })
+    );
     isLoading.value = false;
   }
 };

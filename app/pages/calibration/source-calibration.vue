@@ -149,6 +149,14 @@ interface SourceItem {
   url: string;
   name: string;
   status: string;
+  language?: string;
+}
+
+interface Badge {
+  label: string;
+  icon: string;
+  classes: string;
+  iconClasses: string;
 }
 
 const navigate = useSovereignNavigate();
@@ -166,9 +174,14 @@ const sourceToDelete = ref<number | null>(null);
 const serverErrorMsg = ref("");
 const saveErrorMsg = ref("");
 
-const domainRegex = /^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$/;
+const domainRegex = /^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?(\?[^\s]*)?$/;
 const isValidUrl = computed(() => domainRegex.test(urlInput.value.trim()));
 const showUrlError = computed(() => (urlInput.value.trim() !== "" && !isValidUrl.value) || serverErrorMsg.value !== "");
+
+const parseApiMessage = (msg: string | undefined, fallbackText: string) => {
+  if (!msg) return fallbackText;
+  return msg.startsWith('api_errors.') ? t(msg) : msg;
+};
 
 const goBackToRegion = async () => {
   if (isSaving.value || isAdding.value) return;
@@ -199,7 +212,7 @@ const addSource = async () => {
     // DB Ellenőrző hívás az új végpontra
     const response = await $api<any>("/api/util/check-source", {
       method: "POST",
-      body: { url: targetUrl },
+      body: { url: targetUrl, language: authStore.user?.preferredLanguage || 'en' },
     });
 
     if (response.success) {
@@ -207,14 +220,28 @@ const addSource = async () => {
       sources.value.unshift({
         url: response.url,
         name: response.name,
-        status: response.status
+        status: response.status,
+        language: response.language
+
       });
       urlInput.value = "";
     } else {
-      serverErrorMsg.value = response.message || t("sourceCalibration.errors.invalid");
+      // Ha az $api wrapper 200 OK-t ad vissza, de "success: false" állapotú belső üzletilogikával:
+      serverErrorMsg.value = parseApiMessage(
+        response.message || response.statusMessage, 
+        t("sourceCalibration.errors.invalid")
+      );
     }
-  } catch (err) {
-    serverErrorMsg.value = t("sourceCalibration.errors.network");
+  }catch (err: any) {
+    console.error("Nuxt 4 Calibration Intercepted Error:", err);
+    
+    // Tiszta kiolvasás az api.ts által normalizált objektumból, hálózati fallback-kel
+    serverErrorMsg.value = 
+      parseApiMessage(
+        err.response?._data?.normalizedMessage, 
+        t("sourceCalibration.errors.network")
+      );
+      
   } finally {
     isAdding.value = false;
   }
@@ -241,13 +268,17 @@ const saveAndContinue = async () => {
   saveErrorMsg.value = "";
 
   try {
-    // Visszaalakítjuk egyszerű string tömbbé a Store és a finalize-onboarding.post.ts számára
-    const urlArray = sources.value.map(s => s.url);
-    agentStore.topSources = urlArray;
+    // 3. RICH PAYLOAD: Map to objects containing both URL and Language
+    const sourcesPayload = sources.value.map(s => ({
+      url: s.url,
+      language: s.language || 'en'
+    }));
+    
+    agentStore.topSources = sourcesPayload as any;
 
     if (authStore.user) {
       authStore.user.onboardingStep = 2;
-      authStore.user.topSources = urlArray; 
+      authStore.user.topSources = sourcesPayload as any; 
 
       if (!import.meta.server) {
         localStorage.setItem("nusift_pwa_profile", JSON.stringify(authStore.user));
@@ -262,12 +293,18 @@ const saveAndContinue = async () => {
 };
 
 // --- SEGÉDFÜGGVÉNYEK A UI-HOZ ---
-
+// UI Helper functions (getPath, getBadges) remain exactly the same ...
 const getPath = (url: string) => {
+  if (!url) return ''; // JAVÍTÁS: Biztonsági ellenőrzés üres bemenetre
   try {
-    const path = new URL(url).pathname;
-    return path === '/' ? '' : path.substring(1).replace(/\//g, ' > ');
-  } catch { return ''; }
+    const parsedUrl = new URL(url);
+    const path = parsedUrl.pathname;
+    // JAVÍTÁS: Csak akkor csinálunk string műveleteket, ha a path biztosan létezik
+    if (!path || path === '/') return ''; 
+    return path.substring(1).replace(/\//g, ' > ');
+  } catch { 
+    return ''; 
+  }
 };
 
 const getBadges = (status: string) => {
@@ -275,7 +312,6 @@ const getBadges = (status: string) => {
 
   switch(status) {
     case 'ACTIVE':
-      // Changed $t to t
       badges.push({ label: t("sourceCalibration.badges.verified"), icon: 'verified_user', classes: 'bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]', iconClasses: '' });
       badges.push({ label: t("sourceCalibration.badges.rss_fast"), icon: 'bolt', classes: 'bg-[#00363d]/40 text-neon-cyan outline-[#00363d]', iconClasses: '' });
       break;
@@ -284,9 +320,14 @@ const getBadges = (status: string) => {
       badges.push({ label: t("sourceCalibration.badges.pending"), icon: 'hourglass_empty', classes: 'bg-[#3a3002]/40 text-tertiary-fixed outline-[#3a3002]', iconClasses: 'animate-spin-slow' });
       break;
     case 'NO_RSS_FOUND':
-    case 'FAILED':
+      // A NO_RSS_FOUND egy valid, de lassabb direkt mászó státusz
       badges.push({ label: t("sourceCalibration.badges.verified"), icon: 'verified_user', classes: 'bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]', iconClasses: '' });
       badges.push({ label: t("sourceCalibration.badges.direct_crawl"), icon: 'public', classes: 'bg-surface-variant/50 text-on-surface-variant outline-outline-variant', iconClasses: '' });
+      break;
+    case 'FAILED':
+    case 'DOMAIN_DEAD': // DOMAIN_DEAD státusz hozzáadása
+      // Ha hibás vagy halott a domain, azt pirossal jelezzük
+      badges.push({ label: t("sourceCalibration.badges.error") || "Error", icon: 'error', classes: 'bg-error/20 text-error outline-error/40', iconClasses: '' });
       break;
   }
   return badges;

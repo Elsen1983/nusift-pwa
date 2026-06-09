@@ -14,7 +14,7 @@ interface UserProfile {
   createdAt?: string;
   primaryRegion: string | null;
   preferredLanguage?: string;
-  topSources: any[];
+  topSources: Array<{url: string, language?: string} | string>;
   topInterests: any;
   tier: string;
 }

@@ -14,8 +14,12 @@
           <div class="w-14 h-14 bg-[#201f1f] rounded-full flex items-center justify-center mb-4 border border-[#40484a]/20 shadow-inner">
             <span class="material-symbols-outlined text-[28px] text-[#9ecfd8]" :style="{ fontVariationSettings: '\'FILL\' 1' }">tune</span>
           </div>
-          <h3 class="font-headline text-[#e5e2e1] font-bold text-lg mb-2 leading-tight">Personal Rating</h3>
-          <p class="text-xs font-body text-[#c0c8ca] leading-relaxed mb-6">Adjusting this rating will directly influence your AI agent's future curation logic for this topic.</p>
+          <h3 class="font-headline text-[#e5e2e1] font-bold text-lg mb-2 leading-tight">
+            {{ t('personalRatingModal.title') }}
+          </h3>
+          <p class="text-xs font-body text-[#c0c8ca] leading-relaxed mb-6">
+            {{ t('personalRatingModal.description') }}
+          </p>
           
           <div class="w-full flex flex-col items-center mb-5">
             <span class="text-3xl font-headline font-bold text-[#00E5FF] mb-4">{{ localScore }}/10</span>
@@ -32,7 +36,7 @@
           </div>
           
           <div :class="['text-[#00E5FF] text-[10px] font-label font-bold tracking-wider uppercase h-4 mb-2 transition-opacity', isSaving ? 'opacity-100' : 'opacity-0']">
-            Saving preference...
+            {{ t('personalRatingModal.saving') }}
           </div>
           
           <div class="flex flex-col gap-3 w-full">
@@ -41,10 +45,10 @@
               :disabled="!isChanged || isSaving" 
               class="w-full h-11 bg-gradient-to-r from-[#c3f5ff] to-[#00e5ff] text-[#131313] font-bold rounded-xl text-xs uppercase tracking-wider transition-all active:scale-95 shadow-[0_4px_12px_rgba(0,229,255,0.2)] disabled:opacity-50 disabled:grayscale disabled:cursor-not-allowed disabled:active:scale-100"
             >
-              Confirm Rating
+              {{ t('personalRatingModal.btn_confirm') }}
             </button>
             <button @click="close" :disabled="isSaving" class="mt-1 text-[10px] font-label text-[#c0c8ca]/70 hover:text-[#e5e2e1] transition-colors py-2 uppercase tracking-wider font-bold">
-              Cancel
+              {{ t('personalRatingModal.btn_cancel') }}
             </button>
           </div>
         </div>
@@ -55,6 +59,10 @@
 
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue';
+import { useI18n } from 'vue-i18n';
+
+// i18n inicializálása
+const { t } = useI18n();
 
 const props = defineProps<{
   modelValue: boolean;

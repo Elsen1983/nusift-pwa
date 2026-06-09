@@ -263,7 +263,7 @@ const finalizeOnboarding = async () => {
       navigate.replace("/initialization-preloader-page");
     
   } catch (error) {
-    console.error("Hiba az onboarding véglegesítése során:", error);
+    console.error("Error during onboarding process:", error);
     isInitializing.value = false;
   }
 };

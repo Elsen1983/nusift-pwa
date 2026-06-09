@@ -70,6 +70,12 @@ export default {
         body: ["Manrope", "sans-serif"],
         label: ["Inter", "sans-serif"],
       },
+      // fontFamily: {
+      //   // Mostantól a font-rajdhani osztályt is használhatod, 
+      //   // de ha a 'body'-t erre akarod cserélni:
+      //   body: ['Rajdhani', 'sans-serif'],
+      //   headline: ['Rajdhani', 'sans-serif'],
+      // },
     },
   },
   plugins: [],

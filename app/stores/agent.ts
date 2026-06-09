@@ -16,7 +16,7 @@ export const useAgentStore = defineStore("agent", {
     // ANCHOR ONBOARDING DATA STORAGE
     primaryRegion: null as string | null, // Új mező a régiónak
     regionalWhitelist: [] as string[],
-    topSources: [] as string[],
+    topSources: [] as Array<{url: string, language?: string} | string>,
     topInterests: [] as UserInterest[],
 
     // Központosított preferenciák (Súlyozott adatok)

@@ -204,7 +204,8 @@
             "rss_fast": "RSS Fast-Sync",
             "unknown": "Unknown Source",
             "pending": "Pending AI Scan",
-            "direct_crawl": "AI Deep Scan"
+            "direct_crawl": "AI Deep Scan",
+            "error": "Connection Error"
         },
         "errors": {
             "duplicate": "This source is already in your monitoring list.",
@@ -348,7 +349,13 @@
         "paywall_title": "Continue Reading on Publisher's Site",
         "btn_browser": "Open in Browser"
     },
-    "personalRatingModal": {},
+    "personalRatingModal": {
+        "title": "Personal Rating",
+        "description": "Adjusting this rating will directly influence your AI agent's future curation logic for this topic.",
+        "saving": "Saving preference...",
+        "btn_confirm": "Confirm Rating",
+        "btn_cancel": "Cancel"
+    },
     "notInterestedModal": {},
     "readLaterModal": {},
     "saveFavouriteModal": {},
@@ -510,5 +517,11 @@
         "description": "Are you sure you want to end your secure session? Any unsaved agent configurations or calibration data might be lost.",
         "btn_cancel": "Cancel",
         "btn_terminate": "Quit"
+    },
+    "api_errors": {
+      "missing_url": "URL parameter is required.",
+      "article_detected": "Please provide a publisher's main page or category (e.g., techcrunch.com/startups), not a specific article link.",
+      "soft_404": "The page loaded successfully, but its content indicates it no longer exists (404 / Not Found).",
+      "invalid_domain": "Invalid or unreachable domain."
     }
 }

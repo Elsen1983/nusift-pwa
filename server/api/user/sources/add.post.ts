@@ -34,7 +34,8 @@ export default defineEventHandler(async (event) => {
   }
 
   const userId = decodedToken.userId;
-  const { url, name } = await readBody(event);
+  // ÚJ: A frontendnek küldenie kell a check-source által visszaadott 'detectedLanguage'-t (itt 'language'-ként fogadjuk)
+  const { url, name, language: sourceLanguage } = await readBody(event);
 
   if (!url) {
     throw createError({
@@ -43,6 +44,9 @@ export default defineEventHandler(async (event) => {
       message: "Az URL megadása kötelező.",
     });
   }
+
+  // A forrás nyelve, ha nem jött a frontendről, akkor alapértelmezetten 'en'
+  const finalLanguage = sourceLanguage || 'en';
 
   try {
     // 2. STORAGE LIMIT (Max 50 total)
@@ -61,8 +65,9 @@ export default defineEventHandler(async (event) => {
     // 3. ACTIVATION QUOTA (5 or 15 active - Hierarchical Filter Sync)
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { tier: true },
+      select: { tier: true }, // CORRECTED: Removed preferredLanguage
     });
+
     const maxActiveLimit = user?.tier === "PRO" ? 15 : 5;
 
     const rootSubscriptions = await prisma.userSourceSubscription.findMany({
@@ -106,7 +111,7 @@ export default defineEventHandler(async (event) => {
 
     const shouldBeActive = activeRoots + activeCats < maxActiveLimit;
 
-    // 4. NewsSource & Category Normalization & Deduplication (Teljeskörű Ellenőrzés)
+    // 4. NewsSource & Category Normalization & Deduplication
     const urlObj = new URL(url);
     const cleanIncomingHostname = urlObj.hostname
       .replace(/^www\./, "")
@@ -116,7 +121,8 @@ export default defineEventHandler(async (event) => {
     // 4.A Keresés a Főoldalak (NewsSource) között
     const potentialRootMatches = await prisma.newsSource.findMany({
       where: {
-        frontPageUrl: { contains: cleanIncomingHostname, mode: "insensitive" },
+        frontPageUrl: { contains: cleanIncomingHostname, mode: "insensitive" }
+        // CORRECTED: Removed language filtering entirely to allow deduplication
       },
     });
 
@@ -138,7 +144,7 @@ export default defineEventHandler(async (event) => {
       where: {
         pathUrl: { contains: cleanIncomingHostname, mode: "insensitive" },
       },
-      include: { newsSource: true }, // Szükségünk van a szülőre is
+      include: { newsSource: true }, 
     });
 
     const existingCategory = potentialCategoryMatches.find((dbCat) => {
@@ -158,10 +164,7 @@ export default defineEventHandler(async (event) => {
 
     // 5. UPSERT (Összekötés a megfelelő entitással)
     if (existingCategory) {
-      // ESET 1: A link már létezik a kategóriák között (pl. wexfordpeople)
-      console.log(
-        `[Source-Manager] Linked to existing CATEGORY: ${existingCategory.id}`,
-      );
+      console.log(`[Source-Manager] Linked to existing CATEGORY: ${existingCategory.id}`);
 
       await prisma.userCategorySubscription.upsert({
         where: {
@@ -175,10 +178,7 @@ export default defineEventHandler(async (event) => {
         update: { isActive: shouldBeActive },
       });
     } else if (existingRoot) {
-      // ESET 2: A link már létezik a főoldalak között
-      console.log(
-        `[Source-Manager] Linked to existing ROOT source: ${existingRoot.id}`,
-      );
+      console.log(`[Source-Manager] Linked to existing ROOT source: ${existingRoot.id}`);
 
       await prisma.userSourceSubscription.upsert({
         where: { userId_sourceId: { userId, sourceId: existingRoot.id } },
@@ -187,32 +187,29 @@ export default defineEventHandler(async (event) => {
       });
     } else {
       // ESET 3: Teljesen ismeretlen link.
-      // 1. Megtisztítjuk a szülőt a path-tól
       const pureRootUrl = `${urlObj.protocol}//${urlObj.hostname}`;
       const path = urlObj.pathname;
 
-      // 2. Mindenképp létrehozzuk a tiszta szülőt (Root) a NewsSource táblában
-      const newRoot = await prisma.newsSource.create({
-        data: {
+      // CORRECTED: Switched from .create to .upsert to prevent 500 crashes
+      const newRoot = await prisma.newsSource.upsert({
+        where: { frontPageUrl: pureRootUrl },
+        create: {
           frontPageUrl: pureRootUrl,
           mediaName: name || cleanIncomingHostname,
           rssStatus: "PENDING_DISCOVERY",
+          language: finalLanguage, // CORRECTED: Uses the true detected language
         },
+        update: {} 
       });
-      console.log(
-        `[Source-Manager] Created completely new ROOT: ${newRoot.frontPageUrl}`,
-      );
+      console.log(`[Source-Manager] Created completely new ROOT: ${newRoot.frontPageUrl}`);
 
-      // 3. Eldöntjük, hogy a user egy tiszta főoldalt, vagy egy kategóriát kért-e
       if (path === "/" || path === "") {
-        // Ha csak egy főoldal (pl. telex.hu), akkor magához a Root-hoz kötjük
         await prisma.userSourceSubscription.upsert({
           where: { userId_sourceId: { userId, sourceId: newRoot.id } },
           create: { userId, sourceId: newRoot.id, isActive: shouldBeActive },
           update: { isActive: shouldBeActive },
         });
       } else {
-        // Ha van belső útvonal (pl. telex.hu/sport), létrehozzuk a kategóriát a friss szülő alá
         const newCat = await prisma.sourceCategory.create({
           data: {
             newsSourceId: newRoot.id,
@@ -223,25 +220,18 @@ export default defineEventHandler(async (event) => {
           },
         });
 
-        // A usert a friss KATEGÓRIÁHOZ kötjük, nem a szülőhöz!
         await prisma.userCategorySubscription.upsert({
           where: { userId_categoryId: { userId, categoryId: newCat.id } },
           create: { userId, categoryId: newCat.id, isActive: shouldBeActive },
           update: { isActive: shouldBeActive },
         });
-        console.log(
-          `[Source-Manager] Created completely new CATEGORY: ${newCat.pathUrl}`,
-        );
+        console.log(`[Source-Manager] Created completely new CATEGORY: ${newCat.pathUrl}`);
       }
 
       needsDiscovery = true;
 
-      // 6. TRIGGER TARGETED DISCOVERY (Csak teljesen új forrás esetén indul el!)
-      console.log(
-        `[Source-Manager] Dispatching background agent for new source...`,
-      );
+      console.log(`[Source-Manager] Dispatching background agent for new source...`);
       event.waitUntil(
-        // A szkennernek a Root ID-t küldjük, hogy onnan indítsa a feltérképezést
         executeTargetedDiscovery([newRoot.id]).catch((err) =>
           console.error("[Source-Manager] Discovery failed:", err),
         ),

@@ -255,7 +255,10 @@
             <h3
               class="font-headline text-[16px] font-bold text-white flex items-center gap-2"
             >
-              <span class="material-symbols-outlined text-xxl text-on-surface-variant">visibility_off</span>
+              <span
+                class="material-symbols-outlined text-xxl text-on-surface-variant"
+                >visibility_off</span
+              >
               {{ $t("sourceManager.suspended_zone.title") }}
             </h3>
             <div class="flex items-center gap-3">
@@ -336,7 +339,9 @@
             <h2
               class="font-headline text-[16px] font-bold text-white flex items-center gap-2"
             >
-            <span class="material-symbols-outlined text-xxl text-warning">visibility_lock</span>
+              <span class="material-symbols-outlined text-xxl text-warning"
+                >visibility_lock</span
+              >
               {{ $t("sourceManager.restricted_zone.title") }}
             </h2>
             <div class="flex items-center gap-3">
@@ -379,7 +384,6 @@
           </div>
         </div>
       </section>
-
     </main>
   </div>
 </template>
@@ -391,6 +395,13 @@ import { useAgentStore } from "~/stores/agent";
 import { useAuthStore } from "~/stores/auth";
 
 definePageMeta({ layout: "app-layout" });
+
+interface SourceItem {
+  url: string;
+  name: string;
+  status: string;
+  language: string; // <-- Ezt eddig eldobtuk
+}
 
 const { t } = useI18n();
 const agentStore = useAgentStore();
@@ -415,7 +426,7 @@ const quota = ref({
 
 // --- COMPUTED ---
 const domainRegex =
-  /^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$/;
+  /^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?(\?[^\s]*)?$/;
 const isValidUrl = computed(() => {
   if (!newSourceUrl.value) return true;
   return domainRegex.test(newSourceUrl.value.trim());
@@ -426,11 +437,13 @@ const restrictedSources = computed(() => {
   return sources.value
     .filter(
       (s) =>
-        s.validationStatus === "FAILED" || s.validationStatus === "DOMAIN_DEAD",
+        s.validationStatus === "FAILED" ||
+        s.validationStatus === "DOMAIN_DEAD"
     )
     .sort((a, b) => {
-      const nameA = (a.name || getDomain(a.url)).toLowerCase();
-      const nameB = (b.name || getDomain(b.url)).toLowerCase();
+      // JAVÍTÁS: Safe string fallback a toLowerCase() előtt
+      const nameA = (a.name || getDomain(a?.url || "")).toLowerCase();
+      const nameB = (b.name || getDomain(b?.url || "")).toLowerCase();
       return nameA.localeCompare(nameB);
     });
 });
@@ -444,11 +457,12 @@ const activeSources = computed(() => {
       (s) =>
         s.isActive &&
         s.validationStatus !== "FAILED" &&
-        s.validationStatus !== "DOMAIN_DEAD",
+        s.validationStatus !== "DOMAIN_DEAD"
     )
     .sort((a, b) => {
-      const nameA = (a.name || getDomain(a.url)).toLowerCase();
-      const nameB = (b.name || getDomain(b.url)).toLowerCase();
+      // JAVÍTÁS: Safe string fallback
+      const nameA = (a.name || getDomain(a?.url || "")).toLowerCase();
+      const nameB = (b.name || getDomain(b?.url || "")).toLowerCase();
       return nameA.localeCompare(nameB);
     })
     .slice(0, 15);
@@ -460,11 +474,12 @@ const suspendedSources = computed(() => {
       (s) =>
         !s.isActive &&
         s.validationStatus !== "FAILED" &&
-        s.validationStatus !== "DOMAIN_DEAD",
+        s.validationStatus !== "DOMAIN_DEAD"
     )
     .sort((a, b) => {
-      const nameA = (a.name || getDomain(a.url)).toLowerCase();
-      const nameB = (b.name || getDomain(b.url)).toLowerCase();
+      // JAVÍTÁS: Safe string fallback
+      const nameA = (a.name || getDomain(a?.url || "")).toLowerCase();
+      const nameB = (b.name || getDomain(b?.url || "")).toLowerCase();
       return nameA.localeCompare(nameB);
     });
 });
@@ -481,6 +496,14 @@ const progressPercentage = computed(() => {
   return Math.min((currentActive / currentLimit) * 100, 100);
 });
 
+
+// Helper a backendről érkező üzenetek dinamikus fordításához
+const parseApiMessage = (msg: string | undefined, fallbackText: string) => {
+  if (!msg) return fallbackText;
+  // Ha a string a mi API hibakulcsunkkal kezdődik, lefordítjuk, különben kiírjuk nyersen
+  return msg.startsWith('api_errors.') ? t(msg) : msg;
+};
+
 // --- METHODS ---
 
 onMounted(async () => {
@@ -489,7 +512,7 @@ onMounted(async () => {
 
 const fetchSourceData = async () => {
   try {
-    const response: any = await $fetch("/api/user/sources");
+    const response = await $api<any>("/api/user/sources");
 
     if (response && response.success) {
       // 1. Update local component UI state
@@ -519,8 +542,9 @@ const fetchSourceData = async () => {
     }
   } catch (error: any) {
     console.error("Failed to load sources", error);
+    // Tiszta kiolvasás az api.ts normalizációjából
     showToast(
-      error?.data?.statusMessage ||
+      error.response?._data?.normalizedMessage ||
         t("sourceManager.toasts.fetch_network_error"),
       "error",
     );
@@ -543,34 +567,39 @@ const addNewSource = async () => {
   isProcessing.value = true;
 
   try {
-    const checkResponse = await $fetch<any>("/api/util/check-source", {
+    const checkResponse = await $api<any>("/api/util/check-source", {
       method: "POST",
-      body: { url: targetUrl },
+      body: {
+        url: targetUrl,
+        language: authStore.user?.preferredLanguage || "en",
+      },
     });
 
     if (!checkResponse.success) {
-      showToast(
-        checkResponse.message || t("sourceManager.toasts.invalid_domain"),
-        "error",
-      );
+      const errorText = parseApiMessage(checkResponse.message, t("sourceManager.toasts.invalid_domain"));
+      showToast(errorText, "error");
       isProcessing.value = false;
       return;
     }
 
-    const response: any = await $fetch("/api/user/sources/add", {
+    const response = await $api<any>("/api/user/sources/add", {
       method: "POST",
       body: {
         url: checkResponse.url,
         name: checkResponse.name,
         validationStatus: checkResponse.status,
+        language: checkResponse.detectedLanguage,
       },
     });
 
     if (response.success) {
       // 1. Intercept Restricted Domains
-      if (checkResponse.status === 'FAILED' || checkResponse.status === 'DOMAIN_DEAD') {
+      if (
+        checkResponse.status === "FAILED" ||
+        checkResponse.status === "DOMAIN_DEAD"
+      ) {
         showToast(t("sourceManager.toasts.add_restricted"), "warning");
-      } 
+      }
       // 2. Handle Normal Activated Domains
       else if (response.activated) {
         showToast(
@@ -578,7 +607,7 @@ const addNewSource = async () => {
           t("sourceManager.toasts.add_success") || response.message,
           "success",
         );
-      } 
+      }
       // 3. Handle Normal Suspended Domains (Quota Full)
       else {
         showToast(
@@ -591,11 +620,15 @@ const addNewSource = async () => {
       await fetchSourceData();
     }
   } catch (error: any) {
-    console.error(error);
-    showToast(
-      error.data?.statusMessage || t("sourceManager.toasts.add_failed"),
-      "error",
+    console.error("Nuxt 4 Global Intercepted Error:", error);
+
+    // Tiszta kiolvasás az api.ts által normalizált objektumból
+    const errorMessage = parseApiMessage(
+      error.response?._data?.normalizedMessage, 
+      t("sourceManager.toasts.add_failed")
     );
+
+    showToast(errorMessage, "error");
   } finally {
     isProcessing.value = false;
   }
@@ -606,7 +639,7 @@ const toggleSourceState = async (id: string, activate: boolean) => {
 
   isProcessing.value = true;
   try {
-    const response: any = await $fetch("/api/user/sources/toggle", {
+    const response = await $api<any>("/api/user/sources/toggle", {
       method: "PUT",
       body: { sourceId: id, isActive: activate },
     });
@@ -616,10 +649,11 @@ const toggleSourceState = async (id: string, activate: boolean) => {
     }
   } catch (error: any) {
     console.error("Failed to toggle state", error);
-    showToast(
-      error.data?.statusMessage || t("sourceManager.toasts.toggle_failed"),
-      "error",
+    const errorMessage = parseApiMessage(
+      error.response?._data?.normalizedMessage, 
+      t("sourceManager.toasts.toggle_failed")
     );
+    showToast(errorMessage, "error");
   } finally {
     isProcessing.value = false;
   }
@@ -628,7 +662,7 @@ const toggleSourceState = async (id: string, activate: boolean) => {
 const deleteSource = async (id: string) => {
   isProcessing.value = true;
   try {
-    const response: any = await $fetch(`/api/user/sources/${id}`, {
+    const response = await $api<any>(`/api/user/sources/${id}`, {
       method: "DELETE",
     });
 
@@ -638,7 +672,8 @@ const deleteSource = async (id: string) => {
   } catch (error: any) {
     console.error("Failed to delete source", error);
     showToast(
-      error.data?.statusMessage || t("sourceManager.toasts.delete_failed"),
+      error.response?._data?.normalizedMessage ||
+        t("sourceManager.toasts.delete_failed"),
       "error",
     );
   } finally {
@@ -653,7 +688,7 @@ const triggerReDiscovery = async (url: string) => {
   showToast(t("sourceManager.toasts.discovery_init"), "warning");
 
   try {
-    const response: any = await $fetch("/api/util/verify-source", {
+    const response = await $api<any>("/api/util/verify-source", {
       method: "POST",
       body: { url },
     });
@@ -669,7 +704,11 @@ const triggerReDiscovery = async (url: string) => {
     }
   } catch (error: any) {
     console.error("Re-Discovery error:", error);
-    showToast(t("sourceManager.toasts.discovery_error"), "error");
+    showToast(
+      error.response?._data?.normalizedMessage ||
+        t("sourceManager.toasts.discovery_error"),
+      "error",
+    );
   } finally {
     isProcessing.value = false;
   }
@@ -685,6 +724,7 @@ const showToast = (message: string, type: "success" | "warning" | "error") => {
 };
 
 const getDomain = (url: string) => {
+  if (!url) return "Ismeretlen Forrás"; // JAVÍTÁS: Ha nincs URL, ne dobjon hibát
   try {
     return new URL(url).hostname.replace(/^www\./, "");
   } catch {

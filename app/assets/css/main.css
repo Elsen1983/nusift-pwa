@@ -1,0 +1,12 @@
+/* assets/css/main.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 400; /* A fájlod neve 'regular'-t tartalmaz, tehát ez 400-as súly */
+  font-display: swap;
+  src: url('/fonts/rajdhani-v17-latin-regular.woff2') format('woff2');
+}
