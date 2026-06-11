@@ -105,6 +105,7 @@
                 :chips="cat.chips"
                 :theme-color="cat.themeColor"
                 :is-new="cat.isNew"
+                :user-tier="cat.userTier"
                 :global-save-tick="globalSaveTick"
                 @update="updateCategory"
                 @deactivate="deactivateCategory"
@@ -284,6 +285,7 @@ const mappedActive = computed(() => {
     chips: cat.chips,
     themeColor: cat.color,
     isNew: cat.isNew,
+    userTier: authStore.user?.tier
   }));
 });
 

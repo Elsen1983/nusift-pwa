@@ -3,6 +3,7 @@
  * Handles framework versioning, module integration, SEO metadata,
  * PWA configuration, and the Sovereign-Grade design system tokens.
  */
+import { resolve } from "node:path"
 
 export default defineNuxtConfig({
   // ANCHOR VERSION-COMPATIBILITY
@@ -167,57 +168,57 @@ export default defineNuxtConfig({
         {
           name: "verify-email-custom",
           path: "/verify-email",
-          file: "~/pages/verifyEmail/verify-email.vue",
+          file: resolve("app/pages/verifyEmail/verify-email.vue"),
         },
         {
           name: "verify-custom",
           path: "/verify",
-          file: "~/pages/verifyEmail/verify.vue",
+          file: resolve("app/pages/verifyEmail/verify.vue"),
         },
         {
           name: "preloader-custom",
           path: "/preloader-page",
-          file: "~/pages/preloader/preloader-first.vue",
+          file: resolve("app/pages/preloader/preloader-first.vue"),
         },
         {
           name: "region-calibration-custom",
           path: "/region-calibration",
-          file: "~/pages/calibration/region-calibration.vue",
+          file: resolve("app/pages/calibration/region-calibration.vue"),
         },
         {
           name: "source-calibration-custom",
           path: "/source-calibration",
-          file: "~/pages/calibration/source-calibration.vue",
+          file: resolve("app/pages/calibration/source-calibration.vue"),
         },
         {
           name: "interest-calibration-custom",
           path: "/interest-calibration",
-          file: "~/pages/calibration/interest-calibration.vue",
+          file: resolve("app/pages/calibration/interest-calibration.vue"),
         },
         {
           name: "preloader-custom-two",
           path: "/initialization-preloader-page",
-          file: "~/pages/preloader/preloader-second.vue",
+          file: resolve("app/pages/preloader/preloader-second.vue"),
         },
         {
           name: "dashboard-initiate-custom",
           path: "/dashboard-initiate",
-          file: "~/pages/dashboard/initiate-dashboard.vue",
+          file: resolve("app/pages/dashboard/initiate-dashboard.vue"),
         },
         {
           name: "dashboard-custom",
           path: "/dashboard",
-          file: "~/pages/dashboard/dashboard-main.vue",
+          file: resolve("app/pages/dashboard/dashboard-main.vue"),
         },
         {
           name: "reset-password",
           path: "/reset-password",
-          file: "~/pages/reset-password.vue",
+          file: resolve("app/pages/reset-password.vue"),
         },
         {
           name: "source-manager-custom",
           path: "/audit/source-manager",
-          file: "~/pages/audit/source-manager.vue",
+          file: resolve("app/pages/audit/source-manager.vue"),
         }
       );
     },

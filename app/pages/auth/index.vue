@@ -175,10 +175,9 @@
             <button
               @click="showEmailForm = true"
               type="button"
-              class="flex items-center justify-center w-full bg-surface-container-high hover:bg-surface-container-highest text-on-surface text-xs font-label font-semibold py-3 rounded-xl border border-outline-variant/10 transition-colors shadow-sm active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+              class="flex items-center justify-center w-full bg-surface-container-high hover:bg-surface-container-highest text-on-surface text-xs font-label font-semibold py-3 rounded-xl border border-outline-variant/10 transition-colors shadow-sm active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed gap-2"
             >
-              <span
-                class="material-symbols-outlined w-5 h-5 mr-3 text-xl opacity-80"
+              <span class="material-symbols-outlined text-xl opacity-80"
                 >mail</span
               >
               {{ $t("auth.buttons.continue_email", "Continue with Email") }}
@@ -429,9 +428,12 @@ const emailError = ref("");
 const passwordError = ref("");
 
 // Helper a backend/store hibaüzenetek dinamikus fordításához
-const parseApiMessage = (msg: string | null | undefined, fallbackText: string) => {
+const parseApiMessage = (
+  msg: string | null | undefined,
+  fallbackText: string,
+) => {
   if (!msg) return fallbackText;
-  return msg.startsWith('api_errors.') ? t(msg) : msg; 
+  return msg.startsWith("api_errors.") ? t(msg) : msg;
 };
 
 /** ANCHOR VALIDATION */
@@ -556,7 +558,7 @@ const handleAuth = async () => {
     } catch (error: any) {
       emailError.value = parseApiMessage(
         error.response?._data?.normalizedMessage || error.data?.statusMessage,
-        t("auth.errors.request_failed")
+        t("auth.errors.request_failed"),
       );
     } finally {
       isLoading.value = false;
@@ -578,8 +580,8 @@ const handleAuth = async () => {
       activeLanguage.value,
     );
     if (success) {
-    //   localStorage.setItem("nusift_visited", "true");
-    //   localStorage.setItem("nusift_pending_email", email.value);
+      //   localStorage.setItem("nusift_visited", "true");
+      //   localStorage.setItem("nusift_pending_email", email.value);
 
       const targetLang = activeLanguage.value as AvailableLocales;
       if (locale.value !== targetLang) {
@@ -596,7 +598,7 @@ const handleAuth = async () => {
     } else {
       emailError.value = parseApiMessage(
         authStore.authError,
-        t("auth.errors.registration_failed")
+        t("auth.errors.registration_failed"),
       );
       isLoading.value = false;
       showForgotButton.value = true;
@@ -604,7 +606,7 @@ const handleAuth = async () => {
   } else {
     const success = await authStore.loginIdentity(email.value, password.value);
     if (success) {
-    //   localStorage.setItem("nusift_visited", "true");
+      //   localStorage.setItem("nusift_visited", "true");
 
       const targetLang = (authStore.user?.preferredLanguage ||
         activeLanguage.value) as AvailableLocales;
@@ -647,7 +649,10 @@ const handleAuth = async () => {
         return navigateTo(verifyRoute);
       }
 
-      emailError.value = parseApiMessage(authStore.authError, t("auth.errors.auth_failure"));
+      emailError.value = parseApiMessage(
+        authStore.authError,
+        t("auth.errors.auth_failure"),
+      );
       showForgotButton.value = true;
       isLoading.value = false;
     }
@@ -675,7 +680,7 @@ const handleOAuth = async (provider: string) => {
       const googleId = config.public.googleClientId;
 
       if (!googleId) {
-       throw new Error(t("auth.errors.oauth_missing_id"));
+        throw new Error(t("auth.errors.oauth_missing_id"));
       }
 
       if (!(window as any).google?.accounts?.oauth2) {
@@ -737,7 +742,7 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
   if (success) {
     // Persistent flag for future sessions
     localStorage.setItem("nusift_visited", "true");
-    
+
     // Sync the live reactive state for the current SPA session
     isRegistering.value = false;
 
@@ -765,8 +770,8 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
     }
   } else {
     emailError.value = parseApiMessage(
-      authStore.authError, 
-      t("auth.errors.handshake_failed", { provider: providerName })
+      authStore.authError,
+      t("auth.errors.handshake_failed", { provider: providerName }),
     );
     isLoading.value = false;
   }

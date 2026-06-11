@@ -362,13 +362,18 @@
     "shareModal": {},
     "myProfile": {
         "quota": {
-            "title": "Aktív Források",
-            "of": "/",
             "sources": "Hely",
-            "upgrade": "Csomag frissítése"
+            "of": "/",
+            "upgrade": "Csomag frissítése",
+            "source_type": {
+                "active_title": "Aktív",
+                "suspended_title": "Felfüggesztett",
+                "restricted_title": "Korlátozott"
+            }
         },
         "sections": {
             "impact": "Személyes Hatásvizsgálat",
+            "sources": "Források",
             "account": "Fiók",
             "preference": "Beállítások"
         },

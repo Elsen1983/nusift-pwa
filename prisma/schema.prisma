@@ -8,7 +8,16 @@ datasource db {
   provider = "postgresql"
 }
 
+// ---------------
 // ANCHOR ENUMS
+// ---------------
+enum ConnectionStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  BLOCKED
+}
+
 enum RssStatus {
   ACTIVE
   FAILED
@@ -37,7 +46,11 @@ enum SubscriptionStatus {
   PAST_DUE // Payment failed, in grace period
 }
 
+// ---------------
 // ANCHOR MODELS
+// ---------------
+
+// ANCHOR USERS
 model User {
   id                   String    @id @default(uuid()) // Sovereign ID (UUID v4)
   email                String    @unique
@@ -96,8 +109,12 @@ model User {
   articleRatings        ArticleRating[]
   bookmarks             Bookmark[]
   userReadActivities    UserReadActivity[]
+  // ... existing relations
+  sentRequests          UsersConnection[]          @relation("SentRequests")
+  receivedRequests      UsersConnection[]          @relation("ReceivedRequests")
 }
 
+// ANCHOR USER PROFILE
 model UserProfile {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
@@ -127,6 +144,30 @@ model UserProfile {
   vatNumber String? // Necessary for selling PRO tiers to registered businesses
 }
 
+// ANCHOR USER FRIENDS
+model UsersConnection {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // The user who initiated the friend request
+  requesterId String
+  requester   User   @relation("SentRequests", fields: [requesterId], references: [id], onDelete: Cascade)
+
+  // The user receiving the friend request
+  addresseeId String
+  addressee   User   @relation("ReceivedRequests", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  status ConnectionStatus @default(PENDING)
+
+  // Ensure user A cannot send multiple requests to user B
+  @@unique([requesterId, addresseeId])
+  // Indexes optimized for generating the Social Feed and friend lists quickly
+  @@index([requesterId, status])
+  @@index([addresseeId, status])
+}
+
+// ANCHOR NEWS SOURCES
 model NewsSource {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
@@ -156,14 +197,15 @@ model NewsSource {
   lastRssCheckAt DateTime?
   nextRetryAt    DateTime?
 
-  categories SourceCategory[]
-
+  articles    Article[]
+  categories  SourceCategory[]
   subscribers UserSourceSubscription[]
 
   @@index([continent, countryCode])
   @@index([rssStatus, nextRetryAt])
 }
 
+// ANCHOR SOURCE CATEGORIES
 model SourceCategory {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
@@ -183,14 +225,14 @@ model SourceCategory {
 
   // ÚJ: Kapcsolat a feliratkozók felé (Explicit)
   subscribers UserCategorySubscription[]
+  articles    Article[]
 
   @@unique([newsSourceId, pathUrl])
   @@index([isUserRequested])
   @@index([rssStatus, nextRetryAt])
 }
 
-// --- ÚJ: EXPLICIT KAPCSOLÓTÁBLÁK (Subscription Logic) ---
-
+// ANCHOR SOURCE SUBSCRIPTIONS
 model UserSourceSubscription {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
@@ -212,6 +254,7 @@ model UserSourceSubscription {
   @@index([userId, isActive]) // Gyorsítja a kvóta-számláló API lekérdezéseket
 }
 
+// ANCHOR USER CATEGORY SUBSCRIPTIONS
 model UserCategorySubscription {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
@@ -233,14 +276,17 @@ model UserCategorySubscription {
 // ========================================================
 // DYNAMIC AI ARTICLES & CLIENT RATING INJECTIONS (MOCKUP STAGE)
 // ========================================================
-
+// ANCHOR ARTICLES
 model Article {
-  id        Int      @id @default(autoincrement()) // Numerikus ID a frontend mockup adatokhoz igazodva
-  title     String
-  source    String // Pl. "reuters.com"
-  date      DateTime // Időbélyeg a performáns szűrésekhez (frontend string formázást igényel)
-  score     Int      @default(0)
-  isPaywall Boolean  @default(false)
+  id         Int             @id @default(autoincrement()) // Numerikus ID a frontend mockup adatokhoz igazodva
+  title      String
+  sourceId   String
+  source     NewsSource      @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  categoryId String?
+  category   SourceCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  date       DateTime // Időbélyeg a performáns szűrésekhez (frontend string formázást igényel)
+  score      Int             @default(0)
+  isPaywall  Boolean         @default(false)
 
   // PostgreSQL natív skalár string tömbök (Gyors indexelés, nincs szükség plusz junction táblákra)
   tags    String[]
@@ -254,10 +300,12 @@ model Article {
   ratings   ArticleRating[]
   bookmarks Bookmark[]
 
+  userReadActivities UserReadActivity[]
+
   @@index([date])
 }
 
-// ========================================================
+// ANCHOR ARTICLE RATINGS
 model ArticleRating {
   id        String   @id @default(uuid())
   score     Int
@@ -274,7 +322,7 @@ model ArticleRating {
   @@index([userId])
 }
 
-// ========================================================
+// ANCHOR BOOKMARKS
 model Bookmark {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
@@ -291,7 +339,7 @@ model Bookmark {
   @@unique([userId, articleId])
 }
 
-// ========================================================
+// ANCHOR AGENT SCAN LOGS
 model AgentScanLog {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
@@ -307,7 +355,7 @@ model AgentScanLog {
   errorLog String? @db.Text
 }
 
-// ========================================================
+// ANCHOR USER READ ACTIVITIES
 model UserReadActivity {
   id        String   @id @default(uuid())
   timestamp DateTime @default(now())
@@ -316,6 +364,7 @@ model UserReadActivity {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   articleId Int
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
 
   // Track how they interacted to calculate the "Fatigue" or "Interest" metrics
   actionType  String // "IMPRESSION", "CLICKED", "READ_FULL"

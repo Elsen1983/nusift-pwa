@@ -61,19 +61,43 @@
       </div>
 
       <div class="relative pt-4">
-        <span class="absolute top-0 right-0 text-[10px] font-bold text-on-surface-variant/40 uppercase tracking-widest">
+        <span 
+          class="absolute top-0 right-0 text-[10px] font-bold uppercase tracking-widest transition-colors"
+          :class="isPro ? 'text-on-surface-variant/40' : 'text-[#fec931]/60'"
+        >
           {{ $t('activeCategoryCard.pro_option') }}
         </span>
-        <div class="relative">
+        
+        <div class="relative mt-2">
           <textarea 
             v-model="localPrompt"
             @input="syncToParent"
             maxlength="500"
-            class="w-full bg-surface-container-highest/50 border-none rounded-xl p-2 text-sm font-body text-on-surface focus:ring-1 focus:ring-primary/40 min-h-[65px] resize-none"
-            :placeholder="$t('activeCategoryCard.placeholder')"
+            :disabled="!isPro"
+            :class="[
+              'w-full border-none rounded-xl p-2 text-sm font-body min-h-[65px] resize-none transition-all duration-300',
+              isPro 
+                ? 'bg-surface-container-highest/50 text-on-surface focus:ring-1 focus:ring-primary/40' 
+                : 'bg-[#0c0c0c]/80 text-on-surface-variant/30 opacity-60 cursor-not-allowed placeholder:text-on-surface-variant/20 shadow-inner'
+            ]"
+            :placeholder="isPro ? $t('activeCategoryCard.placeholder') : $t('activeCategoryCard.pro_option')"
           ></textarea>
+
+          <div 
+            v-if="!isPro" 
+            class="absolute inset-0 flex items-center justify-center pointer-events-none"
+          >
+            <span class="material-symbols-outlined text-on-surface-variant/20 text-3xl">
+              lock
+            </span>
+          </div>
         </div>
-        <div class="text-[10px] font-medium text-right pr-1 transition-colors duration-300" :class="localPrompt.length >= 500 ? 'text-red-400 font-bold' : 'text-on-surface-variant/60'">
+
+        <div 
+          v-if="isPro"
+          class="text-[10px] font-medium text-right pr-1 transition-colors duration-300" 
+          :class="localPrompt.length >= 500 ? 'text-red-400 font-bold' : 'text-on-surface-variant/60'"
+        >
           {{ localPrompt.length }}/500
         </div>
       </div>
@@ -116,6 +140,7 @@ const props = defineProps<{
   initialPrompt: string;
   chips: string[];
   isNew?: boolean; 
+  userTier: string | undefined;
   globalSaveTick: number;
 }>();
 
@@ -128,6 +153,8 @@ const isExpanded = ref(false);
 const originalWeight = ref(props.initialWeight);
 const originalPrompt = ref(props.initialPrompt || "");
 const isLocallyNew = ref(props.isNew);
+
+const isPro = computed(() => props.userTier === 'PRO');
 
 const syncToParent = () => {
   emit("update", { id: props.id, weight: localWeight.value, prompt: localPrompt.value });
