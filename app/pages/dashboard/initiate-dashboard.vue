@@ -97,12 +97,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, computed } from "vue";
+import { useAuthStore } from "~/stores/auth";
 import defaultAvatar from "~/assets/images/default_avatar.png";
 
 const isDisabled = ref(true);
 const navigate = useSovereignNavigate();
-const userAvatar = ref(defaultAvatar);
+const authStore = useAuthStore();
+const userAvatar = computed(
+  () => authStore.user?.profile?.avatarUrl || (authStore.user?.profile as any)?.avatar || defaultAvatar,
+);
 const isSifting = ref(false);
 
 const initiateSift = () => {

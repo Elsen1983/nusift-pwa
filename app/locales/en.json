@@ -270,9 +270,13 @@
         },
         "profileMenu": {
             "my_profile": "My Profile",
+            "my_profile_desc": "Personal data and avatar settings",
             "agent_fine_tuning": "Categories Setup",
+            "agent_fine_tuning_desc": "Tune the agent and category preferences",
             "source_manager": "Source Manager",
-            "logout": "Logout"
+            "source_manager_desc": "Manage connected sources",
+            "logout": "Logout",
+            "logout_desc": "End the active session"
         },
         "navigation": {
             "feed": "Feed",

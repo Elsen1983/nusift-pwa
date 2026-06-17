@@ -30,81 +30,96 @@
           </button>
 
           <div
-            class="flex items-center gap-4 relative"
+            class="relative flex items-center gap-4"
             v-click-outside="() => (isProfileMenuOpen = false)"
           >
             <button
               @click="isProfileMenuOpen = !isProfileMenuOpen"
-              class="relative w-10 h-10 rounded-full p-[2px] bg-gradient-to-tr from-[#00E5FF]/20 to-[#00E5FF] active:scale-90 transition-transform shadow-[0_0_15px_rgba(0,229,255,0.2)]"
+              :aria-expanded="isProfileMenuOpen"
+              aria-label="Open app menu"
+              class="menu-trigger relative w-11 h-11 rounded-2xl border border-[#00E5FF]/15 bg-[#171717]/90 backdrop-blur-xl shadow-[0_0_20px_rgba(0,229,255,0.10)] transition-all duration-300 hover:border-[#00E5FF]/35 hover:shadow-[0_0_24px_rgba(0,229,255,0.18)] active:scale-95"
+              :class="isProfileMenuOpen ? 'bg-[#00E5FF]/10 border-[#00E5FF]/40' : ''"
             >
-              <div
-                class="w-full h-full rounded-full bg-[#131313] overflow-hidden"
-              >
-                <img
-                  alt="User Profile"
-                  class="w-full h-full object-cover"
-                  :src="userAvatar"
-                />
-              </div>
+              <span
+                class="absolute inset-0 rounded-2xl bg-gradient-to-br from-[#00E5FF]/12 via-transparent to-transparent opacity-80"
+              ></span>
+              <span class="menu-icon material-symbols-outlined">
+                {{ isProfileMenuOpen ? "close" : "settings" }}
+              </span>
             </button>
 
             <transition name="dropdown">
               <div
                 v-if="isProfileMenuOpen"
-                class="absolute top-12 right-0 w-60 bg-[#1A1A1A] border border-white/10 rounded-2xl shadow-2xl py-2 z-[110] backdrop-blur-2xl"
+                class="absolute top-14 right-0 w-[290px] overflow-hidden rounded-[28px] border border-white/10 bg-[#161616]/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.45)] z-[110]"
               >
-                <button
-                  @click="handleMenuNavigation('/profile')"
-                  class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group w-full text-left"
-                >
-                  <span
-                    class="material-symbols-outlined text-primary-container text-[20px]"
-                    >account_circle</span
+                <div class="p-2 space-y-1">
+                  <button
+                    @click="handleMenuNavigation('/profile')"
+                    class="menu-item group w-full"
                   >
-                  <span class="text-xs font-medium text-on-surface">{{
-                    $t("appLayout.profileMenu.my_profile")
-                  }}</span>
-                </button>
+                    <span class="menu-item-icon material-symbols-outlined">account_circle</span>
+                    <span class="menu-item-text">
+                      <span class="block text-sm font-medium text-on-surface">
+                        {{ $t("appLayout.profileMenu.my_profile") }}
+                      </span>
+                      <span class="block text-[11px] text-on-surface-variant">
+                        {{ $t("appLayout.profileMenu.my_profile_desc") }}
+                      </span>
+                    </span>
+                    <span class="menu-item-chev material-symbols-outlined">chevron_right</span>
+                  </button>
 
-                <button
-                  @click="handleMenuNavigation('/audit/categories-setup')"
-                  class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group w-full text-left"
-                >
-                  <span
-                    class="material-symbols-outlined text-primary-container text-[20px]"
-                    >tune</span
+                  <button
+                    @click="handleMenuNavigation('/audit/categories-setup')"
+                    class="menu-item group w-full"
                   >
-                  <span class="text-xs font-medium text-on-surface">{{
-                    $t("appLayout.profileMenu.agent_fine_tuning")
-                  }}</span>
-                </button>
+                    <span class="menu-item-icon material-symbols-outlined">tune</span>
+                    <span class="menu-item-text">
+                      <span class="block text-sm font-medium text-on-surface">
+                        {{ $t("appLayout.profileMenu.agent_fine_tuning") }}
+                      </span>
+                      <span class="block text-[11px] text-on-surface-variant">
+                        {{ $t("appLayout.profileMenu.agent_fine_tuning_desc") }}
+                      </span>
+                    </span>
+                    <span class="menu-item-chev material-symbols-outlined">chevron_right</span>
+                  </button>
 
-                <button
-                  @click="handleMenuNavigation('/audit/source-manager')"
-                  class="flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors group w-full text-left"
-                >
-                  <span
-                    class="material-symbols-outlined text-primary-container text-[20px]"
-                    >hub</span
+                  <button
+                    @click="handleMenuNavigation('/audit/source-manager')"
+                    class="menu-item group w-full"
                   >
-                  <span class="text-xs font-medium text-on-surface">{{
-                    $t("appLayout.profileMenu.source_manager")
-                  }}</span>
-                </button>
+                    <span class="menu-item-icon material-symbols-outlined">hub</span>
+                    <span class="menu-item-text">
+                      <span class="block text-sm font-medium text-on-surface">
+                        {{ $t("appLayout.profileMenu.source_manager") }}
+                      </span>
+                      <span class="block text-[11px] text-on-surface-variant">
+                        {{ $t("appLayout.profileMenu.source_manager_desc") }}
+                      </span>
+                    </span>
+                    <span class="menu-item-chev material-symbols-outlined">chevron_right</span>
+                  </button>
 
-                <div class="h-px bg-white/5 w-full my-1"></div>
+                  <div class="h-px bg-white/5 my-2"></div>
 
-                <button
-                  @click="openLogoutModal"
-                  class="flex items-center gap-3 px-4 py-3 hover:bg-error/10 text-error w-full text-left group"
-                >
-                  <span class="material-symbols-outlined text-[20px]"
-                    >logout</span
+                  <button
+                    @click="openLogoutModal"
+                    class="menu-item menu-item-danger group w-full"
                   >
-                  <span class="text-xs font-medium">{{
-                    $t("appLayout.profileMenu.logout")
-                  }}</span>
-                </button>
+                    <span class="menu-item-icon material-symbols-outlined">logout</span>
+                    <span class="menu-item-text">
+                      <span class="block text-sm font-medium">
+                        {{ $t("appLayout.profileMenu.logout") }}
+                      </span>
+                      <span class="block text-[11px] text-error/70">
+                        {{ $t("appLayout.profileMenu.logout_desc") }}
+                      </span>
+                    </span>
+                    <span class="menu-item-chev material-symbols-outlined">chevron_right</span>
+                  </button>
+                </div>
               </div>
             </transition>
           </div>
@@ -148,28 +163,33 @@
         @close="isLogoutModalOpen = false"
         @confirm="handleSecureLogout"
       />
+      <UnsavedChangesModal
+        :is-open="isUnsavedModalOpen"
+        @close="cancelUnsavedLeave"
+        @confirm="confirmUnsavedLeave"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed } from "vue";
+import { useUnsavedStore } from "~/stores/unsaved";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
-import defaultAvatar from "~/assets/images/default_avatar.png";
 import { $api } from "~/utils/api";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
 const route = useRoute();
 const navigate = useSovereignNavigate();
-const userAvatar = ref(defaultAvatar);
-
 const authStore = useAuthStore();
 const agentStore = useAgentStore();
 
 const isProfileMenuOpen = ref(false);
 const isLogoutModalOpen = ref(false);
+const isUnsavedModalOpen = ref(false);
+const pendingNavPath = ref<string | null>(null);
 
 const navItems = computed(() => [
   {
@@ -186,9 +206,32 @@ const navItems = computed(() => [
   },
 ]);
 
+const unsavedStore = useUnsavedStore();
+
 const handleMenuNavigation = (path: string) => {
   isProfileMenuOpen.value = false;
+  try {
+    if (unsavedStore.anyDirty) {
+      pendingNavPath.value = path;
+      isUnsavedModalOpen.value = true;
+      return;
+    }
+  } catch (e) {
+    console.warn('[app-layout] could not check unsaved store', e);
+  }
   navigate.push(path);
+};
+
+const confirmUnsavedLeave = () => {
+  isUnsavedModalOpen.value = false;
+  const path = pendingNavPath.value;
+  pendingNavPath.value = null;
+  if (path) navigate.push(path);
+};
+
+const cancelUnsavedLeave = () => {
+  isUnsavedModalOpen.value = false;
+  pendingNavPath.value = null;
 };
 
 const openLogoutModal = () => {
@@ -242,6 +285,95 @@ const vClickOutside = {
 </script>
 
 <style scoped>
+.menu-trigger {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.menu-trigger::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  pointer-events: none;
+}
+
+.menu-icon {
+  position: relative;
+  z-index: 1;
+  font-variation-settings: "FILL" 1, "wght" 400, "GRAD" 0, "opsz" 24;
+  font-size: 22px;
+  color: #00e5ff;
+  transition:
+    transform 220ms ease,
+    opacity 180ms ease,
+    color 220ms ease;
+}
+
+.menu-trigger:hover .menu-icon {
+  transform: rotate(28deg) scale(1.04);
+}
+
+.menu-trigger[aria-expanded="true"] .menu-icon {
+  color: #e9fbff;
+  transform: rotate(180deg) scale(1.05);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  width: 100%;
+  padding: 0.9rem 0.9rem;
+  border-radius: 1.15rem;
+  text-align: left;
+  transition:
+    background-color 180ms ease,
+    transform 180ms ease,
+    border-color 180ms ease;
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.045);
+  transform: translateY(-1px);
+}
+
+.menu-item-danger:hover {
+  background: rgba(255, 82, 82, 0.08);
+}
+
+.menu-item-icon {
+  flex: 0 0 auto;
+  color: #00e5ff;
+  font-size: 20px;
+}
+
+.menu-item-danger .menu-item-icon,
+.menu-item-danger .menu-item-chev,
+.menu-item-danger .menu-item-text {
+  color: inherit;
+}
+
+.menu-item-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.menu-item-chev {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 18px;
+  transition: transform 180ms ease, color 180ms ease;
+}
+
+.menu-item:hover .menu-item-chev {
+  transform: translateX(2px);
+  color: rgba(255, 255, 255, 0.7);
+}
+
 .dropdown-enter-active,
 .dropdown-leave-active {
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
@@ -249,6 +381,6 @@ const vClickOutside = {
 .dropdown-enter-from,
 .dropdown-leave-to {
   opacity: 0;
-  transform: translateY(-10px) scale(0.95);
+  transform: translateY(-12px) scale(0.96);
 }
 </style>

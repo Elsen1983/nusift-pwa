@@ -11,77 +11,79 @@
       </div>
       <div class="min-w-0">
         <h2 class="font-headline text-2xl font-bold text-primary truncate">
-          {{ authStore.user?.email?.split("@")[0] || "Sovereign User" }}
+          {{ authStore.user?.profile?.nickname || "Sovereign User" }}
         </h2>
         <p class="text-on-surface-variant text-sm font-label">
           {{ authStore.user?.email }}
         </p>
       </div>
     </section>
-
     <!-- ACCOUNT SETTINGS -->
     <section class="space-y-2">
-      <h4
-        class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4"
-      >
+      <h4 class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4">
         {{ $t("myProfile.sections.account") }}
       </h4>
-      <div
-        class="bg-surface-container-low rounded-3xl p-2 border border-outline-variant/10 shadow-lg"
-      >
+      
+      <div class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden flex flex-col p-5">
+        
         <button
-          class="w-full flex items-center justify-between p-3.5 hover:bg-surface-container-highest rounded-2xl transition-colors group"
+          @click="toggleMenu('account')"
+          class="w-full flex items-center justify-between p-4 hover:bg-surface-container-highest transition-colors group outline-none"
         >
           <div class="flex items-center gap-4 text-on-surface">
-            <span
-              class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors"
-              >manage_accounts</span
-            >
-            <span class="font-body text-[15px] font-medium">{{
-              $t("myProfile.menu.settings")
-            }}</span>
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">manage_accounts</span>
+            <span class="font-body text-[15px] font-medium">{{ $t("myProfile.menu.settings") }}</span>
           </div>
           <span
-            class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-colors"
-            >chevron_right</span
-          >
+            class="material-symbols-outlined text-outline-variant transition-transform duration-300"
+            :class="openMenu === 'account' ? 'rotate-90 text-primary' : 'group-hover:text-primary'"
+          >chevron_right</span>
         </button>
 
-        <button
-          class="w-full flex items-center justify-between p-3.5 hover:bg-surface-container-highest rounded-2xl transition-colors group"
-        >
-          <div class="flex items-center gap-4 text-on-surface">
-            <span
-              class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors"
-              >loyalty</span
-            >
-            <span class="font-body text-[15px] font-medium">{{
-              $t("myProfile.menu.subscription")
-            }}</span>
-          </div>
-          <span
-            class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-colors"
-            >chevron_right</span
-          >
-        </button>
+        <div v-show="openMenu === 'account'" class="py-3 px-3 border-t border-outline-variant/10 bg-surface-container-lowest/50">
+          <AccountSettingsForm />
+        </div>
+
+        <div class="h-px w-full bg-outline-variant/10"></div>
 
         <button
-          class="w-full flex items-center justify-between p-3.5 hover:bg-surface-container-highest rounded-2xl transition-colors group"
+          @click="toggleMenu('subscription')"
+          class="w-full flex items-center justify-between p-4 hover:bg-surface-container-highest transition-colors group outline-none"
         >
           <div class="flex items-center gap-4 text-on-surface">
-            <span
-              class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors"
-              >credit_card</span
-            >
-            <span class="font-body text-[15px] font-medium">{{
-              $t("myProfile.menu.billing")
-            }}</span>
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">loyalty</span>
+            <span class="font-body text-[15px] font-medium">{{ $t("myProfile.menu.subscription") }}</span>
           </div>
           <span
-            class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-colors"
-            >chevron_right</span
-          >
+            class="material-symbols-outlined text-outline-variant transition-transform duration-300"
+            :class="openMenu === 'subscription' ? 'rotate-90 text-primary' : 'group-hover:text-primary'"
+          >chevron_right</span>
         </button>
+
+        <div v-show="openMenu === 'subscription'" class="py-3 px-2 border-t border-outline-variant/10 bg-surface-container-lowest/50 text-sm text-on-surface-variant">
+          <p>Active Plan: <strong class="text-primary">{{ authStore.user?.tier || 'FREE' }}</strong></p>
+        </div>
+
+        <div class="h-px w-full bg-outline-variant/10"></div>
+
+        <button
+          @click="toggleMenu('billing')"
+          class="w-full flex items-center justify-between p-4 hover:bg-surface-container-highest transition-colors group outline-none"
+        >
+          <div class="flex items-center gap-4 text-on-surface">
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">credit_card</span>
+            <span class="font-body text-[15px] font-medium">{{ $t("myProfile.menu.billing") }}</span>
+          </div>
+          <span
+            class="material-symbols-outlined text-outline-variant transition-transform duration-300"
+            :class="openMenu === 'billing' ? 'rotate-90 text-primary' : 'group-hover:text-primary'"
+          >chevron_right</span>
+        </button>
+
+        <div v-show="openMenu === 'billing'" class="py-3 px-2 border-t border-outline-variant/10 bg-surface-container-lowest/50 text-sm text-on-surface-variant">
+          <p>No recent invoices found.</p>
+        </div>
+
       </div>
     </section>
 
@@ -155,19 +157,17 @@
         <div
           class="absolute -left-10 -top-10 w-40 h-40 bg-primary-container/5 blur-3xl rounded-full pointer-events-none"
         ></div>
-<h4
-              class="text-[10px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-0 align-self-start mt-2 mb-3"
-            >
-              {{ $t("myProfile.sections.sources") }}
-            </h4>
+        <h4
+          class="text-[10px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-0 align-self-start mt-2 mb-3"
+        >
+          {{ $t("myProfile.sections.sources") }}
+        </h4>
         <div
           class="relative z-10 flex flex-col md:flex-row gap-6 md:gap-4 items-center w-full"
         >
-          
           <div
             class="flex items-center gap-5 shrink-0 w-full md:w-auto justify-center md:justify-start"
           >
-            
             <div
               class="relative w-[7.5rem] h-[7.5rem] shrink-0 flex items-center justify-center"
             >
@@ -251,7 +251,10 @@
           <div
             class="w-full md:flex-1 min-w-0 md:pl-6 md:border-l border-outline-variant/10 pt-4 md:pt-0 border-t md:border-t-0 mt-2 md:mt-0"
           >
-            <SourceTimelineChart :timeline-data="rawTimelineData" :is-loading="isAnalyticsLoading" />
+            <SourceTimelineChart
+              :timeline-data="rawTimelineData"
+              :is-loading="isAnalyticsLoading"
+            />
           </div>
         </div>
 
@@ -261,6 +264,20 @@
         >
           {{ $t("myProfile.quota.upgrade") }}
         </button>
+      </div>
+    </section>
+
+    <!-- ARTICLES VISUALIZATION -->
+    <section class="space-y-2">
+      <h4
+        class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4"
+      >
+        {{ $t("myProfile.sections.impact") }}
+      </h4>
+      <div
+        class="bg-surface-container-low rounded-3xl px-4 border border-outline-variant/10 shadow-lg relative overflow-hidden"
+      >
+        <ArticleInteractionGraph :metrics="articlesStateMetrics" />
       </div>
     </section>
 
@@ -356,9 +373,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useAuthStore } from "~/stores/auth";
-import { $api } from "~/utils/api"; // ÚJ: API importálása
+import { $api } from "~/utils/api";
 import defaultAvatar from "~/assets/images/default_avatar.png";
 import SourceTimelineChart from "~/components/SourceTimelineChart.vue";
 
@@ -367,7 +384,9 @@ definePageMeta({
 });
 
 const authStore = useAuthStore();
-const userAvatar = ref(defaultAvatar);
+const userAvatar = computed(
+  () => authStore.user?.profile?.avatarUrl || (authStore.user?.profile as any)?.avatar || defaultAvatar,
+);
 const isPro = computed(() => authStore.user?.tier === "PRO");
 // --- MOCK DATA ---
 // Ezeket később egy API végpontról (`/api/user/analytics`) fogjuk behúzni
@@ -393,36 +412,59 @@ const articlesStateMetrics = ref({
   rejectedArticles: 0,
 });
 
+const openMenu = ref<string | null>(null);
+const toggleMenu = (menuName: string) => {
+  openMenu.value = openMenu.value === menuName ? null : menuName;
+};
 onMounted(async () => {
   try {
     const [sourcesResponse, analyticsResponse] = await Promise.all([
       $api<any>("/api/user/sources"),
-      $api<any>("/api/user/analytics") // Az új, kibővített endpointod
+      $api<any>("/api/user/analytics"), // Az új, kibővített endpointod
     ]);
 
     if (sourcesResponse && sourcesResponse.success) {
       limit.value = sourcesResponse.quota.limit;
       const sources = sourcesResponse.sources;
 
-      activeCount.value = sources.filter((s: any) => s.isActive && s.validationStatus !== "FAILED" && s.validationStatus !== "DOMAIN_DEAD").length;
-      suspendedCount.value = sources.filter((s: any) => !s.isActive && s.validationStatus !== "FAILED" && s.validationStatus !== "DOMAIN_DEAD").length;
-      restrictedCount.value = sources.filter((s: any) => s.validationStatus === "FAILED" || s.validationStatus === "DOMAIN_DEAD").length;
+      activeCount.value = sources.filter(
+        (s: any) =>
+          s.isActive &&
+          s.validationStatus !== "FAILED" &&
+          s.validationStatus !== "DOMAIN_DEAD",
+      ).length;
+      suspendedCount.value = sources.filter(
+        (s: any) =>
+          !s.isActive &&
+          s.validationStatus !== "FAILED" &&
+          s.validationStatus !== "DOMAIN_DEAD",
+      ).length;
+      restrictedCount.value = sources.filter(
+        (s: any) =>
+          s.validationStatus === "FAILED" ||
+          s.validationStatus === "DOMAIN_DEAD",
+      ).length;
     }
 
     if (analyticsResponse && analyticsResponse.success) {
       console.log("Analytics API response:", analyticsResponse); // Debug log az API válaszról
 
       if (analyticsResponse.data) {
-        console.log("Received timeline data from analytics API:", analyticsResponse.data); // Debug log a timeline adatokkal
+        console.log(
+          "Received timeline data from analytics API:",
+          analyticsResponse.data,
+        ); // Debug log a timeline adatokkal
         rawTimelineData.value = analyticsResponse.data; // Átadjuk a prop-nak
       } else {
         console.warn("Analytics API válasz nem tartalmaz 'data' mezőt.");
       }
-      
-      
+
       // Valós metrikák bekötése az új API válaszból
       if (analyticsResponse.metrics) {
-        console.log("Received metrics from analytics API:", analyticsResponse.metrics); // Debug log a metrikákról
+        console.log(
+          "Received metrics from analytics API:",
+          analyticsResponse.metrics,
+        ); // Debug log a metrikákról
         articlesStateMetrics.value = {
           readArticles: analyticsResponse.metrics.read,
           savedArticles: analyticsResponse.metrics.saved,
@@ -458,9 +500,9 @@ onMounted(async () => {
           s.validationStatus === "FAILED" ||
           s.validationStatus === "DOMAIN_DEAD",
       ).length;
-    } 
+    }
   } finally {
-      isAnalyticsLoading.value = false; // Betöltési állapot frissítése, hogy a hibás állapotban is megjelenjen a UI
+    isAnalyticsLoading.value = false; // Betöltési állapot frissítése, hogy a hibás állapotban is megjelenjen a UI
   }
 });
 

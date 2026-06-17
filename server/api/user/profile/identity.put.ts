@@ -1,0 +1,82 @@
+import { defineEventHandler, readBody, createError } from 'h3';
+
+export default defineEventHandler(async (event) => {
+  const user = event.context.user;
+  if (!user || !user.id) {
+    throw createError({ statusCode: 401, statusMessage: 'Unauthorized' });
+  }
+
+  const body = await readBody(event);
+  const { nickname, phoneNumber, dateOfBirth, avatar } = body;
+
+  // Validate and parse the Date of Birth securely
+  let parsedDate: Date | null = null;
+  if (dateOfBirth) {
+    parsedDate = new Date(dateOfBirth);
+    if (isNaN(parsedDate.getTime())) {
+      throw createError({ statusCode: 400, statusMessage: 'Invalid date format' });
+    }
+  }
+
+  try {
+    // Dynamically import prisma to avoid failing module evaluation
+    let prisma;
+    try {
+      ({ prisma } = await import("../../../utils/prisma"));
+    } catch (impErr) {
+      console.error('Failed to import prisma in identity.put handler:', impErr);
+      throw createError({ statusCode: 500, statusMessage: 'Database unavailable' });
+    }
+
+    // Server-side whitelist validation for avatar filenames (only allow pre-bundled avatars)
+    let avatarBasename: string | null = null;
+    if (avatar) {
+      const fs = await import('fs');
+      const path = await import('path');
+      const avatarsDir = path.resolve(process.cwd(), 'app/assets/images/avatars');
+      let files: string[] = [];
+      try {
+        files = fs.readdirSync(avatarsDir);
+      } catch (e) {
+        console.warn('Avatar directory missing or unreadable:', avatarsDir, e);
+      }
+      // Accept either a runtime URL or a basename; normalize to basename for storage
+      const base = path.basename(avatar as string);
+      if (!files.includes(base)) {
+        throw createError({ statusCode: 400, statusMessage: 'Invalid avatar selection' });
+      }
+      avatarBasename = base;
+    }
+
+    // Use upsert to handle both first-time saves and subsequent updates
+    const updatedProfile = await prisma.userProfile.upsert({
+      where: { userId: user.id },
+      update: {
+        nickname: nickname || null,
+        phoneNumber: phoneNumber || null,
+        dateOfBirth: parsedDate,
+        avatarUrl: avatarBasename || null,
+      },
+      create: {
+        userId: user.id,
+        nickname: nickname || null,
+        phoneNumber: phoneNumber || null,
+        dateOfBirth: parsedDate,
+        avatarUrl: avatarBasename || null,
+      },
+    });
+
+    return {
+      success: true,
+      profile: updatedProfile,
+    };
+  } catch (error: any) {
+    // Handle Prisma unique constraint violations (e.g., duplicate nickname)
+    if (error.code === 'P2002') {
+      throw createError({ statusCode: 409, statusMessage: 'Nickname is already taken.' });
+    }
+    
+    console.error('Failed to update identity profile:', error);
+    throw createError({ statusCode: 500, statusMessage: 'Database execution failed' });
+  }
+});

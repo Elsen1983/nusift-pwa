@@ -3,10 +3,50 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useAgentStore } from "./agent";
 
+// Build a map of available avatar basenames -> runtime URLs so the store can normalize values
+const _avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
+const _avatarByBasename: Record<string, string> = {};
+for (const p in _avatarModules) {
+  try {
+    const url = (_avatarModules as any)[p] as string;
+    const parts = p.split('/');
+    const basename = parts[parts.length - 1];
+    _avatarByBasename[basename] = url;
+  } catch (e) {
+    // ignore
+  }
+}
+
+function _resolveAvatarUrl(stored: string | undefined | null) {
+  if (!stored) return null;
+  const values = Object.values(_avatarByBasename);
+  if (values.includes(stored)) return stored;
+  const maybeBase = String(stored).split('/').pop() || String(stored);
+  return _avatarByBasename[maybeBase] || null;
+}
+
 /** ANCHOR TYPE-DEFINITIONS
  * Ensures strict type-safety for user data flowing from the
  * verified backend handshake to the frontend state.
  */
+
+interface ProfileDetails {
+  id?: string;
+  nickname?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  avatarUrl?: string | null;
+  dateOfBirth?: string | Date | null;
+  phoneNumber?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  stateRegion?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
+  vatNumber?: string | null;
+}
+
 interface UserProfile {
   id: string;
   email: string;
@@ -17,6 +57,7 @@ interface UserProfile {
   topSources: Array<{url: string, language?: string} | string>;
   topInterests: any;
   tier: string;
+  profile?: ProfileDetails;
 }
 
 export const useAuthStore = defineStore("auth", () => {
@@ -220,6 +261,30 @@ export const useAuthStore = defineStore("auth", () => {
     }
   };
 
+  /**
+   * ANCHOR Local Profile Update
+   * Updates the profile state locally so the UI reacts instantly after saving the form,
+   * without needing to fetch the whole user object from the DB again.
+   */
+  const updateUserProfileLocally = (newProfileData: Partial<ProfileDetails>) => {
+    if (user.value) {
+      const data = { ...newProfileData };
+      if (data.avatarUrl) {
+        const resolved = _resolveAvatarUrl(data.avatarUrl as string);
+        if (resolved) data.avatarUrl = resolved;
+      }
+      user.value.profile = {
+        ...user.value.profile,
+        ...data,
+      };
+      
+      // Keep localStorage in sync
+      if (import.meta.client) {
+        localStorage.setItem("nusift_pwa_profile", JSON.stringify(user.value));
+      }
+    }
+  };
+
   return {
     user,
     isLoading,
@@ -229,5 +294,6 @@ export const useAuthStore = defineStore("auth", () => {
     oauthIdentity,
     logoutIdentity,
     $reset,
+    updateUserProfileLocally,
   };
 });

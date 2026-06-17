@@ -205,7 +205,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from "vue";
+import { ref, computed, onMounted, nextTick, onUnmounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useAgentStore } from "~/stores/agent";
 import { useAuthStore } from "~/stores/auth";
@@ -261,6 +261,11 @@ interface ActiveCategory {
 
 const activeCategories = ref<ActiveCategory[]>([]);
 
+// Unsaved-store integration for page-level guard
+import { useUnsavedStore } from "~/stores/unsaved";
+const unsavedStore = useUnsavedStore();
+const CATEGORIES_FORM_ID = "categories-setup";
+
 // Hydrate from Pinia on mount
 onMounted(() => {
   if (agentStore.topInterests && agentStore.topInterests.length > 0) {
@@ -274,6 +279,30 @@ onMounted(() => {
         isNew: false
       };
     });
+  }
+
+  try {
+    unsavedStore.registerForm(CATEGORIES_FORM_ID);
+    unsavedStore.setDirty(CATEGORIES_FORM_ID, globalHasChanges.value);
+  } catch (e) {
+    // noop
+  }
+});
+
+onUnmounted(() => {
+  try {
+    unsavedStore.unregisterForm(CATEGORIES_FORM_ID);
+  } catch (e) {
+    // noop
+  }
+});
+
+// propagate local dirty flag to global unsaved store
+watch(globalHasChanges, (val) => {
+  try {
+    unsavedStore.setDirty(CATEGORIES_FORM_ID, !!val);
+  } catch (e) {
+    // noop
   }
 });
 

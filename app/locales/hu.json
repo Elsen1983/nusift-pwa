@@ -270,9 +270,13 @@
         },
         "profileMenu": {
             "my_profile": "Profilom",
+            "my_profile_desc": "Személyes adatok és avatar beállítások",
             "agent_fine_tuning": "Kategóriák Beállítása",
+            "agent_fine_tuning_desc": "Az ügynök finomhangolása és kategória-preferenciák",
             "source_manager": "Forráskezelő",
-            "logout": "Kijelentkezés"
+            "source_manager_desc": "Csatlakoztatott források kezelése",
+            "logout": "Kijelentkezés",
+            "logout_desc": "Aktív munkamenet lezárása"
         },
         "navigation": {
             "feed": "Hírfolyam",
