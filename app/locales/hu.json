@@ -365,6 +365,22 @@
     "saveFavouriteModal": {},
     "shareModal": {},
     "myProfile": {
+        "sections": {
+            "account": "Fiók",
+            "preference": "Beállítások",
+            "sources": "Források",
+            "articles": "Cikkek",
+            "impact": "Személyes Hatásvizsgálat"
+        },
+        "menu": {
+            "settings": "Fiókbeállítások",
+            "subscription": "Előfizetés és Csomagok",
+            "billing": "Számlázás és Fizetés",
+            "language": "Nyelv",
+            "dark_mode": "Sötét Mód",
+            "help": "Súgóközpont",
+            "logout": "Kijelentkezés"
+        },
         "quota": {
             "sources": "Hely",
             "of": "/",
@@ -375,26 +391,36 @@
                 "restricted_title": "Korlátozott"
             }
         },
-        "sections": {
-            "impact": "Személyes Hatásvizsgálat",
-            "sources": "Források",
-            "account": "Fiók",
-            "preference": "Beállítások"
-        },
         "impact": {
             "time_short": "Spórolt Idő",
             "data_short": "Adat Szűrés",
             "ai_work_short": "AI Művelet"
         },
-        "menu": {
-            "subscription": "Előfizetés és Csomagok",
-            "billing": "Számlázás és Fizetés",
-            "settings": "Fiókbeállítások",
-            "language": "Nyelv",
-            "dark_mode": "Sötét Mód",
-            "help": "Súgóközpont"
+        "identity": {
+            "title": "Személyes Adatok és Identitás",
+            "avatar": "Avatár",
+            "avatarChoose": "Válassz Avatárt",
+            "avatarChooseDesc": "Válassz egy avatárt, az előre beállított készletből.",
+            "nickname": "Becenév (nyilvános)",
+            "phoneNumber": "Telefonszám",
+            "dateOfBirth": "Születési Dátum",
+            "saveIdentityButtonDisabled": "Személyes Adatok Mentése",
+            "saveIdentityButtonEnabled": "Mentése Folyamatban..."
         },
-        "logout": "Kijelentkezés"
+        "billingAddress": {
+            "title": "Cím és Számlázási Információk",
+            "firstName": "Keresztnév",
+            "lastName": "Vezetéknév",
+            "addressLine1": "Címvonal 1",
+            "addressLine2": "Címvonal 2",
+            "city": "Város",
+            "state": "Állam / Megye",
+            "postalCode": "Irányítószám",
+            "country": "Ország",
+            "vatNumber": "ÁFA Szám (opcionális)",
+            "saveBillingAddressButtonDisabled": "Számlázási Információk Mentése",
+            "saveBillingAddressButtonEnabled": "Mentése Folyamatban..."
+        }
     },
     "categoriesSetup": {
         "badge": "A Te Hírfolyamod, A Te Szabályaid",
@@ -529,8 +555,8 @@
     },
     "api_errors": {
         "missing_url": "Az URL megadása kötelező.",
-      "article_detected": "Kérlek, egy hírportál főoldalát vagy rovatát add meg (pl. telex.hu/tech), ne egy konkrét cikk linkjét.",
-      "soft_404": "Az oldal betöltött, de a tartalma alapján (404 / Nem található) már nem létezik.",
-      "invalid_domain": "Érvénytelen vagy elérhetetlen domain."
+        "article_detected": "Kérlek, egy hírportál főoldalát vagy rovatát add meg (pl. telex.hu/tech), ne egy konkrét cikk linkjét.",
+        "soft_404": "Az oldal betöltött, de a tartalma alapján (404 / Nem található) már nem létezik.",
+        "invalid_domain": "Érvénytelen vagy elérhetetlen domain."
     }
 }

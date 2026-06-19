@@ -2,27 +2,14 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useAgentStore } from "./agent";
+import { buildAvatarUrlMap, resolveAvatarUrlFromMap } from "~/utils/avatar";
 
 // Build a map of available avatar basenames -> runtime URLs so the store can normalize values
 const _avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
-const _avatarByBasename: Record<string, string> = {};
-for (const p in _avatarModules) {
-  try {
-    const url = (_avatarModules as any)[p] as string;
-    const parts = p.split('/');
-    const basename = parts[parts.length - 1];
-    _avatarByBasename[basename] = url;
-  } catch (e) {
-    // ignore
-  }
-}
+const _avatarByBasename = buildAvatarUrlMap(_avatarModules as Record<string, unknown>);
 
 function _resolveAvatarUrl(stored: string | undefined | null) {
-  if (!stored) return null;
-  const values = Object.values(_avatarByBasename);
-  if (values.includes(stored)) return stored;
-  const maybeBase = String(stored).split('/').pop() || String(stored);
-  return _avatarByBasename[maybeBase] || null;
+  return resolveAvatarUrlFromMap(stored, _avatarByBasename);
 }
 
 /** ANCHOR TYPE-DEFINITIONS
@@ -37,6 +24,7 @@ interface ProfileDetails {
   lastName?: string | null;
   avatarUrl?: string | null;
   dateOfBirth?: string | Date | null;
+  aboutMyself?: string | null;
   phoneNumber?: string | null;
   addressLine1?: string | null;
   addressLine2?: string | null;

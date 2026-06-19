@@ -1,4 +1,6 @@
 import { defineEventHandler, readBody, createError } from 'h3';
+// Top-level memory cache. Persists across requests in the Nitro process.
+let cachedAvatarList: string[] | null = null;
 
 export default defineEventHandler(async (event) => {
   const user = event.context.user;
@@ -8,6 +10,7 @@ export default defineEventHandler(async (event) => {
 
   const body = await readBody(event);
   const { nickname, phoneNumber, dateOfBirth, avatar } = body;
+  const aboutMyself = body.aboutMyself ?? body.about_myself;
 
   // Validate and parse the Date of Birth securely
   let parsedDate: Date | null = null;
@@ -28,21 +31,27 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 500, statusMessage: 'Database unavailable' });
     }
 
+    // --- OPTIMIZED AVATAR VALIDATION ---
     // Server-side whitelist validation for avatar filenames (only allow pre-bundled avatars)
     let avatarBasename: string | null = null;
     if (avatar) {
-      const fs = await import('fs');
-      const path = await import('path');
-      const avatarsDir = path.resolve(process.cwd(), 'app/assets/images/avatars');
-      let files: string[] = [];
-      try {
-        files = fs.readdirSync(avatarsDir);
-      } catch (e) {
-        console.warn('Avatar directory missing or unreadable:', avatarsDir, e);
+      const path = await import('node:path');
+      
+      // Execute the synchronous file read ONLY if the cache is empty
+      if (!cachedAvatarList) {
+        const fs = await import('node:fs');
+        const avatarsDir = path.resolve(process.cwd(), 'app/assets/images/avatars');
+        try {
+          cachedAvatarList = fs.readdirSync(avatarsDir);
+        } catch (e) {
+          console.warn('Avatar directory missing or unreadable:', avatarsDir, e);
+          cachedAvatarList = []; // Set to empty array so it doesn't try to read again
+        }
       }
-      // Accept either a runtime URL or a basename; normalize to basename for storage
+
+      // Fast memory lookup
       const base = path.basename(avatar as string);
-      if (!files.includes(base)) {
+      if (!cachedAvatarList.includes(base)) {
         throw createError({ statusCode: 400, statusMessage: 'Invalid avatar selection' });
       }
       avatarBasename = base;
@@ -55,6 +64,7 @@ export default defineEventHandler(async (event) => {
         nickname: nickname || null,
         phoneNumber: phoneNumber || null,
         dateOfBirth: parsedDate,
+        aboutMyself: aboutMyself ? String(aboutMyself).slice(0, 1000) : null,
         avatarUrl: avatarBasename || null,
       },
       create: {
@@ -62,6 +72,7 @@ export default defineEventHandler(async (event) => {
         nickname: nickname || null,
         phoneNumber: phoneNumber || null,
         dateOfBirth: parsedDate,
+        aboutMyself: aboutMyself ? String(aboutMyself).slice(0, 1000) : null,
         avatarUrl: avatarBasename || null,
       },
     });

@@ -130,6 +130,7 @@ model UserProfile {
   lastName    String?
   avatarUrl   String?
   dateOfBirth DateTime?
+  aboutMyself String?   @db.Text
   phoneNumber String?
 
   // --- PHYSICAL & BILLING ADDRESS ---

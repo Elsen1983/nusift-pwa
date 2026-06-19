@@ -2,11 +2,19 @@
   <div class="px-4 py-8 max-w-2xl mx-auto space-y-4 pb-20 overflow-hidden">
     <section class="flex items-center gap-4 px-2">
       <div
-        class="w-16 h-16 rounded-full border border-primary-container/30 p-0.5 shrink-0 shadow-[0_0_15px_rgba(0,229,255,0.1)]"
+        class="w-16 h-16 rounded-full border border-primary-container/30 p-0.5 shrink-0 shadow-[0_0_15px_rgba(0,229,255,0.1)] relative overflow-hidden bg-surface-container"
       >
+        <div 
+           v-if="!isClientHydrated && !topAvatarUrl" 
+           class="absolute inset-0 animate-pulse bg-outline-variant/20 rounded-full"
+        ></div>
+
         <img
-          :src="userAvatar"
-          class="w-full h-full object-cover rounded-full"
+          v-if="topAvatarUrl"
+          :src="topAvatarUrl"
+          class="w-full h-full object-cover rounded-full transition-opacity duration-300 opacity-100"
+          alt="Avatar"
+          @error="console.error('Avatar load error')" 
         />
       </div>
       <div class="min-w-0">
@@ -373,9 +381,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useAuthStore } from "~/stores/auth";
 import { $api } from "~/utils/api";
+import { buildAvatarUrlMap, resolveAvatarUrlFromMap } from "~/utils/avatar";
 import defaultAvatar from "~/assets/images/default_avatar.png";
 import SourceTimelineChart from "~/components/SourceTimelineChart.vue";
 
@@ -384,9 +393,36 @@ definePageMeta({
 });
 
 const authStore = useAuthStore();
-const userAvatar = computed(
-  () => authStore.user?.profile?.avatarUrl || (authStore.user?.profile as any)?.avatar || defaultAvatar,
-);
+const isClientHydrated = ref(false);
+
+// --- AVATAR RESOLVER LOGIC ---
+const _avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
+const avatarByBasename = buildAvatarUrlMap(_avatarModules as Record<string, unknown>);
+
+/// Computed avatar logic
+const profileAvatarUrl = ref("");
+
+const topAvatarUrl = computed(() => {
+  // 1. Nyers adat kiszedése a store-ból (ez valószínűleg csak a fájlnév, pl. "avatar_1.png")
+  const rawAvatar =
+    profileAvatarUrl.value ||
+    authStore.user?.profile?.avatarUrl ||
+    (authStore.user?.profile as any)?.avatar;
+  
+  // 2. A fájlnév átfordítása a valós Nuxt/Vite asset URL-re
+  const realAvatar = resolveAvatarUrlFromMap(rawAvatar, avatarByBasename) || "";
+
+  // 3. Ha sikeres a feloldás, mutatjuk az egyedi avatart
+  if (realAvatar) return realAvatar;
+  if (profileAvatarUrl.value) return profileAvatarUrl.value;
+
+  // 4. Ha még töltünk (hidratálunk), nem mutatunk semmit (üres állapot/skeleton)
+  if (!isClientHydrated.value) return ""; 
+
+  // 5. Ha minden betöltött és tényleg nincs avatarja a usernek, jöhet az alapértelmezett
+  return defaultAvatar;
+});
+
 const isPro = computed(() => authStore.user?.tier === "PRO");
 // --- MOCK DATA ---
 // Ezeket később egy API végpontról (`/api/user/analytics`) fogjuk behúzni
@@ -416,7 +452,34 @@ const openMenu = ref<string | null>(null);
 const toggleMenu = (menuName: string) => {
   openMenu.value = openMenu.value === menuName ? null : menuName;
 };
+
+const syncAvatarFromProfile = (profile: any) => {
+  const storedAvatar = profile?.avatarUrl || profile?.avatar;
+  const resolvedAvatar = resolveAvatarUrlFromMap(storedAvatar, avatarByBasename);
+  profileAvatarUrl.value = resolvedAvatar || "";
+};
+
+watch(
+  () => authStore.user?.profile,
+  (profile) => {
+    syncAvatarFromProfile(profile);
+  },
+  { immediate: true, deep: true },
+);
+
 onMounted(async () => {
+  // Refresh the authenticated profile first so the avatar reflects the latest
+  // saved value even after a hard refresh.
+  try {
+    const profileResponse: any = await $api("/api/user/profile");
+    if (profileResponse && profileResponse.success && profileResponse.profile) {
+      authStore.updateUserProfileLocally(profileResponse.profile);
+      syncAvatarFromProfile(profileResponse.profile);
+    }
+  } catch (error) {
+    console.error("Nem sikerült frissíteni a profil adatokat:", error);
+  }
+
   try {
     const [sourcesResponse, analyticsResponse] = await Promise.all([
       $api<any>("/api/user/sources"),
@@ -503,6 +566,7 @@ onMounted(async () => {
     }
   } finally {
     isAnalyticsLoading.value = false; // Betöltési állapot frissítése, hogy a hibás állapotban is megjelenjen a UI
+    isClientHydrated.value = true;
   }
 });
 

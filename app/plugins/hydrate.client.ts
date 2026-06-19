@@ -1,26 +1,10 @@
 // plugins/hydrate.client.ts
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
+import { buildAvatarUrlMap, resolveAvatarUrlFromMap } from "~/utils/avatar";
 
-function resolveAvatarUrl(stored: string | undefined | null) {
-  if (!stored) return null;
-
-  const avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
-  const avatarByBasename: Record<string, string> = {};
-
-  for (const path in avatarModules) {
-    const url = (avatarModules as any)[path] as string;
-    const basename = path.slice(path.lastIndexOf('/') + 1);
-    avatarByBasename[basename] = url;
-  }
-
-  if (Object.values(avatarByBasename).includes(stored)) {
-    return stored;
-  }
-
-  const maybeBase = String(stored).split('/').pop() || String(stored);
-  return avatarByBasename[maybeBase] || stored;
-}
+const avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
+const avatarByBasename = buildAvatarUrlMap(avatarModules as Record<string, unknown>);
 
 export default defineNuxtPlugin((nuxtApp) => {
   // A localStorage-ből csakis a böngészőben olvasunk, miután a Nuxt letöltött mindent
@@ -37,7 +21,7 @@ export default defineNuxtPlugin((nuxtApp) => {
       try {
         if (parsedUser && parsedUser.profile) {
           const storedAvatar = parsedUser.profile.avatarUrl || (parsedUser.profile as any).avatar;
-          const resolvedAvatar = resolveAvatarUrl(storedAvatar);
+          const resolvedAvatar = resolveAvatarUrlFromMap(storedAvatar, avatarByBasename);
           if (resolvedAvatar) {
             parsedUser.profile.avatarUrl = resolvedAvatar;
             (parsedUser.profile as any).avatar = resolvedAvatar;

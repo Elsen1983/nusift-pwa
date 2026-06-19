@@ -4,25 +4,38 @@
       <h5
         class="text-[13px] font-bold text-primary uppercase tracking-widest border-b border-outline-variant/10 pb-1"
       >
-        Identity & Social
+        {{ t("myProfile.identity.title") }}
       </h5>
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div class="flex flex-col gap-1">
-            <label class="text-[12px] text-on-surface-variant uppercase tracking-wider">Nickname (Public)</label>
-            <div class="mt-2">
-                <AvatarPicker
-                  :key="avatarPickerKey"
-                  v-model="profileForm.avatar"
-                  @select="onAvatarSelect"
-                />
-            </div>
-            <input
-              v-model="profileForm.nickname"
-              type="text"
-              placeholder="@tech_guru"
-              :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+        <div ref="avatarPickerSectionRef" class="flex flex-col gap-1 md:col-span-2">
+          <label class="text-[12px] text-on-surface-variant uppercase tracking-wider">{{ t("myProfile.identity.avatar") }}</label>
+          <div class="mt-2">
+            <AvatarPicker
+              :key="avatarPickerKey"
+              v-model="profileForm.avatar"
+              :label="t('myProfile.identity.avatarChoose')"
+              :subtitle="t('myProfile.identity.avatarChooseDesc')"
+              @select="onAvatarSelect"
             />
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-[12px] text-on-surface-variant uppercase tracking-wider">{{ t("myProfile.identity.nickname") }}</label>
+          <input
+            v-model="profileForm.nickname"
+            type="text"
+            placeholder="@tech_guru"
+            :class="[
+              'bg-surface-container border rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none transition-colors',
+              identityError ? 'border-error focus:border-error' : 'border-outline-variant/30 focus:border-primary',
+              globalInputFontClass
+            ]"
+          />
+          <span v-if="identityError" class="text-error text-[10px] mt-1 font-medium">
+            {{ identityError }}
+          </span>
         </div>
 
         <div
@@ -31,7 +44,7 @@
         >
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider"
-            >Phone Number</label
+            >{{ t("myProfile.identity.phoneNumber") }}</label
           >
           <div class="flex gap-2 relative">
             <div class="relative shrink-0 w-[95px]">
@@ -53,11 +66,11 @@
               <input
                 :value="profileForm.phoneNumber"
                 @input="onPhoneInput"
-                autocomplete="tel-national"
+                autocomplete="tel"
                 type="tel"
                 placeholder="87 123 4567"
                 :aria-invalid="!!phoneError"
-                :class="`w-full bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+                :class="`w-full bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
               />
 
               <span
@@ -101,7 +114,7 @@
               v-if="filteredPhoneCountries.length === 0"
               class="p-4 text-center text-xs text-on-surface-variant"
             >
-              No regions found.
+              {{ locale === "hu" ? "Nincsenek találatok." : "No regions found." }}
             </div>
           </div>
         </div>
@@ -109,15 +122,33 @@
         <div class="flex flex-col gap-1 md:col-span-2">
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider"
-            >Date of Birth</label
+            >{{ t("myProfile.identity.dateOfBirth") }}</label
           >
           <input
             v-model="profileForm.dateOfBirth"
             type="date"
             :max="maxAllowedDate"
             @click="openDatePicker"
-            :class="`block w-full bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors [color-scheme:dark] cursor-pointer appearance-none ${globalInputFontClass}`"
+            :class="`block w-full bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors [color-scheme:dark] cursor-pointer appearance-none ${globalInputFontClass}`"
           />
+        </div>
+
+        <div class="flex flex-col gap-1 md:col-span-2">
+          <label class="text-[12px] text-on-surface-variant uppercase tracking-wider">
+            Briefly about myself
+          </label>
+          <textarea
+            v-model="profileForm.aboutMyself"
+            maxlength="1000"
+            rows="4"
+            placeholder="Briefly about myself"
+            :class="`w-full bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface resize-y focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+          ></textarea>
+          <div class="flex justify-end">
+            <span class="text-[10px] text-on-surface-variant font-label">
+              {{ profileForm.aboutMyself.length }}/1000
+            </span>
+          </div>
         </div>
       </div>
 
@@ -128,27 +159,26 @@
           :class="identityButtonClass"
         >
           <span v-if="isSavingIdentity" class="material-symbols-outlined animate-spin text-[16px]">sync</span>
-          {{ isSavingIdentity ? "Saving..." : "Save Identity" }}
+          {{ isSavingIdentity ? t("myProfile.identity.saveIdentityButtonEnabled") : t("myProfile.identity.saveIdentityButtonDisabled") }}
         </button>
       </div>
     </form>
-
     <div class="h-px w-full bg-outline-variant/10 my-8"></div>
 
     <form @submit.prevent="saveBillingProfile" class="space-y-4">
       <div
-        class="flex items-center ju        Test-NetConnection -ComputerName your_db_host -Port 5432stify-between border-b border-outline-variant/10 pb-1"
+        class="flex items-center justify-between border-b border-outline-variant/10 pb-1"
       >
         <h5
           class="text-[13px] font-bold text-primary uppercase tracking-widest"
         >
-          Physical & Billing Address
+          {{ t("myProfile.billingAddress.title") }}
         </h5>
         <span
           v-if="!isPro"
           class="text-[9px] font-label text-on-surface-variant uppercase tracking-wider bg-surface-container-highest px-2 py-0.5 rounded"
         >
-          Optional for Free Tier
+          {{ t("myProfile.quota.upgrade") }}
         </span>
       </div>
 
@@ -157,26 +187,26 @@
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider flex justify-between"
           >
-            First Name <span v-if="isPro" class="text-error">*</span>
+            {{ t("myProfile.billingAddress.firstName") }} <span v-if="isPro" class="text-error">*</span>
           </label>
           <input
             v-model="profileForm.firstName"
             type="text"
             :required="isPro"
-            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
           />
         </div>
         <div class="flex flex-col gap-1">
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider flex justify-between"
           >
-            Last Name <span v-if="isPro" class="text-error">*</span>
+            {{ t("myProfile.billingAddress.lastName") }} <span v-if="isPro" class="text-error">*</span>
           </label>
           <input
             v-model="profileForm.lastName"
             type="text"
             :required="isPro"
-            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
           />
         </div>
 
@@ -184,63 +214,63 @@
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider flex justify-between"
           >
-            Address Line 1 <span v-if="isPro" class="text-error">*</span>
+            {{ t("myProfile.billingAddress.addressLine1") }} <span v-if="isPro" class="text-error">*</span>
           </label>
           <input
             v-model="profileForm.addressLine1"
             type="text"
             :required="isPro"
-            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
           />
         </div>
         <div class="flex flex-col gap-1 md:col-span-2">
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider"
-            >Address Line 2 (Optional)</label
+            >{{ t("myProfile.billingAddress.addressLine2") }}</label
           >
           <input
             v-model="profileForm.addressLine2"
             type="text"
-            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
           />
         </div>
         <div class="flex flex-col gap-1">
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider flex justify-between"
           >
-            City <span v-if="isPro" class="text-error">*</span>
+            {{ t("myProfile.billingAddress.city") }} <span v-if="isPro" class="text-error">*</span>
           </label>
           <input
             v-model="profileForm.city"
             type="text"
             :required="isPro"
-            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
           />
         </div>
         <div class="flex flex-col gap-1">
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider flex justify-between"
           >
-            State / Region <span v-if="isPro" class="text-error">*</span>
+            {{ t("myProfile.billingAddress.state") }} <span v-if="isPro" class="text-error">*</span>
           </label>
           <input
             v-model="profileForm.stateRegion"
             type="text"
             :required="isPro"
-            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
           />
         </div>
         <div class="flex flex-col gap-1">
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider flex justify-between"
           >
-            Postal Code <span v-if="isPro" class="text-error">*</span>
+            {{ t("myProfile.billingAddress.postalCode") }} <span v-if="isPro" class="text-error">*</span>
           </label>
           <input
             v-model="profileForm.postalCode"
             type="text"
             :required="isPro"
-            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
           />
         </div>
 
@@ -251,15 +281,15 @@
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider flex justify-between"
           >
-            Country <span v-if="isPro" class="text-error">*</span>
+            {{ t("myProfile.billingAddress.country") }} <span v-if="isPro" class="text-error">*</span>
           </label>
           <input
             v-model="countrySearchQuery"
             @focus="isCountryDropdownOpen = true"
             type="text"
             :required="isPro"
-            placeholder="Search for a country..."
-            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+            :placeholder="locale === 'hu' ? 'Ország keresése...' : 'Search for a country...'"
+            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
           />
           <div
             v-if="isCountryDropdownOpen && filteredCountries.length > 0"
@@ -289,17 +319,17 @@
         <h5
           class="text-[13px] font-bold text-primary uppercase tracking-widest border-b border-outline-variant/10 pb-1"
         >
-          B2B Information
+          {{ t("myProfile.menu.billing") }}
         </h5>
         <div class="flex flex-col gap-1">
           <label
             class="text-[12px] text-on-surface-variant uppercase tracking-wider"
-            >VAT Number (Optional)</label
+            >{{ t("myProfile.billingAddress.vatNumber") }}</label
           >
           <input
             v-model="profileForm.vatNumber"
             type="text"
-            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
+            :class="`bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface truncate focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
           />
         </div>
       </div>
@@ -311,7 +341,7 @@
           :class="billingButtonClass"
         >
           <span v-if="isSavingBilling" class="material-symbols-outlined animate-spin text-[16px]">sync</span>
-          {{ isSavingBilling ? "Saving..." : "Save Billing Info" }}
+          {{ isSavingBilling ? t("myProfile.billingAddress.saveBillingAddressButtonEnabled") : t("myProfile.billingAddress.saveBillingAddressButtonDisabled") }}
         </button>
       </div>
     </form>
@@ -319,10 +349,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from "vue";
 import { useAuthStore } from "~/stores/auth";
 import { $api } from "~/utils/api";
 import { useI18n } from "vue-i18n";
+import { buildAvatarUrlMap, resolveAvatarUrlFromMap } from "~/utils/avatar";
 import { globalCountries } from "~/utils/countries";
 import { useUnsavedStore } from "~/stores/unsaved";
 import {
@@ -336,31 +367,16 @@ import type { CountryCode } from "libphonenumber-js";
 
 const authStore = useAuthStore();
 const isPro = computed(() => authStore.user?.tier === "PRO");
-const { locale } = useI18n();
+const { locale, t } = useI18n();
 import AvatarPicker from "~/components/AvatarPicker.vue";
 
 // Build a map of available avatar basenames -> runtime URLs so we can
 // normalize stored avatar identifiers to the Vite-resolved URL used by AvatarPicker.
 const _avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
-const avatarByBasename: Record<string, string> = {};
-for (const path in _avatarModules) {
-  try {
-    const url = (_avatarModules as any)[path] as string;
-    const basename = path.slice(path.lastIndexOf('/') + 1);
-    avatarByBasename[basename] = url;
-  } catch (e) {
-    // ignore
-  }
-}
+const avatarByBasename = buildAvatarUrlMap(_avatarModules as Record<string, unknown>);
 
 function resolveAvatarUrl(stored: string | undefined | null) {
-  if (!stored) return "";
-  // If stored is already a runtime URL that matches one of the values, prefer it
-  const values = Object.values(avatarByBasename);
-  if (values.includes(stored)) return stored;
-  // Otherwise try to extract basename and find a matching runtime url
-  const maybeBase = String(stored).split('/').pop() || String(stored);
-  return avatarByBasename[maybeBase] || "";
+  return resolveAvatarUrlFromMap(stored, avatarByBasename) || "";
 }
 
 function formatDateForInput(value: string | Date | null | undefined): string {
@@ -373,6 +389,7 @@ function formatDateForInput(value: string | Date | null | undefined): string {
 // --- STATE ---
 const isSavingIdentity = ref(false);
 const isSavingBilling = ref(false);
+const identityError = ref<string | null>(null);
 
 const profileForm = ref({
   avatar: "",
@@ -381,6 +398,7 @@ const profileForm = ref({
   lastName: "",
   phoneNumber: "",
   dateOfBirth: "",
+  aboutMyself: "",
   addressLine1: "",
   addressLine2: "",
   city: "",
@@ -391,7 +409,7 @@ const profileForm = ref({
 });
 
 // --- SANITIZATION & DIRTY TRACKING ---
-const initialIdentitySnapshot = ref({ avatar: "", nickname: "", phoneNumber: "", dateOfBirth: "" });
+const initialIdentitySnapshot = ref({ avatar: "", nickname: "", phoneNumber: "", dateOfBirth: "", aboutMyself: "" });
 const initialBillingSnapshot = ref({
   firstName: "",
   lastName: "",
@@ -407,6 +425,7 @@ const initialBillingSnapshot = ref({
 const identityDirty = ref(false);
 const billingDirty = ref(false);
 const avatarPickerKey = ref(0);
+const avatarPickerSectionRef = ref<HTMLElement | null>(null);
 
 // Unsaved forms integration
 const unsavedStore = useUnsavedStore();
@@ -426,6 +445,7 @@ const snapshotIdentity = (pf: any) => ({
   nickname: pf.nickname || "",
   phoneNumber: pf.phoneNumber || "",
   dateOfBirth: pf.dateOfBirth || "",
+  aboutMyself: pf.aboutMyself || "",
 });
 
 const snapshotBilling = (pf: any) => ({
@@ -445,6 +465,14 @@ const applyAvatarFromProfile = (avatarSource: string | undefined | null) => {
   avatarPickerKey.value += 1;
 };
 
+const scrollToAvatarPicker = async () => {
+  await nextTick();
+  avatarPickerSectionRef.value?.scrollIntoView({
+    behavior: "smooth",
+    block: "start",
+  });
+};
+
 // Update dirty flags whenever the form changes
 watch(
   () => profileForm.value,
@@ -457,7 +485,8 @@ watch(
       idSnap.avatar !== initialIdentitySnapshot.value.avatar ||
       idSnap.nickname !== initialIdentitySnapshot.value.nickname ||
       idSnap.phoneNumber !== initialIdentitySnapshot.value.phoneNumber ||
-      idSnap.dateOfBirth !== initialIdentitySnapshot.value.dateOfBirth;
+      idSnap.dateOfBirth !== initialIdentitySnapshot.value.dateOfBirth ||
+      idSnap.aboutMyself !== initialIdentitySnapshot.value.aboutMyself;
 
     billingDirty.value = Object.keys(biSnap).some(
       (k) => (biSnap as any)[k] !== (initialBillingSnapshot.value as any)[k],
@@ -617,7 +646,7 @@ const selectPhoneCode = (dialCode: string) => {
       // Validate using full international string
       const full = `${selectedPhoneCode.value}${digits}`;
       const parsed = parsePhoneNumberFromString(full);
-      phoneError.value = parsed && parsed.isValid() ? null : "Invalid phone number";
+      phoneError.value = parsed && parsed.isValid() ? null : (locale.value === "hu" ? "Érvénytelen telefonszám" : "Invalid phone number");
     } catch {
       // fallback
       profileForm.value.phoneNumber = rawLocal;
@@ -693,14 +722,15 @@ onMounted(async () => {
   // If store already has profile data, initialize form including avatar
   if (authStore.user?.profile) {
     const p = authStore.user.profile;
-    profileForm.value = {
-      avatar: "",
-      nickname: p.nickname || "",
-      firstName: p.firstName || "",
-      lastName: p.lastName || "",
-      phoneNumber: p.phoneNumber || "",
-      dateOfBirth: formatDateForInput(p.dateOfBirth),
-      addressLine1: p.addressLine1 || "",
+      profileForm.value = {
+        avatar: "",
+        nickname: p.nickname || "",
+        firstName: p.firstName || "",
+        lastName: p.lastName || "",
+        phoneNumber: p.phoneNumber || "",
+        dateOfBirth: formatDateForInput(p.dateOfBirth),
+        aboutMyself: p.aboutMyself || "",
+        addressLine1: p.addressLine1 || "",
       addressLine2: p.addressLine2 || "",
       city: p.city || "",
       stateRegion: p.stateRegion || "",
@@ -728,6 +758,7 @@ onMounted(async () => {
           nickname: resp.profile.nickname || "",
           phoneNumber: resp.profile.phoneNumber || "",
           dateOfBirth: formatDateForInput(resp.profile.dateOfBirth),
+          aboutMyself: resp.profile.aboutMyself || "",
           firstName: resp.profile.firstName || "",
           lastName: resp.profile.lastName || "",
           addressLine1: resp.profile.addressLine1 || "",
@@ -789,6 +820,7 @@ onMounted(async () => {
   if (authStore.user?.profile?.avatarUrl && !profileForm.value.avatar) {
     applyAvatarFromProfile(authStore.user.profile.avatarUrl as string);
     initialIdentitySnapshot.value = snapshotIdentity(profileForm.value);
+    await scrollToAvatarPicker();
   }
 });
 
@@ -808,7 +840,7 @@ const onPhoneInput = (event: Event) => {
   // Validate using full international string
   const full = selectedPhoneCode.value ? `${selectedPhoneCode.value}${digits}` : digits;
   const parsed = parsePhoneNumberFromString(full);
-  phoneError.value = parsed && parsed.isValid() ? null : (digits.length > 0 ? "Invalid phone number" : null);
+  phoneError.value = parsed && parsed.isValid() ? null : (digits.length > 0 ? (locale.value === "hu" ? "Érvénytelen telefonszám" : "Invalid phone number") : null);
 };
 
 onUnmounted(() => {
@@ -841,6 +873,9 @@ const saveIdentityProfile = async () => {
   }
 
   isSavingIdentity.value = true;
+  identityError.value = null;
+  phoneError.value = null;
+
   try {
     const payload = {
       nickname: sanitizeString(profileForm.value.nickname, 64),
@@ -848,6 +883,7 @@ const saveIdentityProfile = async () => {
       // Send canonical basename (e.g., "avatar_005.png") so the backend stores a stable id
       avatar: profileForm.value.avatar ? String(profileForm.value.avatar).split('/').pop() : undefined,
       dateOfBirth: profileForm.value.dateOfBirth,
+      aboutMyself: sanitizeString(profileForm.value.aboutMyself, 1000),
     };
 
     // Call the backend
@@ -864,6 +900,7 @@ const saveIdentityProfile = async () => {
         nickname: prof.nickname || payload.nickname,
         phoneNumber: prof.phoneNumber || payload.phoneNumber,
         dateOfBirth: prof.dateOfBirth || payload.dateOfBirth,
+        aboutMyself: prof.aboutMyself || payload.aboutMyself,
         avatarUrl: resolvedAvatar || null,
       });
     }
@@ -873,6 +910,13 @@ const saveIdentityProfile = async () => {
     identityDirty.value = false;
   } catch (error: any) {
     console.error("Failed to save identity profile", error);
+    // Intercept the specific 409 Conflict from your Nitro backend
+    // Note: Adjust error.statusCode to error.response?.status depending on how your $api wrapper throws
+    if (error.statusCode === 409 || error?.response?.status === 409) {
+      identityError.value = "This nickname is already taken. Please choose another one.";
+    } else {
+      identityError.value = "An error occurred while saving your profile. Please try again.";
+    }
     // Here you would trigger an error toast (e.g., toast.error(error.message))
   } finally {
     isSavingIdentity.value = false;
@@ -884,6 +928,7 @@ async function onAvatarSelect(url: string) {
   console.debug('onAvatarSelect fired, url=', url, 'current form avatar=', profileForm.value.avatar);
   // v-model already updates profileForm.avatar; we intentionally DO NOT auto-save here
   // The global watcher on profileForm will mark the form dirty and enable the Save button.
+  await scrollToAvatarPicker();
   return;
 }
 
@@ -933,6 +978,7 @@ watch(
         lastName: newProfile.lastName || "",
         phoneNumber: "", // Ez a lenti logikával frissül
         dateOfBirth: formatDateForInput(newProfile.dateOfBirth),
+        aboutMyself: newProfile.aboutMyself || "",
         addressLine1: newProfile.addressLine1 || "",
         addressLine2: newProfile.addressLine2 || "",
         city: newProfile.city || "",

@@ -365,9 +365,25 @@
     "saveFavouriteModal": {},
     "shareModal": {},
     "myProfile": {
+        "sections": {
+            "account": "Account",
+            "preference": "Preference",
+            "sources": "Sources",
+            "articles": "Articles",
+            "impact": "Your Impact & Analytics"
+        },
+        "menu": {
+            "settings": "Account Settings",
+            "subscription": "Subscription & Plans",
+            "billing": "Billing & Payment",
+            "language": "Language",
+            "dark_mode": "Dark Mode",
+            "help": "Help Center",
+            "logout": "Log Out"
+        },
         "quota": {
-            "of": "of",
             "sources": "Slots",
+            "of": "of",
             "upgrade": "Upgrade plan",
             "source_type": {
                 "active_title": "Active",
@@ -375,26 +391,39 @@
                 "restricted_title": "Restricted"
             }
         },
-        "sections": {
-            "impact": "Your Impact & Analytics",
-            "sources": "Sources",
-            "account": "Account",
-            "preference": "Preference"
-        },
         "impact": {
             "time_short": "Time Saved",
             "data_short": "Data Saved",
             "ai_work_short": "AI Scans"
         },
-        "menu": {
-            "subscription": "Subscription & Plans",
-            "billing": "Billing & Payment",
-            "settings": "Account Settings",
-            "language": "Language",
-            "dark_mode": "Dark Mode",
-            "help": "Help Center"
+        "identity": {
+            "title": "Personal Details & Identity",
+            "avatar": "Avatar",
+            "avatarChoose": "Choose Avatar",
+            "avatarChooseDesc": "Pick one of the predefined avatars.",
+            "nickname": "Nickname (Public)",
+            "phoneNumber": "Phone Number",
+            "dateOfBirth": "Date of Birth",
+            "aboutMyself": "Briefly about myself",
+            "noRegionsFound": "No regions found.",
+            "invalidPhoneNumber": "Invalid phone number",
+            "saveIdentityButtonDisabled": "Save Personal Details",
+            "saveIdentityButtonEnabled": "Saving..."
         },
-        "logout": "Log Out"
+        "billingAddress": {
+            "title": "Address & Billing Information",
+            "firstName": "First Name",
+            "lastName": "Last Name",
+            "addressLine1": "Address Line 1",
+            "addressLine2": "Address Line 2",
+            "city": "City",
+            "state": "State / Region",
+            "postalCode": "Postal Code",
+            "country": "Country",
+            "vatNumber": "VAT Number (Optional)",
+            "saveBillingAddressButtonDisabled": "Save Billing Info",
+            "saveBillingAddressButtonEnabled": "Saving..."
+        }
     },
     "categoriesSetup": {
         "badge": "Your Feed, Your Rules",
@@ -534,3 +563,4 @@
       "invalid_domain": "Invalid or unreachable domain."
     }
 }
+
