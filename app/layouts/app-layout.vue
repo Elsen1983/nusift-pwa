@@ -4,7 +4,7 @@
   >
     <div class="w-full max-w-2xl relative min-h-screen">
       <div
-        class="fixed top-0 inset-x-0 mx-auto w-full max-w-2xl bg-[#131313] z-[100] border-b border-white/5"
+        class="fixed top-0 inset-x-0 mx-auto w-full max-w-2xl bg-background z-[100] border-b border-white/5"
       >
         <header
           class="flex justify-between items-center px-6 py-3 w-full h-[60px]"
@@ -18,9 +18,9 @@
               class="h-[28px] w-auto object-contain"
               src="~/assets/images/NuSift_Transparent_Logo.png"
             />
-            <div class="ml-4 pl-4 border-l border-[#00E5FF]/30 py-1">
+            <div class="ml-4 pl-4 border-l border-primary-container/30 py-1">
               <span
-                class="text-[#00E5FF] font-label text-[9px] uppercase tracking-[0.15em] leading-tight block opacity-80 group-hover:opacity-100 transition-opacity"
+                class="text-primary-container font-label text-[9px] uppercase tracking-[0.15em] leading-tight block opacity-80 group-hover:opacity-100 transition-opacity"
               >
                 {{ $t("appLayout.header.slogan_line1") }}<br />{{
                   $t("appLayout.header.slogan_line2")
@@ -37,8 +37,8 @@
               @click="isProfileMenuOpen = !isProfileMenuOpen"
               :aria-expanded="isProfileMenuOpen"
               aria-label="Open app menu"
-              class="menu-trigger relative w-11 h-11 rounded-2xl border border-[#00E5FF]/15 bg-[#171717]/90 backdrop-blur-xl shadow-[0_0_20px_rgba(0,229,255,0.10)] transition-all duration-300 hover:border-[#00E5FF]/35 hover:shadow-[0_0_24px_rgba(0,229,255,0.18)] active:scale-95"
-              :class="isProfileMenuOpen ? 'bg-[#00E5FF]/10 border-[#00E5FF]/40' : ''"
+              class="menu-trigger relative w-11 h-11 rounded-2xl border border-primary-container/15 bg-surface-container-high/90 backdrop-blur-xl shadow-[0_0_20px_rgba(0,229,255,0.10)] transition-all duration-300 hover:border-primary-container/35 hover:shadow-[0_0_24px_rgba(0,229,255,0.18)] active:scale-95"
+              :class="isProfileMenuOpen ? 'bg-[#00E5FF]/10 border-primary-container/40' : ''"
             >
               <span
                 class="absolute inset-0 rounded-2xl bg-gradient-to-br from-[#00E5FF]/12 via-transparent to-transparent opacity-80"
@@ -51,7 +51,7 @@
             <transition name="dropdown">
               <div
                 v-if="isProfileMenuOpen"
-                class="absolute top-14 right-0 w-[290px] overflow-hidden rounded-[28px] border border-white/10 bg-[#161616]/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.45)] z-[110]"
+                class="absolute top-14 right-0 w-[290px] overflow-hidden rounded-[28px] border border-white/10 bg-surface-container-low/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.45)] z-[110]"
               >
                 <div class="p-2 space-y-1">
                   <button
@@ -131,7 +131,7 @@
       </main>
 
       <nav
-        class="fixed bottom-0 inset-x-0 mx-auto w-full max-w-2xl bg-[#131313]/95 backdrop-blur-xl border-t border-white/5 z-[100] pb-safe"
+        class="fixed bottom-0 inset-x-0 mx-auto w-full max-w-2xl bg-background/95 backdrop-blur-xl border-t border-white/5 z-[100] pb-safe"
       >
         <div class="flex justify-around items-center h-16 w-full px-2">
           <button
@@ -141,7 +141,7 @@
             class="flex flex-col items-center justify-center w-full h-full gap-1 transition-colors"
             :class="[
               route.path.includes(item.path)
-                ? 'text-[#00E5FF]'
+                ? 'text-primary-container'
                 : 'text-on-surface-variant hover:text-white',
             ]"
           >

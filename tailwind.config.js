@@ -1,12 +1,5 @@
-/** ANCHOR TAILWIND-CONFIG-OVERVIEW
- * NuSift Design System Configuration.
- * Implements a dark-mode first, Material Design 3 (MD3) inspired color palette
- * with 'Sovereign' neon accents for high-fidelity AI interfaces. */
-
 /** @type {import('tailwindcss').Config} */
 export default {
-  // ANCHOR CONTENT-DETECTION
-  // Updated for Nuxt 4: Files are now located within the /app directory.
   content: [
     "./app/components/**/*.{js,vue,ts}",
     "./app/layouts/**/*.vue",
@@ -15,67 +8,65 @@ export default {
     "./app/app.vue",
     "./app/error.vue",
   ],
-
-  darkMode: "class",
-
+  darkMode: "class", // Ez nagyon fontos, hogy itt legyen!
   theme: {
     extend: {
-      // ANCHOR COLOR-SYSTEM
-      // MD3 Elevation system implementation using semantic naming.
       colors: {
-        // Base backgrounds
-        background: "#131313",
-        surface: "#131313",
+        background:
+          "rgb(var(--color-background) / var(--theme-bg-opacity, <alpha-value>))",
+        surface: "rgb(var(--color-surface) / <alpha-value>)",
 
-        // ANCHOR SURFACE-CONTAINERS
-        // These represent different elevation levels in the neural UI.
-        "surface-container-high": "#2a2a2a",
-        "surface-container-low": "#1c1b1b",
-        "surface-container": "#201f1f",
-        "surface-container-highest": "#353534",
-        "surface-bright": "#393939",
-        "surface-container-lowest": "#0c0c0c",
+        "surface-container-high":
+          "rgb(var(--color-surface-container-high) / <alpha-value>)",
+        "surface-container-low":
+          "rgb(var(--color-surface-container-low) / <alpha-value>)",
+        "surface-container":
+          "rgb(var(--color-surface-container) / <alpha-value>)",
+        "surface-container-highest":
+          "rgb(var(--color-surface-container-highest) / <alpha-value>)",
+        "surface-bright": "rgb(var(--color-surface-bright) / <alpha-value>)",
+        "surface-container-lowest":
+          "rgb(var(--color-surface-container-lowest) / <alpha-value>)",
 
-        // ANCHOR CONTENT-COLORS
-        // High-contrast tokens for text and iconography.
-        "on-background": "#e5e2e1",
-        "on-surface": "#e5e2e1",
-        "on-surface-variant": "#c0c8ca",
-        "outline-variant": "#40484a",
+        "on-background": "rgb(var(--color-on-background) / <alpha-value>)",
+        "on-surface": "rgb(var(--color-on-surface) / <alpha-value>)",
+        "on-surface-variant":
+          "rgb(var(--color-on-surface-variant) / <alpha-value>)",
+        "outline-variant": "rgb(var(--color-outline-variant) / <alpha-value>)",
 
-        // ANCHOR ACCENT-COLORS
-        // Sovereign neon tones for CTAs and AI-driven insights.
-        primary: "#ffffff",
-        "primary-container": "#00e5ff", // Neon Cyan
-        "on-primary-container": "#00363d",
+        "semantic-rating": "rgb(var(--color-semantic-rating) / <alpha-value>)",
+        "semantic-paywall":
+          "rgb(var(--color-semantic-paywall) / <alpha-value>)",
+        "semantic-ai": "rgb(var(--color-semantic-ai) / <alpha-value>)",
+        "semantic-ai-variant":
+          "rgb(var(--color-semantic-ai-variant) / <alpha-value>)",
 
-        "tertiary-container": "#f5e2a3",
-        "on-tertiary-container": "#716431",
+        primary: "rgb(var(--color-primary) / <alpha-value>)",
+        "primary-container":
+          "rgb(var(--color-primary-container) / <alpha-value>)",
+        "on-primary-container":
+          "rgb(var(--color-on-primary-container) / <alpha-value>)",
 
-        // Error State Colors
-        error: "#ff435994",
-        "on-error": "#ffffff",
-        "texterror": "#fd8896b0",
+        error: "rgb(var(--color-error) / <alpha-value>)",
+        "on-error": "rgb(var(--color-on-error) / <alpha-value>)",
+        warning: "rgb(var(--color-warning) / <alpha-value>)",
+        "on-warning": "rgb(var(--color-on-warning) / <alpha-value>)",
 
-        warning: "#f97316",
-
-        // Specialty token for AI engine feedback
-        "ai-reasoning-blue": "#40c4ff",
+        success: "rgb(var(--color-success) / <alpha-value>)",
+        "on-success": "rgb(var(--color-on-success) / <alpha-value>)",
+        
+        "chart-1": "rgb(var(--color-chart-1) / <alpha-value>)",
+        "chart-2": "rgb(var(--color-chart-2) / <alpha-value>)",
+        "chart-3": "rgb(var(--color-chart-3) / <alpha-value>)",
+        "chart-4": "rgb(var(--color-chart-4) / <alpha-value>)",
+        "chart-5": "rgb(var(--color-chart-5) / <alpha-value>)",
+        "chart-6": "rgb(var(--color-chart-6) / <alpha-value>)",
       },
-
-      // ANCHOR TYPOGRAPHY-SYSTEM
-      // Mapping the brand's geometric and grotesque fonts.
       fontFamily: {
         headline: ["Space Grotesk", "sans-serif"],
         body: ["Manrope", "sans-serif"],
         label: ["Inter", "sans-serif"],
       },
-      // fontFamily: {
-      //   // Mostantól a font-rajdhani osztályt is használhatod, 
-      //   // de ha a 'body'-t erre akarod cserélni:
-      //   body: ['Rajdhani', 'sans-serif'],
-      //   headline: ['Rajdhani', 'sans-serif'],
-      // },
     },
   },
   plugins: [],

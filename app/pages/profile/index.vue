@@ -142,7 +142,6 @@
               type="checkbox"
               v-model="isDarkMode"
               class="sr-only peer"
-              disabled
             />
             <div
               class="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container"
@@ -430,7 +429,14 @@ const activeCount = ref(0);
 const suspendedCount = ref(0);
 const restrictedCount = ref(0);
 const limit = ref(5);
-const isDarkMode = ref(true);
+const colorMode = useColorMode();
+
+const isDarkMode = computed({
+  get: () => colorMode.value === 'dark',
+  set: (val) => {
+    colorMode.preference = val ? 'dark' : 'light';
+  }
+});
 
 const rawTimelineData = ref([]);
 const isAnalyticsLoading = ref(true);

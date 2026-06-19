@@ -1,8 +1,9 @@
 <template>
   <div class="w-full h-full flex flex-col">
     <div class="flex items-center justify-between mb-3">
+      <!-- RESTORED: text-semantic-ai brings back the #00E5FF cyan title -->
       <h4
-        class="text-[10px] font-label font-bold text-on-surface-variant uppercase tracking-widest"
+        class="text-[10px] font-label font-bold text-semantic-ai uppercase tracking-widest"
       >
         Scanned Articles Timeline
       </h4>
@@ -23,7 +24,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from "vue";
+import { ref, watch, computed, onMounted } from "vue";
 import { Line } from "vue-chartjs";
 import {
   Chart as ChartJS,
@@ -36,6 +37,10 @@ import {
   Legend,
   Filler,
 } from "chart.js";
+
+// If using Nuxt Color Mode, this allows us to force chart re-renders on theme toggle
+const colorMode = useColorMode(); 
+const themeTrigger = ref(0);
 
 ChartJS.register(
   CategoryScale,
@@ -58,98 +63,98 @@ const props = defineProps<{
   isLoading: boolean;
 }>();
 
-console.log("Received timelineData prop:", props.timelineData);
-
 const selectedYear = ref(new Date().getFullYear());
 const availableYears = ref([2026]);
 const chartData = ref<any>(null);
 const isLoading = ref(props.isLoading || false);
 
-const chartOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: {
-    mode: "index" as const,
-    intersect: false,
-  },
-  plugins: {
-    legend: {
-      position: "bottom" as const,
-      labels: {
-        color: "rgba(255, 255, 255, 0.6)",
-        usePointStyle: true,
-        boxWidth: 8,
-        font: { size: 11, family: "system-ui" },
-      },
-    },
-    tooltip: {
-      backgroundColor: "rgba(17, 16, 16, 0.9)",
-      titleColor: "#00E5FF",
-      bodyColor: "#e2e2e2",
-      borderColor: "rgba(255, 255, 255, 0.1)",
-      borderWidth: 1,
-      padding: 10,
-      cornerRadius: 8,
-    },
-  },
-  scales: {
-    y: {
-      beginAtZero: true,
-      grid: { color: "rgba(255, 255, 255, 0.05)" },
-      ticks: { color: "rgba(255, 255, 255, 0.4)", font: { size: 10 } },
-    },
-    x: {
-      grid: { display: false },
-      ticks: { color: "rgba(255, 255, 255, 0.4)", font: { size: 10 } },
-    },
-  },
+/**
+ * HELPER: Chart.js color parser bypass.
+ * Reads the raw CSS variable (e.g., "0 229 255") from the DOM and formats it into
+ * a standard `rgba(r, g, b, a)` string that Chart.js's canvas engine can safely render.
+ */
+const getCssColor = (varName: string, alpha: number = 1) => {
+  if (typeof window === "undefined") return `rgba(0, 229, 255, ${alpha})`; // SSR Safety
+  const val = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  if (!val) return `rgba(0, 229, 255, ${alpha})`; // Fallback
+  return `rgba(${val.split(/\s+/).join(", ")}, ${alpha})`;
 };
 
-// Sovereign-grade UI color palette for dynamically added sources
-const sourceColors = [
-  "#00E5FF",
-  "#fec931",
-  "#ff6b6b",
-  "#a855f7",
-  "#10b981",
-  "#3b82f6",
-];
+const chartOptions = computed(() => {
+  // We reference themeTrigger to force Vue to re-evaluate this computed property on theme change
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const trigger = themeTrigger.value; 
+
+  const textColor = getCssColor("--color-on-surface-variant", 0.7);
+  const gridColor = getCssColor("--color-outline-variant", 0.1);
+  const tooltipBg = getCssColor("--color-surface-container-highest", 0.9);
+  const tooltipTitle = getCssColor("--color-on-surface", 1);
+  const tooltipBody = getCssColor("--color-on-surface-variant", 1);
+  const tooltipBorder = getCssColor("--color-outline-variant", 0.3);
+
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: {
+      mode: "index" as const,
+      intersect: false,
+    },
+    plugins: {
+      legend: {
+        position: "bottom" as const,
+        labels: {
+          color: textColor,
+          usePointStyle: true,
+          boxWidth: 8,
+          font: { size: 11, family: "system-ui" },
+        },
+      },
+      tooltip: {
+        backgroundColor: tooltipBg,
+        titleColor: tooltipTitle,
+        bodyColor: tooltipBody,
+        borderColor: tooltipBorder,
+        borderWidth: 1,
+        padding: 10,
+        cornerRadius: 8,
+      },
+    },
+    scales: {
+      y: {
+        beginAtZero: true,
+        grid: { color: gridColor },
+        ticks: { color: textColor, font: { size: 10 } },
+      },
+      x: {
+        grid: { display: false },
+        ticks: { color: textColor, font: { size: 10 } },
+      },
+    },
+  };
+});
 
 const fetchTimelineData = async () => {
   isLoading.value = true;
   try {
-    // Note: If you want year-filtering, you can pass ?year=${selectedYear.value}
-    // and update your Nuxt API endpoint to accept it via getQuery(event).
-    
-
     if (props.timelineData && props.timelineData.length > 0) {
       const apiData = props.timelineData;
 
       chartData.value = {
         labels: [
-          "Jan",
-          "Feb",
-          "Mar",
-          "Apr",
-          "May",
-          "Jun",
-          "Jul",
-          "Aug",
-          "Sep",
-          "Oct",
-          "Nov",
-          "Dec",
+          "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ],
         datasets: apiData.map((source: any, index: number) => {
-          const color = sourceColors[index % sourceColors.length];
+          // Dynamically read the correct color for the specific dataset
+          const baseColor = getCssColor(`--color-chart-${(index % 6) + 1}`, 1);
+          const bgColor = getCssColor(`--color-chart-${(index % 6) + 1}`, 0.1);
 
           return {
             label: source.sourceName,
             data: source.data,
-            borderColor: color,
-            backgroundColor: `${color}1A`, // 10% opacity
+            borderColor: baseColor,
+            backgroundColor: bgColor,
             borderWidth: 2,
-            pointBackgroundColor: color,
+            pointBackgroundColor: baseColor,
             pointBorderColor: "transparent",
             pointRadius: 0,
             pointHoverRadius: 4,
@@ -166,14 +171,23 @@ const fetchTimelineData = async () => {
   }
 };
 
+// Re-render chart when Nuxt Color Mode changes
+watch(() => colorMode.value, () => {
+  setTimeout(() => {
+    themeTrigger.value++;
+    fetchTimelineData();
+  }, 50); // Slight delay to ensure DOM has updated the CSS variables
+});
+
 watch(
   () => props.timelineData,
   () => {
     fetchTimelineData();
   },
-  {
-    deep: true,
-    immediate: true,
-  }
+  { deep: true, immediate: true }
 );
+
+onMounted(() => {
+  fetchTimelineData();
+});
 </script>

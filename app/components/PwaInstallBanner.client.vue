@@ -1,15 +1,10 @@
 <template>
   <div>
-    <!-- <div class="pwa-toast" style="bottom: auto; top: 1rem; border-color: red;">
-    <p>PwaInstall mounted</p>
-    <p>isInstallable (hook): {{ isInstallable }}</p>
-    <p>$pwa plugin (vite-pwa): {{ $pwa?.showInstallPrompt }}</p>
-    <p>isIOS: {{ isIOS }}</p>
-    <p>isInStandalone: {{ isInStandalone }}</p>
-    <p>showInstallUI: {{ showInstallUI }}</p>
-  </div> -->
     <transition name="fade">
-      <div v-if="showInstallUI" class="pwa-toast glass-panel">
+      <div 
+        v-if="showInstallUI" 
+        class="pwa-toast bg-surface-container-highest/95 backdrop-blur-xl border border-outline-variant/30 shadow-2xl"
+      >
         <p
           class="mb-4 font-headline text-sm font-bold text-on-surface uppercase tracking-wide"
         >
@@ -35,7 +30,7 @@
     <transition name="fade">
       <div
         v-if="isFirefox && !isInStandalone && !dismissedThisMonth"
-        class="pwa-toast glass-panel"
+        class="pwa-toast bg-surface-container-highest/95 backdrop-blur-xl border border-outline-variant/30 shadow-2xl"
       >
         <i18n-t
           keypath="auth.pwa.firefox_instructions"
@@ -62,7 +57,7 @@
     <transition name="fade">
       <div
         v-if="!showInstallUI && isIOS && !isInStandalone && !dismissedThisMonth"
-        class="pwa-toast glass-panel"
+        class="pwa-toast bg-surface-container-highest/95 backdrop-blur-xl border border-outline-variant/30 shadow-2xl"
       >
         <i18n-t
           keypath="auth.pwa.ios_instructions"
@@ -102,7 +97,6 @@ const isFirefox: boolean = import.meta.client
   : false;
 console.warn("isFirefox:", isFirefox);
 
-// const showInstallUI = ref<boolean>(false);
 const dismissedThisMonth = ref<boolean>(false);
 
 const checkSuppressed = (): void => {
@@ -122,13 +116,6 @@ console.warn("Checking if PWA install banner should be suppressed based on local
 
 checkSuppressed();
 
-// watchEffect(() => {
-//   // Figyeljük mind a saját hook-ot, mind a hivatalos Vite PWA plugint
-//   if ((isInstallable.value || $pwa?.showInstallPrompt) && !dismissedThisMonth.value) {
-//     showInstallUI.value = true;
-//   }
-// });
-
 const showInstallUI = computed(() => {
   return (isInstallable.value || $pwa?.showInstallPrompt) && !dismissedThisMonth.value;
 });
@@ -139,7 +126,6 @@ const installApp = async (): Promise<void> => {
   } else {
     await triggerInstall();
   }
-  // showInstallUI.value = false;
   dismissedThisMonth.value = true;
 };
 
@@ -149,7 +135,6 @@ const dismiss = (): void => {
   // Utilizing the non-null assertion operator (!) to satisfy strict string typing
   const today: string = new Date().toISOString().split("T")[0]!;
   localStorage.setItem("nusift_pwa_dismissed", today);
-  // showInstallUI.value = false;
   dismissedThisMonth.value = true;
 };
 </script>
@@ -176,8 +161,7 @@ const dismiss = (): void => {
   border-radius: 16px;
   z-index: 9999;
   text-align: center;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.8);
+  /* Hardkódolt border és box-shadow eltávolítva, ezt most a Tailwind kezeli a témának megfelelően! */
 }
 
 .min-btn-width {

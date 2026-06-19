@@ -37,7 +37,6 @@
     <main
       class="min-h-screen flex flex-col items-center justify-center px-8 py-6 max-w-md mx-auto relative z-10"
     >
-      <!-- LOGO & DYNAMIC HEADER -->
       <section class="w-full flex flex-col items-center mb-6">
         <div class="relative w-[125px] h-[125px] mb-4 shadow-xl rounded-xl">
           <div
@@ -81,17 +80,16 @@
         v-if="resetSuccessMessage"
         class="w-full mb-4 p-3 bg-primary-container/10 border border-primary-container/30 rounded-xl"
       >
-        <p class="text-xs font-label text-[#00E5FF] leading-tight text-center">
+        <p
+          class="text-xs font-label text-primary-container leading-tight text-center"
+        >
           {{ resetSuccessMessage }}
         </p>
       </div>
 
-      <!-- 1. PROGRESSIVE DISCLOSURE: EMAIL FORM VS BUTTON -->
       <section class="w-full">
         <Transition name="fade-slide" mode="out-in">
-          <!-- STATE A: EMAIL FORM EXPANDED -->
           <div v-if="showEmailForm || isResettingPassword" class="w-full">
-            <!-- UX Escape Hatch -->
             <button
               v-if="!isResettingPassword"
               @click="showEmailForm = false"
@@ -141,7 +139,7 @@
                 <template v-if="isRegistering" #help-text>
                   <p
                     v-if="!passwordError"
-                    class="text-[11px] text-zinc-500 ml-1 italic mt-1.5 leading-tight"
+                    class="text-[11px] text-on-surface-variant opacity-80 ml-1 italic mt-1.5 leading-tight"
                   >
                     {{ $t("auth.form.password_hint") }}
                   </p>
@@ -170,7 +168,6 @@
             </form>
           </div>
 
-          <!-- STATE B: CONTINUE WITH EMAIL BUTTON -->
           <div v-else class="w-full">
             <button
               @click="showEmailForm = true"
@@ -186,21 +183,19 @@
         </Transition>
       </section>
 
-      <!-- 2. DIVIDER -->
       <div
         v-if="!isResettingPassword && !showEmailForm"
         class="w-full relative flex items-center py-6"
       >
         <div class="flex-grow border-t border-outline-variant/15"></div>
         <span
-          class="flex-shrink mx-4 text-[9px] font-label font-bold text-zinc-500 tracking-[0.4em] uppercase"
+          class="flex-shrink mx-4 text-[9px] font-label font-bold text-on-surface-variant opacity-70 tracking-[0.4em] uppercase"
         >
           {{ $t("auth.prompts.divider_label") }}
         </span>
         <div class="flex-grow border-t border-outline-variant/15"></div>
       </div>
 
-      <!-- 3. OAUTH BUTTONS (At the top of the interaction zone) -->
       <section
         v-if="!isResettingPassword && !showEmailForm"
         class="w-full space-y-3"
@@ -209,7 +204,7 @@
           @click="handleOAuth('Google')"
           type="button"
           :disabled="isLoading"
-          class="flex items-center justify-center w-full bg-[#1e1e1e] hover:bg-[#252525] text-on-surface text-xs font-label font-semibold py-3 rounded-xl border border-outline-variant/10 transition-colors shadow-sm active:scale-[0.98] background-button-custom disabled:opacity-50 disabled:cursor-not-allowed"
+          class="flex items-center justify-center w-full bg-surface-container-high hover:bg-surface-container-highest text-on-surface text-xs font-label font-semibold py-3 rounded-xl border border-outline-variant/30 transition-colors shadow-sm active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg class="w-5 h-5 mr-3" fill="currentColor" viewBox="0 0 24 24">
             <path
@@ -234,7 +229,7 @@
         <button
           @click="handleOAuth('Apple')"
           :disabled="isLoading"
-          class="flex items-center justify-center w-full bg-black text-white hover:bg-zinc-900 text-xs font-label font-semibold py-3 rounded-xl transition-colors shadow-sm active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+          class="flex items-center justify-center w-full bg-on-surface text-surface hover:opacity-90 text-xs font-label font-semibold py-3 rounded-xl transition-all shadow-sm active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg class="w-5 h-5 mr-3" fill="currentColor" viewBox="0 0 24 24">
             <path
@@ -245,7 +240,6 @@
         </button>
       </section>
 
-      <!-- 4. AUTH TOGGLE MODE (Already have an account? Login) -->
       <div class="w-full mt-6 text-center space-y-2">
         <p
           v-if="!isResettingPassword"
@@ -275,16 +269,15 @@
           v-if="isResettingPassword"
           @click="cancelResetMode"
           :disabled="isLoading"
-          class="text-xs font-label mt-2 text-on-surface-variant hover:text-white transition-colors uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
+          class="text-xs font-label mt-2 text-on-surface-variant hover:text-on-surface transition-colors uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {{ $t("auth.buttons.back_to_login") }}
         </button>
       </div>
 
-      <!-- 5. FOOTER -->
       <footer class="mt-8 text-center w-full">
         <p
-          class="text-[10px] text-zinc-500 font-label uppercase tracking-[0.4em] mb-2 font-bold opacity-70"
+          class="text-[10px] text-on-surface-variant font-label uppercase tracking-[0.4em] mb-2 font-bold opacity-70"
         >
           {{ $t("auth.footer.encryption_label") }}
         </p>
@@ -316,7 +309,6 @@
       </footer>
     </main>
 
-    <!-- MODALS SECTION -->
     <div
       v-if="activeModal"
       class="fixed inset-0 z-[110] flex items-center justify-center px-4"
@@ -580,9 +572,6 @@ const handleAuth = async () => {
       activeLanguage.value,
     );
     if (success) {
-      //   localStorage.setItem("nusift_visited", "true");
-      //   localStorage.setItem("nusift_pending_email", email.value);
-
       const targetLang = activeLanguage.value as AvailableLocales;
       if (locale.value !== targetLang) {
         try {
@@ -606,8 +595,6 @@ const handleAuth = async () => {
   } else {
     const success = await authStore.loginIdentity(email.value, password.value);
     if (success) {
-      //   localStorage.setItem("nusift_visited", "true");
-
       const targetLang = (authStore.user?.preferredLanguage ||
         activeLanguage.value) as AvailableLocales;
       if (locale.value !== targetLang) {
@@ -635,7 +622,6 @@ const handleAuth = async () => {
       }
     } else {
       if (authStore.authError === "UNVERIFIED_ACCOUNT") {
-        // localStorage.setItem("nusift_pending_email", email.value);
         const targetLang = activeLanguage.value as AvailableLocales;
         if (locale.value !== targetLang) {
           try {
@@ -740,10 +726,7 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
   );
 
   if (success) {
-    // Persistent flag for future sessions
     localStorage.setItem("nusift_visited", "true");
-
-    // Sync the live reactive state for the current SPA session
     isRegistering.value = false;
 
     const targetLang = (authStore.user?.preferredLanguage ||
@@ -752,9 +735,7 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
     if (locale.value !== targetLang) {
       try {
         await setLocale(targetLang);
-      } catch (e) {
-        // Intentionally left blank to swallow Vue Router cancellation warnings
-      }
+      } catch (e) {}
     }
 
     const dashboardRoute = localePath({ name: "dashboard-custom" }, targetLang);
@@ -779,14 +760,6 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
 </script>
 
 <style scoped>
-.background-button-custom {
-  background: linear-gradient(
-    135deg,
-    rgba(80, 80, 80, 0.8) 0%,
-    rgba(121, 121, 121, 0.6) 100%
-  ) !important;
-}
-
 /* UI Transitions for Progressive Disclosure */
 .fade-slide-enter-active,
 .fade-slide-leave-active {

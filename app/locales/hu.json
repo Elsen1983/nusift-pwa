@@ -404,6 +404,9 @@
             "nickname": "Becenév (nyilvános)",
             "phoneNumber": "Telefonszám",
             "dateOfBirth": "Születési Dátum",
+            "aboutMyself": "Röviden magamról",
+            "aboutMyselfPlaceHolder": "Amit itt megadsz, segít az AI-ügynöknek jobban megismerni téged.",
+            "invalidPhoneNumber": "Invalid phone number",
             "saveIdentityButtonDisabled": "Személyes Adatok Mentése",
             "saveIdentityButtonEnabled": "Mentése Folyamatban..."
         },

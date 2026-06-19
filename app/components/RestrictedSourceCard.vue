@@ -1,20 +1,20 @@
 <template>
-  <div class="bg-surface-container-lowest rounded-xl p-3 md:p-5 flex flex-col gap-4 outline outline-2 outline-warning/5 w-full relative overflow-hidden">
+  <div class="bg-surface-container-lowest rounded-xl p-3 md:p-5 flex flex-col gap-4 border border-warning/30 w-full relative overflow-hidden">
     <div class="absolute top-0 right-0 w-32 h-32 bg-warning/5 blur-3xl rounded-full pointer-events-none"></div>
 
     <div class="flex-grow space-y-2 relative z-10">
       
       <div class="flex flex-col items-start gap-2">
         <div>
-          <h4 class="font-body font-bold text-orange-500 text-lg">
+          <h4 class="font-body font-bold text-warning text-lg">
             {{ source.name || getDomain(source.url) }}
           </h4>
-          <p class="font-label text-xs text-outline flex items-center gap-2 mt-0.5" v-if="getFullBreadcrumb(source.url)">
+          <p class="font-label text-xs text-on-surface-variant flex items-center gap-2 mt-0.5" v-if="getFullBreadcrumb(source.url)">
             URL: {{ getFullBreadcrumb(source.url) }}
           </p>
         </div>
         
-        <span class="inline-flex items-center gap-1 px-2 py-1 mt-1 rounded text-[10px] font-label outline outline-1 bg-error/5 text-texterror outline-error/30">
+        <span class="inline-flex items-center gap-1 px-2 py-1 mt-1 rounded text-[10px] font-label border bg-error/10 text-error border-error/30">
           <span class="material-symbols-outlined text-[12px]">shield_lock</span>
           {{ $t('sourceManager.badges.publisher_blocked') }}
         </span>

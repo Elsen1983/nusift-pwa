@@ -1,16 +1,17 @@
 <template>
-  <div class="bg-surface-container-lowest rounded-xl p-3 md:p-5 flex flex-col gap-4 outline outline-2 outline-outline-variant/80 w-full">
-    <div class="flex-grow space-y-1 opacity-60 grayscale hover:grayscale-0 transition-all">
+  <div class="bg-surface-container-lowest rounded-xl p-3 md:p-5 flex flex-col gap-4 border border-outline-variant/80 w-full">
+    <!-- REFACTORED: Changed opacity-60 to opacity-80 to preserve WCAG contrast in Light Mode -->
+    <div class="flex-grow space-y-1 opacity-80 grayscale hover:grayscale-0 hover:opacity-100 transition-all">
       <h4 class="font-body font-bold text-on-surface-variant text-lg">
         {{ source.name || getDomain(source.url) }}
       </h4>
-      <p class="font-label text-xs text-outline flex items-center gap-2" v-if="getFullBreadcrumb(source.url)">
-        <span>URL:</span>
+      <p class="font-label text-xs flex items-center gap-2" v-if="getFullBreadcrumb(source.url)">
+        <span class="text-on-surface-variant">URL:</span>
         <a 
           :href="source.url" 
           target="_blank" 
           rel="noopener noreferrer"
-          class="hover:text-[#00E5FF] transition-colors underline decoration-outline/30 underline-offset-2 hover:decoration-[#00E5FF]/50 pointer-events-auto"
+          class="text-on-surface-variant hover:text-primary-container transition-colors underline decoration-outline-variant/30 underline-offset-2 hover:decoration-primary-container/50 pointer-events-auto"
         >
           {{ getFullBreadcrumb(source.url) }}
         </a>
@@ -37,7 +38,7 @@
         <button 
           @click="$emit('activate', source.id)" 
           :disabled="isQuotaFull || isProcessing" 
-          class="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-primary-container/30 bg-primary-container/10 text-primary-container text-[10px] font-bold uppercase tracking-widest hover:bg-primary-container/20 hover:shadow-[0_0_10px_rgba(0,229,255,0.2)] transition-all duration-300 disabled:opacity-30 disabled:cursor-not-allowed"
+          class="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-primary-container/30 bg-primary-container/10 text-primary-container text-[10px] font-bold uppercase tracking-widest hover:bg-primary-container/20 hover:shadow-md transition-all duration-300 disabled:opacity-30 disabled:cursor-not-allowed"
         >
           <span class="material-symbols-outlined text-[16px]" :style="{ fontVariationSettings: `'FILL' 1` }">play_arrow</span>
           <span>{{ $t('sourceManager.suspended_zone.btn_activate') }}</span>
@@ -47,7 +48,7 @@
       <button 
         @click="$emit('delete', source.id)" 
         :disabled="isProcessing" 
-        class="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-error/50 bg-error/5 text-error text-[10px] font-bold uppercase tracking-widest hover:bg-error/15 hover:border-error/40 transition-all duration-300 disabled:opacity-50 shadow-[0_0_10px_rgba(251,0,31,0.25)]"
+        class="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-error/50 bg-error/5 text-error text-[10px] font-bold uppercase tracking-widest hover:bg-error/15 hover:border-error/40 transition-all duration-300 disabled:opacity-50 shadow-sm shadow-error/20"
       >
         <span class="material-symbols-outlined text-[16px]">delete</span>
         <span>{{ $t('sourceManager.active_zone.btn_delete') }}</span>
@@ -70,7 +71,6 @@ defineProps<{
 
 defineEmits(['activate', 'delete', 'rediscover']);
 
-// Helyi helper függvények
 const getDomain = (url: string) => {
   try { return new URL(url).hostname.replace(/^www\./, ""); } 
   catch { return url; }
@@ -82,9 +82,6 @@ const getFullBreadcrumb = (url: string) => {
     const domain = parsedUrl.hostname.replace(/^www\./, "");
     const path = parsedUrl.pathname.replace(/^\/|\/$/g, "");
     if (!path) return domain;
-    
-    // Safely replacing the internal path slashes with spaced slashes, 
-    // and appending it to the domain with a spaced slash.
     return `${domain} / ${path.replace(/\//g, " / ")}`;
   } catch { 
     return ""; 
@@ -95,20 +92,20 @@ const getBadges = (status: string) => {
   const badges = [];
   switch (status) {
     case "ACTIVE":
-      badges.push({ label: t("sourceManager.badges.verified"), icon: "verified_user", classes: "bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]", iconClasses: "" });
-      badges.push({ label: t("sourceManager.badges.rss"), icon: "bolt", classes: "bg-[#00363d]/40 text-neon-cyan outline-[#00363d]", iconClasses: "" });
+      badges.push({ label: t("sourceManager.badges.verified"), icon: "verified_user", classes: "bg-success/15 text-success outline-success/40", iconClasses: "" });
+      badges.push({ label: t("sourceManager.badges.rss"), icon: "bolt", classes: "bg-primary-container/15 text-primary-container outline-primary-container/40", iconClasses: "" });
       break;
     case "PENDING_DISCOVERY":
       badges.push({ label: t("sourceManager.badges.unknown"), icon: "travel_explore", classes: "bg-surface-variant/50 text-on-surface-variant outline-outline-variant", iconClasses: "" });
-      badges.push({ label: t("sourceManager.badges.pending"), icon: "hourglass_empty", classes: "bg-[#3a3002]/40 text-tertiary-fixed outline-[#3a3002]", iconClasses: "animate-spin-slow" });
+      badges.push({ label: t("sourceManager.badges.pending"), icon: "hourglass_empty", classes: "bg-warning/15 text-warning outline-warning/40", iconClasses: "animate-spin-slow" });
       break;
     case "NO_RSS_FOUND":
-      badges.push({ label: t("sourceManager.badges.verified"), icon: "verified_user", classes: "bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]", iconClasses: "" });
+      badges.push({ label: t("sourceManager.badges.verified"), icon: "verified_user", classes: "bg-success/15 text-success outline-success/40", iconClasses: "" });
       badges.push({ label: t("sourceManager.badges.direct"), icon: "public", classes: "bg-surface-variant/50 text-on-surface-variant outline-outline-variant", iconClasses: "" });
       break;
     case "FAILED":
     case "DOMAIN_DEAD":
-      badges.push({ label: t("sourceManager.badges.error"), icon: "error", classes: "bg-error/20 text-error outline-error/40", iconClasses: "" });
+      badges.push({ label: t("sourceManager.badges.error"), icon: "error", classes: "bg-error/10 text-error outline-error/40", iconClasses: "" });
       break;
   }
   return badges;

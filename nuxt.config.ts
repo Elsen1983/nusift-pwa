@@ -14,22 +14,36 @@ export default defineNuxtConfig({
   compatibilityDate: "2024-04-03",
   devtools: { enabled: true },
 
+  css: ["~/assets/css/main.css"],
+
   // ANCHOR VITE-OPTIMIZATION
   // Pre-bundles dynamically injected dependencies to prevent Vite from
   // hard-reloading the browser during development.
   vite: {
     optimizeDeps: {
       include: ["@vue/devtools-core", "@vue/devtools-kit", "workbox-window"],
-      // 'vue-i18n', 'vue-i18n-bridge', 'vue-i18n-legacy', 'vue-i18n-composable'
     },
   },
 
   // ANCHOR MODULE-REGISTRATION
-  modules: ["@nuxtjs/tailwindcss", "@pinia/nuxt", "@vite-pwa/nuxt", '@nuxt/icon', "@nuxtjs/i18n"],
+  modules: [
+    "@nuxtjs/tailwindcss", 
+    "@pinia/nuxt", 
+    "@vite-pwa/nuxt", 
+    '@nuxt/icon', 
+    "@nuxtjs/i18n",
+    "@nuxtjs/color-mode" // ÚJ: Color mode modul hozzáadva
+  ],
+
+  // ANCHOR COLOR-MODE CONFIGURATION
+  colorMode: {
+    classSuffix: '', // Fontos: a Tailwind alapértelmezetten a '.dark' osztályt keresi, nem a '.dark-mode'-ot
+    preference: 'dark', // Alapértelmezett beállítás a rendszer szerint
+    fallback: 'dark' // Ha nem tudja megállapítani, sötét legyen
+  },
 
   // ANCHOR I18N-CONFIGURATION
   // ts-ignore is used to bypass a type error in the i18n module configuration, which is a known issue with the current version of @nuxtjs/i18n. This allows us to maintain type safety for the rest of the configuration while still using the i18n module effectively.
-  
   i18n: {
     strategy: 'prefix_except_default',
     defaultLocale: 'en',
@@ -140,24 +154,9 @@ export default defineNuxtConfig({
   },
 
   // ANCHOR TAILWIND-SYSTEM-TOKENS
+  // A konfiguráció áthelyezve a tailwind.config.js-be a duplikáció elkerülése végett
   tailwindcss: {
-    config: {
-      theme: {
-        extend: {
-          fontFamily: {
-            headline: ["Orbitron", "sans-serif"],
-            body: ["Rajdhani", "sans-serif"],
-            label: ["Roboto Mono", "monospace"],
-          },
-          colors: {
-            background: "#131313",
-            surface: "#1e1e1e",
-            "primary-container": "#00ffff",
-            "on-primary-container": "#000000",
-          },
-        },
-      },
-    },
+    // Üresen hagyva, mivel a tailwind.config.js kezeli a színeket és a témát
   },
 
   // ANCHOR CUSTOM-ROUTING

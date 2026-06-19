@@ -1,7 +1,8 @@
 <template>
   <div>
+    <!-- REFACTORED: Removed hardcoded #131313 gradients and black borders -->
     <div
-      class="fixed top-[60px] inset-x-0 mx-auto w-full max-w-2xl bg-gradient-to-b from-[#131313] via-[#131313] to-surface-container-low shadow-[0_8px_16px_-4px_rgba(0,0,0,0.3)] z-[90] border-b border-black"
+      class="fixed top-[60px] inset-x-0 mx-auto w-full max-w-2xl bg-surface/95 backdrop-blur-md shadow-sm z-[90] border-b border-outline-variant/30"
     >
       <div class="px-4 py-3 flex gap-3 flex-row relative">
         <div class="flex items-end gap-3 w-full">
@@ -13,9 +14,10 @@
               class="font-label text-[10px] uppercase tracking-wider font-bold text-on-surface-variant"
               >{{ $t("dashboard.header.date_label") }}</span
             >
+            <!-- REFACTORED: Removed #00E5FF outline/border, using primary-container -->
             <div
               @click="toggleDateDropdown"
-              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px] border border-solid border-[#00E5FF]/20 outline outline-1 outline-[#00E5FF]/20"
+              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px] border border-solid border-primary-container/30 outline outline-1 outline-primary-container/20"
             >
               <div class="flex flex-col w-full h-full justify-center min-w-0">
                 <div class="flex justify-between items-center w-full min-w-0">
@@ -34,7 +36,7 @@
             </div>
             <div
               v-show="isDateDropdownOpen"
-              class="absolute top-full mt-1 left-0 w-full z-[60] shadow-2xl bg-surface-container-highest border border-outline-variant/30 rounded-lg space-y-1 p-3 pt-2"
+              class="absolute top-full mt-1 left-0 w-full z-[60] shadow-xl bg-surface-container-highest border border-outline-variant/30 rounded-lg space-y-1 p-3 pt-2"
             >
               <div
                 v-for="option in dateOptions"
@@ -68,9 +70,10 @@
               class="font-label text-[10px] uppercase tracking-wider font-bold text-on-surface-variant"
               >{{ $t("dashboard.header.categories_label") }}</span
             >
+            <!-- REFACTORED: Removed #00E5FF outline/border -->
             <div
               @click="toggleCategoryDropdown"
-              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px] border border-solid border-[#00E5FF]/20 outline outline-1 outline-[#00E5FF]/20"
+              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px] border border-solid border-primary-container/30 outline outline-1 outline-primary-container/20"
             >
               <div class="flex flex-col w-full h-full justify-center min-w-0">
                 <div class="flex justify-between items-center w-full min-w-0">
@@ -92,14 +95,15 @@
             </div>
             <div
               v-show="isCategoryDropdownOpen"
-              class="absolute top-full mt-1 left-0 w-full z-[60] shadow-2xl bg-surface-container-highest border border-outline-variant/30 rounded-lg flex flex-col gap-y-2 p-3 pt-2 max-h-48 overflow-y-auto"
+              class="absolute top-full mt-1 left-0 w-full z-[60] shadow-xl bg-surface-container-highest border border-outline-variant/30 rounded-lg flex flex-col gap-y-2 p-3 pt-2 max-h-48 overflow-y-auto"
             >
+              <!-- REFACTORED: text-[#00E5FF] changed to text-primary-container -->
               <div
                 @click="selectCategory('All Categories')"
                 :class="[
                   'text-[13px] font-bold hover:text-primary-container transition-colors py-0.5 cursor-pointer',
                   selectedCategories.length === 0
-                    ? 'text-[#00E5FF]'
+                    ? 'text-primary-container'
                     : 'text-on-surface-variant/100',
                 ]"
               >
@@ -112,7 +116,7 @@
                 :class="[
                   'text-[13px] font-bold hover:text-primary-container transition-colors py-0.5 cursor-pointer',
                   selectedCategories.includes(cat.value)
-                    ? 'text-[#00E5FF]'
+                    ? 'text-primary-container'
                     : 'text-on-surface-variant/90',
                 ]"
               >
@@ -122,13 +126,14 @@
           </div>
 
           <div class="flex-shrink-0 flex items-center justify-center">
+            <!-- REFACTORED: Removed hardcoded shadow and #00E5FF, injected CSS variables -->
             <button
               @click="applyFilters"
               :disabled="!hasPendingFilters || isRefreshing"
               :class="[
                 'flex justify-center items-center p-2 rounded-lg transition-all h-[36px] w-[36px] border',
                 hasPendingFilters
-                  ? 'bg-surface-container-highest text-[#00E5FF] border-[#00E5FF]/30 shadow-[0_0_12px_rgba(0,229,255,0.15)] hover:bg-surface-bright'
+                  ? 'bg-surface-container-highest text-primary-container border-primary-container/30 shadow-[0_0_12px_rgb(var(--color-primary-container)/0.15)] hover:bg-surface-bright'
                   : 'bg-surface-container-highest text-on-surface-variant/50 border-transparent disabled:opacity-50 disabled:cursor-not-allowed',
               ]"
             >
@@ -146,7 +151,7 @@
     </div>
 
     <main
-      class="px-4 space-y-3 max-w-2xl mx-auto pt-[90px]"
+      class="px-4 space-y-2 max-w-2xl mx-auto pt-[90px]"
       @click="closeArticleInteractions"
     >
       <NewsCard
@@ -159,20 +164,22 @@
         @toggleMenu="toggleActionMenu"
         @openOverlay="openOverlay"
         @openRating="openRatingModal"
+        style="margin-bottom: 0.75rem !important;"
       />
 
       <section class="flex justify-center items-center gap-2 py-4">
         <div class="flex items-center gap-3 text-xs font-medium">
-          <button class="text-[#00E5FF] font-bold transition-colors">1</button>
+          <!-- REFACTORED: text-[#00E5FF] changed to text-primary-container -->
+          <button class="text-primary-container font-bold transition-colors">1</button>
           <span class="text-outline-variant/30 text-[10px]">|</span>
           <button
-            class="text-on-surface-variant hover:text-[#00E5FF] transition-colors"
+            class="text-on-surface-variant hover:text-primary-container transition-colors"
           >
             2
           </button>
           <span class="text-outline-variant/30 text-[10px]">|</span>
           <button
-            class="text-on-surface-variant hover:text-[#00E5FF] transition-colors"
+            class="text-on-surface-variant hover:text-primary-container transition-colors"
           >
             3
           </button>
@@ -210,7 +217,6 @@ const { t } = useI18n();
 const authStore = useAuthStore();
 
 const isUserFreeTier = computed(() => {
-  // Replace 'tier' with the actual property name if different in your UserProfile interface
   return !authStore.user?.tier || authStore.user.tier === "FREE";
 });
 
@@ -218,7 +224,6 @@ definePageMeta({
   layout: "app-layout",
 });
 
-// Define the shape of the data coming from the database/Pinia
 interface InterestNode {
   id: string;
   name: string;
@@ -336,7 +341,6 @@ const articles = ref<Article[]>([
   },
 ]);
 
-// Decoupled Option Arrays
 const dateOptions = [
   { key: "today", value: "Today", isPro: false },
   { key: "last_48h", value: "Last 48h (Free)", isPro: false },
@@ -344,21 +348,16 @@ const dateOptions = [
   { key: "last_2w", value: "Last 2 Week (Pro)", isPro: true },
 ];
 
-// ANCHOR: Dynamic Category Mapping from Pinia
 const availableCategories = computed<{ key: string; value: string }[]>(() => {
-  // Fallback to empty array if user data isn't loaded yet
   if (!authStore.user?.topInterests) return [];
 
-  // Define a local type for clarity
   type CategoryOption = { key: string; value: string };
 
-  // 1. Map the DB structure to the UI structure and explicitly cast the array type
   const mappedCategories: CategoryOption[] = authStore.user.topInterests.map((interest: InterestNode) => ({
     key: interest.id,
     value: interest.name
   }));
 
-  // 2. Sort alphabetically with strictly typed parameters
   return mappedCategories.sort((a: CategoryOption, b: CategoryOption) => {
     const translatedA = t(`dashboard.filters.categories.${a.key}`);
     const translatedB = t(`dashboard.filters.categories.${b.key}`);
@@ -377,11 +376,9 @@ const appliedSelectedDateKey = ref("today");
 const appliedSelectedCategories = ref<string[]>([]);
 const isRefreshing = ref(false);
 
-// Format the selected categories string using the translated values
 const localizedSelectedCategories = computed(() => {
   return selectedCategories.value
     .map((val) => {
-      // ANCHOR: Added .value to availableCategories
       const matchedCategory = availableCategories.value.find(
         (c: { key: string; value: string }) => c.value === val,
       );

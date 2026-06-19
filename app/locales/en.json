@@ -405,7 +405,7 @@
             "phoneNumber": "Phone Number",
             "dateOfBirth": "Date of Birth",
             "aboutMyself": "Briefly about myself",
-            "noRegionsFound": "No regions found.",
+            "aboutMyselfPlaceHolder": "What you provide here helps the AI ​​agent get to know you better.",
             "invalidPhoneNumber": "Invalid phone number",
             "saveIdentityButtonDisabled": "Save Personal Details",
             "saveIdentityButtonEnabled": "Saving..."

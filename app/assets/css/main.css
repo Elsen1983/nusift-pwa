@@ -1,4 +1,3 @@
-/* assets/css/main.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -6,7 +5,103 @@
 @font-face {
   font-family: 'Rajdhani';
   font-style: normal;
-  font-weight: 400; /* A fájlod neve 'regular'-t tartalmaz, tehát ez 400-as súly */
+  font-weight: 400;
   font-display: swap;
   src: url('/fonts/rajdhani-v17-latin-regular.woff2') format('woff2');
+}
+
+@layer base {
+  /* ALAPÉRTELMEZETT: SÖTÉT TÉMA (A Te eredeti dizájnod) */
+  :root {
+    --color-background: 19 19 19;
+    --theme-bg-opacity: 1;
+    --color-surface: 19 19 19;
+    
+    --color-surface-container-lowest: 12 12 12;
+    --color-surface-container-low: 28 27 27;
+    --color-surface-container: 32 31 31;
+    --color-surface-container-high: 42 42 42;
+    --color-surface-container-highest: 53 53 52;
+    --color-surface-bright: 57 57 57;
+
+    --color-on-background: 229 226 225;
+    --color-on-surface: 229 226 225;
+    --color-on-surface-variant: 192 200 202;
+    --color-outline-variant: 64 72 74;
+
+    --color-primary: 255 255 255;
+    --color-primary-container: 0 229 255;
+    --color-on-primary-container: 0 54 61;
+
+    --color-error: 255 67 89; 
+    --color-on-error: 255 255 255;
+    --color-warning: 254 201 49;      /* Neon Yellow */
+    --color-on-warning: 51 45 20;     /* Very dark yellow/brown */
+
+    /* Semantic Accents (Dark Mode) */
+    --color-semantic-rating: 242 201 76;      /* #F2C94C (Golden Yellow) */
+    --color-semantic-paywall: 0 191 165;      /* #00BFA5 (Neon Teal) */
+    --color-semantic-ai: 0 229 255;           /* #00E5FF (Neon Cyan) */
+    --color-semantic-ai-variant: 136 226 242; /* #88E2F2 (Muted Cyan for tags) */
+
+    --color-success: 0 191 165;       /* Neon Teal */
+    --color-on-success: 13 41 46;     /* Very dark teal for contrast */
+
+    /* Chart.js és Node Színek */
+    --color-chart-1: 0 229 255;
+    --color-chart-2: 254 201 49;
+    --color-chart-3: 255 107 107;
+    --color-chart-4: 168 85 247;
+    --color-chart-5: 16 185 129;
+    --color-chart-6: 59 130 246;
+  }
+
+  /* VILÁGOS TÉMA ("Sovereign Dim" - Low-emission, matte E-ink/Steel palette to prevent eye strain) */
+  .light {
+    /* Base Backgrounds: #F8FAFC */
+    --color-background: 248 250 252;
+    --color-surface: 248 250 252;
+    
+    /* Elevation Tiers (Progressing through your 4 colors) */
+    --color-surface-container-lowest: 255 255 255; /* Pure white for deep contrast */
+    --color-surface-container-low: 233 242 252;    /* Midpoint to #D9EAFD */
+    --color-surface-container: 217 234 253;        /* #D9EAFD */
+    --color-surface-container-high: 188 204 220;   /* #BCCCDC */
+    --color-surface-container-highest: 154 166 178;/* #9AA6B2 */
+    --color-surface-bright: 248 250 252;
+
+    /* Typography & Outlines */
+    --color-on-background: 28 31 35;
+    --color-on-surface: 28 31 35;
+    --color-on-surface-variant: 71 85 105; /* Darkened slate for readability */
+    --color-outline-variant: 154 166 178;  /* #9AA6B2 */
+
+    /* Primary Accents */
+    --color-primary: 0 101 169;
+    --color-primary-container: 0 101 169;
+    --color-on-primary-container: 255 255 255; /* Changed to white to ensure contrast against the 0 101 169 container */
+
+    /* Status */
+    --color-error: 186 26 26; 
+    --color-on-error: 255 255 255;
+    --color-warning: 217 119 6;       /* Deep Amber (Tailwind amber-600) */
+    --color-on-warning: 255 251 235;  /* Light Amber (Tailwind amber-50) */
+
+    /* Semantic Accents (Light Mode) */
+    --color-semantic-rating: 217 119 6;       /* Tailwind amber-600 */
+    --color-semantic-paywall: 15 118 110;     /* Tailwind teal-700 */
+    --color-semantic-ai: 2 132 199;           /* Tailwind sky-600 */
+    --color-semantic-ai-variant: 3 105 161;   /* Tailwind sky-700 */
+
+    --color-success: 15 118 110;      /* Deep Teal (Tailwind teal-700) */
+    --color-on-success: 204 251 241;  /* Light Teal (Tailwind teal-50) */
+
+    /* Chart.js és Node Színek (sötétebb, kontrasztosabb tónusok) */
+    --color-chart-1: 0 101 169;
+    --color-chart-2: 217 119 6;
+    --color-chart-3: 220 38 38;
+    --color-chart-4: 147 51 234;
+    --color-chart-5: 5 150 105;
+    --color-chart-6: 37 99 235;
+  }
 }

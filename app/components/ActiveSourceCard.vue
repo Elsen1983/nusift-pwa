@@ -1,12 +1,9 @@
 <template>
   <div
-    class="glass-card rounded-2xl p-3 flex flex-col space-y-3 border-2 transition-all relative"
-    :style="{
-      borderColor: 'rgba(0, 229, 255, 0.1)',
-    }"
+    class="bg-surface-container-low backdrop-blur-md rounded-2xl p-3 flex flex-col space-y-3 border border-primary-container/20 transition-all relative"
   >
     <div class="flex-grow space-y-1">
-      <h4 class="text-[#00E5FF] font-headline text-[16px] font-bold">
+      <h4 class="text-primary-container font-headline text-[16px] font-bold">
         {{ source.name || getDomain(source.url) }}
       </h4>
       <p
@@ -18,7 +15,7 @@
           :href="source.url" 
           target="_blank" 
           rel="noopener noreferrer"
-          class="hover:text-[#00E5FF] transition-colors underline decoration-on-surface-variant/30 underline-offset-2 hover:decoration-[#00E5FF]/50"
+          class="hover:text-primary-container transition-colors underline decoration-on-surface-variant/30 underline-offset-2 hover:decoration-primary-container/50"
         >
           {{ getFullBreadcrumb(source.url) }}
         </a>
@@ -47,7 +44,7 @@
       <button
         @click="$emit('suspend', source.id)"
         :disabled="isProcessing"
-        class="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-surface-variant/20 outline outline-1 outline-white/50 text-on-surface text-[10px] font-bold uppercase tracking-widest hover:bg-surface-variant/40 hover:text-white transition-all duration-300 disabled:opacity-50"
+        class="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-surface-variant/20 outline outline-1 outline-outline-variant text-on-surface text-[10px] font-bold uppercase tracking-widest hover:bg-surface-variant/40 hover:text-on-surface transition-all duration-300 disabled:opacity-50"
       >
         <span
           class="material-symbols-outlined text-[16px]"
@@ -59,7 +56,7 @@
       <button
         @click="$emit('delete', source.id)"
         :disabled="isProcessing"
-        class="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-error/50 bg-error/5 text-error text-[10px] font-bold uppercase tracking-widest hover:bg-error/15 hover:border-error/40 transition-all duration-300 disabled:opacity-50 shadow-[0_0_10px_rgba(251,0,31,0.25)]"
+        class="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-error/50 bg-error/5 text-error text-[10px] font-bold uppercase tracking-widest hover:bg-error/15 hover:border-error/40 transition-all duration-300 disabled:opacity-50 shadow-sm shadow-error/20"
       >
         <span class="material-symbols-outlined text-[16px]">delete</span>
         <span>{{ $t("sourceManager.active_zone.btn_delete") }}</span>
@@ -80,7 +77,6 @@ defineProps<{
 
 defineEmits(["suspend", "delete"]);
 
-// Helyi helper függvények a formázáshoz
 const getDomain = (url: string) => {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -95,9 +91,6 @@ const getFullBreadcrumb = (url: string) => {
     const domain = parsedUrl.hostname.replace(/^www\./, "");
     const path = parsedUrl.pathname.replace(/^\/|\/$/g, "");
     if (!path) return domain;
-    
-    // Safely replacing the internal path slashes with spaced slashes, 
-    // and appending it to the domain with a spaced slash.
     return `${domain} / ${path.replace(/\//g, " / ")}`;
   } catch { 
     return ""; 
@@ -111,13 +104,13 @@ const getBadges = (status: string) => {
       badges.push({
         label: t("sourceManager.badges.verified"),
         icon: "verified_user",
-        classes: "bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]",
+        classes: "bg-success/15 text-success outline-success/40",
         iconClasses: "",
       });
       badges.push({
         label: t("sourceManager.badges.rss"),
         icon: "bolt",
-        classes: "bg-[#00363d]/40 text-neon-cyan outline-[#00363d]",
+        classes: "bg-primary-container/15 text-primary-container outline-primary-container/40",
         iconClasses: "",
       });
       break;
@@ -132,7 +125,7 @@ const getBadges = (status: string) => {
       badges.push({
         label: t("sourceManager.badges.pending"),
         icon: "hourglass_empty",
-        classes: "bg-[#3a3002]/40 text-tertiary-fixed outline-[#3a3002]",
+        classes: "bg-warning/15 text-warning outline-warning/40",
         iconClasses: "animate-spin-slow",
       });
       break;
@@ -140,7 +133,7 @@ const getBadges = (status: string) => {
       badges.push({
         label: t("sourceManager.badges.verified"),
         icon: "verified_user",
-        classes: "bg-[#194d56]/40 text-[#b9ebf5] outline-[#194d56]",
+        classes: "bg-success/15 text-success outline-success/40",
         iconClasses: "",
       });
       badges.push({
@@ -156,7 +149,7 @@ const getBadges = (status: string) => {
       badges.push({
         label: t("sourceManager.badges.error"),
         icon: "error",
-        classes: "bg-error/20 text-error outline-error/40",
+        classes: "bg-error/10 text-error outline-error/40",
         iconClasses: "",
       });
       break;
@@ -168,25 +161,5 @@ const getBadges = (status: string) => {
 <style scoped>
 .animate-spin-slow {
   animation: spin 3s linear infinite;
-}
-.glass-card {
-  background: rgba(17, 16, 16, 0.8);
-  backdrop-filter: blur(12px);
-}
-.text-cursor {
-  display: inline-block;
-  width: 2px;
-  height: 1.2em;
-  background-color: #00e5ff;
-  animation: blink 1s step-end infinite;
-}
-@keyframes blink {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0;
-  }
 }
 </style>

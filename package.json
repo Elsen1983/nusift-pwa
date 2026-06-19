@@ -9,10 +9,11 @@
     "preview": "nuxt preview",
     "postinstall": "prisma generate",
     "prisma:studio": "prisma studio",
-    "clean": "nuxi clean"
-    ,"normalize-avatars": "node ./scripts/normalize-avatars.js"
+    "clean": "nuxi clean",
+    "normalize-avatars": "node ./scripts/normalize-avatars.js"
   },
   "dependencies": {
+    "@nuxtjs/color-mode": "^4.0.1",
     "@nuxtjs/tailwindcss": "^6.14.0",
     "@pinia/nuxt": "^0.11.3",
     "@prisma/adapter-pg": "^7.8.0",

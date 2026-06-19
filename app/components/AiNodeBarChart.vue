@@ -37,23 +37,13 @@ const props = defineProps<{
   nodes: Array<{ text: string; value: number }>
 }>();
 
-// Sovereign UI Colors for the bars
-const sourceColors = [
-  "#00E5FF", 
-  "#fec931", 
-  "#ff6b6b", 
-  "#a855f7", 
-  "#10b981", 
-  "#3b82f6"
-];
+const sourceColors = Array.from({length: 6}, (_, i) => `rgb(var(--color-chart-${i + 1}))`);
 
-// Sort nodes by weight (highest first) for a standard top-down bar chart look
 const sortedNodes = computed(() => {
   if (!props.nodes) return [];
   return [...props.nodes].sort((a, b) => b.value - a.value);
 });
 
-// Find the maximum value to calculate percentage widths dynamically
 const maxValue = computed(() => {
   if (!sortedNodes.value.length) return 1;
   return Math.max(...sortedNodes.value.map(n => n.value));

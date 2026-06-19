@@ -13,8 +13,8 @@
             :class="[
               'relative p-3 rounded-xl border text-left transition-all duration-100',
               selectedCategory === 'read'
-                ? 'bg-primary-container/20 border-primary shadow-[0_0_15px_rgba(0,229,255,0.2)]'
-                : 'bg-[#00444c] border-primary-container hover:scale-110 animate-pulse-very-slow',
+                ? 'bg-primary-container/20 border-primary shadow-[0_0_15px_rgb(var(--color-primary-container)/0.2)]'
+                : 'bg-primary-container/15 border-primary-container/50 hover:scale-110 animate-pulse-very-slow',
             ]"
           >
             <span
@@ -32,8 +32,8 @@
             :class="[
               'relative p-3 rounded-xl border text-left transition-all duration-100',
               selectedCategory === 'shared'
-                ? 'bg-primary-container/20 border-primary shadow-[0_0_15px_rgba(0,229,255,0.2)]'
-                : 'bg-[#00444c] border-primary-container hover:scale-110 animate-pulse-very-slow',
+                ? 'bg-primary-container/20 border-primary shadow-[0_0_15px_rgb(var(--color-primary-container)/0.2)]'
+                : 'bg-primary-container/15 border-primary-container/50 hover:scale-110 animate-pulse-very-slow',
             ]"
           >
             <span
@@ -54,7 +54,7 @@
           'z-20 w-24 h-24 rounded-full border-2 flex flex-col items-center justify-center transition-all duration-500 ease-out shadow-lg',
           isExpanded
             ? 'bg-surface-container-highest border-primary scale-90'
-            : 'bg-[#00444c] border-primary-container hover:scale-110 animate-pulse-slow',
+            : 'bg-primary-container/15 border-primary-container hover:scale-110 animate-pulse-slow',
         ]"
       >
         <span
@@ -81,8 +81,8 @@
             :class="[
               'relative p-3 rounded-xl border text-right transition-all duration-100',
               selectedCategory === 'saved'
-                ? 'bg-primary-container/20 border-primary shadow-[0_0_15px_rgba(0,229,255,0.2)]'
-                : 'bg-[#00444c] border-primary-container hover:scale-110 animate-pulse-very-slow',
+                ? 'bg-primary-container/20 border-primary shadow-[0_0_15px_rgb(var(--color-primary-container)/0.2)]'
+                : 'bg-primary-container/15 border-primary-container/50 hover:scale-110 animate-pulse-very-slow',
             ]"
           >
             <span
@@ -100,8 +100,8 @@
             :class="[
               'relative p-3 rounded-xl border text-right transition-all duration-100',
               selectedCategory === 'rejected'
-                ? 'bg-primary-container/20 border-primary shadow-[0_0_15px_rgba(0,229,255,0.2)]'
-                : 'bg-[#00444c] border-primary-container hover:scale-110 animate-pulse-very-slow',
+                ? 'bg-primary-container/20 border-primary shadow-[0_0_15px_rgb(var(--color-primary-container)/0.2)]'
+                : 'bg-primary-container/15 border-primary-container/50 hover:scale-110 animate-pulse-very-slow',
             ]"
           >
             <span
@@ -249,19 +249,19 @@ const currentAiNodes = computed(() => {
 @keyframes pulse-slow {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(0, 229, 255, 0.1);
+    box-shadow: 0 0 0 0 rgb(var(--color-primary-container) / 0.1);
   }
   50% {
-    box-shadow: 0 0 0 7px rgba(4, 143, 158, 0.329);
+    box-shadow: 0 0 0 7px rgb(var(--color-primary-container) / 0.3);
   }
 }
 @keyframes pulse-very-slow {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(0, 229, 255, 0.1);
+    box-shadow: 0 0 0 0 rgb(var(--color-primary-container) / 0.1);
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(4, 143, 158, 0.329);
+    box-shadow: 0 0 0 4px rgb(var(--color-primary-container) / 0.3);
   }
 }
 .animate-pulse-slow {

@@ -135,13 +135,13 @@
 
         <div class="flex flex-col gap-1 md:col-span-2">
           <label class="text-[12px] text-on-surface-variant uppercase tracking-wider">
-            Briefly about myself
+            {{ t("myProfile.identity.aboutMyself") }} 
           </label>
           <textarea
             v-model="profileForm.aboutMyself"
             maxlength="1000"
             rows="4"
-            placeholder="Briefly about myself"
+            :placeholder="t('myProfile.identity.aboutMyselfPlaceHolder')"
             :class="`w-full bg-surface-container border border-outline-variant/30 rounded-lg px-3 py-2 font-body text-sm text-on-surface resize-y focus:outline-none focus:border-primary transition-colors ${globalInputFontClass}`"
           ></textarea>
           <div class="flex justify-end">
