@@ -13,8 +13,7 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
   const DASHBOARD_PATH = "/dashboard";
 
   const authStore = useAuthStore();
-  const tokenCookie = useCookie("auth_token");     
-  const sessionStatus = useCookie("session_status"); 
+  const tokenCookie = useCookie("auth_token");
   const localePath = useLocalePath();
 
   // 1. ANCHOR: i18n PATH NORMALIZATION
@@ -26,7 +25,9 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
 
   
 
-  let hasActiveSession = import.meta.server ? !!tokenCookie.value : !!sessionStatus.value;
+  // On server: check auth_token cookie. On client: check if auth store has user data.
+  // session_status is now httpOnly and unreadable by client JS.
+  let hasActiveSession = import.meta.server ? !!tokenCookie.value : !!authStore.user;
 
 // ==========================================
   // ANCHOR RUNTIME ZOMBIE CHECK (CLIENT ONLY)
@@ -42,7 +43,6 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
       console.warn("Sovereign Shield: Active session rejected by authority. Forcing eviction.", error);
       
       tokenCookie.value = null;
-      sessionStatus.value = null;
       hasActiveSession = false;
       authStore.$reset();
       

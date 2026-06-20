@@ -135,7 +135,6 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
-import { useCookie } from "nuxt/app";
 import { $api } from "~/utils/api";
 
 type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
@@ -149,14 +148,15 @@ const resendCooldown = ref(0);
 
 let pollingInterval: NodeJS.Timeout | null = null;
 
-// 1. ANCHOR: ROBUST COOKIE DETECTION
-// Use Nuxt's built-in composable instead of raw document.cookie parsing.
-// This guarantees we are reading the actual parsed cookie value safely.
-const sessionCookie = useCookie('session_status');
-
-const checkSessionActive = () => {
-  console.log("[Verification Protocol] Current session status:", sessionCookie.value);
-  return sessionCookie.value === 'active';
+// 1. ANCHOR: SESSION VALIDATION
+// session_status is now httpOnly — validate via the server endpoint instead.
+const checkSessionActive = async (): Promise<boolean> => {
+  try {
+    await $fetch('/api/auth/user-validate');
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 onMounted(() => {
@@ -171,10 +171,15 @@ onMounted(() => {
   }
 
   // 2. ANCHOR: THE POLLING INTERVAL
-  pollingInterval = setInterval(() => {
-    // We now use the reactive Nuxt cookie checker
-    if (checkSessionActive()) {
-      console.log("Verification confirmed via Nuxt cookie check. Redirecting...");
+  let isPolling = false;
+  pollingInterval = setInterval(async () => {
+    if (isPolling) return;
+    isPolling = true;
+    // Validate session via server endpoint (session_status is httpOnly)
+    const isActive = await checkSessionActive();
+    isPolling = false;
+    if (isActive) {
+      console.log("Verification confirmed via server validation. Redirecting...");
       if (pollingInterval) clearInterval(pollingInterval);
 
       // Clean up local storage before redirecting
@@ -183,8 +188,8 @@ onMounted(() => {
 
       isLoading.value = true;
       loadingText.value = t('verifyEmail.loading.confirmed');
-      setTimeout(() => {
-        if (checkSessionActive()) {
+      setTimeout(async () => {
+        if (await checkSessionActive()) {
           navigate.hardRedirect("/preloader-page");
         } else {
           successMsg.value = t('verifyEmail.messages.check_email') || t('verifyEmail.messages.session_expired');
@@ -208,10 +213,10 @@ const handleManualVerification = async () => {
 
   await new Promise((resolve) => setTimeout(resolve, 2000));
 
-  console.warn("Manual verification triggered by user. Checking session cookie status...");
+  console.warn("Manual verification triggered by user. Checking session status...");
 
-  // Use the robust check here too
-  if (checkSessionActive()) {
+  // Validate via server endpoint
+  if (await checkSessionActive()) {
     // SCENARIO 1: Same Browser. Session exists. Proceed to onboarding.
     console.warn("Manual verification successful. Redirecting to secure login...");
     isLoading.value = false;

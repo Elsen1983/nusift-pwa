@@ -65,10 +65,7 @@ export const useAuthStore = defineStore("auth", () => {
     if (import.meta.client) {
       localStorage.removeItem("nusift_pwa_profile");
       sessionStorage.clear();
-
-      // ANCHOR COOKIE-CLEANUP
-      const sessionStatus = useCookie("session_status");
-      sessionStatus.value = null; // Explicitly nullify the indicator
+      // session_status is now httpOnly — server handles clearing it on logout/session invalidation
     }
   }
 
@@ -82,12 +79,9 @@ export const useAuthStore = defineStore("auth", () => {
     authError.value = null;
 
     // console.log("Initiating registration for email:", emailPayload);
-    // BIZTONSÁGI PROTOKOLL: Regisztráció előtt kiirtjuk a beragadt "szellem" sütiket,
-    // hogy a verify-email ne találhasson régi session nyomokat.
+    // BIZTONSÁGI PROTOKOLL: Regisztráció előtt kiirtjuk a beragadt "szellem" sütiket.
+    // session_status is now httpOnly — only auth_token needs client-side clearing.
     if (import.meta.client) {
-      // console.log("Clearing auth cookies before registration attempt");
-      document.cookie =
-        "session_status=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
       document.cookie =
         "auth_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
     }

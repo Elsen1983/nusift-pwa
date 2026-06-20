@@ -8,7 +8,7 @@ export default defineEventHandler((event) => {
 
   // 2. Delete the Session Status Cookie
   deleteCookie(event, 'session_status', {
-    httpOnly: false,
+    httpOnly: true,
     path: '/',
     sameSite: 'lax'
   });

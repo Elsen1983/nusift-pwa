@@ -7,7 +7,6 @@ export function useApiFetch<T>(
   opts?: UseFetchOptions<T>
 ) {
   const tokenCookie = useCookie('auth_token');
-  const sessionStatus = useCookie('session_status');
 
   // We construct the options object and cast it to bypass Nuxt's strict NoInfer checks internally
   const options = {
@@ -17,7 +16,7 @@ export function useApiFetch<T>(
         console.error('Sovereign Shield: Session invalid. Logging out...');
         
         tokenCookie.value = null;
-        sessionStatus.value = null;
+        // session_status is now httpOnly — server handles clearing it
         
         if (import.meta.client) {
           window.location.href = '/auth';

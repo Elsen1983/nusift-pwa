@@ -29,11 +29,16 @@ const agentStore = useAgentStore();
 const isHydrated = ref(false);
 
 // ANCHOR PAGE-VISIBILITY-GUARD
-const handleVisibilityChange = () => {
+const handleVisibilityChange = async () => {
   if (document.visibilityState === "visible") {
-    // 1. Check the Shadow Cookie instead of the httpOnly token
-    const sessionCookie = useCookie("session_status");
-    const hasActiveSession = !!sessionCookie.value;
+    // 1. Validate session via server endpoint (session_status is now httpOnly)
+    let hasActiveSession = false;
+    try {
+      await $fetch('/api/auth/user-validate');
+      hasActiveSession = true;
+    } catch {
+      hasActiveSession = false;
+    }
 
     // If Pinia says logged in, but the Shadow Cookie is gone (expired in background)
     if (authStore.user !== null && !hasActiveSession) {
@@ -48,8 +53,7 @@ const handleVisibilityChange = () => {
 
       if (process.client) {
         sessionStorage.clear();
-        const sessionStatus = useCookie("session_status");
-        sessionStatus.value = null;
+        localStorage.removeItem("nusift_pwa_profile");
       }
 
       window.location.href = "/auth";

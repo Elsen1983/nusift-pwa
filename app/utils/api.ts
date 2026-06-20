@@ -8,7 +8,7 @@ export const $api = $fetch.create({
       
       if (import.meta.client) {
         document.cookie = "auth_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-        document.cookie = "session_status=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+        // session_status is now httpOnly — server handles clearing it
         window.location.href = '/auth';
       }
     }
