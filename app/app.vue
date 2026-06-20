@@ -29,45 +29,53 @@ const agentStore = useAgentStore();
 const isHydrated = ref(false);
 
 // ANCHOR PAGE-VISIBILITY-GUARD
+const isChecking = ref(false);
+
 const handleVisibilityChange = async () => {
-  if (document.visibilityState === "visible") {
-    // 1. Validate session via server endpoint (session_status is now httpOnly)
-    let hasActiveSession = false;
+  if (document.visibilityState === "visible" && !isChecking.value) {
+    // Guard against concurrent calls on rapid tab switches
+    isChecking.value = true;
     try {
-      await $fetch('/api/auth/user-validate');
-      hasActiveSession = true;
-    } catch {
-      hasActiveSession = false;
-    }
-
-    // If Pinia says logged in, but the Shadow Cookie is gone (expired in background)
-    if (authStore.user !== null && !hasActiveSession) {
-      console.warn(
-        "Security Alert: Session expired in the background. Terminating access.",
-      );
-
-      if (typeof authStore.$reset === "function") authStore.$reset();
-      else authStore.user = null;
-
-      if (typeof agentStore.$reset === "function") agentStore.$reset();
-
-      if (process.client) {
-        sessionStorage.clear();
-        localStorage.removeItem("nusift_pwa_profile");
+      // 1. Validate session via server endpoint (session_status is now httpOnly)
+      let hasActiveSession = false;
+      try {
+        await $fetch('/api/auth/user-validate');
+        hasActiveSession = true;
+      } catch {
+        hasActiveSession = false;
       }
 
-      window.location.href = "/auth";
-      return;
-    }
+      // If Pinia says logged in, but the Shadow Cookie is gone (expired in background)
+      if (authStore.user !== null && !hasActiveSession) {
+        console.warn(
+          "Security Alert: Session expired in the background. Terminating access.",
+        );
 
-    // 2. Data Refresh
-    if (
-      authStore.user !== null &&
-      hasActiveSession &&
-      authStore.user.onboardingStep >= 3
-    ) {
-      console.log("Welcome back. Checking for daily horizon updates...");
-      // agentStore.refreshFeedIfStale();
+        if (typeof authStore.$reset === "function") authStore.$reset();
+        else authStore.user = null;
+
+        if (typeof agentStore.$reset === "function") agentStore.$reset();
+
+        if (process.client) {
+          sessionStorage.clear();
+          localStorage.removeItem("nusift_pwa_profile");
+        }
+
+        window.location.href = "/auth";
+        return;
+      }
+
+      // 2. Data Refresh
+      if (
+        authStore.user !== null &&
+        hasActiveSession &&
+        authStore.user.onboardingStep >= 3
+      ) {
+        console.log("Welcome back. Checking for daily horizon updates...");
+        // agentStore.refreshFeedIfStale();
+      }
+    } finally {
+      isChecking.value = false;
     }
   }
 };
