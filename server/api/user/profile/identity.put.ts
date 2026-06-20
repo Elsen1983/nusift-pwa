@@ -1,6 +1,4 @@
 import { defineEventHandler, readBody, createError } from 'h3';
-// Top-level memory cache. Persists across requests in the Nitro process.
-let cachedAvatarList: string[] | null = null;
 
 export default defineEventHandler(async (event) => {
   const user = event.context.user;
@@ -31,27 +29,15 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 500, statusMessage: 'Database unavailable' });
     }
 
-    // --- OPTIMIZED AVATAR VALIDATION ---
-    // Server-side whitelist validation for avatar filenames (only allow pre-bundled avatars)
+    // --- AVATAR VALIDATION ---
+    // Pattern-based validation: avatars are avatar_001.png through avatar_108.png
+    // No filesystem read needed — works on Vercel serverless where app/ doesn't exist at runtime
     let avatarBasename: string | null = null;
     if (avatar) {
       const path = await import('node:path');
-      
-      // Execute the synchronous file read ONLY if the cache is empty
-      if (!cachedAvatarList) {
-        const fs = await import('node:fs');
-        const avatarsDir = path.resolve(process.cwd(), 'app/assets/images/avatars');
-        try {
-          cachedAvatarList = fs.readdirSync(avatarsDir);
-        } catch (e) {
-          console.warn('Avatar directory missing or unreadable:', avatarsDir, e);
-          cachedAvatarList = []; // Set to empty array so it doesn't try to read again
-        }
-      }
-
-      // Fast memory lookup
       const base = path.basename(avatar as string);
-      if (!cachedAvatarList.includes(base)) {
+      const AVATAR_PATTERN = /^avatar_\d{3}\.png$/;
+      if (!AVATAR_PATTERN.test(base)) {
         throw createError({ statusCode: 400, statusMessage: 'Invalid avatar selection' });
       }
       avatarBasename = base;
