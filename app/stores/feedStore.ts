@@ -4,7 +4,7 @@ import { ref } from 'vue'
 
 export const useFeedStore = defineStore('feed', () => {
   // Állapotok (State)
-  const articles = ref([])
+  const articles = ref<any[]>([])
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 

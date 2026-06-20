@@ -28,7 +28,7 @@ export default defineNuxtPlugin((nuxtApp) => {
 
   // Browser unload (close / refresh)
   if (process.client) {
-    window.addEventListener('beforeunload', (e) => {
+    window.addEventListener('beforeunload', async (e) => {
         try {
           const mod = await import('~/stores/unsaved');
           const unsaved = mod.useUnsavedStore();
