@@ -1,11 +1,19 @@
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import { createError, setCookie, type H3Event } from "h3";
+
+const TOKEN_ISSUER = "nusift";
+const TOKEN_AUDIENCE = "nusift-api";
 
 export interface SessionTokenPayload {
   userId: string;
   email: string;
   onboardingStep: number;
   tokenVersion: number;
+  jti?: string;
+  // TODO: Use jti for token revocation — store issued jtis in DB and check on verify.
+  // When combined with tokenVersion, this enables per-token invalidation without
+  // requiring a full version bump (e.g. revoke a single compromised session).
 }
 
 export function requireJwtSecret() {
@@ -20,13 +28,29 @@ export function requireJwtSecret() {
 }
 
 export function signSessionToken(payload: SessionTokenPayload, expiresIn: string) {
-  return jwt.sign(payload, requireJwtSecret(), { expiresIn });
+  const secret = requireJwtSecret();
+  const tokenPayload: jwt.JwtPayload = { ...payload, jti: crypto.randomUUID() };
+  return jwt.sign(tokenPayload, secret, {
+    expiresIn: expiresIn as jwt.SignOptions["expiresIn"],
+    issuer: TOKEN_ISSUER,
+    audience: TOKEN_AUDIENCE,
+  } as jwt.SignOptions);
 }
 
 export function verifySessionToken(token: string): SessionTokenPayload {
   const decoded = jwt.verify(token, requireJwtSecret());
   if (!decoded || typeof decoded !== "object") {
     throw createError({ statusCode: 401, statusMessage: "Invalid token." });
+  }
+
+  // Validate iss/aud if present (backward-compatible: old tokens without these claims still pass).
+  // Once all existing tokens have rotated through (≤7d), this can become strict validation.
+  const d = decoded as Record<string, unknown>;
+  if ("iss" in d && d.iss !== TOKEN_ISSUER) {
+    throw createError({ statusCode: 401, statusMessage: "Invalid token issuer." });
+  }
+  if ("aud" in d && d.aud !== TOKEN_AUDIENCE) {
+    throw createError({ statusCode: 401, statusMessage: "Invalid token audience." });
   }
 
   const payload = decoded as Partial<SessionTokenPayload>;
@@ -55,8 +79,9 @@ export function setSessionCookies(event: H3Event, token: string, maxAge: number)
     path: "/",
   });
 
+  // TODO: Add SameSite=strict option for production if CSRF becomes a concern.
   setCookie(event, "session_status", "active", {
-    httpOnly: false,
+    httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     maxAge,

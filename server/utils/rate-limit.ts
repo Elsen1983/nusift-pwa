@@ -3,6 +3,15 @@ import { createError, getRequestIP, type H3Event } from "h3";
 type Bucket = { count: number; resetAt: number };
 const buckets = new Map<string, Bucket>();
 
+// TODO: This in-memory rate limiter resets on every cold start and is shared only
+// within a single process instance. In a serverless deployment (Vercel, Netlify,
+// Cloudflare Workers) each request may hit a different instance, making this
+// ineffective. For production serverless, consider:
+//   - Upstash Redis (serverless-friendly, per-request billing)
+//   - Vercel's built-in rate limiting (edge middleware)
+//   - Cloudflare WAF / Rate Limiting rules
+// For a single-server deployment (e.g. VPS), this works as-is.
+
 export function assertRateLimit(
   event: H3Event,
   key: string,
