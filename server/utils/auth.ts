@@ -16,6 +16,15 @@ export interface SessionTokenPayload {
   // for this app's threat model. See session-guard.ts for enforcement.
 }
 
+export function validatePasswordComplexity(password: string): string | null {
+  if (password.length < 12) return "Password must be at least 12 characters.";
+  if (!/[A-Z]/.test(password)) return "Password must contain at least one uppercase letter.";
+  if (!/[a-z]/.test(password)) return "Password must contain at least one lowercase letter.";
+  if (!/[0-9]/.test(password)) return "Password must contain at least one digit.";
+  if (!/[!@#$%^&*(),.?":{}|<>\-+=\[\]\/\\'`~]/.test(password)) return "Password must contain at least one special character.";
+  return null; // valid
+}
+
 export function requireJwtSecret() {
   const secret = process.env.JWT_SECRET;
   if (!secret) {

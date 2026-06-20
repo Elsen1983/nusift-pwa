@@ -3,6 +3,7 @@ import { prisma } from '../../utils/prisma';
 import { Resend } from 'resend';
 import crypto from 'crypto';
 import { assertRateLimit } from "../../utils/rate-limit";
+import { validatePasswordComplexity } from "../../utils/auth";
 
 const resend = new Resend(process.env.RESEND_API_KEY); // Replace with your actual Resend API key
 
@@ -31,11 +32,19 @@ export default defineEventHandler(async (event) => {
     const body = await readBody(event);
     const { email, password, language = 'en' } = body;
 
-    // 2. Alapvető validáció a szerver oldalon is (Sovereign-Grade védelem)
-    if (!email || !password || password.length < 12) {
+    // 2. Server-side input validation (Sovereign-Grade defense)
+    if (!email || !password) {
       throw createError({
         statusCode: 400,
-        statusMessage: 'Invalid input data. Minimum 12 char password required.',
+        statusMessage: 'Email and password are required.',
+      });
+    }
+
+    const passwordError = validatePasswordComplexity(password);
+    if (passwordError) {
+      throw createError({
+        statusCode: 400,
+        statusMessage: passwordError,
       });
     }
 

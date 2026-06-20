@@ -2,17 +2,26 @@
 import { prisma } from '../../utils/prisma';
 import bcrypt from 'bcryptjs';
 import { assertRateLimit } from "../../utils/rate-limit";
+import { validatePasswordComplexity } from "../../utils/auth";
 
 export default defineEventHandler(async (event) => {
   try {
     assertRateLimit(event, "auth-reset-password", 5, 60_000);
     const { token, newPassword } = await readBody(event);
 
-    // Validate inputs (Enforcing Sovereign-Grade 12 char minimum)
-    if (!token || !newPassword || newPassword.length < 12) {
+    // Validate inputs (Sovereign-Grade complexity enforced)
+    if (!token || !newPassword) {
       throw createError({
         statusCode: 400,
-        statusMessage: 'Invalid request. Minimum 12 character password required.'
+        statusMessage: 'Invalid request. Token and password are required.'
+      });
+    }
+
+    const passwordError = validatePasswordComplexity(newPassword);
+    if (passwordError) {
+      throw createError({
+        statusCode: 400,
+        statusMessage: passwordError,
       });
     }
 
