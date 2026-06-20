@@ -2,11 +2,13 @@
 import { prisma } from '../../utils/prisma';
 import { Resend } from 'resend';
 import crypto from 'crypto';
+import { assertRateLimit } from "../../utils/rate-limit";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 export default defineEventHandler(async (event) => {
   try {
+    assertRateLimit(event, "auth-resend", 5, 60_000);
     const { email } = await readBody(event);
 
     if (!email) {

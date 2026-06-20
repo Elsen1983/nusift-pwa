@@ -4,23 +4,6 @@
  */
 import { useAuthStore } from "~/stores/auth";
 
-const decodeJwtPayload = (token: string) => {
-  try {
-    const base64Url = token.split(".")[1];
-    if (!base64Url) return null;
-    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-    
-    if (import.meta.server) {
-      return JSON.parse(Buffer.from(base64, 'base64').toString('utf-8'));
-    } else {
-      return JSON.parse(atob(base64));
-    }
-  } catch (error) {
-    console.error("Sovereign Shield: JWT Decode Error", error);
-    return null;
-  }
-};
-
 export default defineNuxtRouteMiddleware(async (to, from) => {
   const AUTH_PATH = "/auth";
   const ROOT_PATH = "/";
@@ -66,25 +49,7 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
       return navigateTo(AUTH_PATH, { replace: true });
     }
   }
-  // 2. ANCHOR JWT-HYDRATION (SSR Only)
-  if (import.meta.server && hasActiveSession && !authStore.user) {
-    const payload = decodeJwtPayload(tokenCookie.value as string);
-    if (payload && payload.userId) {
-      authStore.user = {
-        id: payload.userId,
-        email: payload.email,
-        onboardingStep: payload.onboardingStep ?? 0,
-        createdAt: new Date().toISOString(),
-        primaryRegion: null,
-        topSources: [],
-        topInterests: [],
-        tier: payload.tier || "free",
-        preferredLanguage: payload.preferredLanguage || "en",
-      };
-    }
-  }
-
-  // 3. ANCHOR SYNC-CHECK (Ghost State Prevention)
+  // 2. ANCHOR SYNC-CHECK (Ghost State Prevention)
   if (!hasActiveSession && authStore.user !== null) {
     authStore.$reset();
   }

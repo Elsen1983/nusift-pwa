@@ -1,9 +1,11 @@
 // server/api/auth/verify.post.ts
 import { prisma } from '../../utils/prisma';
-import jwt from 'jsonwebtoken';
+import { signSessionToken, setSessionCookies } from "../../utils/auth";
+import { assertRateLimit } from "../../utils/rate-limit";
 
 export default defineEventHandler(async (event) => {
   try {
+    assertRateLimit(event, "auth-verify", 10, 60_000);
     const { token } = await readBody(event);
 
     if (!token) {
@@ -29,41 +31,22 @@ export default defineEventHandler(async (event) => {
     });
 
     // 3. Automatikus Beléptetés (JWT generálás)
-    const secret = process.env.JWT_SECRET || 'fallback_secret';
-
     // SENIOR PROTOCOL: Dual-Zone Expiration
     const isFullyOnboarded = user.onboardingStep >= 3;
     const tokenExpirationStr = isFullyOnboarded ? '7d' : '1h';
     const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60; // second-based
 
-    const sessionToken = jwt.sign(
-      { 
-        userId: user.id, 
-        email: user.email, 
-        onboardingStep: user.onboardingStep 
+    const sessionToken = signSessionToken(
+      {
+        userId: user.id,
+        email: user.email,
+        onboardingStep: user.onboardingStep,
+        tokenVersion: updatedUser.tokenVersion,
       },
-      secret,
-      { expiresIn: tokenExpirationStr } 
+      tokenExpirationStr,
     );
 
-    // --- 4. SESSION PROVISIONING ---
-    // 4.a Set the HTTP-Only Cookie for Authentication
-    setCookie(event, 'auth_token', sessionToken, {
-      httpOnly: true, // The cookie is inaccessible to JavaScript, mitigating XSS risks
-      secure: process.env.NODE_ENV === 'production', 
-      sameSite: 'lax', 
-      maxAge: cookieMaxAge, // Dinamically set based on onboarding status
-      path: '/', 
-    });
-
-    // 4.b Set a non-HTTP-Only cookie to indicate session status (optional, can be used by frontend to show user is logged in)
-    setCookie(event, 'session_status', 'active', {
-      httpOnly: false,
-      secure: process.env.NODE_ENV === 'production', 
-      sameSite: 'lax', 
-      maxAge: cookieMaxAge,
-      path: '/', 
-    });
+    setSessionCookies(event, sessionToken, cookieMaxAge);
 
     return { 
       success: true, 

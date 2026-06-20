@@ -1,6 +1,6 @@
 // server/api/user/sources/add.post.ts
-import jwt from "jsonwebtoken";
 import { prisma } from "../../../utils/prisma";
+import { verifySessionToken } from "../../../utils/auth";
 
 export default defineEventHandler(async (event) => {
   // 1. Authentication
@@ -12,28 +12,7 @@ export default defineEventHandler(async (event) => {
       message: "Nincs jogosultságod a művelethez.",
     });
   }
-
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw createError({
-      statusCode: 500,
-      statusMessage: "Server Configuration Error",
-      message: "Szerver konfigurációs hiba (JWT_SECRET).",
-    });
-  }
-
-  let decodedToken: any;
-  try {
-    decodedToken = jwt.verify(token, secret);
-  } catch (error) {
-    throw createError({
-      statusCode: 401,
-      statusMessage: "Invalid token",
-      message: "Érvénytelen vagy lejárt munkamenet.",
-    });
-  }
-
-  const userId = decodedToken.userId;
+  const userId = verifySessionToken(token).userId;
   // ÚJ: A frontendnek küldenie kell a check-source által visszaadott 'detectedLanguage'-t (itt 'language'-ként fogadjuk)
   const { url, name, language: sourceLanguage } = await readBody(event);
 

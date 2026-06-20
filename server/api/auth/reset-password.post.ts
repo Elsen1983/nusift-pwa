@@ -1,9 +1,11 @@
 // server/api/auth/reset-password.post.ts
 import { prisma } from '../../utils/prisma';
 import bcrypt from 'bcryptjs';
+import { assertRateLimit } from "../../utils/rate-limit";
 
 export default defineEventHandler(async (event) => {
   try {
+    assertRateLimit(event, "auth-reset-password", 5, 60_000);
     const { token, newPassword } = await readBody(event);
 
     // Validate inputs (Enforcing Sovereign-Grade 12 char minimum)
@@ -41,7 +43,8 @@ export default defineEventHandler(async (event) => {
       data: {
         passwordHash: hashedPassword,
         resetPasswordToken: null,
-        resetPasswordExpires: null
+        resetPasswordExpires: null,
+        tokenVersion: { increment: 1 }
       }
     });
 

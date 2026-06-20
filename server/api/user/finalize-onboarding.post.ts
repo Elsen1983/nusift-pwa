@@ -1,7 +1,7 @@
 // server/api/user/finalize-onboarding.post.ts
-import jwt from "jsonwebtoken";
 import { prisma } from "../../utils/prisma";
 import { executeTargetedDiscovery } from "../../utils/discovery";
+import { verifySessionToken } from "../../utils/auth";
 import { ISO_LANG_CODES } from "../../utils/langCodes"; // ÚJ: Importáljuk a nyelv-Set-et (Ellenőrizd az elérési utat!)
 
 const MAX_SUBMITTED_SOURCES = 20;
@@ -44,24 +44,7 @@ function verifyAuth(event: any): string {
       statusMessage: "Unauthorized: Missing token.",
     });
 
-  const secret = process.env.JWT_SECRET;
-  if (!secret)
-    throw createError({
-      statusCode: 500,
-      statusMessage: "Server Configuration Error.",
-    });
-
-  let decoded: any;
-  try {
-    decoded = jwt.verify(token, secret);
-  } catch (err) {
-    throw createError({
-      statusCode: 401,
-      statusMessage: "Unauthorized: Invalid or expired token.",
-    });
-  }
-
-  const userId = decoded && decoded.userId;
+  const userId = verifySessionToken(token).userId;
   if (!userId)
     throw createError({
       statusCode: 401,

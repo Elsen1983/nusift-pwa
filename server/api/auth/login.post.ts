@@ -1,10 +1,12 @@
 // server/api/auth/login.post.ts
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import { prisma } from '../../utils/prisma';
+import { signSessionToken, setSessionCookies, requireJwtSecret } from "../../utils/auth";
+import { assertRateLimit } from "../../utils/rate-limit";
 
 export default defineEventHandler(async (event) => {
   try {
+    assertRateLimit(event, "auth-login", 10, 60_000);
     const body = await readBody(event);
     const { email, password } = body;
 
@@ -62,41 +64,21 @@ export default defineEventHandler(async (event) => {
     }
 
     // 5. Generate the JWT
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-      throw new Error('JWT_SECRET is not defined in environment variables.');
-    }
-
     const isFullyOnboarded = user.onboardingStep >= 3;
     const tokenExpirationStr = isFullyOnboarded ? '7d' : '1h';
     const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60; 
 
-    const token = jwt.sign(
-      { 
-        userId: user.id, 
+    requireJwtSecret();
+    const token = signSessionToken(
+      {
+        userId: user.id,
         email: user.email,
-        onboardingStep: user.onboardingStep
+        onboardingStep: user.onboardingStep,
+        tokenVersion: user.tokenVersion,
       },
-      secret,
-      { expiresIn: tokenExpirationStr } 
+      tokenExpirationStr,
     );
-
-    // 6. Set Cookies
-    setCookie(event, 'auth_token', token, {
-      httpOnly: true, 
-      secure: process.env.NODE_ENV === 'production', 
-      sameSite: 'lax', 
-      maxAge: cookieMaxAge, 
-      path: '/', 
-    });
-
-    setCookie(event, 'session_status', 'active', {
-      httpOnly: false, 
-      secure: process.env.NODE_ENV === 'production', 
-      sameSite: 'lax', 
-      maxAge: cookieMaxAge, 
-      path: '/', 
-    });
+    setSessionCookies(event, token, cookieMaxAge);
 
     // 7. Return safe user data
     return {

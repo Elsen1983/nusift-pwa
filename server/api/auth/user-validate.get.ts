@@ -1,4 +1,5 @@
 import { prisma } from '../../utils/prisma';
+import { verifySessionToken } from "../../utils/auth";
 
 export default defineEventHandler(async (event) => {
   // 1. Extract the token directly from the cookie
@@ -9,23 +10,17 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    // 2. Decode the JWT to extract the userId
-    const base64Url = token.split(".")[1];
-    if (!base64Url) return null;
-    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-    const payload = JSON.parse(Buffer.from(base64, 'base64').toString('utf-8'));
+    const payload = verifySessionToken(token);
     const userId = payload.userId;
 
-    if (!userId) throw new Error("Invalid payload");
-
-    // 3. Query the DB (Select ONLY the ID for maximum speed)
+    // 3. Query the DB and ensure tokenVersion still matches
     const userExists = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true } 
+      select: { id: true, tokenVersion: true }
     });
 
     // 4. Force reject if the user was deleted
-    if (!userExists) {
+    if (!userExists || userExists.tokenVersion !== payload.tokenVersion) {
       // Clear the cookie on the server side
       deleteCookie(event, 'auth_token');
       deleteCookie(event, 'session_status');

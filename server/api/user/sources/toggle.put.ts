@@ -1,5 +1,4 @@
 // server/api/user/sources/toggle.put.ts
-import jwt from 'jsonwebtoken';
 import { prisma } from '../../../utils/prisma';
 
 export default defineEventHandler(async (event) => {
@@ -8,7 +7,10 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized", message: "Nincs jogosultságod a művelethez." });
   }
 
-  const userId = (jwt.verify(token, process.env.JWT_SECRET!) as any).userId;
+  const userId = (event.context.user as { id?: string } | undefined)?.id;
+  if (!userId) {
+    throw createError({ statusCode: 401, statusMessage: "Unauthorized", message: "Nincs jogosultsÃ¡god a mÅ±velethez." });
+  }
   const { sourceId, isActive } = await readBody(event); 
 
   if (!sourceId || typeof isActive !== 'boolean') {

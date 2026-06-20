@@ -1,23 +1,13 @@
 // server/api/user/sources.get.ts
-import jwt from 'jsonwebtoken';
 import { prisma } from '../../utils/prisma';
+import { verifySessionToken } from "../../utils/auth";
 
 export default defineEventHandler(async (event) => {
   // 1. Autentikáció
   const token = getCookie(event, 'auth_token');
   if (!token) throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
 
-  const secret = process.env.JWT_SECRET;
-  if (!secret) throw createError({ statusCode: 500, statusMessage: "Server Configuration Error" });
-
-  let decodedToken: any;
-  try {
-    decodedToken = jwt.verify(token, secret);
-  } catch (error) {
-    throw createError({ statusCode: 401, statusMessage: "Invalid token" });
-  }
-
-  const userId = decodedToken.userId;
+  const userId = verifySessionToken(token).userId;
 
   try {
     // 2. Felhasználói kvóta (Tier) lekérése

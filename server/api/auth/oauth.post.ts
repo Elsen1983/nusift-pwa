@@ -1,8 +1,9 @@
 // server/api/auth/oauth.post.ts
 import { Resend } from 'resend';
-import jwt from 'jsonwebtoken';
 import appleSigninAuth from 'apple-signin-auth';
 import { prisma } from '../../utils/prisma'; 
+import { signSessionToken, setSessionCookies, requireJwtSecret } from "../../utils/auth";
+import { assertRateLimit } from "../../utils/rate-limit";
 
 const resend = new Resend(process.env.RESEND_API_KEY); 
 
@@ -21,6 +22,7 @@ const welcomeDictionaries = {
 };
 
 export default defineEventHandler(async (event) => {
+  assertRateLimit(event, "auth-oauth", 10, 60_000);
   const body = await readBody(event);
   const { token, provider, language } = body; 
 
@@ -125,39 +127,21 @@ export default defineEventHandler(async (event) => {
     }
 
     // --- 3. JWT GENERATION ---
-    const secret = process.env.JWT_SECRET;
-    if (!secret) throw new Error("Missing JWT_SECRET in environment variables.");
-
     const isFullyOnboarded = user.onboardingStep >= 3;
     const tokenExpirationStr = isFullyOnboarded ? '7d' : '1h';
     const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60;
 
-    const sessionToken = jwt.sign(
-      { 
-        userId: user.id, 
-        email: user.email, 
-        onboardingStep: user.onboardingStep 
+    requireJwtSecret();
+    const sessionToken = signSessionToken(
+      {
+        userId: user.id,
+        email: user.email,
+        onboardingStep: user.onboardingStep,
+        tokenVersion: user.tokenVersion,
       },
-      secret,
-      { expiresIn: tokenExpirationStr } 
+      tokenExpirationStr,
     );
-
-    // --- 4. COOKIE MANAGEMENT ---
-    setCookie(event, 'auth_token', sessionToken, {
-      httpOnly: true, 
-      secure: process.env.NODE_ENV === 'production', 
-      sameSite: 'lax', 
-      maxAge: cookieMaxAge, 
-      path: '/', 
-    });
-
-    setCookie(event, 'session_status', 'active', {
-      httpOnly: false,
-      secure: process.env.NODE_ENV === 'production', 
-      sameSite: 'lax', 
-      maxAge: cookieMaxAge,
-      path: '/', 
-    });
+    setSessionCookies(event, sessionToken, cookieMaxAge);
 
     // --- 5. SAFE RETURN ---
     return { 

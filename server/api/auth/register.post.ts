@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../../utils/prisma';
 import { Resend } from 'resend';
 import crypto from 'crypto';
+import { assertRateLimit } from "../../utils/rate-limit";
 
 const resend = new Resend(process.env.RESEND_API_KEY); // Replace with your actual Resend API key
 
@@ -25,6 +26,7 @@ const emailDictionaries = {
 
 export default defineEventHandler(async (event) => {
   try {
+    assertRateLimit(event, "auth-register", 5, 60_000);
     // 1. Kinyerjük a frontendről küldött adatokat a kérés törzséből (body)
     const body = await readBody(event);
     const { email, password, language = 'en' } = body;

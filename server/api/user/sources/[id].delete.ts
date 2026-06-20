@@ -1,22 +1,11 @@
 // server/api/user/sources/[id].delete.ts
-import jwt from 'jsonwebtoken';
 import { prisma } from '../../../utils/prisma';
+import { verifySessionToken } from "../../../utils/auth";
 
 export default defineEventHandler(async (event) => {
   const token = getCookie(event, 'auth_token');
   if (!token) throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
-
-  const secret = process.env.JWT_SECRET;
-  if (!secret) throw createError({ statusCode: 500, statusMessage: "Server Config Error" });
-
-  let decodedToken: any;
-  try {
-    decodedToken = jwt.verify(token, secret);
-  } catch (error) {
-    throw createError({ statusCode: 401, statusMessage: "Invalid token" });
-  }
-
-  const userId = decodedToken.userId;
+  const userId = verifySessionToken(token).userId;
   // Kinyerjük az ID-t az URL-ből (pl. /api/user/sources/1234-uuid-5678)
   const subscriptionId = getRouterParam(event, 'id');
 

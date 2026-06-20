@@ -1,6 +1,6 @@
 // server/api/user/update-interests.post.ts
-import jwt from 'jsonwebtoken';
 import { prisma } from '../../utils/prisma';
+import { verifySessionToken } from "../../utils/auth";
 
 export default defineEventHandler(async (event) => {
   // 1. Read the JWT Token from the HTTP-Only cookie
@@ -10,20 +10,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized: Missing token." });
   }
 
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw createError({ statusCode: 500, statusMessage: "Server Configuration Error." });
-  }
-
-  let decodedToken: any;
-  try {
-    // 2. Verify token validity
-    decodedToken = jwt.verify(token, secret);
-  } catch (error) {
-    throw createError({ statusCode: 401, statusMessage: "Unauthorized: Invalid or expired token." });
-  }
-
-  const currentUserId = decodedToken.userId;
+  const currentUserId = verifySessionToken(token).userId;
 
   if (!currentUserId) {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized: Invalid token payload." });
