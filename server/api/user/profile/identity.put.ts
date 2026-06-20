@@ -31,16 +31,18 @@ export default defineEventHandler(async (event) => {
 
     // --- AVATAR VALIDATION ---
     // Pattern-based validation: avatars are avatar_001.png through avatar_108.png
+    // Vite hashes filenames with a dot separator: avatar_087.BzDPd4l4.png
     let avatarBasename: string | null = null;
     if (avatar) {
       const path = await import('node:path');
       const base = path.basename(avatar as string);
-      console.log('[Avatar Debug] raw value:', avatar, '| basename:', base);
-      const AVATAR_PATTERN = /^avatar_(\d{3})(?:-[a-zA-Z0-9]+)?\.png$/;
+      // Matches: avatar_001.png (dev) OR avatar_001.HASH.png (Vite-hashed prod)
+      const AVATAR_PATTERN = /^avatar_(\d{3})(?:\.[a-zA-Z0-9]+)?\.png$/;
       const match = base.match(AVATAR_PATTERN);
       if (!match) {
-        throw createError({ statusCode: 400, statusMessage: `Invalid avatar selection: ${base}` });
+        throw createError({ statusCode: 400, statusMessage: 'Invalid avatar selection' });
       }
+      // Store the canonical name without hash for consistent lookups
       avatarBasename = `avatar_${match[1]}.png`;
     }
 
