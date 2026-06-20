@@ -61,6 +61,8 @@ onMounted(async () => {
       if (import.meta.client) {
         localStorage.setItem("nusift_visited", "true");
         localStorage.removeItem("nusift_pending_email");
+        // Signal to the original verify-email tab that verification succeeded
+        localStorage.setItem("nusift_email_verified", Date.now().toString());
       }
     }
   } catch (err: any) {

@@ -134,7 +134,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onBeforeUnmount } from "vue";
 import { $api } from "~/utils/api";
 
 type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
@@ -156,7 +156,32 @@ onMounted(() => {
   } else{
     console.warn("No saved language preference found. Defaulting to English.");
   }
+
+  // Cross-tab detection: listen for verification signal from verify.vue tab
+  if (import.meta.client) {
+    window.addEventListener("storage", handleStorageEvent);
+  }
 });
+
+onBeforeUnmount(() => {
+  if (import.meta.client) {
+    window.removeEventListener("storage", handleStorageEvent);
+  }
+});
+
+const handleStorageEvent = (event: StorageEvent) => {
+  if (event.key === "nusift_email_verified" && event.newValue) {
+    console.log("Verification confirmed via cross-tab signal. Redirecting...");
+    isLoading.value = true;
+    loadingText.value = t('verifyEmail.loading.confirmed');
+    localStorage.removeItem("nusift_email_verified");
+    localStorage.setItem("nusift_visited", "true");
+    localStorage.removeItem("nusift_pending_email");
+    setTimeout(() => {
+      navigate.hardRedirect("/preloader-page");
+    }, 1000);
+  }
+};
 
 const handleManualVerification = async () => {
   // Redirect to login so the user can authenticate after verifying via email link
