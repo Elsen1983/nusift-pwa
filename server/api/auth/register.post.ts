@@ -6,7 +6,7 @@ import { assertRateLimit } from "../../utils/rate-limit";
 import { validatePasswordComplexity } from "../../utils/auth";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
-const EMAIL_SENDER = process.env.EMAIL_SENDER || 'NuSift <onboarding@resend.dev>';
+const EMAIL_SENDER = process.env.EMAIL_SENDER || 'NuSift <onboarding@nusift.com>';
 
 // ANCHOR: Backend Micro-Dictionary for different languages (for future localization of email content)
 const emailDictionaries = {
