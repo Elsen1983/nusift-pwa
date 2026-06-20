@@ -59,9 +59,10 @@ model User {
   tier                 UserTier  @default(FREE)
   tokenVersion         Int       @default(0)
   preferredLanguage    String    @default("en") // NEW: Stores the ISO language code
-  verificationToken    String?   @unique
-  resetPasswordToken   String?   @unique
-  resetPasswordExpires DateTime?
+  verificationToken        String?   @unique
+  verificationTokenExpires DateTime?
+  resetPasswordToken       String?   @unique
+  resetPasswordExpires     DateTime?
   onboardingStep       Int       @default(0)
   oauthProvider        String? // e.g., "GOOGLE" or "APPLE"
   oauthId              String?   @unique
