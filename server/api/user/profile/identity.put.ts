@@ -91,10 +91,11 @@ export default defineEventHandler(async (event) => {
       code: error.code,
       message: error.message,
       meta: error.meta,
+      stack: error.stack,
     });
     throw createError({
       statusCode: 500,
-      statusMessage: `Database error: ${error.code || 'UNKNOWN'} - ${error.message || 'No details'}`,
+      statusMessage: 'Database execution failed',
     });
   }
 });
