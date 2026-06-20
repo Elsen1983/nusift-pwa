@@ -87,7 +87,14 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 409, statusMessage: 'Nickname is already taken.' });
     }
     
-    console.error('Failed to update identity profile:', error);
-    throw createError({ statusCode: 500, statusMessage: 'Database execution failed' });
+    console.error('Failed to update identity profile:', {
+      code: error.code,
+      message: error.message,
+      meta: error.meta,
+    });
+    throw createError({
+      statusCode: 500,
+      statusMessage: `Database error: ${error.code || 'UNKNOWN'} - ${error.message || 'No details'}`,
+    });
   }
 });
