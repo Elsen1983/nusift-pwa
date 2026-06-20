@@ -31,16 +31,20 @@ export default defineEventHandler(async (event) => {
 
     // --- AVATAR VALIDATION ---
     // Pattern-based validation: avatars are avatar_001.png through avatar_108.png
-    // No filesystem read needed — works on Vercel serverless where app/ doesn't exist at runtime
+    // Vite adds content hashes in production (e.g. avatar_001-Bx3kP.png)
+    // Extract the original filename from the URL path for storage
     let avatarBasename: string | null = null;
     if (avatar) {
       const path = await import('node:path');
       const base = path.basename(avatar as string);
-      const AVATAR_PATTERN = /^avatar_\d{3}\.png$/;
-      if (!AVATAR_PATTERN.test(base)) {
+      // Matches: avatar_001.png OR avatar_001-Bx3kP.png (Vite-hashed)
+      const AVATAR_PATTERN = /^avatar_(\d{3})(?:-[a-zA-Z0-9]+)?\.png$/;
+      const match = base.match(AVATAR_PATTERN);
+      if (!match) {
         throw createError({ statusCode: 400, statusMessage: 'Invalid avatar selection' });
       }
-      avatarBasename = base;
+      // Store the canonical name without hash for consistent lookups
+      avatarBasename = `avatar_${match[1]}.png`;
     }
 
     // Use upsert to handle both first-time saves and subsequent updates
