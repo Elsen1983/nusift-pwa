@@ -30,20 +30,24 @@ export default defineEventHandler(async (event) => {
     }
 
     // --- AVATAR VALIDATION ---
-    // Pattern-based validation: avatars are avatar_001.png through avatar_108.png
-    // Vite hashes filenames with a dot separator: avatar_087.BzDPd4l4.png
+    // Avatars are avatar_001.png through avatar_108.png
+    // Vite may hash filenames in production (e.g. avatar_087.BzDPd4l4.png)
+    // Extract the 3-digit number from the basename and validate it's 001-108
     let avatarBasename: string | null = null;
     if (avatar) {
       const path = await import('node:path');
       const base = path.basename(avatar as string);
-      // Matches: avatar_001.png (dev) OR avatar_001.HASH.png (Vite-hashed prod)
-      const AVATAR_PATTERN = /^avatar_(\d{3})(?:\.[a-zA-Z0-9]+)?\.png$/;
-      const match = base.match(AVATAR_PATTERN);
-      if (!match) {
+      const numberMatch = base.match(/avatar_(\d{3})/);
+      if (!numberMatch || !numberMatch[1]) {
         throw createError({ statusCode: 400, statusMessage: 'Invalid avatar selection' });
       }
-      // Store the canonical name without hash for consistent lookups
-      avatarBasename = `avatar_${match[1]}.png`;
+      const avatarNum = numberMatch[1];
+      const num = parseInt(avatarNum, 10);
+      if (num < 1 || num > 108) {
+        throw createError({ statusCode: 400, statusMessage: 'Invalid avatar selection' });
+      }
+      // Store the canonical name without Vite hash for consistent lookups
+      avatarBasename = `avatar_${numberMatch[1]}.png`;
     }
 
     // Use upsert to handle both first-time saves and subsequent updates
