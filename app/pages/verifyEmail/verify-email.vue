@@ -134,7 +134,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted } from "vue";
 import { $api } from "~/utils/api";
 
 type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
@@ -146,19 +146,6 @@ const errorMsg = ref("");
 const successMsg = ref("");
 const resendCooldown = ref(0);
 
-let pollingInterval: NodeJS.Timeout | null = null;
-
-// 1. ANCHOR: SESSION VALIDATION
-// session_status is now httpOnly — validate via the server endpoint instead.
-const checkSessionActive = async (): Promise<boolean> => {
-  try {
-    await $fetch('/api/auth/user-validate');
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 onMounted(() => {
   console.log("Checking for saved language preference...");
   const savedLang = localStorage.getItem('nusift_preferred_language');
@@ -169,73 +156,13 @@ onMounted(() => {
   } else{
     console.warn("No saved language preference found. Defaulting to English.");
   }
-
-  // 2. ANCHOR: THE POLLING INTERVAL
-  let isPolling = false;
-  pollingInterval = setInterval(async () => {
-    if (isPolling) return;
-    isPolling = true;
-    // Validate session via server endpoint (session_status is httpOnly)
-    const isActive = await checkSessionActive();
-    isPolling = false;
-    if (isActive) {
-      console.log("Verification confirmed via server validation. Redirecting...");
-      if (pollingInterval) clearInterval(pollingInterval);
-
-      // Clean up local storage before redirecting
-      localStorage.setItem("nusift_visited", "true");
-      localStorage.removeItem("nusift_pending_email");
-
-      isLoading.value = true;
-      loadingText.value = t('verifyEmail.loading.confirmed');
-      setTimeout(async () => {
-        if (await checkSessionActive()) {
-          navigate.hardRedirect("/preloader-page");
-        } else {
-          successMsg.value = t('verifyEmail.messages.check_email') || t('verifyEmail.messages.session_expired');
-        }
-      }, 1500);
-    }
-  }, 1500);
-});
-
-// Clear interval on unmount to prevent memory leaks
-onUnmounted(() => {
-  if (pollingInterval) clearInterval(pollingInterval);
-  console.warn("Verification component unmounted, polling stopped.");
 });
 
 const handleManualVerification = async () => {
-  isLoading.value = true;
-  loadingText.value = t('verifyEmail.loading.verifying');
-  errorMsg.value = "";
-  successMsg.value = "";
-
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-
-  console.warn("Manual verification triggered by user. Checking session status...");
-
-  // Validate via server endpoint
-  if (await checkSessionActive()) {
-    // SCENARIO 1: Same Browser. Session exists. Proceed to onboarding.
-    console.warn("Manual verification successful. Redirecting to secure login...");
-    isLoading.value = false;
-    navigate.hardRedirect("/preloader-page"); 
-  } else {
-    // SCENARIO 2: Different Browser. No local session. 
-    // They must log in manually to get their cookies on this device.
-    isLoading.value = false;
-    localStorage.setItem("nusift_visited", "true");
-    localStorage.removeItem("nusift_pending_email");
-    successMsg.value = t('verifyEmail.messages.manual_check');
-    console.warn("Manual verification attempted, but session cookie is not active. User may need to check their email or wait a moment before trying again.");
-    console.log(t('verifyEmail.messages.manual_check'));
-
-    setTimeout(() => {
-      // window.location.href = "/";
-      navigate.hardRedirect("/"); // This will trigger a full page reload, ensuring the new session cookie is recognized immediately 
-    }, 3000);
-  }
+  // Redirect to login so the user can authenticate after verifying via email link
+  localStorage.setItem("nusift_visited", "true");
+  localStorage.removeItem("nusift_pending_email");
+  navigate.hardRedirect("/auth");
 };
 
 const resendEmail = async () => {
