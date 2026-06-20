@@ -881,7 +881,7 @@ const saveIdentityProfile = async () => {
       nickname: sanitizeString(profileForm.value.nickname, 64),
       phoneNumber: e164Phone,
       // Send canonical basename (e.g., "avatar_005.png") so the backend stores a stable id
-      avatar: profileForm.value.avatar ? String(profileForm.value.avatar).split('/').pop() : undefined,
+      avatar: profileForm.value.avatar ? String(profileForm.value.avatar).split(/[?#]/)[0].split('/').pop() : undefined,
       dateOfBirth: profileForm.value.dateOfBirth,
       aboutMyself: sanitizeString(profileForm.value.aboutMyself, 1000),
     };
