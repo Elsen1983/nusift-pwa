@@ -11,9 +11,9 @@ export interface SessionTokenPayload {
   onboardingStep: number;
   tokenVersion: number;
   jti?: string;
-  // TODO: Use jti for token revocation — store issued jtis in DB and check on verify.
-  // When combined with tokenVersion, this enables per-token invalidation without
-  // requiring a full version bump (e.g. revoke a single compromised session).
+  // Token revocation is handled via tokenVersion (incremented on password reset).
+  // This invalidates ALL sessions for the user — simple, no DB overhead, sufficient
+  // for this app's threat model. See session-guard.ts for enforcement.
 }
 
 export function requireJwtSecret() {
@@ -79,7 +79,6 @@ export function setSessionCookies(event: H3Event, token: string, maxAge: number)
     path: "/",
   });
 
-  // TODO: Add SameSite=strict option for production if CSRF becomes a concern.
   setCookie(event, "session_status", "active", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
