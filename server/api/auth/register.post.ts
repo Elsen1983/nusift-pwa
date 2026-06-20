@@ -55,8 +55,9 @@ export default defineEventHandler(async (event) => {
     const saltRounds = 10;
     const passwordHash = await bcrypt.hash(password, saltRounds);
 
-    // 5. generate a unique verification token for email verification (if needed in the future)
+    // 5. generate a unique verification token with 24-hour expiry
     const verificationToken = crypto.randomUUID();
+    const verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     // 5. Az új felhasználó elmentése a Vercel Postgres adatbázisba
     const newUser = await prisma.user.create({
@@ -64,6 +65,7 @@ export default defineEventHandler(async (event) => {
         email,
         passwordHash,
         verificationToken,
+        verificationTokenExpires,
         preferredLanguage: language || "en",
       },
     });

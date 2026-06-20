@@ -21,12 +21,22 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 401, statusMessage: 'Invalid or expired verification token.' });
     }
 
+    // SECURITY: Reject expired verification tokens.
+    // Backward-compat: If verificationTokenExpires is null (pre-migration users or
+    // tokens created before this field existed), the check is skipped — those tokens
+    // remain valid indefinitely. Once all users have rotated through the verification
+    // flow, this null-skip can be removed to enforce expiry strictly.
+    if (user.verificationTokenExpires && user.verificationTokenExpires < new Date()) {
+      throw createError({ statusCode: 401, statusMessage: 'Verification token has expired. Please request a new one.' });
+    }
+
     // 2. Frissítjük a DB-ben: isVerified = true, tokent töröljük
     const updatedUser = await prisma.user.update({
       where: { id: user.id },
       data: {
         isVerified: true,
-        verificationToken: null // Egyszer használatos!
+        verificationToken: null,
+        verificationTokenExpires: null,
       }
     });
 

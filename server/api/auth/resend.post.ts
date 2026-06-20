@@ -26,11 +26,15 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 400, statusMessage: 'This Neural Node is already verified. Proceed to login.' });
     }
 
-    // Új token generálása és frissítése
+    // Új token generálása és frissítése (24-hour expiry)
     const newVerificationToken = crypto.randomUUID();
+    const newVerificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await prisma.user.update({
       where: { email },
-      data: { verificationToken: newVerificationToken }
+      data: {
+        verificationToken: newVerificationToken,
+        verificationTokenExpires: newVerificationTokenExpires,
+      }
     });
 
     const config = useRuntimeConfig();
