@@ -5,8 +5,9 @@ import { prisma } from '../../utils/prisma';
 import { signSessionToken, setSessionCookies, requireJwtSecret } from "../../utils/auth";
 import { assertRateLimit } from "../../utils/rate-limit";
 
-const resend = new Resend(process.env.RESEND_API_KEY); 
-
+const resend = new Resend(process.env.RESEND_API_KEY);
+const EMAIL_SENDER = process.env.EMAIL_SENDER || 'NuSift <onboarding@resend.dev>';
+const APPLE_CLIENT_ID = process.env.APPLE_CLIENT_ID || '';
 // ANCHOR: Backend Micro-Dictionary for different languages (for future localization of email content)
 const welcomeDictionaries = {
   en: {
@@ -43,7 +44,7 @@ export default defineEventHandler(async (event) => {
 
     } else if (provider === 'APPLE') {
       const appleTokenPayload = await appleSigninAuth.verifyIdToken(token, {
-        audience: 'com.yourdomain.nusift', 
+        audience: APPLE_CLIENT_ID,
         ignoreExpiration: false,
       });
 
@@ -90,7 +91,7 @@ export default defineEventHandler(async (event) => {
         const t = welcomeDictionaries[(language as SupportedLang)] || welcomeDictionaries['en'];
 
         await resend.emails.send({
-          from: 'NuSift Protocol <onboarding@resend.dev>',
+          from: EMAIL_SENDER,
           to: verifiedEmail,
           subject: t.subject,
           html: `

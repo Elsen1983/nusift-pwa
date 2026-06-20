@@ -701,7 +701,7 @@ const handleOAuth = async (provider: string) => {
       client.requestAccessToken();
     } else if (provider === "Apple") {
       (window as any).AppleID.auth.init({
-        clientId: "com.yourdomain.nusift",
+        clientId: useRuntimeConfig().public.appleClientId,
         scope: "email name",
         redirectURI: "https://nusift.io/api/auth/apple/callback",
         usePopup: true,

@@ -75,6 +75,7 @@ export default defineNuxtConfig({
     // public keys (available to browser)
     public: {
       googleClientId: process.env.NUXT_PUBLIC_GOOGLE_CLIENT_ID,
+      appleClientId: process.env.NUXT_PUBLIC_APPLE_CLIENT_ID,
       appUrl: process.env.NUXT_PUBLIC_APP_URL || "http://localhost:3000",
     },
   },

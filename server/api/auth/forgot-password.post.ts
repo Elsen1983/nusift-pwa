@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { assertRateLimit } from "../../utils/rate-limit";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
+const EMAIL_SENDER = process.env.EMAIL_SENDER || 'NuSift <onboarding@resend.dev>';
 
 export default defineEventHandler(async (event) => {
   try {
@@ -42,7 +43,7 @@ export default defineEventHandler(async (event) => {
 
     // Dispatch Email via Resend
     await resend.emails.send({
-      from: 'NuSift Sovereign <onboarding@nusift.com>',
+      from: EMAIL_SENDER,
       to: email,
       subject: 'Neural Node Security - Password Reset Request',
       html: `
