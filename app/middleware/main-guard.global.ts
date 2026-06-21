@@ -54,7 +54,22 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
     authStore.$reset();
   }
 
-  const isAuthenticated = authStore.user !== null && hasActiveSession;
+  // On SSR: the session-guard middleware already validated the JWT + tokenVersion,
+  // so hasActiveSession (cookie exists) is sufficient proof of authentication.
+  // authStore.user is always null during SSR (Pinia is hydrated client-side only).
+  const isAuthenticated = import.meta.server ? hasActiveSession : (authStore.user !== null && hasActiveSession);
+
+  // --- SSR GATE: On the server, only enforce auth/private-route checks.
+  // Onboarding & dashboard routing requires authStore.user (Pinia data) which
+  // is only available client-side after hydrate.client.ts runs.
+  if (import.meta.server) {
+    if (!isAuthenticated && !isPublicRoute) {
+      return navigateTo(localePath(AUTH_PATH), { replace: true });
+    }
+    return;
+  }
+
+  // --- Everything below runs CLIENT-ONLY where authStore.user is populated ---
   const currentStep = authStore.user?.onboardingStep || 0;
 
  // Define the exact literal types allowed by your i18n config
