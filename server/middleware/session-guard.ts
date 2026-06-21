@@ -37,7 +37,8 @@ export default defineEventHandler(async (event) => {
     }
 
     event.context.user = { id: payload.userId };
-  } catch (error) {
+  } catch (error: any) {
+    console.warn(`[Sovereign Shield] Session verification failed: ${error?.message || error}`);
     deleteCookie(event, "auth_token");
     deleteCookie(event, "session_status");
 
