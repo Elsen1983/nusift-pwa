@@ -37,7 +37,7 @@ export default defineEventHandler(async (event) => {
     let avatarBasename: string | null = null;
     if (avatar) {
       const path = await import('node:path');
-      const rawAvatar = String(avatar).split(/[?#]/)[0];
+      const rawAvatar = String(avatar).split(/[?#]/)[0] ?? '';
       const base = path.basename(rawAvatar);
       const numberMatch = base.match(/avatar_(\d{1,3})/i);
       if (!numberMatch || !numberMatch[1]) {
