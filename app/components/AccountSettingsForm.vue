@@ -372,7 +372,7 @@ import AvatarPicker from "~/components/AvatarPicker.vue";
 
 // Build a map of available avatar basenames -> runtime URLs so we can
 // normalize stored avatar identifiers to the Vite-resolved URL used by AvatarPicker.
-const _avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
+const _avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, query: '?url', import: 'default' });
 const avatarByBasename = buildAvatarUrlMap(_avatarModules as Record<string, unknown>);
 
 function resolveAvatarUrl(stored: string | undefined | null) {

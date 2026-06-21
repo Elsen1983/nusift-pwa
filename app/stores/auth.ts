@@ -5,7 +5,7 @@ import { useAgentStore } from "./agent";
 import { buildAvatarUrlMap, resolveAvatarUrlFromMap } from "~/utils/avatar";
 
 // Build a map of available avatar basenames -> runtime URLs so the store can normalize values
-const _avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
+const _avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, query: '?url', import: 'default' });
 const _avatarByBasename = buildAvatarUrlMap(_avatarModules as Record<string, unknown>);
 
 function _resolveAvatarUrl(stored: string | undefined | null) {

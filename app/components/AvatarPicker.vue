@@ -45,7 +45,7 @@ const toggle = () => (open.value = !open.value);
 const close = () => (open.value = false);
 
 // Load avatars from the assets folder. Eager to get urls at build time.
-const modules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
+const modules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, query: '?url', import: 'default' });
 const avatars = Object.values(modules) as string[];
 
 const currentValue = computed(() => props.modelValue || defaultAvatar);

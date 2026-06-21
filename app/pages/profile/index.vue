@@ -395,7 +395,7 @@ const authStore = useAuthStore();
 const isClientHydrated = ref(false);
 
 // --- AVATAR RESOLVER LOGIC ---
-const _avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
+const _avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, query: '?url', import: 'default' });
 const avatarByBasename = buildAvatarUrlMap(_avatarModules as Record<string, unknown>);
 
 /// Computed avatar logic

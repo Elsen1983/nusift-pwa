@@ -3,7 +3,7 @@ import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
 import { buildAvatarUrlMap, resolveAvatarUrlFromMap } from "~/utils/avatar";
 
-const avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, as: 'url' });
+const avatarModules = import.meta.glob('/assets/images/avatars/*.{png,jpg,jpeg,webp,svg}', { eager: true, query: '?url', import: 'default' });
 const avatarByBasename = buildAvatarUrlMap(avatarModules as Record<string, unknown>);
 
 export default defineNuxtPlugin((nuxtApp) => {
