@@ -102,6 +102,22 @@
                     <span class="menu-item-chev material-symbols-outlined">chevron_right</span>
                   </button>
 
+                  <button
+                    @click="handleMenuNavigation('/settings')"
+                    class="menu-item group w-full"
+                  >
+                    <span class="menu-item-icon material-symbols-outlined">tune</span>
+                    <span class="menu-item-text">
+                      <span class="block text-sm font-medium text-on-surface">
+                        {{ $t("appLayout.profileMenu.app_settings") }}
+                      </span>
+                      <span class="block text-[11px] text-on-surface-variant">
+                        {{ $t("appLayout.profileMenu.app_settings_desc") }}
+                      </span>
+                    </span>
+                    <span class="menu-item-chev material-symbols-outlined">chevron_right</span>
+                  </button>
+
                   <div class="h-px bg-white/5 my-2"></div>
 
                   <button

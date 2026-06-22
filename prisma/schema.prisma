@@ -46,6 +46,23 @@ enum SubscriptionStatus {
   PAST_DUE // Payment failed, in grace period
 }
 
+enum NotificationType {
+  DAILY_DIGEST
+  BREAKING_SYSTEM
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum NotificationScheduleSlot {
+  MORNING
+  NOON
+  EVENING
+}
+
 // ---------------
 // ANCHOR MODELS
 // ---------------
@@ -66,6 +83,8 @@ model User {
   onboardingStep       Int       @default(0)
   oauthProvider        String? // e.g., "GOOGLE" or "APPLE"
   oauthId              String?   @unique
+  notificationScheduleSlot NotificationScheduleSlot @default(MORNING)
+  allowBreakingNotifications Boolean @default(true)
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
@@ -111,6 +130,8 @@ model User {
   articleRatings        ArticleRating[]
   bookmarks             Bookmark[]
   userReadActivities    UserReadActivity[]
+  pushSubscriptions     PushSubscription[]
+  notifications         Notification[]
   // ... existing relations
   sentRequests          UsersConnection[]          @relation("SentRequests")
   receivedRequests      UsersConnection[]          @relation("ReceivedRequests")
@@ -372,4 +393,47 @@ model UserReadActivity {
   // Track how they interacted to calculate the "Fatigue" or "Interest" metrics
   actionType  String // "IMPRESSION", "CLICKED", "READ_FULL"
   readTimeSec Int? // How long they spent looking at it
+}
+
+model PushSubscription {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  endpoint String @unique
+  p256dh   String
+  auth     String
+  expirationTime BigInt?
+  platform String?
+  userAgent String?
+  isActive Boolean @default(true)
+  lastSeenAt DateTime?
+
+  @@index([userId, isActive])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  type NotificationType
+  title String
+  body  String
+  url   String?
+  payload Json?
+  status NotificationStatus @default(PENDING)
+  sentAt DateTime?
+  readAt DateTime?
+  scheduledFor NotificationScheduleSlot?
+  errorLog String? @db.Text
+
+  @@index([type, status])
+  @@index([userId, status])
 }

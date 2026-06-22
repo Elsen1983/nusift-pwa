@@ -1,4 +1,21 @@
 <template>
+  <!-- Full-page loader overlay -->
+  <Transition name="fade">
+    <div
+      v-if="showPageLoader"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-surface/80 backdrop-blur-sm"
+    >
+      <div class="flex flex-col items-center gap-4">
+        <div class="relative">
+          <div class="w-12 h-12 border-4 border-primary-container/30 border-t-primary rounded-full animate-spin"></div>
+        </div>
+        <span class="text-on-surface font-body text-sm tracking-wide">
+          {{ t("myProfile.savingModal") }} 
+        </span>
+      </div>
+    </div>
+  </Transition>
+
   <div class="space-y-4">
     <form @submit.prevent="saveIdentityProfile" class="space-y-4">
       <h5
@@ -390,6 +407,12 @@ function formatDateForInput(value: string | Date | null | undefined): string {
 const isSavingIdentity = ref(false);
 const isSavingBilling = ref(false);
 const identityError = ref<string | null>(null);
+
+// Full-page loader state
+const showPageLoader = ref(false);
+const pageLoaderStartTime = ref(0);
+const activeSaves = ref(0);
+const MIN_LOADER_DURATION = 1000; // 1 second minimum display time
 
 const profileForm = ref({
   avatar: "",
@@ -854,6 +877,26 @@ onUnmounted(() => {
   }
 });
 
+// --- PAGE LOADER LOGIC ---
+const startPageLoader = () => {
+  if (activeSaves.value === 0) {
+    pageLoaderStartTime.value = Date.now();
+    showPageLoader.value = true;
+  }
+  activeSaves.value++;
+};
+
+const hidePageLoaderAfterMinDuration = async () => {
+  activeSaves.value--;
+  if (activeSaves.value > 0) return; // another save still in progress
+  const elapsed = Date.now() - pageLoaderStartTime.value;
+  const remaining = MIN_LOADER_DURATION - elapsed;
+  if (remaining > 0) {
+    await new Promise((resolve) => setTimeout(resolve, remaining));
+  }
+  showPageLoader.value = false;
+};
+
 // --- SAVE ACTIONS ---
 const saveIdentityProfile = async () => {
   const rawLocalNumber = profileForm.value.phoneNumber.trim();
@@ -872,6 +915,7 @@ const saveIdentityProfile = async () => {
     e164Phone = parsed.number; // already in E.164
   }
 
+  startPageLoader();
   isSavingIdentity.value = true;
   identityError.value = null;
   phoneError.value = null;
@@ -920,6 +964,7 @@ const saveIdentityProfile = async () => {
     // Here you would trigger an error toast (e.g., toast.error(error.message))
   } finally {
     isSavingIdentity.value = false;
+    await hidePageLoaderAfterMinDuration();
   }
 };
 
@@ -933,6 +978,7 @@ async function onAvatarSelect(url: string) {
 }
 
 const saveBillingProfile = async () => {
+  startPageLoader();
   isSavingBilling.value = true;
   try {
     const payload = {
@@ -963,6 +1009,7 @@ const saveBillingProfile = async () => {
     console.error("Failed to save billing profile", error);
   } finally {
     isSavingBilling.value = false;
+    await hidePageLoaderAfterMinDuration();
   }
 };
 
@@ -1027,5 +1074,14 @@ watch(
 .hide-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 </style>

@@ -275,6 +275,8 @@
             "agent_fine_tuning_desc": "Az ügynök finomhangolása és kategória-preferenciák",
             "source_manager": "Forráskezelő",
             "source_manager_desc": "Csatlakoztatott források kezelése",
+            "app_settings": "Alkalmazás Beállításai",
+            "app_settings_desc": "Megjelenés, nyelv és beállítások",
             "logout": "Kijelentkezés",
             "logout_desc": "Aktív munkamenet lezárása"
         },
@@ -423,7 +425,8 @@
             "vatNumber": "ÁFA Szám (opcionális)",
             "saveBillingAddressButtonDisabled": "Számlázási Információk Mentése",
             "saveBillingAddressButtonEnabled": "Mentése Folyamatban..."
-        }
+        },
+        "savingModal": "Mentés folyamatban..."
     },
     "categoriesSetup": {
         "badge": "A Te Hírfolyamod, A Te Szabályaid",
@@ -555,6 +558,53 @@
         "description": "Biztosan be akarod fejezni a biztonságos munkamenetet? Minden nem mentett ügynök-konfiguráció vagy kalibrációs adat elveszhet.",
         "btn_cancel": "Mégsem",
         "btn_terminate": "Kilépés"
+    },
+    "appSettings": {
+        "title": "Alkalmazás Beállításai",
+        "description": "Testreszabhatod a NuSift megjelenését és működését.",
+        "sections": {
+            "appearance": "Megjelenés",
+            "language": "Nyelv",
+            "notifications": "Értesítések",
+            "about": "Névjegy"
+        },
+        "darkMode": {
+            "label": "Sötét Mód",
+            "current_dark": "Sötét téma aktív",
+            "current_light": "Világos téma aktív"
+        },
+        "theme": {
+            "label": "Téma",
+            "description": "Válaszd ki a preferált színsémát",
+            "system": "Rendszer",
+            "light": "Világos",
+            "dark": "Sötét"
+        },
+        "language": {
+            "label": "Nyelv",
+            "description": "Válaszd ki a felület nyelvét",
+            "active": "Aktív",
+            "coming_soon": "Hamarosan"
+        },
+        "about": {
+            "version": "Alkalmazás Verzió"
+        },
+        "notifications": {
+            "title": "Push értesítések",
+            "description": "Napi hírjelzések és fontos rendszerüzenetek.",
+            "enabled": "Bekapcsolva",
+            "disabled": "Kikapcsolva",
+            "enable": "Engedélyezés",
+            "disable": "Kikapcsolás",
+            "test": "Teszt küldése",
+            "dailyTiming": "Napi időpont",
+            "dailyTimingDesc": "Válaszd ki, mikor érkezzen a napi frissítés.",
+            "morning": "Reggel",
+            "noon": "Délben",
+            "evening": "Este",
+            "breaking": "Breaking értesítések",
+            "breakingDesc": "Sürgős rendszerüzenetek engedélyezése."
+        }
     },
     "api_errors": {
         "missing_url": "Az URL megadása kötelező.",

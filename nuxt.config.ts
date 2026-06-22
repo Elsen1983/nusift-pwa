@@ -71,12 +71,15 @@ export default defineNuxtConfig({
   },
 
   runtimeConfig: {
+    vapidPrivateKey: process.env.NUXT_VAPID_PRIVATE_KEY,
+    vapidSubject: process.env.NUXT_VAPID_SUBJECT || "mailto:support@nusift.com",
     // Private keys (server-side only)
     // public keys (available to browser)
     public: {
       googleClientId: process.env.NUXT_PUBLIC_GOOGLE_CLIENT_ID,
       appleClientId: process.env.NUXT_PUBLIC_APPLE_CLIENT_ID,
       appUrl: process.env.NUXT_PUBLIC_APP_URL || "http://localhost:3000",
+      vapidPublicKey: process.env.NUXT_PUBLIC_VAPID_PUBLIC_KEY,
     },
   },
 
@@ -109,6 +112,9 @@ export default defineNuxtConfig({
 
   // ANCHOR PWA-CONFIGURATION
   pwa: {
+    strategies: "injectManifest",
+    srcDir: "public",
+    filename: "sw.ts",
     registerType: "autoUpdate",
     injectRegister: "auto",
     client: {

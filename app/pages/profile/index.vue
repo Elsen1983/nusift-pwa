@@ -95,62 +95,6 @@
       </div>
     </section>
 
-    <!-- PREFERENCE SETTINGS -->
-    <section class="space-y-2">
-      <h4
-        class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4"
-      >
-        {{ $t("myProfile.sections.preference") }}
-      </h4>
-      <div
-        class="bg-surface-container-low rounded-3xl p-2 border border-outline-variant/10 shadow-lg"
-      >
-        <button
-          class="w-full flex items-center justify-between p-3.5 hover:bg-surface-container-highest rounded-2xl transition-colors group"
-        >
-          <div class="flex items-center gap-4 text-on-surface">
-            <span
-              class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors"
-              >language</span
-            >
-            <span class="font-body text-[15px] font-medium">{{
-              $t("myProfile.menu.language")
-            }}</span>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="text-on-surface-variant text-[13px] font-label"
-              >English</span
-            >
-            <span
-              class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-colors"
-              >chevron_right</span
-            >
-          </div>
-        </button>
-
-        <div class="w-full flex items-center justify-between p-3.5 rounded-2xl">
-          <div class="flex items-center gap-4 text-on-surface">
-            <span class="material-symbols-outlined text-on-surface-variant"
-              >dark_mode</span
-            >
-            <span class="font-body text-[15px] font-medium">{{
-              $t("myProfile.menu.dark_mode")
-            }}</span>
-          </div>
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              v-model="isDarkMode"
-              class="sr-only peer"
-            />
-            <div
-              class="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container"
-            ></div>
-          </label>
-        </div>
-      </div>
-    </section>
-
     <!-- SOURCE METRICS -->
     <section class="space-y-2">
       <h4
@@ -429,14 +373,6 @@ const activeCount = ref(0);
 const suspendedCount = ref(0);
 const restrictedCount = ref(0);
 const limit = ref(5);
-const colorMode = useColorMode();
-
-const isDarkMode = computed({
-  get: () => colorMode.value === 'dark',
-  set: (val) => {
-    colorMode.preference = val ? 'dark' : 'light';
-  }
-});
 
 const rawTimelineData = ref([]);
 const isAnalyticsLoading = ref(true);

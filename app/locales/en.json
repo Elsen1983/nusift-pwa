@@ -275,6 +275,8 @@
             "agent_fine_tuning_desc": "Tune the agent and category preferences",
             "source_manager": "Source Manager",
             "source_manager_desc": "Manage connected sources",
+            "app_settings": "App Settings",
+            "app_settings_desc": "Appearance, language & preferences",
             "logout": "Logout",
             "logout_desc": "End the active session"
         },
@@ -423,7 +425,8 @@
             "vatNumber": "VAT Number (Optional)",
             "saveBillingAddressButtonDisabled": "Save Billing Info",
             "saveBillingAddressButtonEnabled": "Saving..."
-        }
+        },
+        "savingModal": "Saving in progress ..."
     },
     "categoriesSetup": {
         "badge": "Your Feed, Your Rules",
@@ -555,6 +558,53 @@
         "description": "Are you sure you want to end your secure session? Any unsaved agent configurations or calibration data might be lost.",
         "btn_cancel": "Cancel",
         "btn_terminate": "Quit"
+    },
+    "appSettings": {
+        "title": "App Settings",
+        "description": "Customize how NuSift looks and feels.",
+        "sections": {
+            "appearance": "Appearance",
+            "language": "Language",
+            "notifications": "Notifications",
+            "about": "About"
+        },
+        "darkMode": {
+            "label": "Dark Mode",
+            "current_dark": "Dark theme active",
+            "current_light": "Light theme active"
+        },
+        "theme": {
+            "label": "Theme",
+            "description": "Choose your preferred color scheme",
+            "system": "System",
+            "light": "Light",
+            "dark": "Dark"
+        },
+        "language": {
+            "label": "Language",
+            "description": "Choose your interface language",
+            "active": "Active",
+            "coming_soon": "Coming Soon"
+        },
+        "about": {
+            "version": "App Version"
+        },
+        "notifications": {
+            "title": "Push notifications",
+            "description": "Daily news alerts and important system messages.",
+            "enabled": "Enabled",
+            "disabled": "Disabled",
+            "enable": "Enable",
+            "disable": "Disable",
+            "test": "Send test",
+            "dailyTiming": "Daily timing",
+            "dailyTimingDesc": "Choose when the daily update should arrive.",
+            "morning": "Morning",
+            "noon": "Noon",
+            "evening": "Evening",
+            "breaking": "Breaking notifications",
+            "breakingDesc": "Allow urgent system messages."
+        }
     },
     "api_errors": {
       "missing_url": "URL parameter is required.",
