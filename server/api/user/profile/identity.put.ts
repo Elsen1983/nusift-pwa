@@ -7,8 +7,14 @@ export default defineEventHandler(async (event) => {
   }
 
   const body = await readBody(event);
-  const { nickname, phoneNumber, dateOfBirth, avatar } = body;
+  const { nickname, phoneNumber, dateOfBirth, avatar, preferredLanguage } = body;
   const aboutMyself = body.aboutMyself ?? body.about_myself;
+  const hasIdentityPayload =
+    nickname !== undefined ||
+    phoneNumber !== undefined ||
+    dateOfBirth !== undefined ||
+    avatar !== undefined ||
+    aboutMyself !== undefined;
 
   // Validate and parse the Date of Birth securely
   let parsedDate: Date | null = null;
@@ -53,25 +59,37 @@ export default defineEventHandler(async (event) => {
       avatarBasename = `avatar_${String(num).padStart(3, '0')}.png`;
     }
 
-    // Use upsert to handle both first-time saves and subsequent updates
-    const updatedProfile = await prisma.userProfile.upsert({
-      where: { userId: user.id },
-      update: {
-        nickname: nickname || null,
-        phoneNumber: phoneNumber || null,
-        dateOfBirth: parsedDate,
-        aboutMyself: aboutMyself ? String(aboutMyself).slice(0, 1000) : null,
-        avatarUrl: avatarBasename || null,
-      },
-      create: {
-        userId: user.id,
-        nickname: nickname || null,
-        phoneNumber: phoneNumber || null,
-        dateOfBirth: parsedDate,
-        aboutMyself: aboutMyself ? String(aboutMyself).slice(0, 1000) : null,
-        avatarUrl: avatarBasename || null,
-      },
-    });
+    if (preferredLanguage) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { preferredLanguage: String(preferredLanguage) },
+      });
+    }
+
+    let updatedProfile = null;
+    if (hasIdentityPayload) {
+      const profileUpdate: Record<string, unknown> = {};
+      if (nickname !== undefined) profileUpdate.nickname = nickname || null;
+      if (phoneNumber !== undefined) profileUpdate.phoneNumber = phoneNumber || null;
+      if (dateOfBirth !== undefined) profileUpdate.dateOfBirth = parsedDate;
+      if (aboutMyself !== undefined) {
+        profileUpdate.aboutMyself = aboutMyself ? String(aboutMyself).slice(0, 1000) : null;
+      }
+      if (avatar !== undefined) profileUpdate.avatarUrl = avatarBasename || null;
+
+      updatedProfile = await prisma.userProfile.upsert({
+        where: { userId: user.id },
+        update: profileUpdate,
+        create: {
+          userId: user.id,
+          nickname: nickname !== undefined ? (nickname || null) : null,
+          phoneNumber: phoneNumber !== undefined ? (phoneNumber || null) : null,
+          dateOfBirth: dateOfBirth !== undefined ? parsedDate : null,
+          aboutMyself: aboutMyself !== undefined ? (aboutMyself ? String(aboutMyself).slice(0, 1000) : null) : null,
+          avatarUrl: avatar !== undefined ? (avatarBasename || null) : null,
+        },
+      });
+    }
 
     return {
       success: true,

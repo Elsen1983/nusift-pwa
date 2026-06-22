@@ -111,7 +111,7 @@
                   </button>
 
                   <button
-                    @click="handleMenuNavigation('/notifications/MyNotifications')"
+                    @click="handleMenuNavigation('/notifications')"
                     class="menu-item group w-full"
                   >
                     <span class="menu-item-icon material-symbols-outlined">notifications</span>

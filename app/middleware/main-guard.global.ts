@@ -15,9 +15,10 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
   const authStore = useAuthStore();
   const tokenCookie = useCookie("auth_token");
   const localePath = useLocalePath();
-
+  const supportedLocales = new Set(["en", "hu", "fr", "de", "pl", "es"]);
   // 1. ANCHOR: i18n PATH NORMALIZATION
   // Strip the language prefix (e.g., '/hu', '/en') so the guard logic works universally
+  const routeLocale = to.path.match(/^\/(en|hu|fr|de|pl|es)(?=\/|$)/)?.[1] || null;
   const cleanPath = to.path.replace(/^\/(en|hu|fr|de|pl|es)(?=\/|$)/, '') || '/';
   const PUBLIC_ROUTES = [AUTH_PATH, "/verify-email", "/verify", "/reset-password"];
   // 2. Use cleanPath instead of to.path
@@ -72,11 +73,15 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
   // --- Everything below runs CLIENT-ONLY where authStore.user is populated ---
   const currentStep = authStore.user?.onboardingStep || 0;
 
- // Define the exact literal types allowed by your i18n config
+  // Define the exact literal types allowed by your i18n config
   type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
   
   // Cast the extracted string to the strict type
-  const userLang = (authStore.user?.preferredLanguage || 'en') as AvailableLocales;
+  // Prefer the explicit route prefix when present, otherwise keep the user's saved language.
+  const userLang = (authStore.user?.preferredLanguage || "en") as AvailableLocales;
+  const activeLang = ((routeLocale && supportedLocales.has(routeLocale))
+    ? routeLocale
+    : userLang) as AvailableLocales;
 
   const getOnboardingTarget = (step: number) => {
     switch (step) {
@@ -93,17 +98,17 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
   
   // If authenticated, NEVER allow access to /auth - send to current onboarding step or dashboard
   if (isAuthenticated && cleanPath === AUTH_PATH) {
-    return navigateTo(localePath(targetPath, userLang));
+    return navigateTo(localePath(targetPath, activeLang));
   }
 
   // Handle Root Path
   if (cleanPath === ROOT_PATH) {
-    return navigateTo(localePath(isAuthenticated ? targetPath : AUTH_PATH, userLang));
+    return navigateTo(localePath(isAuthenticated ? targetPath : AUTH_PATH, activeLang));
   }
 
   // Protect private routes
   if (!isAuthenticated && !isPublicRoute) {
-    return navigateTo(localePath(AUTH_PATH, userLang), { replace: true });
+    return navigateTo(localePath(AUTH_PATH, activeLang), { replace: true });
   }
 
   // --- Onboarding Flow Lockdown ---
@@ -123,7 +128,7 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
   const isFullyOnboarded = currentStep >= 3;
 
   if (isFullyOnboarded && LOCKED_ONBOARDING_ROUTES.includes(cleanPath)) {
-    return navigateTo(localePath(DASHBOARD_PATH, userLang), { replace: true });
+    return navigateTo(localePath(DASHBOARD_PATH, activeLang), { replace: true });
   }
 
   if (
@@ -134,6 +139,6 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
     cleanPath !== DASHBOARD_PATH &&
     !ALL_TRANSITIONAL_ROUTES.includes(cleanPath)
   ) {
-    return navigateTo(localePath(targetPath, userLang), { replace: true });
+    return navigateTo(localePath(targetPath, activeLang), { replace: true });
   }
 });

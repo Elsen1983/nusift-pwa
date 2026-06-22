@@ -1,6 +1,5 @@
 <template>
-  <div class="px-4 py-8 max-w-2xl mx-auto space-y-6 pb-20 overflow-hidden">
-    <!-- PAGE HEADER -->
+  <div class="px-4 py-8 max-w-2xl mx-auto space-y-6 pb-20 overflow-visible">
     <section class="px-2">
       <div class="flex items-center gap-3 mb-1">
         <span class="material-symbols-outlined text-primary-container text-2xl">settings</span>
@@ -13,12 +12,11 @@
       </p>
     </section>
 
-    <!-- NOTIFICATIONS -->
     <section class="space-y-2">
       <h4 class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4">
         {{ $t("appSettings.sections.notifications") }}
       </h4>
-      <div class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden flex flex-col">
+      <div class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-visible flex flex-col">
         <div class="w-full flex flex-col gap-4 p-4">
           <div class="flex items-start justify-between gap-4">
             <div class="flex items-center gap-4 text-on-surface min-w-0">
@@ -32,20 +30,19 @@
                 </span>
               </div>
             </div>
-            <span class="text-[11px] font-label uppercase tracking-widest px-2 py-1 rounded-full border"
-              :class="pushEnabled ? 'border-success/30 text-success' : 'border-outline-variant/30 text-on-surface-variant'">
-              {{ pushEnabled ? $t("appSettings.notifications.enabled") : $t("appSettings.notifications.disabled") }}
-            </span>
+            <label class="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                class="sr-only peer"
+                :checked="pushEnabled"
+                :disabled="pushStatus === 'loading'"
+                @change="togglePush"
+              />
+              <div class="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container"></div>
+            </label>
           </div>
 
           <div class="flex flex-wrap gap-3">
-            <button
-              class="px-4 py-3 rounded-lg border text-[11px] font-headline uppercase tracking-widest transition-colors"
-              :class="pushEnabled ? 'border-outline-variant/30 bg-surface-container hover:bg-surface-container-high text-on-surface-variant' : 'border-primary-container/30 bg-primary-container/10 hover:bg-primary-container/20 text-primary-container'"
-              @click="pushEnabled ? disablePush() : enablePush()"
-            >
-              {{ pushEnabled ? $t("appSettings.notifications.disable") : $t("appSettings.notifications.enable") }}
-            </button>
             <button
               class="px-4 py-3 rounded-lg border border-outline-variant/30 bg-surface-container hover:bg-surface-container-high text-on-surface-variant text-[11px] font-headline uppercase tracking-widest transition-colors"
               @click="sendTestPush"
@@ -54,49 +51,59 @@
             </button>
           </div>
 
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label class="flex items-center justify-between gap-3 p-3 rounded-xl border border-outline-variant/20 bg-surface-container">
-              <div>
-                <span class="font-body text-[14px] font-medium block">{{ $t("appSettings.notifications.dailyTiming") }}</span>
-                <span class="text-on-surface-variant text-[11px] font-label">{{ $t("appSettings.notifications.dailyTimingDesc") }}</span>
+          <div class="space-y-3">
+            <div class="flex items-start justify-between gap-4">
+              <div class="flex items-center gap-4 text-on-surface min-w-0">
+                <span class="material-symbols-outlined text-on-surface-variant">bolt</span>
+                <div class="min-w-0">
+                  <span class="font-body text-[15px] font-medium block">{{ $t("appSettings.notifications.breaking") }}</span>
+                  <span class="text-on-surface-variant text-[11px] font-label">{{ $t("appSettings.notifications.breakingDesc") }}</span>
+                </div>
               </div>
-              <select
-                v-model="scheduleSlot"
-                @change="updateSchedule"
-                class="bg-transparent text-on-surface-variant border border-outline-variant/30 rounded-lg px-3 py-2 text-sm"
-              >
-                <option value="MORNING">{{ $t("appSettings.notifications.morning") }}</option>
-                <option value="NOON">{{ $t("appSettings.notifications.noon") }}</option>
-                <option value="EVENING">{{ $t("appSettings.notifications.evening") }}</option>
-              </select>
-            </label>
-
-            <label class="flex items-center justify-between gap-3 p-3 rounded-xl border border-outline-variant/20 bg-surface-container">
-              <div>
-                <span class="font-body text-[14px] font-medium block">{{ $t("appSettings.notifications.breaking") }}</span>
-                <span class="text-on-surface-variant text-[11px] font-label">{{ $t("appSettings.notifications.breakingDesc") }}</span>
-              </div>
-              <label class="relative inline-flex items-center cursor-pointer">
+              <label class="relative inline-flex items-center cursor-pointer shrink-0">
                 <input type="checkbox" v-model="breakingEnabled" @change="updateBreaking" class="sr-only peer" />
                 <div class="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container"></div>
               </label>
-            </label>
+            </div>
+
+            <div class="flex items-start gap-4">
+              <span class="material-symbols-outlined text-on-surface-variant shrink-0 mt-0.5">schedule</span>
+              <div class="min-w-0 flex-1">
+                <span class="font-body text-[15px] font-medium block">{{ $t("appSettings.notifications.dailyTiming") }}</span>
+                <span class="text-on-surface-variant text-[11px] font-label block">{{ $t("appSettings.notifications.dailyTimingDesc") }}</span>
+                <div class="mt-3 grid grid-cols-3 gap-2">
+                  <label
+                    v-for="option in scheduleOptions"
+                    :key="option.value"
+                    class="flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors cursor-pointer min-w-0"
+                    :class="scheduleSlot === option.value ? 'border-primary-container/50 bg-primary-container/10' : 'border-outline-variant/20 bg-surface-container-high hover:bg-surface-container-highest'"
+                  >
+                    <input
+                      type="radio"
+                      name="scheduleSlot"
+                      class="sr-only"
+                      :value="option.value"
+                      :checked="scheduleSlot === option.value"
+                      @change="selectSchedule(option.value)"
+                    />
+                    <span class="h-4 w-4 rounded-full border flex items-center justify-center shrink-0" :class="scheduleSlot === option.value ? 'border-primary-container' : 'border-outline-variant/40'">
+                      <span v-if="scheduleSlot === option.value" class="h-2 w-2 rounded-full bg-primary-container"></span>
+                    </span>
+                    <span class="font-label text-xs sm:text-sm font-bold text-on-surface truncate">{{ option.label }}</span>
+                  </label>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- APPEARANCE -->
     <section class="space-y-2">
-      <h4
-        class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4"
-      >
+      <h4 class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4">
         {{ $t("appSettings.sections.appearance") }}
       </h4>
-      <div
-        class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden flex flex-col"
-      >
-        <!-- Dark Mode Toggle -->
+      <div class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden flex flex-col">
         <div class="w-full flex items-center justify-between p-4">
           <div class="flex items-center gap-4 text-on-surface">
             <span class="material-symbols-outlined text-on-surface-variant">
@@ -112,36 +119,21 @@
             </div>
           </div>
           <label class="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              v-model="isDarkMode"
-              class="sr-only peer"
-            />
-            <div
-              class="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container"
-            ></div>
+            <input type="checkbox" v-model="isDarkMode" class="sr-only peer" />
+            <div class="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container"></div>
           </label>
         </div>
-
       </div>
     </section>
 
-    <!-- LANGUAGE -->
     <section class="space-y-2">
-      <h4
-        class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4"
-      >
+      <h4 class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4">
         {{ $t("appSettings.sections.language") }}
       </h4>
-      <div
-        class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden flex flex-col"
-      >
-        <!-- Current Language Display -->
+      <div class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden flex flex-col">
         <div class="w-full flex items-center justify-between p-4">
           <div class="flex items-center gap-4 text-on-surface">
-            <span class="material-symbols-outlined text-on-surface-variant">
-              language
-            </span>
+            <span class="material-symbols-outlined text-on-surface-variant">language</span>
             <div>
               <span class="font-body text-[15px] font-medium block">
                 {{ $t("appSettings.language.label") }}
@@ -155,15 +147,12 @@
             <span class="text-on-surface-variant text-[13px] font-label">
               {{ currentLanguageName }}
             </span>
-            <span
-              class="material-symbols-outlined text-outline-variant text-lg"
-            >chevron_right</span>
+            <span class="material-symbols-outlined text-outline-variant text-lg">chevron_right</span>
           </div>
         </div>
 
         <div class="h-px w-full bg-outline-variant/10"></div>
 
-        <!-- Language Grid -->
         <div class="p-4">
           <div class="grid grid-cols-2 gap-3">
             <button
@@ -210,16 +199,11 @@
       </div>
     </section>
 
-    <!-- ABOUT -->
     <section class="space-y-2">
-      <h4
-        class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4"
-      >
+      <h4 class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4">
         {{ $t("appSettings.sections.about") }}
       </h4>
-      <div
-        class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden"
-      >
+      <div class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden">
         <div class="w-full flex items-center justify-between p-4">
           <div class="flex items-center gap-4 text-on-surface">
             <span class="material-symbols-outlined text-on-surface-variant">info</span>
@@ -238,22 +222,26 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { useI18n } from "vue-i18n";
+import { useAuthStore } from "~/stores/auth";
 import { usePushNotifications } from "~/composables/usePushNotifications";
 
-definePageMeta({
-  layout: "app-layout",
-});
+definePageMeta({ layout: "app-layout" });
 
-const { locale, t } = useI18n();
+const { locale, setLocale } = useI18n();
+const authStore = useAuthStore();
 const colorMode = useColorMode();
 const push = usePushNotifications();
 
 const pushEnabled = computed(() => push.enabled.value);
+const pushStatus = computed(() => push.status.value);
 const scheduleSlot = ref<"MORNING" | "NOON" | "EVENING">("MORNING");
 const breakingEnabled = ref(true);
+const scheduleOptions = [
+  { value: "MORNING", label: "Reggel" },
+  { value: "NOON", label: "Délben" },
+  { value: "EVENING", label: "Este" },
+] as const;
 
-// --- DARK MODE TOGGLE ---
 const isDarkMode = computed({
   get: () => colorMode.value === "dark",
   set: (val: boolean) => {
@@ -261,8 +249,9 @@ const isDarkMode = computed({
   },
 });
 
-// --- LANGUAGE ---
-const availableLanguages = [
+type LocaleCode = "en" | "hu" | "fr" | "de" | "pl" | "es";
+
+const availableLanguages: { code: LocaleCode; name: string; icon: string; enabled: boolean }[] = [
   { code: "en", name: "English", icon: "circle-flags:gb", enabled: true },
   { code: "hu", name: "Magyar", icon: "circle-flags:hu", enabled: true },
   { code: "fr", name: "Français", icon: "circle-flags:fr", enabled: false },
@@ -276,10 +265,23 @@ const currentLanguageName = computed(() => {
   return current?.name || "English";
 });
 
-const selectLanguage = (lang: (typeof availableLanguages)[number]) => {
+const selectLanguage = async (lang: (typeof availableLanguages)[number]) => {
   if (!lang.enabled) return;
   localStorage.setItem("nusift_preferred_language", lang.code);
-  locale.value = lang.code as "en" | "hu";
+  if (authStore.user) {
+    authStore.user.preferredLanguage = lang.code;
+    localStorage.setItem("nusift_pwa_profile", JSON.stringify(authStore.user));
+  }
+  try {
+    await $fetch("/api/user/profile/identity", {
+      method: "PUT",
+      body: { preferredLanguage: lang.code },
+    });
+  } catch (error) {
+    console.warn("[settings] failed to persist preferredLanguage", error);
+  }
+  await setLocale(lang.code);
+  locale.value = lang.code;
 };
 
 const enablePush = async () => {
@@ -288,6 +290,12 @@ const enablePush = async () => {
 
 const disablePush = async () => {
   await push.unsubscribe();
+};
+
+const togglePush = async (event: Event) => {
+  const nextEnabled = (event.target as HTMLInputElement)?.checked ?? false;
+  if (nextEnabled) await enablePush();
+  else await disablePush();
 };
 
 const sendTestPush = async () => {
@@ -301,6 +309,11 @@ const sendTestPush = async () => {
 
 const updateSchedule = async () => {
   await push.setScheduleSlot(scheduleSlot.value);
+};
+
+const selectSchedule = async (slot: "MORNING" | "NOON" | "EVENING") => {
+  scheduleSlot.value = slot;
+  await updateSchedule();
 };
 
 const updateBreaking = async () => {

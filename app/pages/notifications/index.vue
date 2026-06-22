@@ -100,7 +100,11 @@ type NotificationItem = {
 
 const open = reactive({ new: true, read: false });
 const unreadNotificationCount = useState<number>("unreadNotificationCount", () => 0);
-const { data, refresh } = await useAsyncData("notifications", () => $fetch<{ unreadCount: number; notifications: NotificationItem[] }>("/api/notifications"), { server: false });
+const { data, refresh } = await useAsyncData(
+  "notifications",
+  () => $fetch<{ unreadCount: number; notifications: NotificationItem[] }>("/api/notifications"),
+  { server: false },
+);
 
 const notifications = computed(() => data.value?.notifications || []);
 const newNotifications = computed(() => notifications.value.filter((item) => !item.readAt));
@@ -125,5 +129,7 @@ async function deleteNotification(id: string) {
   if (import.meta.client) window.dispatchEvent(new Event("nusift:notifications:update"));
 }
 
-await syncUnreadCount();
+onMounted(() => {
+  void syncUnreadCount();
+});
 </script>

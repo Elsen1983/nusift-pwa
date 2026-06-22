@@ -1,638 +1,630 @@
-﻿{
-    "auth":  {
-                 "loading":  {
-                                 "resetting":  "Protokoll engedélyezése...",
-                                 "registering":  "Szuverén identitás létrehozása...",
-                                 "initializing":  "Biztonságos kapcsolat inicializálása..."
-                             },
-                 "pwa":  {
-                             "install_prompt":  "Telepíted a NuSift-et az eszközödre?",
-                             "buttons":  {
-                                             "install":  "Telepítés",
-                                             "not_now":  "Most nem",
-                                             "got_it":  "Értem"
-                                         },
-                             "firefox_instructions":  "A Firefoxban való telepítéshez nyisd meg a böngésző menüjét, és válaszd a {action1} vagy a {action2} lehetőséget.",
-                             "firefox_action1":  "\"Telepítés\"",
-                             "firefox_action2":  "\"Hozzáadás az alkalmazástárhoz\"",
-                             "ios_instructions":  "A telepítéshez bökj a {action1} → {action2} gombra a Safariban.",
-                             "ios_action1":  "Megosztás",
-                             "ios_action2":  "Főképernyőhöz adás"
-                         },
-                 "heading":  {
-                                 "reset":  "Biztonsági helyreállítás",
-                                 "register":  "Regisztráció",
-                                 "login":  "Üdvözlünk újra"
-                             },
-                 "subheading":  {
-                                    "reset":  "Jelszó-helyreállítás engedélyezése",
-                                    "register":  "Érd el a napi híreid",
-                                    "login":  "Személyre szabott híreid várnak"
-                                },
-                 "form":  {
-                              "email_label":  "Email cím",
-                              "email_placeholder":  "kovacsbela\\@freemail.hu",
-                              "password_label":  "Jelszó",
-                              "password_placeholder":  "••••••••••••",
-                              "forgot_password":  "Elfelejtetted?",
-                              "password_hint":  "Min. 12 karakter, kis- és nagybetűk, valamint szimbólumok."
-                          },
-                 "buttons":  {
-                                 "send_reset":  "Helyreállító link küldése",
-                                 "register_identity":  "Regisztráció",
-                                 "authenticate":  "Hitelesítés",
-                                 "continue_email":  "Folytatás Email-lel",
-                                 "back_to_options":  "Vissza a beállításokhoz",
-                                 "continue_google":  "Folytatás Google-lal",
-                                 "continue_apple":  "Folytatás Apple-lel",
-                                 "back_to_login":  "Vissza a bejelentkezéshez"
-                             },
-                 "prompts":  {
-                                 "already_have_account":  "Van már fiókod?",
-                                 "dont_have_account":  "Még nincs fiókod?",
-                                 "login_link":  "Bejelentkezés",
-                                 "registration_link":  "Regisztráció",
-                                 "divider_label":  "Social Kapu"
-                             },
-                 "footer":  {
-                                "encryption_label":  "Szuverén szintű titkosítás",
-                                "terms":  "Felhasználási feltételek",
-                                "privacy":  "Adatvédelem",
-                                "help":  "Segítség"
-                            },
-                 "modal":  {
-                               "language_selection_title":  "Interfész kiválasztása",
-                               "language_selection_subtitle":  "Válaszd ki a preferált nyelvi protokollt.",
-                               "terms_title":  "Szuverenitási feltételek",
-                               "terms_p1":  "Ezen csomópont inicializálásával elfogadod a NuSift decentralizált irányítási protokolljait.",
-                               "terms_p2":  "A felhasználói adatok helyileg titkosítottak; a NuSift soha nem tárolja a privát kulcsaidat.",
-                               "acknowledge":  "Tudomásul veszem",
-                               "privacy_title":  "Adatvédelmi tájékoztató",
-                               "privacy_p1":  "A NuSift zéró tudású (zero-knowledge) architektúrán működik. Nem gyűjtünk és nem tárolunk semmilyen személyes azonosításra alkalmas adatot. Minden felhasználói adat az eszközödön titkosított, és soha nem továbbítjuk azokat szervereinkre.",
-                               "privacy_p2":  "A NuSift használatával elfogadod az ebben a tájékoztatóban leírt adatvédelmi gyakorlatunkat.",
-                               "privacy_acknowledge":  "Megértettem",
-                               "help_title":  "Segítségre van szükséged?",
-                               "help_p1":  "Ha problémákat tapasztalsz a hitelesítés során, vagy kérdéseid vannak a fiókoddal kapcsolatban, kérjük, vedd fel a kapcsolatot támogató csapatunkkal.",
-                               "help_p2":  "Email: support\\@nusift.com",
-                               "help_acknowledge":  "Kapcsolatfelvétel"
-                           },
-                 "validation":  {
-                                    "invalid_email":  "Érvénytelen formátum.",
-                                    "password_too_short":  "Minimum 12 karakter szükséges.",
-                                    "password_no_uppercase":  "Legalább egy nagybetűt kell tartalmaznia.",
-                                    "password_no_lowercase":  "Legalább egy kisbetűt kell tartalmaznia.",
-                                    "password_no_special":  "Legalább egy speciális karaktert kell tartalmaznia.",
-                                    "password_no_number":  "Legalább egy számot kell tartalmaznia."
-                                },
-                 "errors":  {
-                                "unexpected":  "Váratlan hiba történt.",
-                                "auth_failure":  "Hitelesítési hiba.",
-                                "request_failed":  "A kérés feldolgozása sikertelen.",
-                                "oauth_cancelled":  "A felhasználó megszakította a hitelesítést.",
-                                "oauth_timeout":  "A hitelesítési ablak túl sokáig válaszolt. Kérlek, próbáld újra.",
-                                "oauth_failed":  "Sikertelen hitelesítés ezzel: {provider}.",
-                                "oauth_missing_id":  "Konfigurációs hiba: A Google Client ID hiányzik.",
-                                "oauth_not_init":  "Kézfogás sikertelen: Az identitás-szolgáltató még nem inicializált.",
-                                "handshake_failed":  "{provider} kézfogás sikertelen."
-                            }
-             },
-    "verifyEmail":  {
-                        "loading":  {
-                                        "syncing":  "Hitelesítő adatok szinkronizálása...",
-                                        "confirmed":  "Személyazonosság megerősítve. Horizont formálása...",
-                                        "verifying":  "Kapcsolat állapotának ellenőrzése...",
-                                        "dispatching":  "Biztonságos csomag továbbítása..."
-                                    },
-                        "title":  "Ellenőrizd a beérkező leveleket",
-                        "description":  "Küldtünk egy megerősítő linket az e-mail címedre. Kattints a levélben található linkre a fiókod automatikus megerősítéséhez.",
-                        "awaiting":  "Várakozás az automatikus megerősítésre...",
-                        "fallback_title":  "Tartalék protokoll",
-                        "buttons":  {
-                                        "verified_login":  "Megerősítettem az e-mailt. Bejelentkezés.",
-                                        "resend":  "Megerősítő link újraküldése",
-                                        "resend_wait":  "Újraküldés {seconds}mp múlva"
-                                    },
-                        "messages":  {
-                                         "session_expired":  "A munkamenet lejárt. Kérlek, térj vissza a bejelentkezési oldalra, és próbáld újra.",
-                                         "resend_success":  "Új megerősítő link továbbítva. Ellenőrizd a beérkező leveleket.",
-                                         "resend_error":  "Hiba történt a link újraküldése közben. Kérlek, próbáld újra később.",
-                                         "check_email":  "Megerősítés folyamatban. Kérlek, ellenőrizd az e-mail fiókod.",
-                                         "manual_check":  "Kézi ellenőrzés befejezve. Átirányítás a bejelentkezéshez..."
-                                     }
-                    },
-    "emailVerify":  {
-                        "title_success":  "Személyazonosság megerősítve",
-                        "title_loading":  "Hozzáférési link dekódolása...",
-                        "description":  "A hitelesítés sikeresen befejeződött. Biztonságosan bezárhatod ezt a lapot, és visszatérhetsz az eredeti NuSift ablakba a folytatáshoz.",
-                        "buttons":  {
-                                        "continue":  "Vagy folytatás itt"
-                                    },
-                        "messages":  {
-                                         "missing_signature":  "Hiányzó hitelesítési aláírás.",
-                                         "verification_failed":  "A hitelesítés sikertelen. A link érvényessége lejárt, vagy már felhasználták."
-                                     }
-                    },
-    "preloaderFirst":  {
-                           "system_init":  "Rendszer inicializálása",
-                           "processing":  "Feldolgozás...",
-                           "curating":  "Információs horizontod kurálása...",
-                           "version":  "Verzió 2.4.0-Alpha",
-                           "footer":  "Digitális szuverenitásod biztosítása",
-                           "quotes":  [
-                                          {
-                                              "text":  "A megtévesztés korában az igazmondás forradalmi cselekedet.",
-                                              "author":  "George Orwell"
-                                          },
-                                          {
-                                              "text":  "Az igazság ritkán tiszta és sosem egyszerű.",
-                                              "author":  "Oscar Wilde"
-                                          },
-                                          {
-                                              "text":  "Az információ a demokrácia valutája.",
-                                              "author":  "Thomas Jefferson"
-                                          },
-                                          {
-                                              "text":  "Egy hazugság bejárja a fél világot, míg az igazság a cipőjét húzza.",
-                                              "author":  "Mark Twain"
-                                          }
-                                      ]
-                       },
-    "preloaderSecond":  {
-                            "forging":  "INTELLIGENCIA HORIZONT FORMÁLÁSA...",
-                            "quotes":  [
-                                           {
-                                               "text":  "Amikor átszűröd a zajt, nem csak információt találsz; tisztaságot is. És a tisztaságban megtalálod a saját utadat.",
-                                               "author":  ""
-                                           }
-                                       ]
-                        },
-    "regionCalibration":  {
-                              "back_link":  "Vissza a bejelentkezéshez",
-                              "step_indicator":  "Lépés 01/03.",
-                              "badge_init":  "Régió Inicializálása",
-                              "title":  "Elsődleges Régió Kiválasztása",
-                              "description":  "Állítsd be az információgyűjtés alaprégióját. Ez segít kalibrálni a kezdeti hírforrásokat. Ne aggódj – később a világ bármely pontjáról hozzáadhatsz egyéni domaineket, ahogy adatbázisunk bővül.",
-                              "current_location":  "Jelenlegi Helyzet",
-                              "set_primary":  "Beállítás elsődleges forrásként",
-                              "global_db":  "Globális Adatbázis",
-                              "search_placeholder":  "Gépelj egy ország kereséséhez...",
-                              "info_text":  "A régióválasztás a NuSift ügynököd számára a gyorsaságot és a relevanciát helyezi előtérbe. A kalibrálás után a hírfolyamod ezekről a domainekről kezdi el lekérni a történelmi adatpontokat a kezdeti tudásgráfod felépítéséhez.",
-                              "btn_next":  "Tovább: Források Inicializálása",
-                              "btn_finalizing":  "Véglegesítés..."
-                          },
-    "sourceCalibration":  {
-                              "back_link":  "Vissza a Régió Kalibrálásához",
-                              "step_indicator":  "Lépés 02/03.",
-                              "badge_deploy":  "Forrás(ok) Inicializálása",
-                              "title":  "Válaszd ki a forrást",
-                              "description":  "Add meg azokat a domaineket vagy oldalneveket, amelyeket a NuSift-nek előtérbe kell helyeznie. Hírszerző hálózatunk azonnal ellenőrzi az ismert forrásokat.",
-                              "manual_entry":  "Manuális Domain Megadás",
-                              "input_placeholder":  "Illeszd be az URL-t (pl. techcrunch.com)...",
-                              "default_error":  "Kérlek, adj meg egy érvényes domain formátumot.",
-                              "btn_add":  "Hozzáadás a Forrás Listához",
-                              "active_list":  "Aktív Forrás Lista",
-                              "nodes_count":  "Forrás(ok)",
-                              "empty_state":  "Még nincsenek források hozzáadva. Kezdésként adj meg egy domaint fentebb.",
-                              "root_domain":  "Fő Domain",
-                              "modal_title":  "Eltávolítod ezt a forrást?",
-                              "modal_cancel":  "Mégsem",
-                              "modal_remove":  "Eltávolítás",
-                              "btn_next":  "Tovább: Érdeklődési Kategóriák",
-                              "btn_finalizing":  "Véglegesítés...",
-                              "badges":  {
-                                             "verified":  "Érvényes Domain",
-                                             "rss_fast":  "Gyors RSS Szinkronizáció",
-                                             "unknown":  "Ismeretlen Forrás",
-                                             "pending":  "AI Ellenőrzés Függőben",
-                                             "direct_crawl":  "AI Mélyszkennelés",
-                                             "error":  "Kapcsolati Hiba"
-                                         },
-                              "errors":  {
-                                             "duplicate":  "Ez a forrás már szerepel a figyelési listádon.",
-                                             "invalid":  "Érvénytelen forrás domain.",
-                                             "network":  "Hiba történt a hálózati ellenőrzés során.",
-                                             "save_failed":  "Sikertelen folytatás. Kérlek, ellenőrizd a hálózatot és próbáld újra."
-                                         }
-                          },
-    "interestCalibration":  {
-                                "back_link":  "Vissza a Forrás Kalibrálásához",
-                                "step_indicator":  "Lépés 03/03.",
-                                "badge_selection":  "Érdeklődési Kategóriák Kiválasztása",
-                                "title":  "Érdeklődési Horizontod Feltérképezése",
-                                "description":  "Válaszd ki az intelligens hírfolyamod tematikus pilléreit. Ezeket később megváltoztathatod vagy finomhangolhatod a Profil Auditban.",
-                                "categories_title":  "Kategóriák",
-                                "selected_count":  "Kiválasztva",
-                                "categories":  {
-                                                   "politics":  "Politika",
-                                                   "technology":  "Technológia",
-                                                   "economy":  "Gazdaság",
-                                                   "health":  "Egészségügy",
-                                                   "science":  "Tudomány",
-                                                   "sports":  "Sport",
-                                                   "entertainment":  "Szórakozás",
-                                                   "world":  "Világ",
-                                                   "environment":  "Környezet",
-                                                   "lifestyle":  "Életmód",
-                                                   "culture":  "Kultúra",
-                                                   "society":  "Társadalom",
-                                                   "transport":  "Közlekedés",
-                                                   "gastronomy":  "Gasztronómia",
-                                                   "real_estate":  "Ingatlan",
-                                                   "gardening":  "Kertészkedés",
-                                                   "travel":  "Utazás",
-                                                   "hobbies":  "Hobbik",
-                                                   "education":  "Oktatás",
-                                                   "business":  "Üzlet",
-                                                   "art_\u0026_culture":  "Művészet és Kultúra",
-                                                   "food_\u0026_drink":  "Étel és Ital",
-                                                   "gaming":  "Játékok",
-                                                   "automotive":  "Autóipar",
-                                                   "law_\u0026_crime":  "Jog és Bűnügy"
-                                               },
-                                "btn_next":  "Tovább: Hírfolyam Felépítése",
-                                "btn_finalizing":  "Véglegesítés..."
-                            },
-    "dashboardInitiate":  {
-                              "header":  {
-                                             "slogan_line1":  "AI Keresés és Szűrés.",
-                                             "slogan_line2":  "A Te Irányításoddal."
-                                         },
-                              "content":  {
-                                              "title":  "A Hírfolyamod Készen Áll.",
-                                              "description":  "Ügynökeidet telepítettük, és feltérképeztük az érdeklődési köreidet. Kattints az alábbi gombra az első keresés végrehajtásához és a személyre szabott hírfolyamod legenerálásához.",
-                                              "btn_initiate":  "Első Szűrés Indítása"
-                                          }
-                          },
-    "appLayout":  {
-                      "header":  {
-                                     "slogan_line1":  "AI Keresés és Szűrés.",
-                                     "slogan_line2":  "A Te Irányításoddal."
-                                 },
-                      "profileMenu":  {
-                                          "my_profile":  "Profilom",
-                                          "my_profile_desc":  "Személyes adatok és avatar beállítások",
-                                          "agent_fine_tuning":  "Kategóriák Beállítása",
-                                          "agent_fine_tuning_desc":  "Az ügynök finomhangolása és kategória-preferenciák",
-                                          "source_manager":  "Forráskezelő",
-                                          "source_manager_desc":  "Csatlakoztatott források kezelése",
-                                          "app_settings":  "Alkalmazás Beállításai",
-                                          "app_settings_desc":  "Megjelenés, nyelv és beállítások",
-                                          "logout":  "Kijelentkezés",
-                                          "logout_desc":  "Aktív munkamenet lezárása",
-                                          "notifications":  "Értesítések",
-                                          "notifications_desc":  "Új és olvasott értesítések megtekintése."
-                                      },
-                      "navigation":  {
-                                         "feed":  "Hírfolyam",
-                                         "saved":  "Mentve",
-                                         "shared":  "Megosztva",
-                                         "trends":  "Trendek"
-                                     }
-                  },
-    "dashboard":  {
-                      "header":  {
-                                     "date_label":  "Dátum",
-                                     "categories_label":  "Kategóriák",
-                                     "all_categories":  "Összes Kategória"
-                                 },
-                      "filters":  {
-                                      "dates":  {
-                                                    "today":  "Mai nap",
-                                                    "last_48h":  "Elmúlt 48 óra",
-                                                    "last_1w":  "Elmúlt 1 Hét (Pro)",
-                                                    "last_2w":  "Elmúlt 2 Hét (Pro)"
-                                                },
-                                      "categories":  {
-                                                         "politics":  "Politika",
-                                                         "technology":  "Technológia",
-                                                         "economy":  "Gazdaság",
-                                                         "health":  "Egészségügy",
-                                                         "science":  "Tudomány",
-                                                         "sports":  "Sport",
-                                                         "entertainment":  "Szórakozás",
-                                                         "world":  "Világ",
-                                                         "environment":  "Környezet",
-                                                         "lifestyle":  "Életmód",
-                                                         "culture":  "Kultúra",
-                                                         "society":  "Társadalom",
-                                                         "transport":  "Közlekedés",
-                                                         "gastronomy":  "Gasztronómia",
-                                                         "real_estate":  "Ingatlan",
-                                                         "gardening":  "Kertészkedés",
-                                                         "travel":  "Utazás",
-                                                         "hobbies":  "Hobbik",
-                                                         "education":  "Oktatás",
-                                                         "business":  "Üzlet",
-                                                         "art_\u0026_culture":  "Művészet és Kultúra",
-                                                         "food_\u0026_drink":  "Étel és Ital",
-                                                         "gaming":  "Játékok",
-                                                         "automotive":  "Autóipar",
-                                                         "law_\u0026_crime":  "Jog és Bűnügy"
-                                                     }
-                                  }
-                  },
-    "newsCard":  {
-                     "key_signals":  "Összefoglalt Tartalom",
-                     "paywall":  "Fizetős",
-                     "read_now":  "Olvasás",
-                     "ai_reasoning":  "AI Érvelés",
-                     "menu":  {
-                                  "view_signals":  "Összefoglaló",
-                                  "save_favourite":  "Mentés Kedvencként",
-                                  "read_later":  "Olvasás Később",
-                                  "share":  "Megosztás",
-                                  "not_interested":  "Nem Érdekel",
-                                  "personal_rating":  "Személyes Értékelés"
-                              }
-                 },
-    "paywallModal":  {
-                         "title":  "Fizetős Tartalom",
-                         "description":  "Ez a cikk fizetőfal mögött található. Használd a biztonságos protokollunkat, vagy nyisd meg a böngészőben.",
-                         "btn_browser":  "Megnyitás Böngészőben",
-                         "btn_read":  "Olvasás NuSift-ben",
-                         "btn_cancel":  "Mégsem"
-                     },
-    "articleReaderModal":  {
-                               "badge_preview":  "Cikk Tartalma",
-                               "paywall_title":  "Olvasd Tovább a Kiadó Oldalán",
-                               "btn_browser":  "Megnyitás Böngészőben"
-                           },
-    "personalRatingModal":  {
-                                "title":  "Személyes Értékelés",
-                                "description":  "Ennek az értékelésnek a módosítása közvetlenül befolyásolja az AI ügynököd jövőbeli válogatási logikáját ebben a témában.",
-                                "saving":  "Beállítás mentése...",
-                                "btn_confirm":  "Értékelés Megerősítése",
-                                "btn_cancel":  "Mégsem"
-                            },
-    "notInterestedModal":  {
-
-                           },
-    "readLaterModal":  {
-
-                       },
-    "saveFavouriteModal":  {
-
-                           },
-    "shareModal":  {
-
-                   },
-    "myProfile":  {
-                      "sections":  {
-                                       "account":  "Fiók",
-                                       "preference":  "Beállítások",
-                                       "sources":  "Források",
-                                       "articles":  "Cikkek",
-                                       "impact":  "Személyes Hatásvizsgálat"
-                                   },
-                      "menu":  {
-                                   "settings":  "Fiókbeállítások",
-                                   "subscription":  "Előfizetés és Csomagok",
-                                   "billing":  "Számlázás és Fizetés",
-                                   "language":  "Nyelv",
-                                   "dark_mode":  "Sötét Mód",
-                                   "help":  "Súgóközpont",
-                                   "logout":  "Kijelentkezés"
-                               },
-                      "quota":  {
-                                    "sources":  "Hely",
-                                    "of":  "/",
-                                    "upgrade":  "Csomag frissítése",
-                                    "source_type":  {
-                                                        "active_title":  "Aktív",
-                                                        "suspended_title":  "Felfüggesztett",
-                                                        "restricted_title":  "Korlátozott"
-                                                    }
-                                },
-                      "impact":  {
-                                     "time_short":  "Spórolt Idő",
-                                     "data_short":  "Adat Szűrés",
-                                     "ai_work_short":  "AI Művelet"
-                                 },
-                      "identity":  {
-                                       "title":  "Személyes Adatok és Identitás",
-                                       "avatar":  "Avatár",
-                                       "avatarChoose":  "Válassz Avatárt",
-                                       "avatarChooseDesc":  "Válassz egy avatárt, az előre beállított készletből.",
-                                       "nickname":  "Becenév (nyilvános)",
-                                       "phoneNumber":  "Telefonszám",
-                                       "dateOfBirth":  "Születési Dátum",
-                                       "aboutMyself":  "Röviden magamról",
-                                       "aboutMyselfPlaceHolder":  "Amit itt megadsz, segít az AI-ügynöknek jobban megismerni téged.",
-                                       "invalidPhoneNumber":  "Invalid phone number",
-                                       "saveIdentityButtonDisabled":  "Személyes Adatok Mentése",
-                                       "saveIdentityButtonEnabled":  "Mentése Folyamatban..."
-                                   },
-                      "billingAddress":  {
-                                             "title":  "Cím és Számlázási Információk",
-                                             "firstName":  "Keresztnév",
-                                             "lastName":  "Vezetéknév",
-                                             "addressLine1":  "Címvonal 1",
-                                             "addressLine2":  "Címvonal 2",
-                                             "city":  "Város",
-                                             "state":  "Állam / Megye",
-                                             "postalCode":  "Irányítószám",
-                                             "country":  "Ország",
-                                             "vatNumber":  "ÁFA Szám (opcionális)",
-                                             "saveBillingAddressButtonDisabled":  "Számlázási Információk Mentése",
-                                             "saveBillingAddressButtonEnabled":  "Mentése Folyamatban..."
-                                         },
-                      "savingModal":  "Mentés folyamatban..."
-                  },
-    "categoriesSetup":  {
-                            "badge":  "A Te Hírfolyamod, A Te Szabályaid",
-                            "title":  "Mond meg az AI-nak, mi érdekel",
-                            "description":  "Eleged van a zajból? Itt te irányítasz. Válaszd ki a fő témáidat, adj meg specifikus kulcsszavakat, és mondd el az AI asszisztensednek, pontosan milyen híreket szeretnél látni. Ezután az AI kiszűri a felesleget, hogy csak azt lásd, amit keresel. Minél jobban finomhangolod ezeket a beállításokat, annál jobb lesz a hírfolyamod.",
-                            "active_title":  "Aktív Kategóriák",
-                            "active_count":  "{count} Aktív",
-                            "inactive_title":  "Inaktív Kategóriák",
-                            "danger_zone":  {
-                                                "badge":  "Veszélyzóna",
-                                                "export":  "Érdeklődési Gráf Exportálása",
-                                                "reset":  "AI Memória Törlése"
-                                            },
-                            "save_btn":  {
-                                             "saving":  "MENTÉS FOLYAMATBAN...",
-                                             "save":  "MINDEN VÁLTOZÁS MENTÉSE"
-                                         },
-                            "categories":  {
-                                               "politics":  "Politika",
-                                               "technology":  "Technológia",
-                                               "economy":  "Gazdaság",
-                                               "health":  "Egészségügy",
-                                               "science":  "Tudomány",
-                                               "sports":  "Sport",
-                                               "entertainment":  "Szórakozás",
-                                               "world":  "Világ",
-                                               "environment":  "Környezet",
-                                               "lifestyle":  "Életmód",
-                                               "culture":  "Kultúra",
-                                               "society":  "Társadalom",
-                                               "transport":  "Közlekedés",
-                                               "gastronomy":  "Gasztronómia",
-                                               "real_estate":  "Ingatlan",
-                                               "gardening":  "Kertészkedés",
-                                               "travel":  "Utazás",
-                                               "hobbies":  "Hobbik",
-                                               "education":  "Oktatás",
-                                               "business":  "Üzlet",
-                                               "art_\u0026_culture":  "Művészet és Kultúra",
-                                               "food_\u0026_drink":  "Étel és Ital",
-                                               "gaming":  "Játékok",
-                                               "automotive":  "Autóipar",
-                                               "law_\u0026_crime":  "Jog és Bűnügy"
-                                           }
-                        },
-    "activeCategoryCard":  {
-                               "priority_weight":  "Prioritás Mértéke",
-                               "pro_option":  "(PRO Felhasználói Opció)",
-                               "placeholder":  "Ügynök fókuszának finomhangolása...",
-                               "sub_nodes_info":  "AI által válogatott alcímkék a kalibráció alapján.",
-                               "show_less":  "Kevesebb",
-                               "show_more":  "+{count} további",
-                               "save_changes":  "Változások Mentése",
-                               "deactivate":  "Kategória Kikapcsolása"
-                           },
-    "inactiveCategoryCard":  {
-                                 "btn_activate":  "Aktiválás",
-                                 "weight":  "Prioritás Mértéke"
-                             },
-    "sourceManager":  {
-                          "header":  {
-                                         "badge":  "Forráshálózat Kezelő",
-                                         "title":  "Adatfolyamok Irányítása",
-                                         "description":  "Válogasd össze pontosan azokat a forrásokat, amelyeket az AI ügynököd figyel. Adj hozzá új forrásokat, kezeld a kvótáidat, és függeszd fel vagy töröld az adatfolyamokat a tiszta információs bázis fenntartása érdekében."
-                                     },
-                          "quota":  {
-                                        "tier_status_label":  "Előfizetés típusa",
-                                        "tier_free":  "Ingyenes",
-                                        "tier_pro":  "Pro",
-                                        "quota_label":  "Aktiválható Források Száma",
-                                        "upgrade_btn_title":  "Frissítés Pro-ra",
-                                        "upgrade_btn_sub":  "(15 aktív forrás)"
-                                    },
-                          "input":  {
-                                        "label":  "Forrás URL",
-                                        "placeholder":  "Forrás URL megadása (pl. telex.hu/tech)...",
-                                        "error_format":  "Kérlek, valós URL formátumot adj meg.",
-                                        "btn_add":  "Új Forrás Felvétele"
-                                    },
-                          "restricted_zone":  {
-                                                  "title":  "Korlátozott Zóna",
-                                                  "empty":  "Nincsenek korlátozott források. Minden kapcsolat zavartalan.",
-                                                  "banner_p1":  "Ez a kiadó aktívan blokkolja az automatizált kapcsolatokat. A NuSift áthelyezte ezt a Korlátozott Zónába, és a következő háttérciklus során megpróbálja kinyerni a cikkeket az ",
-                                                  "banner_highlight":  "AI Mélyszkennelés",
-                                                  "banner_p2":  " segítségével."
-                                              },
-                          "active_zone":  {
-                                              "title":  "Aktív Források",
-                                              "empty":  "Nincsenek aktív adatfolyamok. Adj hozzá egy forrást az adatok útválasztásához.",
-                                              "btn_suspend":  "Felfüggesztés",
-                                              "btn_delete":  "Törlés",
-                                              "btn_activate":  "Aktiválás"
-                                          },
-                          "suspended_zone":  {
-                                                 "title":  "Felfüggesztett Zóna",
-                                                 "empty":  "A felfüggesztett zónád üres.",
-                                                 "btn_rediscover":  "Újrafelfedezés",
-                                                 "quota_full":  "Függessz fel egy aktív forrást hely felszabadításához.",
-                                                 "btn_activate":  "Aktiválás"
-                                             },
-                          "toasts":  {
-                                         "duplicate":  "Ez a forrás már szerepel a hálózatodban.",
-                                         "fetch_logic_error":  "Nem sikerült lekérni a forrásadatokat a szerverről.",
-                                         "fetch_network_error":  "Hiba az adatok betöltésekor. Kérlek, frissíts.",
-                                         "invalid_domain":  "Érvénytelen domain.",
-                                         "add_success":  "Forrás sikeresen hozzáadva és aktiválva.",
-                                         "add_suspended":  "Forrás hozzáadva a Felfüggesztett Zónához (Kvótakorlát elérve).",
-                                         "add_failed":  "Nem sikerült hozzáadni a forrást",
-                                         "toggle_failed":  "Nem sikerült átállítani a forrás állapotát",
-                                         "delete_failed":  "Nem sikerült törölni a forrást",
-                                         "discovery_init":  "AI felfedező szkennelés inicializálása...",
-                                         "discovery_success":  "Forrás sikeresen validálva. Hálózat frissítése...",
-                                         "discovery_failed":  "Felfedezés sikertelen. Továbbra sincs érvényes feed.",
-                                         "discovery_error":  "Hálózati hiba a felfedezési fázis alatt.",
-                                         "add_restricted":  "Kiadó által blokkolt kapcsolat. Forrás áthelyezve a Korlátozott Zónába."
-                                     },
-                          "badges":  {
-                                         "verified":  "Érvényes Domain",
-                                         "rss":  "Gyors RSS-Szinkron",
-                                         "unknown":  "Ismeretlen Forrás",
-                                         "pending":  "AI Szkennelés Alatt",
-                                         "direct":  "AI Mélyszkennelés",
-                                         "error":  "Kapcsolati Hiba",
-                                         "publisher_blocked":  "Kiadó Által Blokkolt"
-                                     }
-                      },
-    "logoutModal":  {
-                        "title":  "Munkamenet Befejezése?",
-                        "description":  "Biztosan be akarod fejezni a biztonságos munkamenetet? Minden nem mentett ügynök-konfiguráció vagy kalibrációs adat elveszhet.",
-                        "btn_cancel":  "Mégsem",
-                        "btn_terminate":  "Kilépés"
-                    },
-    "appSettings":  {
-                        "title":  "Alkalmazás Beállításai",
-                        "description":  "Testreszabhatod a NuSift megjelenését és működését.",
-                        "sections":  {
-                                         "appearance":  "Megjelenés",
-                                         "language":  "Nyelv",
-                                         "notifications":  "Értesítések",
-                                         "about":  "Névjegy"
-                                     },
-                        "darkMode":  {
-                                         "label":  "Sötét Mód",
-                                         "current_dark":  "Sötét téma aktív",
-                                         "current_light":  "Világos téma aktív"
-                                     },
-                        "theme":  {
-                                      "label":  "Téma",
-                                      "description":  "Válaszd ki a preferált színsémát",
-                                      "system":  "Rendszer",
-                                      "light":  "Világos",
-                                      "dark":  "Sötét"
-                                  },
-                        "language":  {
-                                         "label":  "Nyelv",
-                                         "description":  "Válaszd ki a felület nyelvét",
-                                         "active":  "Aktív",
-                                         "coming_soon":  "Hamarosan"
-                                     },
-                        "about":  {
-                                      "version":  "Alkalmazás Verzió"
-                                  },
-                        "notifications":  {
-                                              "title":  "Push értesítések",
-                                              "description":  "Napi hírjelzések és fontos rendszerüzenetek.",
-                                              "enabled":  "Bekapcsolva",
-                                              "disabled":  "Kikapcsolva",
-                                              "enable":  "Engedélyezés",
-                                              "disable":  "Kikapcsolás",
-                                              "test":  "Teszt küldése",
-                                              "dailyTiming":  "Napi időpont",
-                                              "dailyTimingDesc":  "Válaszd ki, mikor érkezzen a napi frissítés.",
-                                              "morning":  "Reggel",
-                                              "noon":  "Délben",
-                                              "evening":  "Este",
-                                              "breaking":  "Breaking értesítések",
-                                              "breakingDesc":  "Sürgős rendszerüzenetek engedélyezése."
-                                          }
-                    },
-    "api_errors":  {
-                       "missing_url":  "Az URL megadása kötelező.",
-                       "article_detected":  "Kérlek, egy hírportál főoldalát vagy rovatát add meg (pl. telex.hu/tech), ne egy konkrét cikk linkjét.",
-                       "soft_404":  "Az oldal betöltött, de a tartalma alapján (404 / Nem található) már nem létezik.",
-                       "invalid_domain":  "Érvénytelen vagy elérhetetlen domain."
-                   },
-    "notificationsPage":  {
-                              "title":  "Értesítések",
-                              "description":  "Kövesd a bejövő üzeneteket, jelöld olvasottnak, és töröld, amit már nem kérsz.",
-                              "sections":  {
-                                               "new":  "Új",
-                                               "read":  "Olvasott"
-                                           },
-                              "items":  "elem",
-                              "empty":  {
-                                            "new":  "Jelenleg nincs olvasatlan értesítésed.",
-                                            "read":  "Még nincs olvasott értesítésed."
-                                        }
-                          }
+{
+    "auth": {
+        "loading": {
+            "resetting": "Protokoll engedélyezése...",
+            "registering": "Szuverén identitás létrehozása...",
+            "initializing": "Biztonságos kapcsolat inicializálása..."
+        },
+        "pwa": {
+            "install_prompt": "Telepíted a NuSift-et az eszközödre?",
+            "buttons": {
+                "install": "Telepítés",
+                "not_now": "Most nem",
+                "got_it": "Értem"
+            },
+            "firefox_instructions": "A Firefoxban való telepítéshez nyisd meg a böngésző menüjét, és válaszd a {action1} vagy a {action2} lehetőséget.",
+            "firefox_action1": "\"Telepítés\"",
+            "firefox_action2": "\"Hozzáadás az alkalmazástárhoz\"",
+            "ios_instructions": "A telepítéshez bökj a {action1} → {action2} gombra a Safariban.",
+            "ios_action1": "Megosztás",
+            "ios_action2": "Főképernyőhöz adás"
+        },
+        "heading": {
+            "reset": "Biztonsági helyreállítás",
+            "register": "Regisztráció",
+            "login": "Üdvözlünk újra"
+        },
+        "subheading": {
+            "reset": "Jelszó-helyreállítás engedélyezése",
+            "register": "Érd el a napi híreid",
+            "login": "Személyre szabott híreid várnak"
+        },
+        "form": {
+            "email_label": "Email cím",
+            "email_placeholder": "kovacsbela\\@freemail.hu",
+            "password_label": "Jelszó",
+            "password_placeholder": "••••••••••••",
+            "forgot_password": "Elfelejtetted?",
+            "password_hint": "Min. 12 karakter, kis- és nagybetűk, valamint szimbólumok."
+        },
+        "buttons": {
+            "send_reset": "Helyreállító link küldése",
+            "register_identity": "Regisztráció",
+            "authenticate": "Hitelesítés",
+            "continue_email": "Folytatás Email-lel",
+            "back_to_options": "Vissza a beállításokhoz",
+            "continue_google": "Folytatás Google-lal",
+            "continue_apple": "Folytatás Apple-lel",
+            "back_to_login": "Vissza a bejelentkezéshez"
+        },
+        "prompts": {
+            "already_have_account": "Van már fiókod?",
+            "dont_have_account": "Még nincs fiókod?",
+            "login_link": "Bejelentkezés",
+            "registration_link": "Regisztráció",
+            "divider_label": "Social Kapu"
+        },
+        "footer": {
+            "encryption_label": "Szuverén szintű titkosítás",
+            "terms": "Felhasználási feltételek",
+            "privacy": "Adatvédelem",
+            "help": "Segítség"
+        },
+        "modal": {
+            "language_selection_title": "Interfész kiválasztása",
+            "language_selection_subtitle": "Válaszd ki a preferált nyelvi protokollt.",
+            "terms_title": "Szuverenitási feltételek",
+            "terms_p1": "Ezen csomópont inicializálásával elfogadod a NuSift decentralizált irányítási protokolljait.",
+            "terms_p2": "A felhasználói adatok helyileg titkosítottak; a NuSift soha nem tárolja a privát kulcsaidat.",
+            "acknowledge": "Tudomásul veszem",
+            "privacy_title": "Adatvédelmi tájékoztató",
+            "privacy_p1": "A NuSift zéró tudású (zero-knowledge) architektúrán működik. Nem gyűjtünk és nem tárolunk semmilyen személyes azonosításra alkalmas adatot. Minden felhasználói adat az eszközödön titkosított, és soha nem továbbítjuk azokat szervereinkre.",
+            "privacy_p2": "A NuSift használatával elfogadod az ebben a tájékoztatóban leírt adatvédelmi gyakorlatunkat.",
+            "privacy_acknowledge": "Megértettem",
+            "help_title": "Segítségre van szükséged?",
+            "help_p1": "Ha problémákat tapasztalsz a hitelesítés során, vagy kérdéseid vannak a fiókoddal kapcsolatban, kérjük, vedd fel a kapcsolatot támogató csapatunkkal.",
+            "help_p2": "Email: support\\@nusift.com",
+            "help_acknowledge": "Kapcsolatfelvétel"
+        },
+        "validation": {
+            "invalid_email": "Érvénytelen formátum.",
+            "password_too_short": "Minimum 12 karakter szükséges.",
+            "password_no_uppercase": "Legalább egy nagybetűt kell tartalmaznia.",
+            "password_no_lowercase": "Legalább egy kisbetűt kell tartalmaznia.",
+            "password_no_special": "Legalább egy speciális karaktert kell tartalmaznia.",
+            "password_no_number": "Legalább egy számot kell tartalmaznia."
+        },
+        "errors": {
+            "unexpected": "Váratlan hiba történt.",
+            "auth_failure": "Hitelesítési hiba.",
+            "request_failed": "A kérés feldolgozása sikertelen.",
+            "oauth_cancelled": "A felhasználó megszakította a hitelesítést.",
+            "oauth_timeout": "A hitelesítési ablak túl sokáig válaszolt. Kérlek, próbáld újra.",
+            "oauth_failed": "Sikertelen hitelesítés ezzel: {provider}.",
+            "oauth_missing_id": "Konfigurációs hiba: A Google Client ID hiányzik.",
+            "oauth_not_init": "Kézfogás sikertelen: Az identitás-szolgáltató még nem inicializált.",
+            "handshake_failed": "{provider} kézfogás sikertelen."
+        }
+    },
+    "verifyEmail": {
+        "loading": {
+            "syncing": "Hitelesítő adatok szinkronizálása...",
+            "confirmed": "Személyazonosság megerősítve. Horizont formálása...",
+            "verifying": "Kapcsolat állapotának ellenőrzése...",
+            "dispatching": "Biztonságos csomag továbbítása..."
+        },
+        "title": "Ellenőrizd a beérkező leveleket",
+        "description": "Küldtünk egy megerősítő linket az e-mail címedre. Kattints a levélben található linkre a fiókod automatikus megerősítéséhez.",
+        "awaiting": "Várakozás az automatikus megerősítésre...",
+        "fallback_title": "Tartalék protokoll",
+        "buttons": {
+            "verified_login": "Megerősítettem az e-mailt. Bejelentkezés.",
+            "resend": "Megerősítő link újraküldése",
+            "resend_wait": "Újraküldés {seconds}mp múlva"
+        },
+        "messages": {
+            "session_expired": "A munkamenet lejárt. Kérlek, térj vissza a bejelentkezési oldalra, és próbáld újra.",
+            "resend_success": "Új megerősítő link továbbítva. Ellenőrizd a beérkező leveleket.",
+            "resend_error": "Hiba történt a link újraküldése közben. Kérlek, próbáld újra később.",
+            "check_email": "Megerősítés folyamatban. Kérlek, ellenőrizd az e-mail fiókod.",
+            "manual_check": "Kézi ellenőrzés befejezve. Átirányítás a bejelentkezéshez..."
+        }
+    },
+    "emailVerify": {
+        "title_success": "Személyazonosság megerősítve",
+        "title_loading": "Hozzáférési link dekódolása...",
+        "description": "A hitelesítés sikeresen befejeződött. Biztonságosan bezárhatod ezt a lapot, és visszatérhetsz az eredeti NuSift ablakba a folytatáshoz.",
+        "buttons": {
+            "continue": "Vagy folytatás itt"
+        },
+        "messages": {
+            "missing_signature": "Hiányzó hitelesítési aláírás.",
+            "verification_failed": "A hitelesítés sikertelen. A link érvényessége lejárt, vagy már felhasználták."
+        }
+    },
+    "preloaderFirst": {
+        "system_init": "Rendszer inicializálása",
+        "processing": "Feldolgozás...",
+        "curating": "Információs horizontod kurálása...",
+        "version": "Verzió 2.4.0-Alpha",
+        "footer": "Digitális szuverenitásod biztosítása",
+        "quotes": [
+            {
+                "text": "A megtévesztés korában az igazmondás forradalmi cselekedet.",
+                "author": "George Orwell"
+            },
+            {
+                "text": "Az igazság ritkán tiszta és sosem egyszerű.",
+                "author": "Oscar Wilde"
+            },
+            {
+                "text": "Az információ a demokrácia valutája.",
+                "author": "Thomas Jefferson"
+            },
+            {
+                "text": "Egy hazugság bejárja a fél világot, míg az igazság a cipőjét húzza.",
+                "author": "Mark Twain"
+            }
+        ]
+    },
+    "preloaderSecond": {
+        "forging": "INTELLIGENCIA HORIZONT FORMÁLÁSA...",
+        "quotes": [
+            {
+                "text": "Amikor átszűröd a zajt, nem csak információt találsz; tisztaságot is. És a tisztaságban megtalálod a saját utadat.",
+                "author": ""
+            }
+        ]
+    },
+    "regionCalibration": {
+        "back_link": "Vissza a bejelentkezéshez",
+        "step_indicator": "Lépés 01/03.",
+        "badge_init": "Régió Inicializálása",
+        "title": "Elsődleges Régió Kiválasztása",
+        "description": "Állítsd be az információgyűjtés alaprégióját. Ez segít kalibrálni a kezdeti hírforrásokat. Ne aggódj – később a világ bármely pontjáról hozzáadhatsz egyéni domaineket, ahogy adatbázisunk bővül.",
+        "current_location": "Jelenlegi Helyzet",
+        "set_primary": "Beállítás elsődleges forrásként",
+        "global_db": "Globális Adatbázis",
+        "search_placeholder": "Gépelj egy ország kereséséhez...",
+        "info_text": "A régióválasztás a NuSift ügynököd számára a gyorsaságot és a relevanciát helyezi előtérbe. A kalibrálás után a hírfolyamod ezekről a domainekről kezdi el lekérni a történelmi adatpontokat a kezdeti tudásgráfod felépítéséhez.",
+        "btn_next": "Tovább: Források Inicializálása",
+        "btn_finalizing": "Véglegesítés..."
+    },
+    "sourceCalibration": {
+        "back_link": "Vissza a Régió Kalibrálásához",
+        "step_indicator": "Lépés 02/03.",
+        "badge_deploy": "Forrás(ok) Inicializálása",
+        "title": "Válaszd ki a forrást",
+        "description": "Add meg azokat a domaineket vagy oldalneveket, amelyeket a NuSift-nek előtérbe kell helyeznie. Hírszerző hálózatunk azonnal ellenőrzi az ismert forrásokat.",
+        "manual_entry": "Manuális Domain Megadás",
+        "input_placeholder": "Illeszd be az URL-t (pl. techcrunch.com)...",
+        "default_error": "Kérlek, adj meg egy érvényes domain formátumot.",
+        "btn_add": "Hozzáadás a Forrás Listához",
+        "active_list": "Aktív Forrás Lista",
+        "nodes_count": "Forrás(ok)",
+        "empty_state": "Még nincsenek források hozzáadva. Kezdésként adj meg egy domaint fentebb.",
+        "root_domain": "Fő Domain",
+        "modal_title": "Eltávolítod ezt a forrást?",
+        "modal_cancel": "Mégsem",
+        "modal_remove": "Eltávolítás",
+        "btn_next": "Tovább: Érdeklődési Kategóriák",
+        "btn_finalizing": "Véglegesítés...",
+        "badges": {
+            "verified": "Érvényes Domain",
+            "rss_fast": "Gyors RSS Szinkronizáció",
+            "unknown": "Ismeretlen Forrás",
+            "pending": "AI Ellenőrzés Függőben",
+            "direct_crawl": "AI Mélyszkennelés",
+            "error": "Kapcsolati Hiba"
+        },
+        "errors": {
+            "duplicate": "Ez a forrás már szerepel a figyelési listádon.",
+            "invalid": "Érvénytelen forrás domain.",
+            "network": "Hiba történt a hálózati ellenőrzés során.",
+            "save_failed": "Sikertelen folytatás. Kérlek, ellenőrizd a hálózatot és próbáld újra."
+        }
+    },
+    "interestCalibration": {
+        "back_link": "Vissza a Forrás Kalibrálásához",
+        "step_indicator": "Lépés 03/03.",
+        "badge_selection": "Érdeklődési Kategóriák Kiválasztása",
+        "title": "Érdeklődési Horizontod Feltérképezése",
+        "description": "Válaszd ki az intelligens hírfolyamod tematikus pilléreit. Ezeket később megváltoztathatod vagy finomhangolhatod a Profil Auditban.",
+        "categories_title": "Kategóriák",
+        "selected_count": "Kiválasztva",
+        "categories": {
+            "politics": "Politika",
+            "technology": "Technológia",
+            "economy": "Gazdaság",
+            "health": "Egészségügy",
+            "science": "Tudomány",
+            "sports": "Sport",
+            "entertainment": "Szórakozás",
+            "world": "Világ",
+            "environment": "Környezet",
+            "lifestyle": "Életmód",
+            "culture": "Kultúra",
+            "society": "Társadalom",
+            "transport": "Közlekedés",
+            "gastronomy": "Gasztronómia",
+            "real_estate": "Ingatlan",
+            "gardening": "Kertészkedés",
+            "travel": "Utazás",
+            "hobbies": "Hobbik",
+            "education": "Oktatás",
+            "business": "Üzlet",
+            "art_\u0026_culture": "Művészet és Kultúra",
+            "food_\u0026_drink": "Étel és Ital",
+            "gaming": "Játékok",
+            "automotive": "Autóipar",
+            "law_\u0026_crime": "Jog és Bűnügy"
+        },
+        "btn_next": "Tovább: Hírfolyam Felépítése",
+        "btn_finalizing": "Véglegesítés..."
+    },
+    "dashboardInitiate": {
+        "header": {
+            "slogan_line1": "AI Keresés és Szűrés.",
+            "slogan_line2": "A Te Irányításoddal."
+        },
+        "content": {
+            "title": "A Hírfolyamod Készen Áll.",
+            "description": "Ügynökeidet telepítettük, és feltérképeztük az érdeklődési köreidet. Kattints az alábbi gombra az első keresés végrehajtásához és a személyre szabott hírfolyamod legenerálásához.",
+            "btn_initiate": "Első Szűrés Indítása"
+        }
+    },
+    "appLayout": {
+        "header": {
+            "slogan_line1": "AI Keresés és Szűrés.",
+            "slogan_line2": "A Te Irányításoddal."
+        },
+        "profileMenu": {
+            "my_profile": "Profilom",
+            "my_profile_desc": "Személyes adatok és avatar beállítások",
+            "agent_fine_tuning": "Kategóriák Beállítása",
+            "agent_fine_tuning_desc": "Az ügynök finomhangolása és kategória-preferenciák",
+            "source_manager": "Forráskezelő",
+            "source_manager_desc": "Csatlakoztatott források kezelése",
+            "app_settings": "Alkalmazás Beállításai",
+            "app_settings_desc": "Megjelenés, nyelv és beállítások",
+            "logout": "Kijelentkezés",
+            "logout_desc": "Aktív munkamenet lezárása",
+            "notifications": "Értesítések",
+            "notifications_desc": "Új és olvasott értesítések megtekintése."
+        },
+        "navigation": {
+            "feed": "Hírfolyam",
+            "saved": "Mentve",
+            "shared": "Megosztva",
+            "trends": "Trendek"
+        }
+    },
+    "dashboard": {
+        "header": {
+            "date_label": "Dátum",
+            "categories_label": "Kategóriák",
+            "all_categories": "Összes Kategória"
+        },
+        "filters": {
+            "dates": {
+                "today": "Mai nap",
+                "last_48h": "Elmúlt 48 óra",
+                "last_1w": "Elmúlt 1 Hét (Pro)",
+                "last_2w": "Elmúlt 2 Hét (Pro)"
+            },
+            "categories": {
+                "politics": "Politika",
+                "technology": "Technológia",
+                "economy": "Gazdaság",
+                "health": "Egészségügy",
+                "science": "Tudomány",
+                "sports": "Sport",
+                "entertainment": "Szórakozás",
+                "world": "Világ",
+                "environment": "Környezet",
+                "lifestyle": "Életmód",
+                "culture": "Kultúra",
+                "society": "Társadalom",
+                "transport": "Közlekedés",
+                "gastronomy": "Gasztronómia",
+                "real_estate": "Ingatlan",
+                "gardening": "Kertészkedés",
+                "travel": "Utazás",
+                "hobbies": "Hobbik",
+                "education": "Oktatás",
+                "business": "Üzlet",
+                "art_\u0026_culture": "Művészet és Kultúra",
+                "food_\u0026_drink": "Étel és Ital",
+                "gaming": "Játékok",
+                "automotive": "Autóipar",
+                "law_\u0026_crime": "Jog és Bűnügy"
+            }
+        }
+    },
+    "newsCard": {
+        "key_signals": "Összefoglalt Tartalom",
+        "paywall": "Fizetős",
+        "read_now": "Olvasás",
+        "ai_reasoning": "AI Érvelés",
+        "menu": {
+            "view_signals": "Összefoglaló",
+            "save_favourite": "Mentés Kedvencként",
+            "read_later": "Olvasás Később",
+            "share": "Megosztás",
+            "not_interested": "Nem Érdekel",
+            "personal_rating": "Személyes Értékelés"
+        }
+    },
+    "paywallModal": {
+        "title": "Fizetős Tartalom",
+        "description": "Ez a cikk fizetőfal mögött található. Használd a biztonságos protokollunkat, vagy nyisd meg a böngészőben.",
+        "btn_browser": "Megnyitás Böngészőben",
+        "btn_read": "Olvasás NuSift-ben",
+        "btn_cancel": "Mégsem"
+    },
+    "articleReaderModal": {
+        "badge_preview": "Cikk Tartalma",
+        "paywall_title": "Olvasd Tovább a Kiadó Oldalán",
+        "btn_browser": "Megnyitás Böngészőben"
+    },
+    "personalRatingModal": {
+        "title": "Személyes Értékelés",
+        "description": "Ennek az értékelésnek a módosítása közvetlenül befolyásolja az AI ügynököd jövőbeli válogatási logikáját ebben a témában.",
+        "saving": "Beállítás mentése...",
+        "btn_confirm": "Értékelés Megerősítése",
+        "btn_cancel": "Mégsem"
+    },
+    "notInterestedModal": {},
+    "readLaterModal": {},
+    "saveFavouriteModal": {},
+    "shareModal": {},
+    "myProfile": {
+        "sections": {
+            "account": "Fiók",
+            "preference": "Beállítások",
+            "sources": "Források",
+            "articles": "Cikkek",
+            "impact": "Személyes Hatásvizsgálat"
+        },
+        "menu": {
+            "settings": "Fiókbeállítások",
+            "subscription": "Előfizetés és Csomagok",
+            "billing": "Számlázás és Fizetés",
+            "language": "Nyelv",
+            "dark_mode": "Sötét Mód",
+            "help": "Súgóközpont",
+            "logout": "Kijelentkezés"
+        },
+        "quota": {
+            "sources": "Hely",
+            "of": "/",
+            "upgrade": "Csomag frissítése",
+            "source_type": {
+                "active_title": "Aktív",
+                "suspended_title": "Felfüggesztett",
+                "restricted_title": "Korlátozott"
+            }
+        },
+        "impact": {
+            "time_short": "Spórolt Idő",
+            "data_short": "Adat Szűrés",
+            "ai_work_short": "AI Művelet"
+        },
+        "identity": {
+            "title": "Személyes Adatok és Identitás",
+            "avatar": "Avatár",
+            "avatarChoose": "Válassz Avatárt",
+            "avatarChooseDesc": "Válassz egy avatárt, az előre beállított készletből.",
+            "nickname": "Becenév (nyilvános)",
+            "phoneNumber": "Telefonszám",
+            "dateOfBirth": "Születési Dátum",
+            "aboutMyself": "Röviden magamról",
+            "aboutMyselfPlaceHolder": "Amit itt megadsz, segít az AI-ügynöknek jobban megismerni téged.",
+            "invalidPhoneNumber": "Invalid phone number",
+            "saveIdentityButtonDisabled": "Személyes Adatok Mentése",
+            "saveIdentityButtonEnabled": "Mentése Folyamatban..."
+        },
+        "billingAddress": {
+            "title": "Cím és Számlázási Információk",
+            "firstName": "Keresztnév",
+            "lastName": "Vezetéknév",
+            "addressLine1": "Címvonal 1",
+            "addressLine2": "Címvonal 2",
+            "city": "Város",
+            "state": "Állam / Megye",
+            "postalCode": "Irányítószám",
+            "country": "Ország",
+            "vatNumber": "ÁFA Szám (opcionális)",
+            "saveBillingAddressButtonDisabled": "Számlázási Információk Mentése",
+            "saveBillingAddressButtonEnabled": "Mentése Folyamatban..."
+        },
+        "savingModal": "Mentés folyamatban..."
+    },
+    "categoriesSetup": {
+        "badge": "A Te Hírfolyamod, A Te Szabályaid",
+        "title": "Mond meg az AI-nak, mi érdekel",
+        "description": "Eleged van a zajból? Itt te irányítasz. Válaszd ki a fő témáidat, adj meg specifikus kulcsszavakat, és mondd el az AI asszisztensednek, pontosan milyen híreket szeretnél látni. Ezután az AI kiszűri a felesleget, hogy csak azt lásd, amit keresel. Minél jobban finomhangolod ezeket a beállításokat, annál jobb lesz a hírfolyamod.",
+        "active_title": "Aktív Kategóriák",
+        "active_count": "{count} Aktív",
+        "inactive_title": "Inaktív Kategóriák",
+        "danger_zone": {
+            "badge": "Veszélyzóna",
+            "export": "Érdeklődési Gráf Exportálása",
+            "reset": "AI Memória Törlése"
+        },
+        "save_btn": {
+            "saving": "MENTÉS FOLYAMATBAN...",
+            "save": "MINDEN VÁLTOZÁS MENTÉSE"
+        },
+        "categories": {
+            "politics": "Politika",
+            "technology": "Technológia",
+            "economy": "Gazdaság",
+            "health": "Egészségügy",
+            "science": "Tudomány",
+            "sports": "Sport",
+            "entertainment": "Szórakozás",
+            "world": "Világ",
+            "environment": "Környezet",
+            "lifestyle": "Életmód",
+            "culture": "Kultúra",
+            "society": "Társadalom",
+            "transport": "Közlekedés",
+            "gastronomy": "Gasztronómia",
+            "real_estate": "Ingatlan",
+            "gardening": "Kertészkedés",
+            "travel": "Utazás",
+            "hobbies": "Hobbik",
+            "education": "Oktatás",
+            "business": "Üzlet",
+            "art_\u0026_culture": "Művészet és Kultúra",
+            "food_\u0026_drink": "Étel és Ital",
+            "gaming": "Játékok",
+            "automotive": "Autóipar",
+            "law_\u0026_crime": "Jog és Bűnügy"
+        }
+    },
+    "activeCategoryCard": {
+        "priority_weight": "Prioritás Mértéke",
+        "pro_option": "(PRO Felhasználói Opció)",
+        "placeholder": "Ügynök fókuszának finomhangolása...",
+        "sub_nodes_info": "AI által válogatott alcímkék a kalibráció alapján.",
+        "show_less": "Kevesebb",
+        "show_more": "+{count} további",
+        "save_changes": "Változások Mentése",
+        "deactivate": "Kategória Kikapcsolása"
+    },
+    "inactiveCategoryCard": {
+        "btn_activate": "Aktiválás",
+        "weight": "Prioritás Mértéke"
+    },
+    "sourceManager": {
+        "header": {
+            "badge": "Forráshálózat Kezelő",
+            "title": "Adatfolyamok Irányítása",
+            "description": "Válogasd össze pontosan azokat a forrásokat, amelyeket az AI ügynököd figyel. Adj hozzá új forrásokat, kezeld a kvótáidat, és függeszd fel vagy töröld az adatfolyamokat a tiszta információs bázis fenntartása érdekében."
+        },
+        "quota": {
+            "tier_status_label": "Előfizetés típusa",
+            "tier_free": "Ingyenes",
+            "tier_pro": "Pro",
+            "quota_label": "Aktiválható Források Száma",
+            "upgrade_btn_title": "Frissítés Pro-ra",
+            "upgrade_btn_sub": "(15 aktív forrás)"
+        },
+        "input": {
+            "label": "Forrás URL",
+            "placeholder": "Forrás URL megadása (pl. telex.hu/tech)...",
+            "error_format": "Kérlek, valós URL formátumot adj meg.",
+            "btn_add": "Új Forrás Felvétele"
+        },
+        "restricted_zone": {
+            "title": "Korlátozott Zóna",
+            "empty": "Nincsenek korlátozott források. Minden kapcsolat zavartalan.",
+            "banner_p1": "Ez a kiadó aktívan blokkolja az automatizált kapcsolatokat. A NuSift áthelyezte ezt a Korlátozott Zónába, és a következő háttérciklus során megpróbálja kinyerni a cikkeket az ",
+            "banner_highlight": "AI Mélyszkennelés",
+            "banner_p2": " segítségével."
+        },
+        "active_zone": {
+            "title": "Aktív Források",
+            "empty": "Nincsenek aktív adatfolyamok. Adj hozzá egy forrást az adatok útválasztásához.",
+            "btn_suspend": "Felfüggesztés",
+            "btn_delete": "Törlés",
+            "btn_activate": "Aktiválás"
+        },
+        "suspended_zone": {
+            "title": "Felfüggesztett Zóna",
+            "empty": "A felfüggesztett zónád üres.",
+            "btn_rediscover": "Újrafelfedezés",
+            "quota_full": "Függessz fel egy aktív forrást hely felszabadításához.",
+            "btn_activate": "Aktiválás"
+        },
+        "toasts": {
+            "duplicate": "Ez a forrás már szerepel a hálózatodban.",
+            "fetch_logic_error": "Nem sikerült lekérni a forrásadatokat a szerverről.",
+            "fetch_network_error": "Hiba az adatok betöltésekor. Kérlek, frissíts.",
+            "invalid_domain": "Érvénytelen domain.",
+            "add_success": "Forrás sikeresen hozzáadva és aktiválva.",
+            "add_suspended": "Forrás hozzáadva a Felfüggesztett Zónához (Kvótakorlát elérve).",
+            "add_failed": "Nem sikerült hozzáadni a forrást",
+            "toggle_failed": "Nem sikerült átállítani a forrás állapotát",
+            "delete_failed": "Nem sikerült törölni a forrást",
+            "discovery_init": "AI felfedező szkennelés inicializálása...",
+            "discovery_success": "Forrás sikeresen validálva. Hálózat frissítése...",
+            "discovery_failed": "Felfedezés sikertelen. Továbbra sincs érvényes feed.",
+            "discovery_error": "Hálózati hiba a felfedezési fázis alatt.",
+            "add_restricted": "Kiadó által blokkolt kapcsolat. Forrás áthelyezve a Korlátozott Zónába."
+        },
+        "badges": {
+            "verified": "Érvényes Domain",
+            "rss": "Gyors RSS-Szinkron",
+            "unknown": "Ismeretlen Forrás",
+            "pending": "AI Szkennelés Alatt",
+            "direct": "AI Mélyszkennelés",
+            "error": "Kapcsolati Hiba",
+            "publisher_blocked": "Kiadó Által Blokkolt"
+        }
+    },
+    "logoutModal": {
+        "title": "Munkamenet Befejezése?",
+        "description": "Biztosan be akarod fejezni a biztonságos munkamenetet? Minden nem mentett ügynök-konfiguráció vagy kalibrációs adat elveszhet.",
+        "btn_cancel": "Mégsem",
+        "btn_terminate": "Kilépés"
+    },
+    "appSettings": {
+        "title": "Alkalmazás Beállításai",
+        "description": "Testreszabhatod a NuSift megjelenését és működését.",
+        "sections": {
+            "appearance": "Megjelenés",
+            "language": "Nyelv",
+            "notifications": "Értesítések",
+            "about": "Névjegy"
+        },
+        "darkMode": {
+            "label": "Sötét Mód",
+            "current_dark": "Sötét téma aktív",
+            "current_light": "Világos téma aktív"
+        },
+        "theme": {
+            "label": "Téma",
+            "description": "Válaszd ki a preferált színsémát",
+            "system": "Rendszer",
+            "light": "Világos",
+            "dark": "Sötét"
+        },
+        "language": {
+            "label": "Nyelv",
+            "description": "Válaszd ki a felület nyelvét",
+            "active": "Aktív",
+            "coming_soon": "Hamarosan"
+        },
+        "about": {
+            "version": "Alkalmazás Verzió"
+        },
+        "notifications": {
+            "title": "Push értesítések",
+            "description": "Napi hírjelzések és fontos rendszerüzenetek.",
+            "enabled": "Bekapcsolva",
+            "disabled": "Kikapcsolva",
+            "enable": "Engedélyezés",
+            "disable": "Kikapcsolás",
+            "test": "Teszt küldése",
+            "dailyTiming": "Napi időpont",
+            "dailyTimingDesc": "Válaszd ki, mikor érkezzen a napi frissítés.",
+            "morning": "Reggel",
+            "noon": "Délben",
+            "evening": "Este",
+            "breaking": "Breaking értesítések",
+            "breakingDesc": "Sürgős rendszerüzenetek engedélyezése."
+        }
+    },
+    "api_errors": {
+        "missing_url": "Az URL megadása kötelező.",
+        "article_detected": "Kérlek, egy hírportál főoldalát vagy rovatát add meg (pl. telex.hu/tech), ne egy konkrét cikk linkjét.",
+        "soft_404": "Az oldal betöltött, de a tartalma alapján (404 / Nem található) már nem létezik.",
+        "invalid_domain": "Érvénytelen vagy elérhetetlen domain."
+    },
+    "notificationsPage": {
+        "title": "Értesítések",
+        "description": "Kövesd a bejövő üzeneteket, jelöld olvasottnak, és töröld, amit már nem kérsz.",
+        "sections": {
+            "new": "Új",
+            "read": "Olvasott"
+        },
+        "items": "elem",
+        "empty": {
+            "new": "Jelenleg nincs olvasatlan értesítésed.",
+            "read": "Még nincs olvasott értesítésed."
+        }
+    }
 }
