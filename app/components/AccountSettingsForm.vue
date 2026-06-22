@@ -16,7 +16,9 @@
     </div>
   </Transition>
 
-  <div class="space-y-4">
+  <div class="space-y-6">
+    <!-- Identity Section -->
+    <div class="bg-surface-container rounded-2xl p-5 md:p-6">
     <form @submit.prevent="saveIdentityProfile" class="space-y-4">
       <h5
         class="text-[13px] font-bold text-primary uppercase tracking-widest border-b border-outline-variant/10 pb-1"
@@ -180,8 +182,10 @@
         </button>
       </div>
     </form>
-    <div class="h-px w-full bg-outline-variant/10 my-8"></div>
+    </div>
 
+    <!-- Billing Section -->
+    <div class="bg-surface-container rounded-2xl p-5 md:p-6">
     <form @submit.prevent="saveBillingProfile" class="space-y-4">
       <div
         class="flex items-center justify-between border-b border-outline-variant/10 pb-1"
@@ -362,6 +366,7 @@
         </button>
       </div>
     </form>
+    </div>
   </div>
 </template>
 
