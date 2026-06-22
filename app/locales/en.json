@@ -271,6 +271,8 @@
         "profileMenu": {
             "my_profile": "My Profile",
             "my_profile_desc": "Personal data and avatar settings",
+            "notifications": "Notifications",
+            "notifications_desc": "View new and read notifications.",
             "agent_fine_tuning": "Categories Setup",
             "agent_fine_tuning_desc": "Tune the agent and category preferences",
             "source_manager": "Source Manager",
@@ -604,6 +606,19 @@
             "evening": "Evening",
             "breaking": "Breaking notifications",
             "breakingDesc": "Allow urgent system messages."
+        }
+    },
+    "notificationsPage": {
+        "title": "Notifications",
+        "description": "Track inbox updates, mark items as read, and clear what you no longer need.",
+        "sections": {
+            "new": "New",
+            "read": "Read"
+        },
+        "items": "items",
+        "empty": {
+            "new": "No unread notifications right now.",
+            "read": "No read notifications yet."
         }
     },
     "api_errors": {

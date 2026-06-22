@@ -18,7 +18,7 @@
 
   <div class="space-y-6">
     <!-- Identity Section -->
-    <div class="bg-surface-container rounded-2xl p-5 md:p-6">
+    <div class="bg-surface-container border border-outline-variant/10 rounded-2xl p-5 md:p-6 transition-[border-color,box-shadow] duration-200 hover:border-outline-variant/30 hover:shadow-sm">
     <form @submit.prevent="saveIdentityProfile" class="space-y-4">
       <h5
         class="text-[13px] font-bold text-primary uppercase tracking-widest border-b border-outline-variant/10 pb-1"
@@ -185,7 +185,7 @@
     </div>
 
     <!-- Billing Section -->
-    <div class="bg-surface-container rounded-2xl p-5 md:p-6">
+    <div class="bg-surface-container border border-outline-variant/10 rounded-2xl p-5 md:p-6 transition-[border-color,box-shadow] duration-200 hover:border-outline-variant/30 hover:shadow-sm">
     <form @submit.prevent="saveBillingProfile" class="space-y-4">
       <div
         class="flex items-center justify-between border-b border-outline-variant/10 pb-1"

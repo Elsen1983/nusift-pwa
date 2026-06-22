@@ -292,6 +292,11 @@ const disablePush = async () => {
 
 const sendTestPush = async () => {
   await $fetch("/api/notifications/test", { method: "POST", body: {} });
+  if (import.meta.client) {
+    window.dispatchEvent(new Event("nusift:notifications:update"));
+    const { $refreshUnreadNotifications } = useNuxtApp();
+    await $refreshUnreadNotifications?.();
+  }
 };
 
 const updateSchedule = async () => {

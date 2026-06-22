@@ -36,7 +36,7 @@
         
         <button
           @click="toggleMenu('account')"
-          class="w-full flex items-center justify-between p-4 hover:bg-surface-container-highest transition-colors group outline-none"
+          class="w-full flex items-center justify-between p-4 hover:bg-surface-container-highest transition-colors group outline-none rounded-t-[20px]"
         >
           <div class="flex items-center gap-4 text-on-surface">
             <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">manage_accounts</span>
@@ -76,7 +76,7 @@
 
         <button
           @click="toggleMenu('billing')"
-          class="w-full flex items-center justify-between p-4 hover:bg-surface-container-highest transition-colors group outline-none"
+          class="w-full flex items-center justify-between p-4 hover:bg-surface-container-highest transition-colors group outline-none rounded-b-[20px]"
         >
           <div class="flex items-center gap-4 text-on-surface">
             <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">credit_card</span>

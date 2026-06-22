@@ -33,6 +33,7 @@
             class="relative flex items-center gap-4"
             v-click-outside="() => (isProfileMenuOpen = false)"
           >
+            <div class="relative">
             <button
               @click="isProfileMenuOpen = !isProfileMenuOpen"
               :aria-expanded="isProfileMenuOpen"
@@ -47,6 +48,13 @@
                 {{ isProfileMenuOpen ? "close" : "settings" }}
               </span>
             </button>
+              <span
+                v-if="unreadNotificationCount > 0"
+                class="absolute -top-1.5 -right-1.5 min-w-5 h-5 px-1 rounded-full bg-error text-white text-[10px] font-bold flex items-center justify-center border-2 border-background shadow-md pointer-events-none"
+              >
+                {{ unreadNotificationCount > 99 ? "99+" : unreadNotificationCount }}
+              </span>
+            </div>
 
             <transition name="dropdown">
               <div
@@ -74,7 +82,7 @@
                     @click="handleMenuNavigation('/audit/categories-setup')"
                     class="menu-item group w-full"
                   >
-                    <span class="menu-item-icon material-symbols-outlined">tune</span>
+                    <span class="menu-item-icon material-symbols-outlined">cards_stack</span>
                     <span class="menu-item-text">
                       <span class="block text-sm font-medium text-on-surface">
                         {{ $t("appLayout.profileMenu.agent_fine_tuning") }}
@@ -97,6 +105,22 @@
                       </span>
                       <span class="block text-[11px] text-on-surface-variant">
                         {{ $t("appLayout.profileMenu.source_manager_desc") }}
+                      </span>
+                    </span>
+                    <span class="menu-item-chev material-symbols-outlined">chevron_right</span>
+                  </button>
+
+                  <button
+                    @click="handleMenuNavigation('/notifications/MyNotifications')"
+                    class="menu-item group w-full"
+                  >
+                    <span class="menu-item-icon material-symbols-outlined">notifications</span>
+                    <span class="menu-item-text">
+                      <span class="block text-sm font-medium text-on-surface">
+                        {{ $t("appLayout.profileMenu.notifications") }}
+                      </span>
+                      <span class="block text-[11px] text-on-surface-variant">
+                        {{ $t("appLayout.profileMenu.notifications_desc") }}
                       </span>
                     </span>
                     <span class="menu-item-chev material-symbols-outlined">chevron_right</span>
@@ -206,6 +230,7 @@ const isProfileMenuOpen = ref(false);
 const isLogoutModalOpen = ref(false);
 const isUnsavedModalOpen = ref(false);
 const pendingNavPath = ref<string | null>(null);
+const unreadNotificationCount = useState<number>("unreadNotificationCount", () => 0);
 
 const navItems = computed(() => [
   {
