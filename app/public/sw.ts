@@ -1,7 +1,10 @@
 /// <reference lib="webworker" />
+import { precacheAndRoute } from "workbox-precaching";
 export {};
 
 declare const self: ServiceWorkerGlobalScope;
+
+precacheAndRoute(self.__WB_MANIFEST);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
