@@ -20,7 +20,7 @@
           </span>
         </div>
         <h2
-          class="font-lg text-3xl md:text-5xl font-bold text-primary leading-tight tracking-tight mb-4 text-white"
+          class="font-lg text-3xl md:text-5xl font-bold text-black dark:text-white leading-tight tracking-tight mb-4"
         >
           {{ $t("sourceManager.header.title") }}
         </h2>
@@ -112,7 +112,7 @@
             <div class="relative group">
               <label
                 for="source-url-input"
-                class="block text-[13px] font-label uppercase tracking-widest text-white mb-2 ml-1"
+                class="block text-[13px] font-label font-bold uppercase tracking-widest text-on-surface-variant mb-2 ml-1"
               >
                 {{ $t("sourceManager.input.label") }}
               </label>
@@ -123,7 +123,8 @@
                   id="source-url-input"
                   v-model="newSourceUrl"
                   @keyup.enter="addNewSource"
-                  class="w-full bg-surface-container-highest focus:bg-surface-bright transition-colors duration-300 border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-neon-cyan/30 font-body h-[52px] text-[16px] font-bold px-4 disabled:opacity-50 outline-none"
+                  class="source-url-input w-full bg-surface-container-highest focus:bg-surface-bright transition-colors duration-300 border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-neon-cyan/30 font-body h-[52px] text-[16px] font-bold px-4 disabled:opacity-50 outline-none"
+                  :style="sourceUrlInputStyle"
                   :placeholder="$t('sourceManager.input.placeholder')"
                   type="text"
                   :disabled="isProcessing"
@@ -141,7 +142,7 @@
               <button
                 @click="addNewSource"
                 :disabled="!newSourceUrl || !isValidUrl || isProcessing"
-                class="bg-gradient-to-br from-[#c3f5ff] to-[#00e5ff] text-[#131313] font-bold px-6 py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-95 transition-all shadow-[0_8px_20px_rgba(0,229,255,0.15)] group w-full sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
+                class="bg-primary-container text-on-primary-container font-bold px-6 py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-95 transition-all shadow-[0_8px_20px_rgba(0,229,255,0.15)] group w-full sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <span
                   v-if="!isProcessing"
@@ -150,7 +151,7 @@
                 >
                 <span
                   v-else
-                  class="animate-spin h-5 w-5 border-2 border-[#131313] border-t-transparent rounded-full"
+                  class="animate-spin h-5 w-5 border-2 border-on-primary-container border-t-transparent rounded-full"
                 ></span>
                 <span class="text-[14px] uppercase tracking-wider">{{
                   $t("sourceManager.input.btn_add")
@@ -196,7 +197,7 @@
             class="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-container-low/80 transition-colors select-none"
           >
             <h2
-              class="font-headline text-[16px] font-bold text-white flex items-center gap-2"
+              class="font-headline text-[16px] font-bold text-black dark:text-white flex items-center gap-2"
             >
               <span
                 class="material-symbols-outlined text-xxl text-primary-container"
@@ -253,7 +254,7 @@
             class="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-container-low/80 transition-colors select-none"
           >
             <h3
-              class="font-headline text-[16px] font-bold text-white flex items-center gap-2"
+              class="font-headline text-[16px] font-bold text-black dark:text-white flex items-center gap-2"
             >
               <span
                 class="material-symbols-outlined text-xxl text-on-surface-variant"
@@ -337,7 +338,7 @@
             class="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-container-low/80 transition-colors select-none"
           >
             <h2
-              class="font-headline text-[16px] font-bold text-white flex items-center gap-2"
+              class="font-headline text-[16px] font-bold text-black dark:text-white flex items-center gap-2"
             >
               <span class="material-symbols-outlined text-xxl text-warning"
                 >visibility_lock</span
@@ -404,6 +405,7 @@ interface SourceItem {
 }
 
 const { t } = useI18n();
+const colorMode = useColorMode();
 const agentStore = useAgentStore();
 const authStore = useAuthStore();
 
@@ -431,6 +433,12 @@ const isValidUrl = computed(() => {
   if (!newSourceUrl.value) return true;
   return domainRegex.test(newSourceUrl.value.trim());
 });
+
+const sourceUrlInputStyle = computed(() =>
+  colorMode.value === "light"
+    ? { backgroundColor: "rgb(var(--color-surface-container-lowest))" }
+    : { backgroundColor: "rgb(var(--color-surface-container-highest))" },
+);
 
 // Restricted Array
 const restrictedSources = computed(() => {

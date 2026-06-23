@@ -71,12 +71,12 @@
               <div class="min-w-0 flex-1">
                 <span class="font-body text-[15px] font-medium block">{{ $t("appSettings.notifications.dailyTiming") }}</span>
                 <span class="text-on-surface-variant text-[11px] font-label block">{{ $t("appSettings.notifications.dailyTimingDesc") }}</span>
-                <div class="mt-3 grid grid-cols-3 gap-2">
+                <div class="mt-3 grid grid-cols-3 gap-1">
                   <label
                     v-for="option in scheduleOptions"
                     :key="option.value"
-                    class="flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors cursor-pointer min-w-0"
-                    :class="scheduleSlot === option.value ? 'border-primary-container/50 bg-primary-container/10' : 'border-outline-variant/20 bg-surface-container-high hover:bg-surface-container-highest'"
+                    class="flex items-center gap-1 transition-colors cursor-pointer min-w-0"
+                    :class="scheduleSlot === option.value ? '' : ''"
                   >
                     <input
                       type="radio"
@@ -237,9 +237,9 @@ const pushStatus = computed(() => push.status.value);
 const scheduleSlot = ref<"MORNING" | "NOON" | "EVENING">("MORNING");
 const breakingEnabled = ref(true);
 const scheduleOptions = [
-  { value: "MORNING", label: "Reggel" },
-  { value: "NOON", label: "Délben" },
-  { value: "EVENING", label: "Este" },
+  { value: "MORNING", label: $t("appSettings.notifications.morning") },
+  { value: "NOON", label: $t("appSettings.notifications.noon") },
+  { value: "EVENING", label: $t("appSettings.notifications.evening") },
 ] as const;
 
 const isDarkMode = computed({
@@ -299,8 +299,10 @@ const togglePush = async (event: Event) => {
 };
 
 const sendTestPush = async () => {
-  await $fetch("/api/notifications/test", { method: "POST", body: {} });
+  const res = await $fetch<{ unreadCount?: number }>("/api/notifications/test", { method: "POST", body: {} });
   if (import.meta.client) {
+    const unreadNotificationCount = useState<number>("unreadNotificationCount", () => 0);
+    unreadNotificationCount.value = res.unreadCount || 0;
     window.dispatchEvent(new Event("nusift:notifications:update"));
     const { $refreshUnreadNotifications } = useNuxtApp();
     await $refreshUnreadNotifications?.();

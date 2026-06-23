@@ -1,4 +1,8 @@
+import { watch } from "vue";
+import { useAuthStore } from "~/stores/auth";
+
 export default defineNuxtPlugin((nuxtApp) => {
+  const authStore = useAuthStore();
   const unreadNotificationCount = useState<number>(
     "unreadNotificationCount",
     () => 0,
@@ -9,6 +13,26 @@ export default defineNuxtPlugin((nuxtApp) => {
   );
   let audioContext: AudioContext | null = null;
   let hasInitializedUnreadCount = false;
+  let intervalId: ReturnType<typeof setInterval> | undefined;
+  let listenersAttached = false;
+
+  const hasActiveSession = () => !!authStore.user;
+
+  const detach = () => {
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = undefined;
+    }
+    if (listenersAttached) {
+      window.removeEventListener("focus", refreshUnreadNotificationCount);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+      window.removeEventListener(
+        "nusift:notifications:update",
+        refreshUnreadNotificationCount,
+      );
+      listenersAttached = false;
+    }
+  };
 
   const playNotificationTone = async () => {
     try {
@@ -43,6 +67,12 @@ export default defineNuxtPlugin((nuxtApp) => {
   };
 
   const refreshUnreadNotificationCount = async () => {
+    if (!hasActiveSession()) {
+      unreadNotificationCount.value = 0;
+      previousUnreadCount.value = 0;
+      detach();
+      return;
+    }
     try {
       const res = await $fetch<{ unreadCount: number }>("/api/notifications");
       const nextCount = res.unreadCount || 0;
@@ -70,10 +100,10 @@ export default defineNuxtPlugin((nuxtApp) => {
     }
   };
 
-  let intervalId: ReturnType<typeof setInterval> | undefined;
-
   if (import.meta.client) {
     const attach = () => {
+      if (!hasActiveSession()) return;
+      if (listenersAttached) return;
       void refreshUnreadNotificationCount();
       intervalId = setInterval(refreshUnreadNotificationCount, 30000);
       window.addEventListener("focus", refreshUnreadNotificationCount);
@@ -82,9 +112,23 @@ export default defineNuxtPlugin((nuxtApp) => {
         "nusift:notifications:update",
         refreshUnreadNotificationCount,
       );
+      listenersAttached = true;
     };
 
     nuxtApp.hook("app:mounted", attach);
+    watch(
+      () => authStore.user,
+      () => {
+        if (!hasActiveSession()) {
+          detach();
+          unreadNotificationCount.value = 0;
+          previousUnreadCount.value = 0;
+        } else if (!listenersAttached) {
+          attach();
+        }
+      },
+      { immediate: true },
+    );
   }
 
   return {

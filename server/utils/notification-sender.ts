@@ -63,6 +63,7 @@ export async function sendDueDailyNotifications(now = new Date()) {
     const payload = getNotificationPayload(title, body, url, "DAILY_DIGEST", {
       articleCount,
       slot: user.notificationScheduleSlot,
+      sentAt: now.toISOString(),
     });
 
     let sentCount = 0;
@@ -129,6 +130,9 @@ export async function sendBreakingNotification(input: {
     input.body,
     input.url || "/dashboard",
     "BREAKING_SYSTEM",
+    {
+      sentAt: new Date().toISOString(),
+    },
   );
 
   for (const user of users) {

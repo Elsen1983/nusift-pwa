@@ -13,11 +13,20 @@
             @click="navigate.push('/dashboard')"
             class="flex items-center group transition-all duration-300 text-left"
           >
-            <img
-              alt="NuSift Logo"
-              class="h-[28px] w-auto object-contain"
-              src="~/assets/images/NuSift_Transparent_Logo.png"
-            />
+            <ClientOnly>
+              <img
+                v-if="isLightMode"
+                alt="NuSift Logo"
+                class="h-[28px] w-auto object-contain"
+                src="~/assets/images/NuSift_Transparent_Logo_Blue.png"
+              />
+              <img
+                v-else
+                alt="NuSift Logo"
+                class="h-[28px] w-auto object-contain"
+                src="~/assets/images/NuSift_Transparent_Logo.png"
+              />
+            </ClientOnly>
             <div class="ml-4 pl-4 border-l border-primary-container/30 py-1">
               <span
                 class="text-primary-container font-label text-[9px] uppercase tracking-[0.15em] leading-tight block opacity-80 group-hover:opacity-100 transition-opacity"
@@ -50,7 +59,7 @@
             </button>
               <span
                 v-if="unreadNotificationCount > 0"
-                class="absolute -top-1.5 -right-1.5 min-w-5 h-5 px-1 rounded-full bg-error text-white text-[10px] font-bold flex items-center justify-center border-2 border-background shadow-md pointer-events-none"
+                class="notification-badge absolute -top-1.5 -right-1.5 min-w-5 h-5 px-1 rounded-full bg-error text-white text-[10px] font-bold flex items-center justify-center border-2 border-background shadow-md pointer-events-none"
               >
                 {{ unreadNotificationCount > 99 ? "99+" : unreadNotificationCount }}
               </span>
@@ -116,8 +125,16 @@
                   >
                     <span class="menu-item-icon material-symbols-outlined">notifications</span>
                     <span class="menu-item-text">
-                      <span class="block text-sm font-medium text-on-surface">
-                        {{ $t("appLayout.profileMenu.notifications") }}
+                      <span class="flex items-center gap-2">
+                        <span class="block text-sm font-medium text-on-surface">
+                          {{ $t("appLayout.profileMenu.notifications") }}
+                        </span>
+                        <span
+                          v-if="unreadNotificationCount > 0"
+                          class="notification-badge min-w-[18px] h-[18px] px-1.5 rounded-full bg-error text-white text-[9px] font-bold flex items-center justify-center border border-background/80 shadow-sm"
+                        >
+                          {{ unreadNotificationCount > 99 ? "99+" : unreadNotificationCount }}
+                        </span>
                       </span>
                       <span class="block text-[11px] text-on-surface-variant">
                         {{ $t("appLayout.profileMenu.notifications_desc") }}
@@ -213,15 +230,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useUnsavedStore } from "~/stores/unsaved";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
 import { $api } from "~/utils/api";
 import { useI18n } from "vue-i18n";
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
+const colorMode = useColorMode();
 const route = useRoute();
+const localePath = useLocalePath();
 const navigate = useSovereignNavigate();
 const authStore = useAuthStore();
 const agentStore = useAgentStore();
@@ -231,6 +250,7 @@ const isLogoutModalOpen = ref(false);
 const isUnsavedModalOpen = ref(false);
 const pendingNavPath = ref<string | null>(null);
 const unreadNotificationCount = useState<number>("unreadNotificationCount", () => 0);
+const isLightMode = computed(() => colorMode.value === "light");
 
 const navItems = computed(() => [
   {
@@ -306,9 +326,21 @@ const handleSecureLogout = async () => {
     sessionStorage.clear();
 
     // Hard-redirect a bejelentkező oldalra
-    window.location.href = "/auth";
+    const savedLang = localStorage.getItem("nusift_preferred_language");
+    const redirectLang =
+      (savedLang === "en" || savedLang === "hu" || savedLang === "fr" || savedLang === "de" || savedLang === "pl" || savedLang === "es")
+        ? savedLang
+        : locale.value;
+    window.location.href = localePath("/auth", redirectLang);
   }
 };
+
+onMounted(async () => {
+  if (authStore.user) {
+    const { $refreshUnreadNotifications } = useNuxtApp();
+    await $refreshUnreadNotifications?.();
+  }
+});
 
 const vClickOutside = {
   mounted(el: any, binding: any) {
@@ -347,11 +379,15 @@ const vClickOutside = {
   z-index: 1;
   font-variation-settings: "FILL" 1, "wght" 400, "GRAD" 0, "opsz" 24;
   font-size: 22px;
-  color: #00e5ff;
+  color: rgb(var(--color-primary-container));
   transition:
     transform 220ms ease,
     opacity 180ms ease,
     color 220ms ease;
+}
+
+.light .menu-icon {
+  color: rgb(var(--color-primary));
 }
 
 .menu-trigger:hover .menu-icon {
@@ -359,7 +395,6 @@ const vClickOutside = {
 }
 
 .menu-trigger[aria-expanded="true"] .menu-icon {
-  color: #e9fbff;
   transform: rotate(180deg) scale(1.05);
 }
 
@@ -413,6 +448,23 @@ const vClickOutside = {
 .menu-item:hover .menu-item-chev {
   transform: translateX(2px);
   color: rgba(255, 255, 255, 0.7);
+}
+
+.notification-badge {
+  animation: notification-badge-pulse 2.2s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@keyframes notification-badge-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(255, 82, 82, 0.3);
+  }
+  50% {
+    transform: scale(1.06);
+    box-shadow: 0 0 0 6px rgba(255, 82, 82, 0);
+  }
 }
 
 .dropdown-enter-active,

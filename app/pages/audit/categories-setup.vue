@@ -15,7 +15,7 @@
           >
         </div>
         <h2
-          class="font-lg text-3xl md:text-5xl font-bold text-primary leading-tight tracking-tight mb-4 text-white"
+          class="font-lg text-3xl md:text-5xl font-bold text-black dark:text-white leading-tight tracking-tight mb-4"
         >
           {{ $t('categoriesSetup.title') }}
         </h2>
@@ -70,7 +70,7 @@
             @click="isActiveSectionOpen = !isActiveSectionOpen"
             class="w-full flex items-center justify-between p-4 bg-surface-container-low/50 cursor-pointer hover:bg-surface-container-low/80 transition-colors select-none"
           >
-            <h2 class="font-headline text-[16px] font-bold text-white">
+            <h2 class="font-headline text-[16px] font-bold text-black dark:text-white">
               {{ $t('categoriesSetup.active_title') }}
             </h2>
             <div class="flex items-center gap-3">
@@ -124,7 +124,7 @@
             @click="isInactiveSectionOpen = !isInactiveSectionOpen"
             class="w-full flex items-center justify-between p-4 cursor-pointer hover:bg-surface-container-low/50 transition-colors select-none"
           >
-            <h2 class="font-headline text-[16px] font-bold text-white">
+            <h2 class="font-headline text-[16px] font-bold text-black dark:text-white">
               {{ $t('categoriesSetup.inactive_title') }}
             </h2>
             <div class="flex items-center gap-3">

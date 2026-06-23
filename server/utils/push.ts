@@ -35,7 +35,28 @@ export async function sendPushNotification(
   payload: Record<string, unknown>,
 ) {
   configureWebPush();
-  return webpush.sendNotification(subscription as any, JSON.stringify(payload));
+  const startedAt = Date.now();
+  const endpointHint = subscription.endpoint.slice(-12);
+  console.info("[push] sending notification", {
+    endpointHint,
+    ttl: 30,
+    urgency: "high",
+    payloadType: (payload as any)?.type,
+  });
+  return webpush.sendNotification(
+    subscription as any,
+    JSON.stringify(payload),
+    {
+      TTL: 30,
+      urgency: "high",
+    },
+  ).finally(() => {
+    console.info("[push] sendNotification finished", {
+      endpointHint,
+      elapsedMs: Date.now() - startedAt,
+      payloadType: (payload as any)?.type,
+    });
+  });
 }
 
 export function mapSubscriptionFromBody(body: any): PushSubscriptionRecord {

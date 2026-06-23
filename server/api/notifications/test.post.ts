@@ -44,5 +44,7 @@ export default defineEventHandler(async (event) => {
     },
   });
 
-  return { ok: true };
+  const unreadCount = await prisma.notification.count({ where: { userId, readAt: null } });
+
+  return { ok: true, unreadCount };
 });
