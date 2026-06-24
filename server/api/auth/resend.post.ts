@@ -9,7 +9,7 @@ const EMAIL_SENDER = process.env.EMAIL_SENDER || 'NuSift <onboarding@nusift.com>
 
 export default defineEventHandler(async (event) => {
   try {
-    assertRateLimit(event, "auth-resend", 5, 60_000);
+    await assertRateLimit(event, "auth-resend", 5, 60_000);
     const { email } = await readBody(event);
 
     if (!email) {

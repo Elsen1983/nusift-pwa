@@ -5,7 +5,7 @@ import { assertRateLimit } from "../../utils/rate-limit";
 
 export default defineEventHandler(async (event) => {
   try {
-    assertRateLimit(event, "auth-verify", 10, 60_000);
+    await assertRateLimit(event, "auth-verify", 10, 60_000);
     const { token } = await readBody(event);
 
     if (!token) {

@@ -23,7 +23,7 @@ const welcomeDictionaries = {
 };
 
 export default defineEventHandler(async (event) => {
-  assertRateLimit(event, "auth-oauth", 10, 60_000);
+  await assertRateLimit(event, "auth-oauth", 10, 60_000);
   const body = await readBody(event);
   const { token, provider, language } = body; 
 

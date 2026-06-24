@@ -2,6 +2,7 @@
 import { prisma } from "../../utils/prisma";
 import { ISO_LANG_CODES } from "../../utils/langCodes";
 import { safeFetch, SSRFError } from "../../utils/ssrf-guard"; // Globális, gyorsítótárazott import
+import { assertRateLimit } from "../../utils/rate-limit";
 
 // ANCHOR: WAF & Paywall Trap Signatures
 const WAF_AND_PAYWALL_PATTERNS = [
@@ -147,6 +148,7 @@ const stripTrackingParams = (rawUrl: string): string => {
 };
 
 export default defineEventHandler(async (event) => {
+  await assertRateLimit(event, "util-check-source", 30, 60_000);
   const body = await readBody(event);
   // Enforce strict string types immediately
   const rawUrl: string = body.url ? String(body.url) : "";

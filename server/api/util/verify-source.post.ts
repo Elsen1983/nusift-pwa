@@ -1,5 +1,6 @@
 // server/api/util/verify-source.post.ts
 import { safeFetch, SSRFError, sanitiseHostnameForApi, resolveAndValidate } from "../../utils/ssrf-guard";
+import { assertRateLimit } from "../../utils/rate-limit";
 
 // ANCHOR UGC & SOCIAL BLACKLIST
 const NON_NEWS_DOMAINS = [
@@ -15,6 +16,7 @@ const NON_NEWS_DOMAINS = [
 ];
 
 export default defineEventHandler(async (event) => {
+  await assertRateLimit(event, "util-verify-source", 20, 60_000);
   const { url } = await readBody(event);
 
   if (!url) {

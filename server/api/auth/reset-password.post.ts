@@ -6,7 +6,7 @@ import { validatePasswordComplexity } from "../../utils/auth";
 
 export default defineEventHandler(async (event) => {
   try {
-    assertRateLimit(event, "auth-reset-password", 5, 60_000);
+    await assertRateLimit(event, "auth-reset-password", 5, 60_000);
     const { token, newPassword } = await readBody(event);
 
     // Validate inputs (Sovereign-Grade complexity enforced)

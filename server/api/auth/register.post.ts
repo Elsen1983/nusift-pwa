@@ -28,7 +28,7 @@ const emailDictionaries = {
 
 export default defineEventHandler(async (event) => {
   try {
-    assertRateLimit(event, "auth-register", 5, 60_000);
+    await assertRateLimit(event, "auth-register", 5, 60_000);
     // 1. Kinyerjük a frontendről küldött adatokat a kérés törzséből (body)
     const body = await readBody(event);
     const { email, password, language = 'en' } = body;

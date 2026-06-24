@@ -6,7 +6,7 @@ import { assertRateLimit } from "../../utils/rate-limit";
 
 export default defineEventHandler(async (event) => {
   try {
-    assertRateLimit(event, "auth-login", 10, 60_000);
+    await assertRateLimit(event, "auth-login", 10, 60_000);
     const body = await readBody(event);
     const { email, password } = body;
 
