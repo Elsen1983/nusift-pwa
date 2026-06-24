@@ -1,5 +1,5 @@
 // server/api/util/verify-source.post.ts
-import dns from "node:dns/promises";
+import { safeFetch, SSRFError, sanitiseHostnameForApi, resolveAndValidate } from "../../utils/ssrf-guard";
 
 // ANCHOR UGC & SOCIAL BLACKLIST
 const NON_NEWS_DOMAINS = [
@@ -59,17 +59,12 @@ export default defineEventHandler(async (event) => {
   try {
     // HEAD helyett GET-et kérünk, de csak az első 15KB-ot akarjuk, hogy gyors legyen
     // A fetch API-nál a timeout és az abort controller segít
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
-
-    const response = await fetch(targetUrl, {
+    const response = await safeFetch(targetUrl, {
       method: "GET",
-      headers: { 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' 
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       },
-      signal: controller.signal
     });
-    clearTimeout(timeoutId);
 
     if (response.ok) {
         isDomainValid = true;
@@ -80,9 +75,15 @@ export default defineEventHandler(async (event) => {
          return { success: false, message: `Az oldal nem elérhető (${response.status}).` };
     }
   } catch (error: any) {
+    // SSRF guard violations → reject immediately
+    if (error instanceof SSRFError) {
+      console.warn(`[Verify-Source] SSRF blocked: ${error.detail}`);
+      return { success: false, message: "Érvénytelen forrás." };
+    }
     // Ha a GET elszállt (WAF, Cloudflare, Timeout), próbáljuk csak a domaint DNS-el
+    // SSRF-validated: resolveAndValidate blocks private/metadata IPs
     try {
-      await dns.lookup(urlObj.hostname);
+      await resolveAndValidate(urlObj.hostname);
       isDomainValid = true;
       validationWarning = "Domain valid (DNS fallback).";
     } catch (dnsError) {
@@ -121,7 +122,8 @@ export default defineEventHandler(async (event) => {
   let isNewsSource: boolean | string = "unknown";
 
   try {
-    const gdeltApiUrl = `https://api.gdeltproject.org/api/v2/doc/doc?query=domain:${rootDomain}&mode=artlist&maxrecords=1&format=json`;
+    const safeDomain = sanitiseHostnameForApi(rootDomain);
+    const gdeltApiUrl = `https://api.gdeltproject.org/api/v2/doc/doc?query=domain:${safeDomain}&mode=artlist&maxrecords=1&format=json`;
     
     // Node.js 18+ esetén a DNS feloldás olykor IPv6 problémát okozhat a fetch-nél (ez okozhat fetch failed-et)
     // Ezért 5 másodpercet adunk neki

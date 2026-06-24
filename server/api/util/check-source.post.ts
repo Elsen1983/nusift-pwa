@@ -1,6 +1,7 @@
 // server/api/util/check-source.post.ts
 import { prisma } from "../../utils/prisma";
-import { ISO_LANG_CODES } from "../../utils/langCodes"; // Globális, gyorsítótárazott import
+import { ISO_LANG_CODES } from "../../utils/langCodes";
+import { safeFetch, SSRFError } from "../../utils/ssrf-guard"; // Globális, gyorsítótárazott import
 
 // ANCHOR: WAF & Paywall Trap Signatures
 const WAF_AND_PAYWALL_PATTERNS = [
@@ -165,8 +166,7 @@ export default defineEventHandler(async (event) => {
     if (!cleanedUrl.startsWith("http")) cleanedUrl = `https://${cleanedUrl}`;
 
     // Egy utolsó biztonsági ellenőrzés, hogy a URL formátuma helyes-e, mielőtt megpróbálnánk elérni
-    let targetUrl = cleanedUrl;
-    if (!targetUrl.startsWith("http")) targetUrl = `https://${targetUrl}`;
+    const targetUrl = cleanedUrl;
 
     if (isArticleUrl(targetUrl)) {
       console.warn(`[Check-Source] Article URL rejected: ${targetUrl}`);
@@ -184,59 +184,25 @@ export default defineEventHandler(async (event) => {
       guessedLang || userLang,
     );
 
-    // Hálózati validáció (Első körben HEAD kérés az átirányítások és létezés ellenőrzésére)
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-
-    // ADD BROWSER HEADERS to bypass basic WAF/Cloudflare protection
-    const response = await fetch(targetUrl, {
+    // SSRF-protected fetch: validates DNS, blocks private IPs, handles redirects safely
+    const response = await safeFetch(targetUrl, {
       method: "GET",
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         Accept:
           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": acceptLangHeader, // Ezzel "verjük át" a célpont szerverét
+        "Accept-Language": acceptLangHeader,
       },
-      signal: controller.signal,
     });
-    clearTimeout(timeout);
 
     let finalUrl = response.url;
 
-    // --- ÚJ: CROSS-DOMAIN REDIRECT PAJZS ---
-    const originalUrlObj = new URL(targetUrl);
+    // Cross-domain redirect is now handled inside safeFetch (SSRF guard).
     const finalUrlObj = new URL(finalUrl);
-
-    const originalCleanHost = originalUrlObj.hostname
-      .replace(/^www\./, "")
-      .toLowerCase();
     const finalCleanHost = finalUrlObj.hostname
       .replace(/^www\./, "")
       .toLowerCase();
-
-    // --- 2. LÉPÉS: HÁLÓZATI PAJZSOK (Cross-Domain & WAF) ---
-    // Cross-Domain Átirányítás - Ha a gyökér-domain megváltozott (pl. roblox.ie -> fruits.co)
-    // Engedélyezzük, ha pontosan egyezik, VAGY ha egy legitim aldomainre irányított át (pl. euronews.com -> hu.euronews.com)
-    const isSubdomainRedirect = finalCleanHost.endsWith(
-      `.${originalCleanHost}`,
-    );
-
-    // Cross-Domain Átirányítás Pajzs
-    if (
-      originalCleanHost !== finalCleanHost &&
-      !isSubdomainRedirect &&
-      response.ok
-    ) {
-      console.warn(
-        `[Check-Source] Cross-Domain redirect blocked: ${originalCleanHost} -> ${finalCleanHost}`,
-      );
-      throw createError({
-        statusCode: 400,
-        statusMessage: "Redirect Hijack",
-        message: `Ez a domain átirányít egy másik, idegen weboldalra (${finalCleanHost}). Parkolt vagy lejárt forrás.`,
-      });
-    }
 
     // WAF és Paywall Csapda Pajzs
     const isWafTrap = WAF_AND_PAYWALL_PATTERNS.some((pattern) =>
@@ -378,12 +344,22 @@ export default defineEventHandler(async (event) => {
   } catch (error: any) {
     console.error("[Check-Source] Network/Runtime Error:", error.message);
 
+    // SSRF guard violations → 400 (never expose internal network details)
+    if (error instanceof SSRFError) {
+      console.warn(`[Check-Source] SSRF blocked: ${error.detail}`);
+      throw createError({
+        statusCode: 400,
+        statusMessage: "Blocked",
+        message: "api_errors.invalid_domain",
+      });
+    }
+
     // 1. Handle timeouts gracefully
     if (error.name === "AbortError" || error.statusCode === 408) {
       throw createError({
         statusCode: 408,
         statusMessage: "Request Timeout",
-        message: "api_errors.invalid_domain", 
+        message: "api_errors.invalid_domain",
       });
     }
 
@@ -395,8 +371,8 @@ export default defineEventHandler(async (event) => {
     // 3. Mask Node.js internal errors (like "fetch failed", DNS resolution issues)
     throw createError({
       statusCode: 400,
-      statusMessage: "Unreachable Domain",
-      message: "api_errors.invalid_domain",
+        statusMessage: "Unreachable Domain",
+        message: "api_errors.invalid_domain",
     });
   }
 });

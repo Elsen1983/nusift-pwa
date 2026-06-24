@@ -1,6 +1,7 @@
 // server/utils/discovery.ts
 import { prisma } from "./prisma";
 import { RssStatus } from "@prisma/client";
+import { safeFetch, SSRFError } from "./ssrf-guard";
 
 // ANCHOR: WAF & Paywall Trap Signatures (Ugyanaz a lista)
 const WAF_AND_PAYWALL_PATTERNS = [
@@ -92,8 +93,6 @@ export async function executeTargetedDiscovery(
   // 2. Iteráció és Web Scraping
   for (const source of pendingSources) {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
       // Dinamikus fejléc generálása az adatbázisban lévő nyelv alapján
       const acceptLangHeader = generateAcceptLanguageHeader(
         source.language || "en",
@@ -104,17 +103,16 @@ export async function executeTargetedDiscovery(
         `[Targeted-Discovery][Fetch] Scanning frontPageUrl: "${source.frontPageUrl}" using Sovereign-Agent UA.`,
       );
 
-      const response = await fetch(source.frontPageUrl, {
+      // SSRF-protected fetch: validates DNS/IP even for DB-stored URLs (defence-in-depth)
+      const response = await safeFetch(source.frontPageUrl, {
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NuSift/1.0 Sovereign-Agent",
           Accept: "text/html,application/xhtml+xml",
           "Accept-Language": acceptLangHeader,
         },
-        signal: controller.signal,
+        // allowIp defaults to false — hostname-only validation + DNS IP check for defence-in-depth
       });
-
-      clearTimeout(timeout);
 
       // WAF-Aware Response Handling
       if (!response.ok) {
@@ -124,41 +122,19 @@ export async function executeTargetedDiscovery(
         throw new Error(`HTTP Error: ${response.status}`);
       }
 
-      // --- ÚJ: CROSS-DOMAIN REDIRECT PAJZS (AGENT) ---
+      // Cross-domain redirect is now enforced inside safeFetch (SSRF guard).
+      // If safeFetch throws SSRFError, the catch block marks the source as FAILED.
+
+      // Soft WAF / Paywall csapda (Hibát dobunk, hogy a catch blokk FAILED-re tegye)
       const finalUrlObj = new URL(response.url);
-      const originalUrlObj = new URL(source.frontPageUrl);
-      const finalCleanHost = finalUrlObj.hostname
-        .replace(/^www\./, "")
-        .toLowerCase();
-      const originalCleanHost = originalUrlObj.hostname
-        .replace(/^www\./, "")
-        .toLowerCase();
-      // Engedélyezzük, ha legitim aldomainre irányított át (pl. euronews.com -> hu.euronews.com)
-      const isSubdomainRedirect = finalCleanHost.endsWith(
-        `.${originalCleanHost}`,
-      );
-
-      // 1. PAJZS: Cross-Domain Átirányítás (Azonnali halál)
-      if (originalCleanHost !== finalCleanHost && !isSubdomainRedirect) {
-        console.warn(
-          `[Targeted-Discovery] Cross-Domain Redirect blocked: ${originalCleanHost} -> ${finalCleanHost}`,
-        );
-
-        await prisma.newsSource.update({
-          where: { id: source.id },
-          data: { rssStatus: "DOMAIN_DEAD" },
-        });
-        continue; // Ugrás a következő forrásra
-      }
-
-      // 2. PAJZS: Soft WAF / Paywall csapda (Hibát dobunk, hogy a catch blokk FAILED-re tegye)
       const isWafTrap = WAF_AND_PAYWALL_PATTERNS.some((pattern) =>
         finalUrlObj.pathname.toLowerCase().includes(pattern),
       );
 
       if (isWafTrap) {
+        const sourceHost = new URL(source.frontPageUrl).hostname.replace(/^www\./, '').toLowerCase();
         console.warn(
-          `[Targeted-Discovery] Soft WAF/Paywall Trap detected on ${originalCleanHost}. Path: ${finalUrlObj.pathname}`,
+          `[Targeted-Discovery] Soft WAF/Paywall Trap detected on ${sourceHost}. Path: ${finalUrlObj.pathname}`,
         );
         throw new Error(`WAF_BLOCKED_REDIRECT`);
       }
@@ -209,7 +185,19 @@ export async function executeTargetedDiscovery(
         `[Targeted-Discovery][Database] Updated ID ${source.id} (${source.frontPageUrl}) status to: ${newStatus}`,
       );
     } catch (error: any) {
-      // 2. Graceful Logging for Firewalls
+      // SSRF guard violations → mark as DOMAIN_DEAD (likely poisoned DB entry)
+      if (error instanceof SSRFError) {
+        console.warn(
+          `[Targeted-Discovery][SSRF] Blocked unsafe URL: ${error.detail}. Marking as DOMAIN_DEAD.`,
+        );
+        await prisma.newsSource.update({
+          where: { id: source.id },
+          data: { rssStatus: "DOMAIN_DEAD" },
+        });
+        continue;
+      }
+
+      // Graceful Logging for Firewalls
       if (error.message.includes("WAF_BLOCKED")) {
         console.warn(
           `[Targeted-Discovery][Blocked] Firewall prevented scanning of "${source.frontPageUrl}". Marking as FAILED.`,
@@ -223,7 +211,7 @@ export async function executeTargetedDiscovery(
 
       await prisma.newsSource.update({
         where: { id: source.id },
-        data: { rssStatus: "FAILED" }, // Safe fallback
+        data: { rssStatus: "FAILED" },
       });
     }
   }

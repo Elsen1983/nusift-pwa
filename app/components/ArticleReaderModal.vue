@@ -22,7 +22,12 @@
           </div>
           <h1 class="font-headline text-2xl md:text-3xl font-bold text-on-surface mb-6 leading-tight">{{ article.title }}</h1>
           
-          <div class="font-body text-sm md:text-base text-on-surface-variant leading-relaxed space-y-5" v-html="content"></div>
+          <ClientOnly>
+            <div class="font-body text-sm md:text-base text-on-surface-variant leading-relaxed space-y-5" v-html="sanitizedContent"></div>
+            <template #fallback>
+              <div class="font-body text-sm md:text-base text-on-surface-variant leading-relaxed space-y-5">{{ strippedContent }}</div>
+            </template>
+          </ClientOnly>
           
           <div v-if="article.isPaywall" class="absolute bottom-0 left-0 w-full h-[400px] bg-gradient-to-t from-background via-background/95 to-transparent flex flex-col items-center justify-end pb-12 px-6 z-10">
             <div class="pointer-events-auto flex flex-col items-center w-full pb-12">
@@ -44,6 +49,17 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{ modelValue: boolean, article: any, content: string }>();
+import { computed } from 'vue'
+import { stripAllTags } from '~/composables/useSanitizeHtml'
+
+const props = defineProps<{ modelValue: boolean, article: any, content: string }>();
 defineEmits(['update:modelValue', 'browser']);
+
+const { sanitize } = useSanitizeHtml()
+
+// Client-side: DOMPurify-sanitised HTML (safe for v-html)
+const sanitizedContent = computed(() => sanitize(props.content))
+
+// SSR fallback: plain-text for the <ClientOnly> #fallback slot (no HTML, no XSS)
+const strippedContent = computed(() => stripAllTags(props.content || ''))
 </script>
