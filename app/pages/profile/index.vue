@@ -36,7 +36,7 @@
         
         <button
           @click="toggleMenu('account')"
-          class="w-full flex items-center justify-between p-4 hover:bg-surface-container-highest transition-colors group outline-none rounded-t-[20px]"
+          class="w-full flex items-center justify-between px-1 py-3 hover:bg-surface-container-highest transition-colors group outline-none rounded-t-[20px]"
         >
           <div class="flex items-center gap-4 text-on-surface">
             <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">manage_accounts</span>
@@ -48,7 +48,7 @@
           >chevron_right</span>
         </button>
 
-        <div v-show="openMenu === 'account'" class="py-3 px-3 border-t border-outline-variant/10 bg-surface-container-lowest/50">
+        <div v-show="openMenu === 'account'" class="py-3 px-3 border-t border-outline-variant/10 rounded-2xl bg-surface-container-lowest/50">
           <AccountSettingsForm />
         </div>
 
@@ -56,7 +56,7 @@
 
         <button
           @click="toggleMenu('subscription')"
-          class="w-full flex items-center justify-between p-4 hover:bg-surface-container-highest transition-colors group outline-none"
+          class="w-full flex items-center justify-between px-1 py-3 hover:bg-surface-container-highest transition-colors group outline-none"
         >
           <div class="flex items-center gap-4 text-on-surface">
             <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">loyalty</span>
@@ -76,7 +76,7 @@
 
         <button
           @click="toggleMenu('billing')"
-          class="w-full flex items-center justify-between p-4 hover:bg-surface-container-highest transition-colors group outline-none rounded-b-[20px]"
+          class="w-full flex items-center justify-between px-1 py-3 hover:bg-surface-container-highest transition-colors group outline-none rounded-b-[20px]"
         >
           <div class="flex items-center gap-4 text-on-surface">
             <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">credit_card</span>
@@ -95,10 +95,10 @@
       </div>
     </section>
 
-    <!-- SOURCE METRICS -->
+    <!-- SOURCE STATUS -->
     <section class="space-y-2">
       <h4
-        class="text-[10px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-5"
+        class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4"
       >
         {{ $t("myProfile.sections.sources") }}
       </h4>
@@ -108,104 +108,86 @@
         <div
           class="absolute -left-10 -top-10 w-40 h-40 bg-primary-container/5 blur-3xl rounded-full pointer-events-none"
         ></div>
-        <h4
-          class="text-[10px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-0 align-self-start mt-2 mb-3"
-        >
-          {{ $t("myProfile.sections.sources") }}
-        </h4>
         <div
-          class="relative z-10 flex flex-col md:flex-row gap-6 md:gap-4 items-center w-full"
+          class="relative z-10 flex items-center gap-5 w-full justify-center"
         >
           <div
-            class="flex items-center gap-5 shrink-0 w-full md:w-auto justify-center md:justify-start"
+            class="relative w-[7.5rem] h-[7.5rem] shrink-0 flex items-center justify-center"
           >
-            <div
-              class="relative w-[7.5rem] h-[7.5rem] shrink-0 flex items-center justify-center"
+            <svg
+              viewBox="0 0 120 120"
+              class="w-full h-full transform -rotate-90"
             >
-              <svg
-                viewBox="0 0 120 120"
-                class="w-full h-full transform -rotate-90"
-              >
-                <circle
-                  v-for="ring in sourceRings"
-                  :key="`${ring.labelKey}-track`"
-                  cx="60"
-                  cy="60"
-                  :r="ring.radius"
-                  stroke="currentColor"
-                  :stroke-width="ring.strokeWidth"
-                  fill="transparent"
-                  class="text-surface-container-highest"
-                />
-                <circle
-                  v-for="ring in sourceRings"
-                  :key="ring.labelKey"
-                  cx="60"
-                  cy="60"
-                  :r="ring.radius"
-                  stroke="currentColor"
-                  :stroke-width="ring.strokeWidth"
-                  fill="transparent"
-                  :stroke-dasharray="ring.circumference"
-                  :stroke-dashoffset="
-                    ring.circumference -
-                    (ring.percentage / 100) * ring.circumference
-                  "
-                  :class="[
-                    ring.ringClass,
-                    'transition-all duration-1000 ease-out',
-                  ]"
-                  stroke-linecap="round"
-                />
-              </svg>
-            </div>
-
-            <div class="min-w-0 flex-1 max-w-[200px] space-y-3">
-              <div
+              <circle
                 v-for="ring in sourceRings"
-                :key="`${ring.labelKey}-legend`"
-                class="flex items-center justify-between gap-3"
-              >
-                <div class="flex items-center gap-2 min-w-0">
-                  <span
-                    :class="[
-                      ring.ringClass,
-                      'w-2.5 h-2.5 rounded-full bg-current shadow-[0_0_8px_currentColor] shrink-0',
-                    ]"
-                  ></span>
-                  <span
-                    class="font-label text-[11px] uppercase tracking-wider text-on-surface-variant truncate"
-                  >
-                    {{ $t(ring.labelKey) }}
-                  </span>
-                </div>
-
-                <div class="shrink-0">
-                  <span
-                    :class="[
-                      ring.countClass,
-                      'font-headline font-bold text-base leading-none',
-                    ]"
-                  >
-                    {{ ring.count }}
-                  </span>
-                  <span
-                    v-if="ring.usesLimit"
-                    class="text-on-surface-variant font-headline font-bold text-base leading-none"
-                    >/{{ limit }}</span
-                  >
-                </div>
-              </div>
-            </div>
+                :key="`${ring.labelKey}-track`"
+                cx="60"
+                cy="60"
+                :r="ring.radius"
+                stroke="currentColor"
+                :stroke-width="ring.strokeWidth"
+                fill="transparent"
+                class="text-surface-container-highest"
+              />
+              <circle
+                v-for="ring in sourceRings"
+                :key="ring.labelKey"
+                cx="60"
+                cy="60"
+                :r="ring.radius"
+                stroke="currentColor"
+                :stroke-width="ring.strokeWidth"
+                fill="transparent"
+                :stroke-dasharray="ring.circumference"
+                :stroke-dashoffset="
+                  ring.circumference -
+                  (ring.percentage / 100) * ring.circumference
+                "
+                :class="[
+                  ring.ringClass,
+                  'transition-all duration-1000 ease-out',
+                ]"
+                stroke-linecap="round"
+              />
+            </svg>
           </div>
 
-          <div
-            class="w-full md:flex-1 min-w-0 md:pl-6 md:border-l border-outline-variant/10 pt-4 md:pt-0 border-t md:border-t-0 mt-2 md:mt-0"
-          >
-            <SourceTimelineChart
-              :timeline-data="rawTimelineData"
-              :is-loading="isAnalyticsLoading"
-            />
+          <div class="min-w-0 flex-1 max-w-[200px] space-y-3">
+            <div
+              v-for="ring in sourceRings"
+              :key="`${ring.labelKey}-legend`"
+              class="flex items-center justify-between gap-3"
+            >
+              <div class="flex items-center gap-2 min-w-0">
+                <span
+                  :class="[
+                    ring.ringClass,
+                    'w-2.5 h-2.5 rounded-full bg-current shadow-[0_0_8px_currentColor] shrink-0',
+                  ]"
+                ></span>
+                <span
+                  class="font-label text-[11px] uppercase tracking-wider text-on-surface-variant truncate"
+                >
+                  {{ $t(ring.labelKey) }}
+                </span>
+              </div>
+
+              <div class="shrink-0">
+                <span
+                  :class="[
+                    ring.countClass,
+                    'font-headline font-bold text-base leading-none',
+                  ]"
+                >
+                  {{ ring.count }}
+                </span>
+                <span
+                  v-if="ring.usesLimit"
+                  class="text-on-surface-variant font-headline font-bold text-base leading-none"
+                  >/{{ limit }}</span
+                >
+              </div>
+            </div>
           </div>
         </div>
 
@@ -215,6 +197,28 @@
         >
           {{ $t("myProfile.quota.upgrade") }}
         </button>
+      </div>
+    </section>
+
+    <!-- SCANNED ARTICLES TIMELINE -->
+    <section class="space-y-2">
+      <h4
+        class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4"
+      >
+        {{ $t("myProfile.sections.timeline") }}
+      </h4>
+      <div
+        class="bg-surface-container-low rounded-3xl p-5 border border-outline-variant/10 shadow-lg relative overflow-hidden"
+      >
+        <div
+          class="absolute -left-10 -top-10 w-40 h-40 bg-primary-container/5 blur-3xl rounded-full pointer-events-none"
+        ></div>
+        <div class="relative z-10">
+          <SourceTimelineChart
+            :timeline-data="rawTimelineData"
+            :is-loading="isAnalyticsLoading"
+          />
+        </div>
       </div>
     </section>
 

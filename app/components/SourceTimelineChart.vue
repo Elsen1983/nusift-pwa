@@ -1,12 +1,6 @@
 <template>
   <div class="w-full h-full flex flex-col">
-    <div class="flex items-center justify-between mb-3">
-      <!-- RESTORED: text-semantic-ai brings back the #00E5FF cyan title -->
-      <h4
-        class="text-[10px] font-label font-bold text-semantic-ai uppercase tracking-widest"
-      >
-        Scanned Articles Timeline
-      </h4>
+    <div class="flex items-center justify-end mb-3">
       <select
         v-model="selectedYear"
         class="bg-surface-container-highest text-on-surface border border-outline-variant/30 rounded-lg px-2 py-1 text-xs font-bold outline-none cursor-pointer"

@@ -147,7 +147,6 @@
             <span class="text-on-surface-variant text-[13px] font-label">
               {{ currentLanguageName }}
             </span>
-            <span class="material-symbols-outlined text-outline-variant text-lg">chevron_right</span>
           </div>
         </div>
 
@@ -160,7 +159,7 @@
               :key="lang.code"
               @click="selectLanguage(lang)"
               :disabled="!lang.enabled"
-              class="flex items-center gap-3 p-3 rounded-xl border transition-all text-left group"
+              class="flex items-center gap-3 py-1 px-2 rounded-xl border transition-all text-left group"
               :class="[
                 lang.enabled
                   ? locale === lang.code
@@ -178,13 +177,13 @@
                 </span>
                 <span
                   v-if="locale === lang.code"
-                  class="text-primary-container text-[10px] font-label uppercase tracking-wider"
+                  class="text-primary-container text-[9px] font-label uppercase tracking-wider"
                 >
                   {{ $t("appSettings.language.active") }}
                 </span>
                 <span
                   v-else-if="!lang.enabled"
-                  class="text-on-surface-variant text-[10px] font-label uppercase tracking-wider"
+                  class="text-on-surface-variant text-[9px] font-label uppercase tracking-wider"
                 >
                   {{ $t("appSettings.language.coming_soon") }}
                 </span>

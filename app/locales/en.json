@@ -372,7 +372,8 @@
         "sections": {
             "account": "Account",
             "preference": "Preference",
-            "sources": "Sources",
+            "sources": "Source Status",
+            "timeline": "Scanned Articles Timeline",
             "articles": "Articles",
             "impact": "Your Impact & Analytics"
         },
