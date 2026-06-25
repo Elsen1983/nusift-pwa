@@ -652,6 +652,7 @@ const handleOAuth = async (provider: string) => {
 
   const OAUTH_TIMEOUT_MS = 30000;
   let safetyTimer: NodeJS.Timeout | null = null;
+  let timedOut = false;
 
   const clearSafetyTimer = () => {
     if (safetyTimer) {
@@ -700,20 +701,49 @@ const handleOAuth = async (provider: string) => {
 
       client.requestAccessToken();
     } else if (provider === "Apple") {
+      const appleConfig = useRuntimeConfig();
+      const appleId = appleConfig.public.appleClientId;
+
+      if (!appleId) {
+        throw new Error(t("auth.errors.oauth_missing_id"));
+      }
+
+      safetyTimer = setTimeout(() => {
+        timedOut = true;
+        if (isLoading.value) {
+          isLoading.value = false;
+          emailError.value = t("auth.errors.oauth_timeout");
+          console.warn("Apple OAuth Handshake Timed Out.");
+        }
+      }, OAUTH_TIMEOUT_MS);
+
       (window as any).AppleID.auth.init({
-        clientId: useRuntimeConfig().public.appleClientId,
+        clientId: appleId,
         scope: "email name",
-        redirectURI: "https://nusift.io/api/auth/apple/callback",
+        redirectURI: window.location.origin,
         usePopup: true,
       });
 
       const response = await (window as any).AppleID.auth.signIn();
+      clearSafetyTimer();
+
+      if (timedOut) {
+        isLoading.value = false;
+        return;
+      }
+
       await processOAuthLogin(response.authorization.id_token, "APPLE");
     }
   } catch (error: any) {
     clearSafetyTimer();
     console.error(`${provider} OAuth Error:`, error);
-    emailError.value = t("auth.errors.oauth_failed", { provider });
+
+    if (provider === "Apple" && error?.error === "popup_closed_by_user") {
+      emailError.value = t("auth.errors.oauth_cancelled");
+    } else {
+      emailError.value = t("auth.errors.oauth_failed", { provider });
+    }
+
     isLoading.value = false;
   }
 };

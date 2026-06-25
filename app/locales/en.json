@@ -91,7 +91,7 @@
             "oauth_cancelled": "Authentication cancelled by user.",
             "oauth_timeout": "The authentication window took too long to respond. Please try again.",
             "oauth_failed": "Failed to authenticate with {provider}.",
-            "oauth_missing_id": "Configuration Error: Google Client ID is missing.",
+            "oauth_missing_id": "Configuration Error: OAuth Client ID is missing.",
             "oauth_not_init": "Handshake failed: Identity provider not initialized yet.",
             "handshake_failed": "{provider} handshake failed."
         }

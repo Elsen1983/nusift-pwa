@@ -91,7 +91,7 @@
             "oauth_cancelled": "A felhasználó megszakította a hitelesítést.",
             "oauth_timeout": "A hitelesítési ablak túl sokáig válaszolt. Kérlek, próbáld újra.",
             "oauth_failed": "Sikertelen hitelesítés ezzel: {provider}.",
-            "oauth_missing_id": "Konfigurációs hiba: A Google Client ID hiányzik.",
+            "oauth_missing_id": "Konfigurációs hiba: Az OAuth Client ID hiányzik.",
             "oauth_not_init": "Kézfogás sikertelen: Az identitás-szolgáltató még nem inicializált.",
             "handshake_failed": "{provider} kézfogás sikertelen."
         }

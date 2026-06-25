@@ -7,7 +7,7 @@ import { assertRateLimit } from "../../utils/rate-limit";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const EMAIL_SENDER = process.env.EMAIL_SENDER || 'NuSift <onboarding@nusift.com>';
-const APPLE_CLIENT_ID = process.env.APPLE_CLIENT_ID || '';
+const APPLE_CLIENT_ID = process.env.NUXT_PUBLIC_APPLE_CLIENT_ID || process.env.APPLE_CLIENT_ID || '';
 // ANCHOR: Backend Micro-Dictionary for different languages (for future localization of email content)
 const welcomeDictionaries = {
   en: {
