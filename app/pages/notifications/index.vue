@@ -28,14 +28,23 @@
             class="rounded-2xl border border-primary-container/25 bg-primary-container/5 p-4"
           >
             <div class="flex items-start justify-between gap-3">
-              <button class="text-left min-w-0 flex-1" @click="markRead(item.id)">
+              <div class="text-left min-w-0 flex-1">
                 <div class="flex items-center gap-2 mb-1">
                   <span class="text-[10px] uppercase tracking-widest px-2 py-1 rounded-full border border-primary-container/30 text-primary-container">New</span>
                 </div>
                 <div class="font-body text-[15px] font-medium text-on-surface break-words">{{ item.title }}</div>
                 <div class="text-sm text-on-surface-variant mt-1 break-words">{{ item.body }}</div>
-              </button>
-              <button class="p-2 rounded-full hover:bg-error/10 text-on-surface-variant hover:text-error" @click="deleteNotification(item.id)">
+                <div v-if="item.type === 'FRIEND_REQUEST'" class="flex gap-2 mt-3" @click.stop>
+                  <button class="px-3 py-2 rounded-full bg-primary-container text-on-primary-container text-sm font-medium border border-primary-container/40 min-w-[4.5rem]" @click="acceptFriendRequest(item)">Accept</button>
+                  <button class="px-3 py-2 rounded-full border border-outline-variant text-on-surface text-sm font-medium bg-surface-container min-w-[4.5rem]" @click="declineFriendRequest(item)">Decline</button>
+                </div>
+                <button v-else class="mt-3 text-sm text-primary" @click="markRead(item.id)">Mark as read</button>
+              </div>
+              <button
+                v-if="item.type !== 'FRIEND_REQUEST'"
+                class="p-2 rounded-full hover:bg-error/10 text-on-surface-variant hover:text-error"
+                @click="deleteNotification(item.id)"
+              >
                 <span class="material-symbols-outlined text-[18px]">delete</span>
               </button>
             </div>
@@ -93,6 +102,7 @@ type NotificationItem = {
   title: string;
   body: string;
   url?: string | null;
+  payload?: any;
   status: string;
   sentAt?: string | null;
   readAt?: string | null;
@@ -114,6 +124,44 @@ const syncUnreadCount = async () => {
   const res = await $fetch<{ unreadCount: number }>("/api/notifications");
   unreadNotificationCount.value = res.unreadCount || 0;
 };
+
+async function acceptFriendRequest(item: NotificationItem) {
+  const connectionId = item.payload?.connectionId;
+  if (!connectionId) return;
+  try {
+    await $fetch(`/api/friends/requests/${connectionId}/accept`, {
+      method: "POST",
+      body: { notificationId: item.id },
+    });
+  } catch (error: any) {
+    if (error?.data?.statusCode === 409) {
+      await deleteNotification(item.id);
+      return;
+    }
+    throw error;
+  }
+  await refresh();
+  await syncUnreadCount();
+}
+
+async function declineFriendRequest(item: NotificationItem) {
+  const connectionId = item.payload?.connectionId;
+  if (!connectionId) return;
+  try {
+    await $fetch(`/api/friends/requests/${connectionId}/decline`, {
+      method: "POST",
+      body: { notificationId: item.id },
+    });
+  } catch (error: any) {
+    if (error?.data?.statusCode === 409) {
+      await deleteNotification(item.id);
+      return;
+    }
+    throw error;
+  }
+  await refresh();
+  await syncUnreadCount();
+}
 
 async function markRead(id: string) {
   await $fetch(`/api/notifications/${id}`, { method: "PATCH" });

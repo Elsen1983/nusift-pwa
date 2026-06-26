@@ -16,6 +16,7 @@ export default defineEventHandler(async (event) => {
         title: true,
         body: true,
         url: true,
+        payload: true,
         status: true,
         sentAt: true,
         readAt: true,

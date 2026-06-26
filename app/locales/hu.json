@@ -371,6 +371,7 @@
     "myProfile": {
         "sections": {
             "account": "Fiók",
+            "friends": "Barátok",
             "preference": "Beállítások",
             "sources": "Forrásállapot",
             "timeline": "Szkennelt Cikk Idővonal",
@@ -414,6 +415,20 @@
             "invalidPhoneNumber": "Invalid phone number",
             "saveIdentityButtonDisabled": "Személyes Adatok Mentése",
             "saveIdentityButtonEnabled": "Mentése Folyamatban..."
+        },
+        "friends": {
+            "title": "Barátok",
+            "currentFriends": "Jelenlegi barátok",
+            "searchNewFriends": "Új barátok keresése",
+            "pendingFriends": "Függőben lévő barátok",
+            "searchPlaceholder": "Keresés email vagy becenév alapján",
+            "searchButton": "Keresés",
+            "sendInvite": "Meghívás",
+            "emptyFriends": "Még nincs egyetlen barátod sem.",
+            "noSearchResults": "Nem található felhasználó a keresésre.",
+            "emptyPending": "Jelenleg nincs függőben lévő barátkérés.",
+            "sentByYou": "Tőled elküldve",
+            "received": "Kaptad"
         },
         "billingAddress": {
             "title": "Cím és Számlázási Információk",
@@ -607,6 +622,40 @@
             "evening": "Este",
             "breaking": "Breaking értesítések",
             "breakingDesc": "Sürgős rendszerüzenetek engedélyezése."
+        }
+    },
+    "savedPage": {
+        "title": "Mentett Cikkek",
+        "description": "A könyvjelzőzett cikkeid itt jelennek meg a gyors eléréshez.",
+        "sections": {
+            "favourites": "Kedvenc Cikkek",
+            "readLater": "Olvasás Később Cikkek"
+        },
+        "items": "elem",
+        "empty": {
+            "favourites": "Még nincsenek kedvenc cikkek.",
+            "readLater": "Még nincsenek későbbre mentett cikkek."
+        }
+    },
+    "sharedPage": {
+        "title": "Megosztott Cikkek",
+        "description": "Kövesd nyomon azokat a cikkeket, amelyeket másokkal megosztottál.",
+        "sections": {
+            "yourShares": "Saját Megosztásaid",
+            "sharedByFriends": "Barátaid által megosztottak"
+        },
+        "items": "elem",
+        "empty": {
+            "yourShares": "Még nem osztottál meg egyetlen cikket sem.",
+            "sharedByFriends": "Még nincsenek barátaid által megosztott cikkek."
+        }
+    },
+    "trendsPage": {
+        "title": "Trendek",
+        "description": "Fedezd fel a népszerű témákat és mintákat a hírfolyamodban.",
+        "emptyState": {
+            "title": "Még nincsenek elérhető trendek",
+            "description": "Ahogy interaktálsz a cikkekkel, a trendelő témák és minták itt fognak megjelenni."
         }
     },
     "api_errors": {

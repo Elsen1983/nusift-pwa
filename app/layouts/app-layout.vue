@@ -258,12 +258,12 @@ const navItems = computed(() => [
     icon: "auto_awesome_motion",
     path: "/dashboard",
   },
-  { label: t("appLayout.navigation.saved"), icon: "bookmark", path: "/saved" },
-  { label: t("appLayout.navigation.shared"), icon: "share", path: "/shared" },
+  { label: t("appLayout.navigation.saved"), icon: "bookmark", path: "/articles/saved" },
+  { label: t("appLayout.navigation.shared"), icon: "share", path: "/articles/shared" },
   {
     label: t("appLayout.navigation.trends"),
     icon: "insights",
-    path: "/trends",
+    path: "/articles/trends",
   },
 ]);
 

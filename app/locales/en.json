@@ -371,6 +371,7 @@
     "myProfile": {
         "sections": {
             "account": "Account",
+            "friends": "Friends",
             "preference": "Preference",
             "sources": "Source Status",
             "timeline": "Scanned Articles Timeline",
@@ -414,6 +415,20 @@
             "invalidPhoneNumber": "Invalid phone number",
             "saveIdentityButtonDisabled": "Save Personal Details",
             "saveIdentityButtonEnabled": "Saving..."
+        },
+        "friends": {
+            "title": "Friends",
+            "currentFriends": "Current Friends",
+            "searchNewFriends": "Search new friends",
+            "pendingFriends": "Pending Friends",
+            "searchPlaceholder": "Search by email or nickname",
+            "searchButton": "Search",
+            "sendInvite": "Invite",
+            "emptyFriends": "You do not have any friends yet.",
+            "noSearchResults": "No users matched your search.",
+            "emptyPending": "No pending friend requests right now.",
+            "sentByYou": "Sent by you",
+            "received": "Received"
         },
         "billingAddress": {
             "title": "Address & Billing Information",
@@ -620,6 +635,40 @@
         "empty": {
             "new": "No unread notifications right now.",
             "read": "No read notifications yet."
+        }
+    },
+    "savedPage": {
+        "title": "Saved Articles",
+        "description": "Your bookmarked articles will appear here for quick access.",
+        "sections": {
+            "favourites": "Favourite Articles",
+            "readLater": "Read Later Articles"
+        },
+        "items": "items",
+        "empty": {
+            "favourites": "No favourite articles yet.",
+            "readLater": "No articles saved for later."
+        }
+    },
+    "sharedPage": {
+        "title": "Shared Articles",
+        "description": "Keep track of articles you've shared with others.",
+        "sections": {
+            "yourShares": "Your Shares",
+            "sharedByFriends": "Shared by your friends"
+        },
+        "items": "items",
+        "empty": {
+            "yourShares": "You haven't shared any articles yet.",
+            "sharedByFriends": "No articles shared by your friends yet."
+        }
+    },
+    "trendsPage": {
+        "title": "Trends",
+        "description": "Discover trending topics and patterns across your news feed.",
+        "emptyState": {
+            "title": "No trends available yet",
+            "description": "As you engage with articles, trending topics and patterns will emerge here."
         }
     },
     "api_errors": {

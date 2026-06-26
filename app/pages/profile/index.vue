@@ -95,6 +95,154 @@
       </div>
     </section>
 
+    <!-- FRIENDS -->
+    <section class="space-y-2">
+      <h4 class="text-[13px] font-label font-bold text-on-surface-variant uppercase tracking-widest px-4">
+        {{ $t("myProfile.sections.friends") }}
+      </h4>
+
+      <div class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden flex flex-col p-5 space-y-3">
+        <button
+          @click="toggleMenu('friends-current')"
+          class="w-full flex items-center justify-between px-1 py-3 hover:bg-surface-container-highest transition-colors group outline-none rounded-[18px]"
+        >
+          <div class="flex items-center gap-4 text-on-surface">
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">group</span>
+            <span class="font-body text-[15px] font-medium">{{ $t("myProfile.friends.currentFriends") }}</span>
+          </div>
+          <span
+            class="material-symbols-outlined text-outline-variant transition-transform duration-300"
+            :class="openMenu === 'friends-current' ? 'rotate-90 text-primary' : 'group-hover:text-primary'"
+          >chevron_right</span>
+        </button>
+
+        <div v-show="openMenu === 'friends-current'" class="pt-2 px-2 pb-2 rounded-2xl bg-surface-container-lowest/50 border border-outline-variant/10 space-y-2">
+          <div v-if="friends.length" class="space-y-2">
+            <div v-for="friend in friends" :key="friend.id" class="flex items-center gap-3 rounded-2xl border border-outline-variant/10 bg-surface-container p-3">
+              <div class="w-10 h-10 rounded-full bg-surface-container-highest overflow-hidden shrink-0 flex items-center justify-center">
+                <img v-if="friend.avatarUrl" :src="friend.avatarUrl" class="w-full h-full object-cover" alt="" />
+                <span v-else class="material-symbols-outlined text-on-surface-variant">person</span>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="font-body text-[14px] font-medium text-on-surface truncate">{{ friend.nickname || friend.email }}</div>
+                <div class="text-xs text-on-surface-variant truncate">{{ friend.email }}</div>
+              </div>
+              <button
+                class="px-3 py-2 rounded-full border border-outline-variant text-on-surface text-sm font-medium bg-surface-container hover:bg-error/10 hover:text-error"
+                @click="removeFriend(friend)"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+          <div v-else class="rounded-2xl border border-dashed border-outline-variant/20 p-4 text-sm text-on-surface-variant">
+            {{ $t("myProfile.friends.emptyFriends") }}
+          </div>
+        </div>
+
+        <button
+          @click="toggleMenu('friends-search')"
+          class="w-full flex items-center justify-between px-1 py-3 hover:bg-surface-container-highest transition-colors group outline-none rounded-[18px]"
+        >
+          <div class="flex items-center gap-4 text-on-surface">
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">person_add</span>
+            <span class="font-body text-[15px] font-medium">{{ $t("myProfile.friends.searchNewFriends") }}</span>
+          </div>
+          <span
+            class="material-symbols-outlined text-outline-variant transition-transform duration-300"
+            :class="openMenu === 'friends-search' ? 'rotate-90 text-primary' : 'group-hover:text-primary'"
+          >chevron_right</span>
+        </button>
+
+        <div v-show="openMenu === 'friends-search'" class="pt-2 px-2 pb-2 rounded-2xl bg-surface-container-lowest/50 border border-outline-variant/10 space-y-3">
+          <div class="flex gap-2">
+            <input
+              v-model="friendSearchQuery"
+              type="text"
+              class="flex-1 min-w-0 rounded-2xl border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-sm text-on-surface outline-none focus:border-primary-container"
+              :placeholder="$t('myProfile.friends.searchPlaceholder')"
+            />
+            <button
+              class="px-4 py-3 rounded-2xl bg-primary-container text-on-primary-container text-sm font-medium disabled:opacity-50 border border-primary-container/40"
+              :disabled="isSearchingFriends || friendSearchQuery.trim().length < 2"
+              @click="searchFriends"
+            >
+              {{ $t("myProfile.friends.searchButton") }}
+            </button>
+          </div>
+
+          <div v-if="friendSearchResults.length" class="space-y-2">
+            <div v-for="user in friendSearchResults" :key="user.id" class="flex items-center gap-3 rounded-2xl border border-outline-variant/10 bg-surface-container-low p-3">
+              <div class="w-10 h-10 rounded-full bg-surface-container-highest overflow-hidden shrink-0 flex items-center justify-center">
+                <img v-if="user.avatarUrl" :src="user.avatarUrl" class="w-full h-full object-cover" alt="" />
+                <span v-else class="material-symbols-outlined text-on-surface-variant">person_add</span>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="font-body text-[14px] font-medium text-on-surface truncate">{{ user.nickname || user.email }}</div>
+                <div class="text-xs text-on-surface-variant truncate">{{ user.email }}</div>
+              </div>
+              <button
+                class="px-3 py-2 rounded-full border border-primary-container text-primary text-sm disabled:opacity-50 bg-surface-container"
+                :disabled="sendingInviteId === user.id"
+                @click="sendFriendInvite(user)"
+              >
+                {{ $t("myProfile.friends.sendInvite") }}
+              </button>
+            </div>
+          </div>
+          <div v-else-if="friendSearchDone" class="rounded-2xl border border-dashed border-outline-variant/20 p-4 text-sm text-on-surface-variant">
+            {{ $t("myProfile.friends.noSearchResults") }}
+          </div>
+        </div>
+
+        <button
+          @click="toggleMenu('friends-pending')"
+          class="w-full flex items-center justify-between px-1 py-3 hover:bg-surface-container-highest transition-colors group outline-none rounded-[18px]"
+        >
+          <div class="flex items-center gap-4 text-on-surface">
+            <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary-container transition-colors">schedule</span>
+            <span class="font-body text-[15px] font-medium">{{ $t("myProfile.friends.pendingFriends") }}</span>
+          </div>
+          <span
+            class="material-symbols-outlined text-outline-variant transition-transform duration-300"
+            :class="openMenu === 'friends-pending' ? 'rotate-90 text-primary' : 'group-hover:text-primary'"
+          >chevron_right</span>
+        </button>
+
+        <div v-show="openMenu === 'friends-pending'" class="pt-2 px-2 pb-2 rounded-2xl bg-surface-container-lowest/50 border border-outline-variant/10 space-y-2">
+          <div v-if="pendingFriends.length" class="space-y-2">
+            <div v-for="friend in pendingFriends" :key="friend.connectionId" class="flex items-center gap-3 rounded-2xl border border-outline-variant/10 bg-surface-container p-3">
+              <div class="w-10 h-10 rounded-full bg-surface-container-highest overflow-hidden shrink-0 flex items-center justify-center">
+                <img v-if="friend.avatarUrl" :src="friend.avatarUrl" class="w-full h-full object-cover" alt="" />
+                <span v-else class="material-symbols-outlined text-on-surface-variant">person</span>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="font-body text-[14px] font-medium text-on-surface truncate">
+                  {{ friend.nickname || friend.email }}
+                </div>
+                <div class="text-xs text-on-surface-variant truncate mt-0.5">
+                  {{ friend.email }}
+                </div>
+                <div class="mt-2">
+                  <span
+                    class="text-[10px] uppercase tracking-widest px-2 py-1 rounded-full border inline-flex"
+                    :class="friend.direction === 'SENT'
+                      ? 'border-primary-container/40 text-primary-container bg-primary-container/10'
+                      : 'border-tertiary-fixed/40 text-tertiary-fixed bg-tertiary-fixed/10'"
+                  >
+                    {{ friend.direction === 'SENT' ? $t("myProfile.friends.sentByYou") : $t("myProfile.friends.received") }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="rounded-2xl border border-dashed border-outline-variant/20 p-4 text-sm text-on-surface-variant">
+            {{ $t("myProfile.friends.emptyPending") }}
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- SOURCE STATUS -->
     <section class="space-y-2">
       <h4
@@ -399,6 +547,102 @@ const toggleMenu = (menuName: string) => {
   openMenu.value = openMenu.value === menuName ? null : menuName;
 };
 
+type FriendItem = {
+  connectionId: string;
+  id: string;
+  email: string;
+  nickname: string | null;
+  avatarUrl: string | null;
+};
+
+type PendingFriendItem = FriendItem & {
+  direction: "SENT" | "RECEIVED";
+};
+
+const resolveFriendAvatar = (avatarUrl?: string | null) => {
+  if (!avatarUrl) return null;
+  return resolveAvatarUrlFromMap(avatarUrl, avatarByBasename) || avatarUrl;
+};
+
+const friends = ref<FriendItem[]>([]);
+const pendingFriends = ref<PendingFriendItem[]>([]);
+const friendSearchQuery = ref("");
+const friendSearchResults = ref<FriendItem[]>([]);
+const friendSearchDone = ref(false);
+const isSearchingFriends = ref(false);
+const sendingInviteId = ref("");
+
+const loadFriends = async () => {
+  try {
+    const res: any = await $api("/api/friends");
+    friends.value = (res?.friends || []).map((friend: FriendItem) => ({
+      ...friend,
+      connectionId: friend.connectionId,
+      avatarUrl: resolveFriendAvatar(friend.avatarUrl),
+    }));
+    pendingFriends.value = (res?.pending || []).map((friend: PendingFriendItem) => ({
+      ...friend,
+      connectionId: friend.connectionId,
+      avatarUrl: resolveFriendAvatar(friend.avatarUrl),
+    }));
+  } catch (error) {
+    console.error("Failed to load friends:", error);
+  }
+};
+
+const searchFriends = async () => {
+  const q = friendSearchQuery.value.trim();
+  if (q.length < 2) return;
+
+  isSearchingFriends.value = true;
+  friendSearchDone.value = false;
+
+  try {
+    const res: any = await $api(`/api/users/search?q=${encodeURIComponent(q)}`);
+    friendSearchResults.value = (res?.users || []).map((user: FriendItem) => ({
+      ...user,
+      connectionId: "",
+      avatarUrl: resolveFriendAvatar(user.avatarUrl),
+    }));
+    friendSearchDone.value = true;
+  } catch (error) {
+    console.error("Failed to search friends:", error);
+    friendSearchResults.value = [];
+    friendSearchDone.value = true;
+  } finally {
+    isSearchingFriends.value = false;
+  }
+};
+
+const sendFriendInvite = async (user: FriendItem) => {
+  sendingInviteId.value = user.id;
+  try {
+    await $api("/api/friends/request", {
+      method: "POST",
+      body: { target: user.nickname || user.email },
+    });
+    friendSearchQuery.value = "";
+    friendSearchResults.value = [];
+    friendSearchDone.value = false;
+    await loadFriends();
+  } catch (error) {
+    console.error("Failed to send friend invite:", error);
+  } finally {
+    sendingInviteId.value = "";
+  }
+};
+
+const removeFriend = async (friend: FriendItem) => {
+  try {
+    await $api(`/api/friends/requests/${friend.connectionId}/remove`, {
+      method: "POST",
+    });
+    await loadFriends();
+  } catch (error) {
+    console.error("Failed to remove friend:", error);
+  }
+};
+
 const syncAvatarFromProfile = (profile: any) => {
   const storedAvatar = profile?.avatarUrl || profile?.avatar;
   const resolvedAvatar = resolveAvatarUrlFromMap(storedAvatar, avatarByBasename);
@@ -514,6 +758,8 @@ onMounted(async () => {
     isAnalyticsLoading.value = false; // Betöltési állapot frissítése, hogy a hibás állapotban is megjelenjen a UI
     isClientHydrated.value = true;
   }
+
+  await loadFriends();
 });
 
 const getSourcePercentage = (count: number) => {

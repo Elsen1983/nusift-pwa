@@ -49,6 +49,9 @@ enum SubscriptionStatus {
 enum NotificationType {
   DAILY_DIGEST
   BREAKING_SYSTEM
+  FRIEND_REQUEST
+  FRIEND_REQUEST_ACCEPTED
+  FRIEND_REQUEST_DECLINED
 }
 
 enum NotificationStatus {
