@@ -1,13 +1,17 @@
 // server/middleware/csrf-guard.ts
 // CSRF protection via Origin/Referer header validation.
 // Only checks state-changing requests (POST, PUT, DELETE, PATCH).
-// Skips requests with no Origin/Referer (SSR, server-to-server, curl).
+//
+// When Origin/Referer is present → validates against allowed origins.
+// When both are absent → requires a valid auth_token cookie.
+//   SSR authenticated requests carry the cookie, so they pass.
+//   Cross-origin POST attacks cannot carry SameSite=Lax cookies, so they are
+//   blocked by the browser regardless. Requiring the cookie here closes the
+//   gap where an attacker strips headers to bypass origin validation.
 //
 // This works as defense-in-depth on top of SameSite=Lax cookies.
-// SameSite=Lax already blocks cross-origin cookies on POST/PUT/DELETE,
-// but this adds an additional layer against browser bugs or same-site attacks.
 
-import { getHeader, createError } from "h3";
+import { getHeader, getCookie, createError } from "h3";
 
 const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "DELETE", "PATCH"]);
 
@@ -30,8 +34,17 @@ export default defineEventHandler((event) => {
   const origin = getHeader(event, "origin");
   const referer = getHeader(event, "referer");
 
-  // No Origin or Referer → likely SSR, server-to-server, or direct API call. Skip.
-  if (!origin && !referer) return;
+  if (!origin && !referer) {
+    // No Origin/Referer: allow only if the request carries a valid session cookie.
+    // SSR authenticated requests include the cookie; cross-origin POST attacks
+    // cannot (SameSite=Lax). Unauthenticated POSTs (login, register) are
+    // client-side SPA actions and always send Origin from the browser.
+    const token = getCookie(event, "auth_token");
+    if (!token) {
+      throw createError({ statusCode: 403, statusMessage: "Missing request origin." });
+    }
+    return;
+  }
 
   const sourceUrl = origin || referer;
   if (!sourceUrl) return;

@@ -1,11 +1,17 @@
 import { createError } from "h3";
+import { requireUserId } from "../../utils/require-user";
+import { assertRateLimit } from "../../utils/rate-limit";
 import { sendDueDailyNotifications } from "../../utils/notification-sender";
 
-export default defineEventHandler(async () => {
+export default defineEventHandler(async (event) => {
+  requireUserId(event);
+
   if (process.env.NODE_ENV === "production" && process.env.NUXT_ALLOW_MANUAL_NOTIFICATION_RUN !== "true") {
     throw createError({ statusCode: 403, statusMessage: "Manual trigger disabled." });
   }
 
-  const results = await sendDueDailyNotifications(new Date());
-  return { ok: true, results };
+  await assertRateLimit(event, "run-daily", 3, 10 * 60 * 1000);
+
+  await sendDueDailyNotifications(new Date());
+  return { ok: true };
 });

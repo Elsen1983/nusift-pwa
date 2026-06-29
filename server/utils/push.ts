@@ -1,5 +1,6 @@
 import webpush from "web-push";
 import { createError } from "h3";
+import { validateHostname, resolveAndValidate, SSRFError } from "./ssrf-guard";
 
 export type NotificationSlot = "MORNING" | "NOON" | "EVENING";
 export type NotificationType = "DAILY_DIGEST" | "BREAKING_SYSTEM";
@@ -30,10 +31,71 @@ export function configureWebPush() {
   return { publicKey, privateKey, subject };
 }
 
+/**
+ * Parse and validate a push endpoint URL.
+ * Returns the parsed URL on success. Throws createError(400) on failure.
+ * Rejects: non-HTTPS, non-parseable, localhost, *.local, *.internal,
+ * raw IPs, and hostnames with injection characters.
+ */
+function parsePushEndpoint(endpoint: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw createError({ statusCode: 400, statusMessage: "Invalid push endpoint URL." });
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw createError({ statusCode: 400, statusMessage: "Push endpoint must use HTTPS." });
+  }
+
+  try {
+    validateHostname(parsed.hostname);
+  } catch (err) {
+    if (err instanceof SSRFError) {
+      throw createError({ statusCode: 400, statusMessage: "Invalid push endpoint host." });
+    }
+    throw err;
+  }
+
+  return parsed;
+}
+
+/**
+ * Full push endpoint validation including DNS resolution + private IP check.
+ * Call at subscribe time to reject SSRF attempts before DB write.
+ */
+export async function validatePushEndpoint(endpoint: string): Promise<void> {
+  const parsed = parsePushEndpoint(endpoint);
+
+  try {
+    await resolveAndValidate(parsed.hostname);
+  } catch (err) {
+    if (err instanceof SSRFError) {
+      throw createError({ statusCode: 400, statusMessage: "Push endpoint host is not allowed." });
+    }
+    throw err;
+  }
+}
+
+/**
+ * Lightweight push endpoint check (no DNS resolution).
+ * Call before sending to catch obviously-invalid endpoints without the latency
+ * of a DNS lookup on every notification send.
+ */
+export function assertValidPushEndpoint(endpoint: string): void {
+  parsePushEndpoint(endpoint);
+}
+
 export async function sendPushNotification(
   subscription: PushSubscriptionRecord,
   payload: Record<string, unknown>,
 ) {
+  // Defense-in-depth: validate endpoint before making the outbound request.
+  // Lightweight sync check only (no DNS) — full DNS validation ran at subscribe
+  // time. This catches obviously-invalid endpoints from DB-poisoned records.
+  assertValidPushEndpoint(subscription.endpoint);
+
   configureWebPush();
   const startedAt = Date.now();
   const endpointHint = subscription.endpoint.slice(-12);
@@ -66,6 +128,10 @@ export function mapSubscriptionFromBody(body: any): PushSubscriptionRecord {
       statusMessage: "Invalid push subscription payload.",
     });
   }
+
+  // Sync URL + HTTPS + hostname validation (full async DNS check runs in
+  // subscribe.post.ts via validatePushEndpoint before DB write).
+  parsePushEndpoint(body.endpoint);
 
   return {
     endpoint: body.endpoint,

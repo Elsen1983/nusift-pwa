@@ -1,12 +1,16 @@
 import { prisma } from "../../utils/prisma";
 import { requireUserId } from "../../utils/require-user";
-import { mapSubscriptionFromBody } from "../../utils/push";
+import { mapSubscriptionFromBody, validatePushEndpoint } from "../../utils/push";
 import { createError, readBody, getHeader } from "h3";
 
 export default defineEventHandler(async (event) => {
   const userId = requireUserId(event);
   const body = await readBody(event);
   const subscription = mapSubscriptionFromBody(body);
+
+  // Full SSRF validation: hostname format + DNS resolution + private IP check
+  await validatePushEndpoint(subscription.endpoint);
+
   const expirationTime =
     typeof subscription.expirationTime === "number"
       ? BigInt(subscription.expirationTime)

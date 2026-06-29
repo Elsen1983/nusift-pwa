@@ -1,9 +1,11 @@
 import { createError, readBody } from "h3";
 import { prisma } from "../../utils/prisma";
 import { requireUserId } from "../../utils/require-user";
+import { assertRateLimit } from "../../utils/rate-limit";
 
 export default defineEventHandler(async (event) => {
   const requesterId = requireUserId(event);
+  await assertRateLimit(event, "friends-request", 10, 60 * 60 * 1000);
   const body = await readBody(event);
   const target = typeof body?.target === "string" ? body.target.trim() : "";
 

@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { isBlockedIp, validateHostname, sanitiseHostnameForApi, SSRFError, safeFetch } from './ssrf-guard'
+import { validatePushEndpoint, assertValidPushEndpoint, mapSubscriptionFromBody } from './push'
 
 /* ================================================================== */
 /*  isBlockedIp                                                        */
@@ -415,6 +416,186 @@ describe('safeFetch – legitimate redirect policy', () => {
 /* ================================================================== */
 /*  SSRFError message safety                                           */
 /* ================================================================== */
+
+/* ================================================================== */
+/*  validatePushEndpoint – push subscription SSRF guard                */
+/* ================================================================== */
+
+describe('validatePushEndpoint', () => {
+  // --- Valid endpoints ---
+  it('accepts a valid HTTPS FCM endpoint', async () => {
+    await expect(
+      validatePushEndpoint('https://fcm.googleapis.com/fcm/send/abc123')
+    ).resolves.toBeUndefined()
+  })
+
+  // --- Protocol rejection ---
+  it('rejects http: endpoint', async () => {
+    await expect(validatePushEndpoint('http://example.com/push')).rejects.toThrow()
+  })
+
+  it('rejects file: endpoint', async () => {
+    await expect(validatePushEndpoint('file:///etc/passwd')).rejects.toThrow()
+  })
+
+  it('rejects ftp: endpoint', async () => {
+    await expect(validatePushEndpoint('ftp://example.com/push')).rejects.toThrow()
+  })
+
+  it('rejects data: endpoint', async () => {
+    await expect(validatePushEndpoint('data:text/html,<h1>hi</h1>')).rejects.toThrow()
+  })
+
+  it('rejects javascript: endpoint', async () => {
+    await expect(validatePushEndpoint('javascript:alert(1)')).rejects.toThrow()
+  })
+
+  // --- Malformed URL ---
+  it('rejects empty string', async () => {
+    await expect(validatePushEndpoint('')).rejects.toThrow()
+  })
+
+  it('rejects plain hostname without scheme', async () => {
+    await expect(validatePushEndpoint('example.com/push')).rejects.toThrow()
+  })
+
+  // --- Localhost / internal ---
+  it('rejects localhost', async () => {
+    await expect(validatePushEndpoint('https://localhost/push')).rejects.toThrow()
+  })
+
+  it('rejects 127.0.0.1', async () => {
+    await expect(validatePushEndpoint('https://127.0.0.1/push')).rejects.toThrow()
+  })
+
+  it('rejects 10.x.x.x private IP', async () => {
+    await expect(validatePushEndpoint('https://10.0.0.1/push')).rejects.toThrow()
+  })
+
+  it('rejects 169.254.169.254 cloud metadata', async () => {
+    await expect(validatePushEndpoint('https://169.254.169.254/metadata')).rejects.toThrow()
+  })
+
+  it('rejects .local hostname', async () => {
+    await expect(validatePushEndpoint('https://myhost.local/push')).rejects.toThrow()
+  })
+
+  it('rejects .internal hostname', async () => {
+    await expect(validatePushEndpoint('https://service.internal/push')).rejects.toThrow()
+  })
+})
+
+/* ================================================================== */
+/*  SSRFError→createError wrapping – error type consistency            */
+/*  These tests verify that NO raw SSRFError leaks from the push       */
+/*  validation functions. Every rejection must be a createError with    */
+/*  a statusCode (HTTP error), never a raw SSRFError instance.         */
+/* ================================================================== */
+
+describe('push validation – error type consistency (no SSRFError leak)', () => {
+  // --- validatePushEndpoint (async, full DNS check) ---
+  it('validatePushEndpoint: http endpoint throws error with statusCode 400, not SSRFError', async () => {
+    try {
+      await validatePushEndpoint('http://example.com/push')
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(SSRFError)
+      expect(err).toHaveProperty('statusCode', 400)
+    }
+  })
+
+  it('validatePushEndpoint: localhost throws error with statusCode 400, not SSRFError', async () => {
+    try {
+      await validatePushEndpoint('https://localhost/push')
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(SSRFError)
+      expect(err).toHaveProperty('statusCode', 400)
+    }
+  })
+
+  it('validatePushEndpoint: private IP hostname throws error with statusCode 400, not SSRFError', async () => {
+    try {
+      await validatePushEndpoint('https://127.0.0.1/push')
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(SSRFError)
+      expect(err).toHaveProperty('statusCode', 400)
+    }
+  })
+
+  it('validatePushEndpoint: malformed URL throws error with statusCode 400, not SSRFError', async () => {
+    try {
+      await validatePushEndpoint('not-a-url')
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(SSRFError)
+      expect(err).toHaveProperty('statusCode', 400)
+    }
+  })
+
+  // --- assertValidPushEndpoint (sync, lightweight) ---
+  it('assertValidPushEndpoint: http endpoint throws error with statusCode 400, not SSRFError', () => {
+    try {
+      assertValidPushEndpoint('http://example.com/push')
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(SSRFError)
+      expect(err).toHaveProperty('statusCode', 400)
+    }
+  })
+
+  it('assertValidPushEndpoint: localhost throws error with statusCode 400, not SSRFError', () => {
+    try {
+      assertValidPushEndpoint('https://localhost/push')
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(SSRFError)
+      expect(err).toHaveProperty('statusCode', 400)
+    }
+  })
+
+  it('assertValidPushEndpoint: .internal hostname throws error with statusCode 400, not SSRFError', () => {
+    try {
+      assertValidPushEndpoint('https://evil.internal/push')
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(SSRFError)
+      expect(err).toHaveProperty('statusCode', 400)
+    }
+  })
+
+  // --- mapSubscriptionFromBody (sync, input mapping) ---
+  it('mapSubscriptionFromBody: http endpoint throws error with statusCode 400, not SSRFError', () => {
+    try {
+      mapSubscriptionFromBody({ endpoint: 'http://example.com/push', keys: { p256dh: 'x', auth: 'y' } })
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(SSRFError)
+      expect(err).toHaveProperty('statusCode', 400)
+    }
+  })
+
+  it('mapSubscriptionFromBody: localhost endpoint throws error with statusCode 400, not SSRFError', () => {
+    try {
+      mapSubscriptionFromBody({ endpoint: 'https://localhost/push', keys: { p256dh: 'x', auth: 'y' } })
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(SSRFError)
+      expect(err).toHaveProperty('statusCode', 400)
+    }
+  })
+
+  it('mapSubscriptionFromBody: missing fields throws error with statusCode 400', () => {
+    try {
+      mapSubscriptionFromBody({})
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(SSRFError)
+      expect(err).toHaveProperty('statusCode', 400)
+    }
+  })
+})
 
 describe('SSRFError – message safety', () => {
   it('public message does not expose internal hostname', () => {
