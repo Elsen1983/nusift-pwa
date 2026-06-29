@@ -3,8 +3,6 @@ import { prisma } from "../../utils/prisma";
 import { requireUserId } from "../../utils/require-user";
 
 export default defineEventHandler(async (event) => {
-  requireUserId(event);
-
   const { q } = getQuery(event);
   const query = typeof q === "string" ? q.trim() : "";
 
@@ -14,14 +12,19 @@ export default defineEventHandler(async (event) => {
 
   const isEmail = query.includes("@");
 
+  const userId = requireUserId(event);
+
   const users = await prisma.user.findMany({
-    where: isEmail
-      ? { email: { contains: query, mode: "insensitive" } }
-      : {
-          profile: {
-            nickname: { contains: query, mode: "insensitive" },
-          },
-        },
+    where: {
+      NOT: { id: userId },
+      ...(isEmail
+        ? { email: { contains: query, mode: "insensitive" } }
+        : {
+            profile: {
+              nickname: { contains: query, mode: "insensitive" },
+            },
+          }),
+    },
     take: 10,
     select: {
       id: true,
@@ -37,6 +40,33 @@ export default defineEventHandler(async (event) => {
     },
   });
 
+  // Fetch existing connections (in either direction) for the matched users
+  const userIds = users.map((u) => u.id);
+  const connections = await prisma.usersConnection.findMany({
+    where: {
+      OR: [
+        { requesterId: userId, addresseeId: { in: userIds } },
+        { requesterId: { in: userIds }, addresseeId: userId },
+      ],
+    },
+    select: {
+      requesterId: true,
+      addresseeId: true,
+      status: true,
+    },
+  });
+
+  // Build a map from other-user-id → connection status
+  const statusMap = new Map<string, string>();
+  for (const conn of connections) {
+    const otherId = conn.requesterId === userId ? conn.addresseeId : conn.requesterId;
+    // Prefer non-DECLINED statuses so that ACCEPTED/BLOCKED/PENDING are not
+    // overwritten by an older DECLINED record.
+    if (!statusMap.has(otherId) || conn.status !== "DECLINED") {
+      statusMap.set(otherId, conn.status);
+    }
+  }
+
   return {
     users: users.map((user) => ({
       id: user.id,
@@ -45,6 +75,7 @@ export default defineEventHandler(async (event) => {
       firstName: user.profile?.firstName || null,
       lastName: user.profile?.lastName || null,
       avatarUrl: user.profile?.avatarUrl || null,
+      connectionStatus: statusMap.get(user.id) || null,
     })),
   };
 });

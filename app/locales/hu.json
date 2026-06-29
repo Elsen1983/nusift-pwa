@@ -428,7 +428,10 @@
             "noSearchResults": "Nem található felhasználó a keresésre.",
             "emptyPending": "Jelenleg nincs függőben lévő barátkérés.",
             "sentByYou": "Tőled elküldve",
-            "received": "Kaptad"
+            "received": "Kaptad",
+            "statusFriend": "Már barátok",
+            "statusPending": "Kérés függőben",
+            "statusBlocked": "Blokkolva"
         },
         "billingAddress": {
             "title": "Cím és Számlázási Információk",

@@ -60,6 +60,10 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 409, statusMessage: "You are already friends." });
   }
 
+  if (existing?.status === "BLOCKED") {
+    throw createError({ statusCode: 409, statusMessage: "This connection is blocked." });
+  }
+
   const [connection] = await prisma.$transaction([
     prisma.usersConnection.upsert({
       where: { requesterId_addresseeId: { requesterId, addresseeId: addressee.id } },

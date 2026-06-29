@@ -181,7 +181,27 @@
                 <div class="font-body text-[14px] font-medium text-on-surface truncate">{{ user.nickname || user.email }}</div>
                 <div class="text-xs text-on-surface-variant truncate">{{ user.email }}</div>
               </div>
+              <!-- Connection status badges / invite button -->
+              <span
+                v-if="user.connectionStatus === 'ACCEPTED'"
+                class="px-3 py-2 rounded-full text-xs font-medium border border-primary-container/40 text-primary-container bg-primary-container/10"
+              >
+                {{ $t("myProfile.friends.statusFriend") }}
+              </span>
+              <span
+                v-else-if="user.connectionStatus === 'PENDING'"
+                class="px-3 py-2 rounded-full text-xs font-medium border border-tertiary-fixed/40 text-tertiary-fixed bg-tertiary-fixed/10"
+              >
+                {{ $t("myProfile.friends.statusPending") }}
+              </span>
+              <span
+                v-else-if="user.connectionStatus === 'BLOCKED'"
+                class="px-3 py-2 rounded-full text-xs font-medium border border-error/40 text-error bg-error/10"
+              >
+                {{ $t("myProfile.friends.statusBlocked") }}
+              </span>
               <button
+                v-else
                 class="px-3 py-2 rounded-full border border-primary-container text-primary text-sm disabled:opacity-50 bg-surface-container"
                 :disabled="sendingInviteId === user.id"
                 @click="sendFriendInvite(user)"
@@ -553,6 +573,7 @@ type FriendItem = {
   email: string;
   nickname: string | null;
   avatarUrl: string | null;
+  connectionStatus?: string | null;
 };
 
 type PendingFriendItem = FriendItem & {
@@ -602,6 +623,7 @@ const searchFriends = async () => {
     friendSearchResults.value = (res?.users || []).map((user: FriendItem) => ({
       ...user,
       connectionId: "",
+      connectionStatus: user.connectionStatus || null,
       avatarUrl: resolveFriendAvatar(user.avatarUrl),
     }));
     friendSearchDone.value = true;
