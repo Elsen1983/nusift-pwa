@@ -209,7 +209,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useAuthStore } from "~/stores/auth";
 import { $api } from "~/utils/api";
 
@@ -258,88 +258,22 @@ const vClickOutside = {
   },
 };
 
-const articles = ref<Article[]>([
-  {
-    id: 1,
-    title: "Global Energy Shifts: Rise of Decentralized Power Grids",
-    source: "reuters.com",
-    date: "24 OCT 2023",
-    score: 9,
-    isPaywall: true,
-    tags: ["Energy Sector", "Infrastructure"],
-    reasoning:
-      "Prioritized based on your interest in decentralized infrastructure trends and historical engagement levels.",
-    signals: [
-      "Significant shift in renewable energy policy in the EU.",
-      "New funding for decentralized grid infrastructure projects.",
-      "Potential for cross-border energy trading protocols.",
-      "Increased investment in smart grid technologies by major utilities.",
-      "Emergence of community energy projects in key regions.",
-    ],
-  },
-  {
-    id: 2,
-    title: "The Evolution of AI Agents in Decentralized Markets",
-    source: "wired.com",
-    date: "22 OCT 2023",
-    score: 9,
-    isPaywall: false,
-    tags: ["React Nuance"],
-    reasoning:
-      "Direct relevance to your current project on autonomous sift protocols and agent logic.",
-    signals: [
-      "Emergence of highly autonomous negotiation agents.",
-      "Integration of LLMs in financial smart contracts.",
-    ],
-  },
-  {
-    id: 3,
-    title: "Major Tech Hub Approved for Bandon with NuSift Protocol",
-    source: "bandonnews.ie",
-    date: "24 OCT 2023",
-    score: 8,
-    isPaywall: true,
-    tags: ["Bandon Market node", "Infrastructure"],
-    reasoning:
-      "High correlation with Bandon Market protocol updates and infrastructure development in followed tech nodes.",
-    signals: [
-      "First major tech hub approval in West Cork region.",
-      "NuSift protocol selected for secure data exchange.",
-      "Impact on local tech node infrastructure development.",
-    ],
-  },
-  {
-    id: 4,
-    title: "Quantum Computing Breakthrough in Atom Trapping",
-    source: "science-nature.org",
-    date: "23 OCT 2023",
-    score: 7,
-    isPaywall: false,
-    tags: ["Quantum Tech"],
-    reasoning:
-      "Significant breakthrough in Physics nodes that precede major shifts in your technical stack.",
-    signals: [
-      "Breakthrough in stable atom trapping at room temperature.",
-      "Potential to scale quantum processors for niche industrial use.",
-    ],
-  },
-  {
-    id: 5,
-    title: "New Privacy Regulations Proposed for EU Tech Nodes",
-    source: "techcrunch.com",
-    date: "23 OCT 2023",
-    score: 6,
-    isPaywall: true,
-    tags: ["EU Compliance"],
-    reasoning:
-      "Impacts your data compliance modules and cross-border protocol developments.",
-    signals: [
-      "Stricter data residency requirements proposed for 2024.",
-      "Potential conflict with current cross-border data transfer protocols.",
-      "EU compliance framework update expected in Q1.",
-    ],
-  },
-]);
+const articles = ref<Article[]>([]);
+const feedError = ref<string | null>(null);
+
+const fetchFeed = async () => {
+  feedError.value = null;
+  try {
+    articles.value = await $fetch<Article[]>("/api/feed");
+  } catch (error) {
+    console.error("Failed to load feed:", error);
+    feedError.value = "Failed to load feed.";
+  }
+};
+
+onMounted(() => {
+  void fetchFeed();
+});
 
 const dateOptions = [
   { key: "today", value: "Today", isPro: false },
@@ -426,15 +360,17 @@ const selectCategory = (catValue: string) => {
   }
 };
 
-const applyFilters = () => {
+const applyFilters = async () => {
   if (!hasPendingFilters.value || isRefreshing.value) return;
 
   isRefreshing.value = true;
-  setTimeout(() => {
+  try {
+    await fetchFeed();
     appliedSelectedDateKey.value = currentSelectedDateKey.value;
     appliedSelectedCategories.value = [...selectedCategories.value];
+  } finally {
     isRefreshing.value = false;
-  }, 600);
+  }
 };
 
 const activeActionMenu = ref<number | null>(null);

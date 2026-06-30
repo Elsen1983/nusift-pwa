@@ -1,37 +1,64 @@
-// server/api/feed.ts
-export default defineEventHandler((event) => {
-  // Később itt fogunk csatlakozni a Prisma-val a PostgreSQL-hez!
-  
-  return [
-    {
-      id: 'art_1',
-      title: 'Global Energy Shifts: Rise of Decentralized Power Grids',
-      sourceDomain: 'reuters.com',
-      date: '2023-10-24',
-      rating: 9,
-      isPaywall: true,
-      aiReasoningTags: ['Energy Sector', 'Infrastructure'],
-      summary: 'Prioritized based on your interest in decentralized infrastructure trends and historical engagement levels.'
+import { prisma } from "../utils/prisma";
+import { requireUserId } from "../utils/require-user";
+
+function formatArticleDate(date: Date): string {
+  return date
+    .toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+    .toUpperCase();
+}
+
+function extractDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+export default defineEventHandler(async (event) => {
+  const userId = await requireUserId(event);
+
+  const [sourceSubs, categorySubs] = await Promise.all([
+    prisma.userSourceSubscription.findMany({
+      where: { userId, isActive: true },
+      select: { sourceId: true },
+    }),
+    prisma.userCategorySubscription.findMany({
+      where: { userId, isActive: true },
+      select: { categoryId: true },
+    }),
+  ]);
+
+  const sourceIds = sourceSubs.map((sub) => sub.sourceId);
+  const categoryIds = categorySubs.map((sub) => sub.categoryId);
+
+  if (sourceIds.length === 0 && categoryIds.length === 0) {
+    return [];
+  }
+
+  const articles = await prisma.article.findMany({
+    where: {
+      OR: [
+        ...(sourceIds.length > 0 ? [{ sourceId: { in: sourceIds } }] : []),
+        ...(categoryIds.length > 0 ? [{ categoryId: { in: categoryIds } }] : []),
+      ],
     },
-    {
-      id: 'art_2',
-      title: 'The Evolution of AI Agents in Decentralized Markets',
-      sourceDomain: 'wired.com',
-      date: '2023-10-22',
-      rating: 9,
-      isPaywall: false,
-      aiReasoningTags: ['React Nuance'],
-      summary: 'Direct relevance to your current project on autonomous sift protocols and agent logic.'
+    include: {
+      source: { select: { frontPageUrl: true, mediaName: true } },
     },
-    {
-      id: 'art_3',
-      title: 'Major Tech Hub Approved for Bandon with NuSift Protocol',
-      sourceDomain: 'bandonnews.ie',
-      date: '2023-10-24',
-      rating: 8,
-      isPaywall: true,
-      aiReasoningTags: ['Bandon Market node', 'Infrastructure'],
-      summary: 'High correlation with Bandon Market protocol updates and infrastructure development in followed tech nodes.'
-    }
-  ]
-})
+    orderBy: { date: "desc" },
+    take: 50,
+  });
+
+  return articles.map((article) => ({
+    id: article.id,
+    title: article.title,
+    source: extractDomain(article.source.frontPageUrl) || article.source.mediaName,
+    date: formatArticleDate(article.date),
+    score: article.score,
+    isPaywall: article.isPaywall,
+    tags: article.tags,
+    reasoning: article.reasoning || "",
+    signals: article.signals,
+  }));
+});
