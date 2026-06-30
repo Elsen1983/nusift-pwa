@@ -52,43 +52,48 @@ export default defineEventHandler(async (event) => {
       verifiedEmail = appleTokenPayload.email;
     }
 
-    if (!verifiedEmail || !verifiedProviderId) {
-      throw new Error("Identity verification failed: Missing payload.");
+    if (!verifiedProviderId) {
+      throw new Error("Identity verification failed: Missing provider ID.");
     }
 
-    // --- 2. DATABASE SYNC (Explicit Relational Fetch) ---
-    let user = await prisma.user.findUnique({ 
-      where: { email: verifiedEmail },
-      include: {
-        sourceSubscriptions: {
-          include: { newsSource: true }
-        },
-        categorySubscriptions: {
-          include: { category: true }
-        }
-      }
-    });
+    const userInclude = {
+      sourceSubscriptions: { include: { newsSource: true } },
+      categorySubscriptions: { include: { category: true } },
+    } as const;
+
+    // --- 2. DATABASE SYNC ---
+    // Apple omits email on repeat sign-ins; resolve returning users by oauthId.
+    let user =
+      (verifiedEmail
+        ? await prisma.user.findUnique({
+            where: { email: verifiedEmail },
+            include: userInclude,
+          })
+        : null) ||
+      (await prisma.user.findUnique({
+        where: { oauthId: verifiedProviderId },
+        include: userInclude,
+      }));
 
     if (!user) {
-      // NEW USER: Create account and apply the language from the payload
+      if (!verifiedEmail) {
+        throw new Error("Identity verification failed: Email required for new accounts.");
+      }
+
       user = await prisma.user.create({
         data: {
           email: verifiedEmail,
           isVerified: true,
           oauthProvider: provider,
           oauthId: verifiedProviderId,
-          preferredLanguage: language || "en", 
+          preferredLanguage: language || "en",
         },
-        include: {
-          sourceSubscriptions: { include: { newsSource: true } },
-          categorySubscriptions: { include: { category: true } }
-        }
+        include: userInclude,
       });
 
-      // ANCHOR: DYNAMIC WELCOME EMAIL
       try {
         type SupportedLang = keyof typeof welcomeDictionaries;
-        const t = welcomeDictionaries[(language as SupportedLang)] || welcomeDictionaries['en'];
+        const t = welcomeDictionaries[(language as SupportedLang)] || welcomeDictionaries["en"];
 
         await resend.emails.send({
           from: EMAIL_SENDER,
@@ -99,32 +104,22 @@ export default defineEventHandler(async (event) => {
               <h2 style="color: #00E5FF; font-size: 24px;">${t.title}</h2>
               <p style="color: #ccc; font-size: 16px; line-height: 1.5; max-width: 400px; margin: 0 auto;">${t.body}</p>
             </div>
-          `
+          `,
         });
       } catch (e) {
         console.error("Welcome email failed, but account created:", e);
       }
-
-    } else {
-      // EXISTING USER: Link the OAuth account if it is missing
-      // We explicitly DO NOT update preferredLanguage to protect the DB state
-      if (!user.oauthProvider || !user.oauthId) {
-        user = await prisma.user.update({
-          where: { email: verifiedEmail },
-          data: {
-            oauthProvider: provider,
-            oauthId: verifiedProviderId,
-          },
-          include: {
-            sourceSubscriptions: { include: { newsSource: true } },
-            categorySubscriptions: { include: { category: true } }
-          }
-        });
-      } else if (user.oauthProvider !== provider || user.oauthId !== verifiedProviderId) {
-        throw new Error("Identity verification failed: Account conflict.");
-      } else {
-        console.log("OAuth login: Existing account verified for", verifiedEmail);
-      }
+    } else if (!user.oauthProvider || !user.oauthId) {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          oauthProvider: provider,
+          oauthId: verifiedProviderId,
+        },
+        include: userInclude,
+      });
+    } else if (user.oauthProvider !== provider || user.oauthId !== verifiedProviderId) {
+      throw new Error("Identity verification failed: Account conflict.");
     }
 
     // --- 3. JWT GENERATION ---
