@@ -1,0 +1,12 @@
+services:
+  nusift-db:
+    image: postgres:16
+    container_name: nusift-local-db
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: nusift
+      POSTGRES_PASSWORD: nusift_local
+      POSTGRES_DB: nusift_dev
+    volumes:
+      - ./data/pg:/var/lib/postgresql/data

@@ -10,7 +10,10 @@
     "postinstall": "prisma generate",
     "prisma:studio": "prisma studio",
     "clean": "nuxi clean",
-    "normalize-avatars": "node ./scripts/normalize-avatars.js"
+    "normalize-avatars": "node ./scripts/normalize-avatars.js",
+    "test": "vitest run",
+    "job:ingest": "tsx scripts/jobs/ingest-rss.ts",
+    "job:discover": "tsx scripts/jobs/discover-pending.ts"
   },
   "dependencies": {
     "@nuxtjs/color-mode": "^4.0.1",
@@ -35,7 +38,8 @@
     "vue": "^3.5.32",
     "vue-chartjs": "^5.3.3",
     "vue-router": "^5.0.4",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "fast-xml-parser": "^5.2.5"
   },
   "devDependencies": {
     "@nuxt/icon": "^2.2.2",
@@ -50,6 +54,7 @@
     "jsdom": "^29.1.1",
     "nuxi": "^3.35.1",
     "prisma": "^7.8.0",
+    "tsx": "^4.20.5",
     "vitest": "^4.1.9"
   },
   "allowScripts": {

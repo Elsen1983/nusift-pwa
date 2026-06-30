@@ -66,6 +66,13 @@ enum NotificationScheduleSlot {
   EVENING
 }
 
+enum IngestStatus {
+  INGESTED
+  NEEDS_RANKING
+  RANKED
+  FAILED
+}
+
 // ---------------
 // ANCHOR MODELS
 // ---------------
@@ -300,36 +307,62 @@ model UserCategorySubscription {
   @@index([userId, isActive])
 }
 
-// ========================================================
-// DYNAMIC AI ARTICLES & CLIENT RATING INJECTIONS (MOCKUP STAGE)
-// ========================================================
 // ANCHOR ARTICLES
 model Article {
-  id         Int             @id @default(autoincrement()) // Numerikus ID a frontend mockup adatokhoz igazodva
-  title      String
-  sourceId   String
-  source     NewsSource      @relation(fields: [sourceId], references: [id], onDelete: Cascade)
-  categoryId String?
-  category   SourceCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
-  date       DateTime // Időbélyeg a performáns szűrésekhez (frontend string formázást igényel)
-  score      Int             @default(0)
-  isPaywall  Boolean         @default(false)
+  id           Int             @id @default(autoincrement())
+  title        String
+  canonicalUrl String          @unique
+  guid         String?
+  summary      String?         @db.Text
+  author       String?
+  imageUrl     String?
+  sourceId     String
+  source       NewsSource      @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  categoryId   String?
+  category     SourceCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  date         DateTime
+  score        Int             @default(5)
+  isPaywall    Boolean         @default(false)
+  ingestStatus IngestStatus    @default(NEEDS_RANKING)
 
-  // PostgreSQL natív skalár string tömbök (Gyors indexelés, nincs szükség plusz junction táblákra)
-  tags    String[]
-  signals String[]
-
+  tags      String[]
+  signals   String[]
   reasoning String? @db.Text
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  ratings   ArticleRating[]
-  bookmarks Bookmark[]
-
+  ratings            ArticleRating[]
+  bookmarks          Bookmark[]
   userReadActivities UserReadActivity[]
 
   @@index([date])
+  @@index([sourceId, date])
+  @@index([categoryId, date])
+  @@index([ingestStatus])
+}
+
+model FeedItemCursor {
+  id            String    @id @default(uuid())
+  feedUrl       String    @unique
+  sourceId      String?
+  categoryId    String?
+  lastFetchedAt DateTime?
+  lastItemDate  DateTime?
+  etag          String?
+  lastModified  String?
+}
+
+model IngestRun {
+  id              String    @id @default(uuid())
+  jobType         String
+  startedAt       DateTime  @default(now())
+  finishedAt      DateTime?
+  sourcesTried    Int       @default(0)
+  articlesNew     Int       @default(0)
+  articlesSkipped Int       @default(0)
+  errors          Int       @default(0)
+  errorLog        String?   @db.Text
 }
 
 // ANCHOR ARTICLE RATINGS

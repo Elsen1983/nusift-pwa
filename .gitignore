@@ -30,3 +30,7 @@ logs
 /app/generated/prisma
 
 docs
+
+automation/logs/
+automation/local/data/
+terminals/
