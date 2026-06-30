@@ -1,14 +1,8 @@
 import { defineEventHandler, createError } from 'h3';
+import { requireUserId } from '../../../utils/require-user';
 
 export default defineEventHandler(async (event) => {
-  // 1. Verify authentication
-  const user = event.context.user;
-  if (!user || !user.id) {
-    throw createError({
-      statusCode: 401,
-      statusMessage: 'Unauthorized',
-    });
-  }
+  const userId = await requireUserId(event);
 
   try {
     // Dynamically import prisma to avoid failing module evaluation
@@ -23,7 +17,7 @@ export default defineEventHandler(async (event) => {
     // 2. Fetch the profile relation
     const profile = await prisma.userProfile.findUnique({
       where: {
-        userId: user.id,
+        userId,
       },
     });
 

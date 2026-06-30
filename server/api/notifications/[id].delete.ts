@@ -3,7 +3,7 @@ import { prisma } from "../../utils/prisma";
 import { requireUserId } from "../../utils/require-user";
 
 export default defineEventHandler(async (event) => {
-  const userId = requireUserId(event);
+  const userId = await requireUserId(event);
   const id = event.context.params?.id;
 
   if (!id) throw createError({ statusCode: 400, statusMessage: "Notification id is required." });

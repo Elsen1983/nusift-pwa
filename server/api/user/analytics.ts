@@ -1,12 +1,9 @@
 // server/api/user/analytics.ts
 import { prisma } from "../../utils/prisma";
+import { requireUserId } from "../../utils/require-user";
 
 export default defineEventHandler(async (event) => {
-  const userId = event.context.user?.id;
-  
-  if (!userId) {
-    throw createError({ statusCode: 401, statusMessage: 'Unauthorized' });
-  }
+  const userId = await requireUserId(event);
 
   const query = getQuery(event);
   const currentYear = parseInt(query.year as string) || new Date().getFullYear();

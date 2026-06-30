@@ -1,18 +1,10 @@
 // server/api/user/sources/add.post.ts
 import { prisma } from "../../../utils/prisma";
-import { verifySessionToken } from "../../../utils/auth";
+import { requireUserId } from "../../../utils/require-user";
+import { executeTargetedDiscovery } from "../../../utils/discovery";
 
 export default defineEventHandler(async (event) => {
-  // 1. Authentication
-  const token = getCookie(event, "auth_token");
-  if (!token) {
-    throw createError({
-      statusCode: 401,
-      statusMessage: "Unauthorized",
-      message: "Nincs jogosultságod a művelethez.",
-    });
-  }
-  const userId = verifySessionToken(token).userId;
+  const userId = await requireUserId(event);
   // ÚJ: A frontendnek küldenie kell a check-source által visszaadott 'detectedLanguage'-t (itt 'language'-ként fogadjuk)
   const { url, name, language: sourceLanguage } = await readBody(event);
 

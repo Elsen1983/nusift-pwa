@@ -4,7 +4,7 @@ import { assertRateLimit } from "../../utils/rate-limit";
 import { sendDueDailyNotifications } from "../../utils/notification-sender";
 
 export default defineEventHandler(async (event) => {
-  requireUserId(event);
+  await requireUserId(event);
 
   if (process.env.NODE_ENV === "production" && process.env.NUXT_ALLOW_MANUAL_NOTIFICATION_RUN !== "true") {
     throw createError({ statusCode: 403, statusMessage: "Manual trigger disabled." });

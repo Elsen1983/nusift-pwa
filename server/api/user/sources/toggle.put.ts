@@ -1,16 +1,9 @@
 // server/api/user/sources/toggle.put.ts
 import { prisma } from '../../../utils/prisma';
+import { requireUserId } from '../../../utils/require-user';
 
 export default defineEventHandler(async (event) => {
-  const token = getCookie(event, 'auth_token');
-  if (!token) {
-    throw createError({ statusCode: 401, statusMessage: "Unauthorized", message: "Nincs jogosultságod a művelethez." });
-  }
-
-  const userId = (event.context.user as { id?: string } | undefined)?.id;
-  if (!userId) {
-    throw createError({ statusCode: 401, statusMessage: "Unauthorized", message: "Nincs jogosultsÃ¡god a mÅ±velethez." });
-  }
+  const userId = await requireUserId(event);
   const { sourceId, isActive } = await readBody(event); 
 
   if (!sourceId || typeof isActive !== 'boolean') {

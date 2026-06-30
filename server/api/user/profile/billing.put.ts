@@ -1,10 +1,8 @@
 import { defineEventHandler, readBody, createError } from 'h3';
+import { requireUserId } from '../../../utils/require-user';
 
 export default defineEventHandler(async (event) => {
-  const user = event.context.user;
-  if (!user || !user.id) {
-    throw createError({ statusCode: 401, statusMessage: 'Unauthorized' });
-  }
+  const userId = await requireUserId(event);
 
   const body = await readBody(event);
   
@@ -32,7 +30,7 @@ export default defineEventHandler(async (event) => {
     }
 
     const updatedProfile = await prisma.userProfile.upsert({
-      where: { userId: user.id },
+      where: { userId },
       update: {
         firstName: firstName || null,
         lastName: lastName || null,
@@ -45,7 +43,7 @@ export default defineEventHandler(async (event) => {
         vatNumber: vatNumber || null,
       },
       create: {
-        userId: user.id,
+        userId,
         firstName: firstName || null,
         lastName: lastName || null,
         addressLine1: addressLine1 || null,

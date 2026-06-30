@@ -2,7 +2,7 @@ import { prisma } from "../../utils/prisma";
 import { requireUserId } from "../../utils/require-user";
 
 export default defineEventHandler(async (event) => {
-  const userId = requireUserId(event);
+  const userId = await requireUserId(event);
 
   const [notifications, unreadCount] = await Promise.all([
     prisma.notification.findMany({

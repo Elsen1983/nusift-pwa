@@ -1,7 +1,7 @@
 // server/api/user/finalize-onboarding.post.ts
 import { prisma } from "../../utils/prisma";
 import { executeTargetedDiscovery } from "../../utils/discovery";
-import { verifySessionToken } from "../../utils/auth";
+import { requireUserId } from "../../utils/require-user";
 import { ISO_LANG_CODES } from "../../utils/langCodes"; // ÚJ: Importáljuk a nyelv-Set-et (Ellenőrizd az elérési utat!)
 
 const MAX_SUBMITTED_SOURCES = 20;
@@ -35,23 +35,6 @@ const guessLanguageFromUrl = (urlString: string): string => {
     return "en";
   }
 };
-
-function verifyAuth(event: any): string {
-  const token = getCookie(event, "auth_token");
-  if (!token)
-    throw createError({
-      statusCode: 401,
-      statusMessage: "Unauthorized: Missing token.",
-    });
-
-  const userId = verifySessionToken(token).userId;
-  if (!userId)
-    throw createError({
-      statusCode: 401,
-      statusMessage: "Unauthorized: Invalid token payload.",
-    });
-  return userId;
-}
 
 function normalizeUrl(raw: string) {
   const incomingUrlObj = new URL(raw);
@@ -89,7 +72,7 @@ async function findParentRoot(cleanIncomingHostname: string) {
 }
 
 export default defineEventHandler(async (event) => {
-  const currentUserId = verifyAuth(event);
+  const currentUserId = await requireUserId(event);
   const rawBody = await readBody<OnboardingBody>(event);
   const { region, sources: rawSources, interests } = rawBody;
 

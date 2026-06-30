@@ -1,10 +1,8 @@
 import { defineEventHandler, readBody, createError } from 'h3';
+import { requireUserId } from '../../../utils/require-user';
 
 export default defineEventHandler(async (event) => {
-  const user = event.context.user;
-  if (!user || !user.id) {
-    throw createError({ statusCode: 401, statusMessage: 'Unauthorized' });
-  }
+  const userId = await requireUserId(event);
 
   const body = await readBody(event);
   const { nickname, phoneNumber, dateOfBirth, avatar, preferredLanguage } = body;
@@ -61,7 +59,7 @@ export default defineEventHandler(async (event) => {
 
     if (preferredLanguage) {
       await prisma.user.update({
-        where: { id: user.id },
+        where: { id: userId },
         data: { preferredLanguage: String(preferredLanguage) },
       });
     }
@@ -78,10 +76,10 @@ export default defineEventHandler(async (event) => {
       if (avatar !== undefined) profileUpdate.avatarUrl = avatarBasename || null;
 
       updatedProfile = await prisma.userProfile.upsert({
-        where: { userId: user.id },
+        where: { userId },
         update: profileUpdate,
         create: {
-          userId: user.id,
+          userId,
           nickname: nickname !== undefined ? (nickname || null) : null,
           phoneNumber: phoneNumber !== undefined ? (phoneNumber || null) : null,
           dateOfBirth: dateOfBirth !== undefined ? parsedDate : null,

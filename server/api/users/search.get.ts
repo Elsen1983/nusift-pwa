@@ -12,7 +12,7 @@ export default defineEventHandler(async (event) => {
 
   const isEmail = query.includes("@");
 
-  const userId = requireUserId(event);
+  const userId = await requireUserId(event);
 
   const users = await prisma.user.findMany({
     where: {

@@ -4,7 +4,7 @@ import { requireUserId } from "../../utils/require-user";
 import { getNotificationPayload, sendPushNotification } from "../../utils/push";
 
 export default defineEventHandler(async (event) => {
-  const userId = requireUserId(event);
+  const userId = await requireUserId(event);
   const body = await readBody(event);
   const subscription = await prisma.pushSubscription.findFirst({
     where: { userId, isActive: true },

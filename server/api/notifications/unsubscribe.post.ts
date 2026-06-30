@@ -3,7 +3,7 @@ import { requireUserId } from "../../utils/require-user";
 import { createError, readBody } from "h3";
 
 export default defineEventHandler(async (event) => {
-  const userId = requireUserId(event);
+  const userId = await requireUserId(event);
   const body = await readBody(event);
 
   if (!body?.endpoint) {

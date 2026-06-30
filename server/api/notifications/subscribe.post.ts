@@ -4,7 +4,7 @@ import { mapSubscriptionFromBody, validatePushEndpoint } from "../../utils/push"
 import { createError, readBody, getHeader } from "h3";
 
 export default defineEventHandler(async (event) => {
-  const userId = requireUserId(event);
+  const userId = await requireUserId(event);
   const body = await readBody(event);
   const subscription = mapSubscriptionFromBody(body);
 
