@@ -50,16 +50,54 @@ export async function sendDueDailyNotifications(now = new Date()) {
 
     if (alreadySentToday) continue;
 
-    const articleCount = await prisma.article.count({
-      where: { createdAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) } },
-    });
+    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const [sourceSubs, categorySubs, topRank] = await Promise.all([
+      prisma.userSourceSubscription.findMany({
+        where: { userId: user.id, isActive: true },
+        select: { sourceId: true },
+      }),
+      prisma.userCategorySubscription.findMany({
+        where: { userId: user.id, isActive: true },
+        select: { categoryId: true },
+      }),
+      prisma.userArticleRank.findFirst({
+        where: {
+          userId: user.id,
+          article: { createdAt: { gte: since } },
+        },
+        orderBy: { score: "desc" },
+        include: {
+          article: { select: { title: true, canonicalUrl: true } },
+        },
+      }),
+    ]);
+
+    const sourceIds = sourceSubs.map((sub) => sub.sourceId);
+    const categoryIds = categorySubs.map((sub) => sub.categoryId);
+    const subscriptionFilter =
+      sourceIds.length === 0 && categoryIds.length === 0
+        ? null
+        : {
+            OR: [
+              ...(sourceIds.length ? [{ sourceId: { in: sourceIds } }] : []),
+              ...(categoryIds.length ? [{ categoryId: { in: categoryIds } }] : []),
+            ],
+          };
+
+    const articleCount = subscriptionFilter
+      ? await prisma.article.count({
+          where: { createdAt: { gte: since }, ...subscriptionFilter },
+        })
+      : 0;
 
     const title = "NuSift daily update";
     const body =
-      articleCount > 0
-        ? `${articleCount} new articles are ready in your feed.`
-        : "Your daily news update is ready.";
-    const url = "/dashboard";
+      topRank?.article.title
+        ? `Top pick: ${topRank.article.title.slice(0, 120)}${topRank.article.title.length > 120 ? "…" : ""}`
+        : articleCount > 0
+          ? `${articleCount} new articles are ready in your feed.`
+          : "Your daily news update is ready.";
+    const url = topRank?.article.canonicalUrl ?? "/dashboard";
     const payload = getNotificationPayload(title, body, url, "DAILY_DIGEST", {
       articleCount,
       slot: user.notificationScheduleSlot,

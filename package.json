@@ -13,7 +13,8 @@
     "normalize-avatars": "node ./scripts/normalize-avatars.js",
     "test": "vitest run",
     "job:ingest": "tsx scripts/jobs/ingest-rss.ts",
-    "job:discover": "tsx scripts/jobs/discover-pending.ts"
+    "job:discover": "tsx scripts/jobs/discover-pending.ts",
+    "job:rank": "tsx scripts/jobs/rank-articles.ts"
   },
   "dependencies": {
     "@nuxtjs/color-mode": "^4.0.1",

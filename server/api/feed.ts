@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../utils/prisma";
 import { requireUserId } from "../utils/require-user";
 
@@ -32,6 +33,24 @@ function extractDomain(url: string): string {
     return url;
   }
 }
+
+type FeedRow = {
+  id: number;
+  title: string;
+  date: Date;
+  score: number;
+  isPaywall: boolean;
+  tags: string[];
+  reasoning: string | null;
+  signals: string[];
+  canonicalUrl: string;
+  summary: string | null;
+  frontPageUrl: string;
+  mediaName: string;
+  rank_score: number | null;
+  rank_reasoning: string | null;
+  rank_signals: string[] | null;
+};
 
 export default defineEventHandler(async (event) => {
   const userId = requireUserId(event);
@@ -69,36 +88,68 @@ export default defineEventHandler(async (event) => {
   }
 
   const since = windowStart(window);
-  const where = {
-    date: { gte: since },
-    OR: [
-      ...(sourceIds.length ? [{ sourceId: { in: sourceIds } }] : []),
-      ...(categoryIds.length ? [{ categoryId: { in: categoryIds } }] : []),
-    ],
-  };
+  const subscriptionClauses: Prisma.Sql[] = [];
+  if (sourceIds.length > 0) {
+    subscriptionClauses.push(Prisma.sql`a."sourceId" IN (${Prisma.join(sourceIds)})`);
+  }
+  if (categoryIds.length > 0) {
+    subscriptionClauses.push(Prisma.sql`a."categoryId" IN (${Prisma.join(categoryIds)})`);
+  }
 
-  const [articles, total] = await Promise.all([
-    prisma.article.findMany({
-      where,
-      include: { source: { select: { frontPageUrl: true, mediaName: true } } },
-      orderBy: [{ date: "desc" }],
-      take: limit,
-      skip: offset,
-    }),
-    prisma.article.count({ where }),
+  const subscriptionFilter =
+    subscriptionClauses.length === 1
+      ? subscriptionClauses[0]!
+      : Prisma.sql`(${Prisma.join(subscriptionClauses, " OR ")})`;
+
+  const [rows, countRows] = await Promise.all([
+    prisma.$queryRaw<FeedRow[]>`
+      SELECT
+        a.id,
+        a.title,
+        a.date,
+        a.score,
+        a."isPaywall",
+        a.tags,
+        a.reasoning,
+        a.signals,
+        a."canonicalUrl",
+        a.summary,
+        s."frontPageUrl",
+        s."mediaName",
+        uar.score AS rank_score,
+        uar.reasoning AS rank_reasoning,
+        uar.signals AS rank_signals
+      FROM "Article" a
+      INNER JOIN "NewsSource" s ON s.id = a."sourceId"
+      LEFT JOIN "UserArticleRank" uar
+        ON uar."articleId" = a.id AND uar."userId" = ${userId}
+      WHERE a.date >= ${since}
+        AND ${subscriptionFilter}
+      ORDER BY COALESCE(uar.score, a.score) DESC, a.date DESC
+      LIMIT ${limit}
+      OFFSET ${offset}
+    `,
+    prisma.$queryRaw<Array<{ total: bigint }>>`
+      SELECT COUNT(*)::bigint AS total
+      FROM "Article" a
+      WHERE a.date >= ${since}
+        AND ${subscriptionFilter}
+    `,
   ]);
 
+  const total = Number(countRows[0]?.total ?? 0);
+
   return {
-    items: articles.map((article) => ({
+    items: rows.map((article) => ({
       id: article.id,
       title: article.title,
-      source: extractDomain(article.source.frontPageUrl) || article.source.mediaName,
+      source: extractDomain(article.frontPageUrl) || article.mediaName,
       date: formatArticleDate(article.date),
-      score: article.score,
+      score: article.rank_score ?? article.score,
       isPaywall: article.isPaywall,
       tags: article.tags,
-      reasoning: article.reasoning ?? article.summary ?? "",
-      signals: article.signals,
+      reasoning: article.rank_reasoning ?? article.reasoning ?? article.summary ?? "",
+      signals: article.rank_signals ?? article.signals,
       canonicalUrl: article.canonicalUrl,
     })),
     total,
