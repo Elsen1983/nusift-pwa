@@ -70,7 +70,7 @@ export default defineEventHandler(async (event) => {
   return {
     users: users.map((user) => ({
       id: user.id,
-      email: user.email,
+      email: isEmail ? user.email : null,
       nickname: user.profile?.nickname || null,
       firstName: user.profile?.firstName || null,
       lastName: user.profile?.lastName || null,

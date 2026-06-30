@@ -2,6 +2,7 @@
 import { prisma } from "../../utils/prisma";
 import { executeTargetedDiscovery } from "../../utils/discovery";
 import { verifySessionToken } from "../../utils/auth";
+import { validateHostname } from "../../utils/ssrf-guard";
 import { ISO_LANG_CODES } from "../../utils/langCodes"; // ÚJ: Importáljuk a nyelv-Set-et (Ellenőrizd az elérési utat!)
 
 const MAX_SUBMITTED_SOURCES = 20;
@@ -57,6 +58,8 @@ function normalizeUrl(raw: string) {
   const incomingUrlObj = new URL(raw);
   if (!/^https?:$/.test(incomingUrlObj.protocol))
     throw new Error("Unsupported URL protocol");
+
+  validateHostname(incomingUrlObj.hostname.replace(/^www\./, "").toLowerCase());
 
   const cleanIncomingHostname = incomingUrlObj.hostname
     .replace(/^www\./, "")
