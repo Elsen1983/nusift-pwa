@@ -1,6 +1,8 @@
 // server/api/util/seed-region.post.ts
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createError, getHeader } from 'h3';
+import { assertRateLimit } from '../../utils/rate-limit';
 
 /**
  * ANCHOR SEED-REGION-HANDLER
@@ -8,6 +10,22 @@ import path from 'node:path';
  * Megkerüli a szinkron timeout-okat és lokális JSON adatbázist épít.
  */
 export default defineEventHandler(async (event) => {
+  if (process.env.NODE_ENV === 'production' && process.env.NUXT_ALLOW_SEED_REGION !== 'true') {
+    throw createError({ statusCode: 403, statusMessage: 'Forbidden in production' });
+  }
+
+  const adminSecret = process.env.NUXT_SEED_ADMIN_SECRET;
+  if (!adminSecret) {
+    throw createError({ statusCode: 503, statusMessage: 'Seeding is not configured.' });
+  }
+
+  const providedSecret = getHeader(event, 'x-seed-secret');
+  if (providedSecret !== adminSecret) {
+    throw createError({ statusCode: 403, statusMessage: 'Invalid seed credentials.' });
+  }
+
+  await assertRateLimit(event, 'util-seed-region', 5, 60 * 60 * 1000);
+
   const body = await readBody(event);
   const country = body.country;
 
