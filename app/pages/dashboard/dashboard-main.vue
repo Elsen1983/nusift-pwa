@@ -518,15 +518,24 @@ const openRatingModal = (id: number) => {
   activeActionMenu.value = null;
 };
 
-const handleConfirmRating = (newScore: number) => {
-  const articleIndex = articles.value.findIndex(
-    (a) => a.id === activeRatingArticleId.value,
-  );
-  if (articleIndex !== -1) {
-    const targetArticle = articles.value[articleIndex];
-    if (targetArticle) {
-      targetArticle.score = newScore;
+const handleConfirmRating = async (newScore: number) => {
+  const articleId = activeRatingArticleId.value;
+  if (!articleId) return;
+
+  try {
+    await $fetch("/api/user/rate-article", {
+      method: "POST",
+      body: { articleId, score: newScore },
+    });
+    const articleIndex = articles.value.findIndex((a) => a.id === articleId);
+    if (articleIndex !== -1) {
+      const targetArticle = articles.value[articleIndex];
+      if (targetArticle) {
+        targetArticle.score = newScore;
+      }
     }
+  } catch (error) {
+    console.error("Failed to save rating:", error);
   }
 };
 

@@ -1,32 +1,35 @@
-// // server/api/user/rate-article.post.ts
-// import { prisma } from '../../utils/prisma';
+import { createError, readBody } from "h3";
+import { prisma } from "../../utils/prisma";
+import { requireUserId } from "../../utils/require-user";
 
-// export default defineEventHandler(async (event) => {
-//   // 1. Biztonsági ellenőrzés (Token validálás)
-//   const token = getCookie(event, 'auth_token');
-//   if (!token) {
-//     throw createError({ statusCode: 401, statusMessage: 'Unauthorized' });
-//   }
+export default defineEventHandler(async (event) => {
+  const userId = await requireUserId(event);
+  const body = await readBody(event);
+  const articleId = Number(body?.articleId ?? body?.id);
+  const score = Number(body?.score);
 
-//   // 2. Kérés törzsének olvasása
-//   const body = await readBody(event);
-//   const { id, score } = body;
+  if (!Number.isInteger(articleId) || articleId <= 0) {
+    throw createError({ statusCode: 400, statusMessage: "Valid article ID is required." });
+  }
 
-//   if (!id || score === undefined) {
-//     throw createError({ statusCode: 400, statusMessage: 'Missing ID or Score' });
-//   }
+  if (!Number.isInteger(score) || score < 0 || score > 10) {
+    throw createError({ statusCode: 400, statusMessage: "Score must be an integer between 0 and 10." });
+  }
 
-//   try {
-//     // 3. Adatbázis művelet (pl. frissítés)
-//     // Itt a te adatbázis sémád szerint frissítsd az értékelést
-//     await prisma.article.update({
-//       where: { id: Number(id) },
-//       data: { score: score }
-//     });
+  const article = await prisma.article.findUnique({
+    where: { id: articleId },
+    select: { id: true },
+  });
 
-//     return { success: true };
-//   } catch (error) {
-//     console.error('Rating update failed:', error);
-//     throw createError({ statusCode: 500, statusMessage: 'Internal Server Error' });
-//   }
-// });
+  if (!article) {
+    throw createError({ statusCode: 404, statusMessage: "Article not found." });
+  }
+
+  await prisma.articleRating.upsert({
+    where: { userId_articleId: { userId, articleId } },
+    create: { userId, articleId, score },
+    update: { score },
+  });
+
+  return { success: true, articleId, score };
+});
