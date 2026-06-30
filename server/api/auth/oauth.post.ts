@@ -159,10 +159,9 @@ export default defineEventHandler(async (event) => {
 
   } catch (error: any) {
     console.error("OAuth Internal Error:", error);
-    throw createError({ 
-      statusCode: 401, 
-      statusMessage: 'Identity verification failed',
-      message: error.message 
+    throw createError({
+      statusCode: 401,
+      statusMessage: "Identity verification failed",
     });
   }
 });
