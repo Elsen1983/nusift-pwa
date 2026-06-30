@@ -1,6 +1,7 @@
 // server/api/user/sources/add.post.ts
 import { prisma } from "../../../utils/prisma";
 import { verifySessionToken } from "../../../utils/auth";
+import { executeTargetedDiscovery } from "../../../utils/discovery";
 
 export default defineEventHandler(async (event) => {
   // 1. Authentication
