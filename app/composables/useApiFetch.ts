@@ -1,23 +1,19 @@
 // composables/useApiFetch.ts
-import { useFetch, useCookie } from '#app';
+import { useFetch } from '#app';
 import type { UseFetchOptions } from 'nuxt/app';
 
 export function useApiFetch<T>(
   request: Parameters<typeof useFetch>[0],
   opts?: UseFetchOptions<T>
 ) {
-  const tokenCookie = useCookie('auth_token');
-
   // We construct the options object and cast it to bypass Nuxt's strict NoInfer checks internally
   const options = {
     ...opts,
     onResponseError(context: any) {
       if (context.response.status === 401 || context.response.status === 404) {
         console.error('Sovereign Shield: Session invalid. Logging out...');
-        
-        tokenCookie.value = null;
-        // session_status is now httpOnly — server handles clearing it
-        
+        // httpOnly cookies (auth_token, session_status) are cleared server-side;
+        // we only handle the client-side redirect here.
         if (import.meta.client) {
           window.location.href = '/auth';
         }

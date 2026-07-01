@@ -132,8 +132,6 @@ export default defineEventHandler(async (event) => {
       }
     });
 
-    let needsDiscovery = false;
-
     // 5. UPSERT (Összekötés a megfelelő entitással)
     if (existingCategory) {
       console.log(`[Source-Manager] Linked to existing CATEGORY: ${existingCategory.id}`);
@@ -199,8 +197,6 @@ export default defineEventHandler(async (event) => {
         });
         console.log(`[Source-Manager] Created completely new CATEGORY: ${newCat.pathUrl}`);
       }
-
-      needsDiscovery = true;
 
       console.log(`[Source-Manager] Dispatching background agent for new source...`);
       event.waitUntil(

@@ -2,6 +2,7 @@
 import { prisma } from "../../utils/prisma";
 import { executeTargetedDiscovery } from "../../utils/discovery";
 import { requireUserId } from "../../utils/require-user";
+import { validateHostname, SSRFError } from "../../utils/ssrf-guard";
 import { ISO_LANG_CODES } from "../../utils/langCodes"; // ÚJ: Importáljuk a nyelv-Set-et (Ellenőrizd az elérési utat!)
 
 const MAX_SUBMITTED_SOURCES = 20;
@@ -83,17 +84,17 @@ export default defineEventHandler(async (event) => {
     : [];
 
   try {
-    const updatedUser = await prisma.user.update({
+    // Fetch current user tier for quota calculation (read-only)
+    const currentUser = await prisma.user.findUnique({
       where: { id: currentUserId },
-      data: {
-        primaryRegion: region ?? null,
-        topInterests: interests ?? undefined,
-        onboardingStep: 3,
-      },
       select: { id: true, tier: true },
     });
 
-    const maxActiveLimit = updatedUser.tier === "PRO" ? 15 : 5;
+    if (!currentUser) {
+      throw createError({ statusCode: 404, statusMessage: "User not found." });
+    }
+
+    const maxActiveLimit = currentUser.tier === "PRO" ? 15 : 5;
     let currentlyActiveCount = 0;
     const targetedSourceIds: string[] = [];
 
@@ -115,6 +116,9 @@ export default defineEventHandler(async (event) => {
           incomingPath,
           pureRootUrl,
         } = normalizeUrl(rawUrl);
+
+        // SSRF guard: reject private/internal/IP-literal hostnames before DB persist
+        validateHostname(cleanIncomingHostname);
         const parentRoot = await findParentRoot(cleanIncomingHostname);
 
         // Final Language assignment: Explicit truth from frontend overrides the URL heuristic guess
@@ -248,6 +252,8 @@ export default defineEventHandler(async (event) => {
 
         if (shouldBeActive) currentlyActiveCount++;
       } catch (error) {
+        // Let SSRF guard violations propagate to abort the entire request
+        if (error instanceof SSRFError) throw error;
         console.error(`[Insertion Error] Failed to process URL:`, error);
       }
     }
@@ -263,8 +269,29 @@ export default defineEventHandler(async (event) => {
       );
     }
 
+    // Persist user profile changes AFTER all sources validated & processed
+    const updatedUser = await prisma.user.update({
+      where: { id: currentUserId },
+      data: {
+        primaryRegion: region ?? null,
+        topInterests: interests ?? undefined,
+        onboardingStep: 3,
+      },
+      select: { id: true, tier: true },
+    });
+
     return { success: true, user: updatedUser };
   } catch (error) {
+    // SSRF guard rejection → 400 (don't persist anything)
+    if (error instanceof SSRFError) {
+      console.warn(`[Onboarding] SSRF blocked: ${error.detail}`);
+      throw createError({
+        statusCode: 400,
+        statusMessage: "Blocked",
+        message: "One or more source URLs failed security validation.",
+      });
+    }
+
     throw createError({
       statusCode: 500,
       statusMessage: "Failed to finalize onboarding process.",

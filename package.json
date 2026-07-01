@@ -10,7 +10,8 @@
     "postinstall": "prisma generate",
     "prisma:studio": "prisma studio",
     "clean": "nuxi clean",
-    "normalize-avatars": "node ./scripts/normalize-avatars.js"
+    "normalize-avatars": "node ./scripts/normalize-avatars.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "@nuxtjs/color-mode": "^4.0.1",
