@@ -87,7 +87,7 @@ export async function executeTargetedDiscovery(
   }
 
   console.log(
-    `[Targeted-Discovery] Initiating direct scan for ${pendingSources.length} specific sources...`,
+    `[Targeted-Discovery] Initiating direct scan for ${pendingSources.length} specific sources....`,
   );
 
   // 2. Iteráció és Web Scraping
