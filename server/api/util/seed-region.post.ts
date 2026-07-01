@@ -1,26 +1,52 @@
 // server/api/util/seed-region.post.ts
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { assertRateLimit } from '../../utils/rate-limit';
 
 /**
- * ANCHOR SEED-REGION-HANDLER
- * Ez a végpont felelős az adott ország hírforrásainak aszinkron begyűjtéséért.
- * Megkerüli a szinkron timeout-okat és lokális JSON adatbázist épít.
+ * ADMIN-ONLY maintenance endpoint. Not for public clients.
+ * Triggers a background NewsData.io crawl for a given country code.
+ *
+ * Required env vars:
+ *   NUXT_SEED_ADMIN_SECRET  – shared secret (X-Seed-Secret header)
+ *   NUXT_ALLOW_SEED_REGION  – set to "true" to enable in production
  */
 export default defineEventHandler(async (event) => {
-  const body = await readBody(event);
-  const country = body.country;
-
-  if (!country) {
-    throw createError({ statusCode: 400, message: "Country parameter is required" });
+  // ── Gate 1: Admin secret ──────────────────────────────────────────────────
+  const expectedSecret = process.env.NUXT_SEED_ADMIN_SECRET;
+  if (!expectedSecret) {
+    console.error('[Seeder] NUXT_SEED_ADMIN_SECRET is not configured.');
+    throw createError({ statusCode: 500, message: 'Endpoint not configured.' });
   }
 
-  // Fire-and-forget: A Nitro nem várja meg a háttérfolyamat végét, azonnal válaszol a kliensnek.
+  const providedSecret = getRequestHeader(event, 'x-seed-secret');
+  if (!providedSecret || providedSecret !== expectedSecret) {
+    throw createError({ statusCode: 403, message: 'Forbidden.' });
+  }
+
+  // ── Gate 2: Production kill switch ────────────────────────────────────────
+  if (process.env.NODE_ENV === 'production' && process.env.NUXT_ALLOW_SEED_REGION !== 'true') {
+    console.warn('[Seeder] Blocked: seed-region is disabled in production. Set NUXT_ALLOW_SEED_REGION=true to enable.');
+    throw createError({ statusCode: 403, message: 'Forbidden.' });
+  }
+
+  // ── Gate 3: Rate limit (5 requests / hour / IP) ──────────────────────────
+  await assertRateLimit(event, 'seed-region', 5, 60 * 60 * 1000);
+
+  // ── Input validation ─────────────────────────────────────────────────────
+  const body = await readBody(event);
+  const country = body?.country;
+
+  if (!country || typeof country !== 'string') {
+    throw createError({ statusCode: 400, message: 'Country parameter is required.' });
+  }
+
+  // ── All gates passed – fire background job ───────────────────────────────
   event.waitUntil(scrapeAndSaveRegion(country));
 
   return {
     success: true,
-    message: `Sovereign Seeding: Background database sync initiated for region: ${country}`
+    message: `Sovereign Seeding: Background database sync initiated for region: ${country}`,
   };
 });
 

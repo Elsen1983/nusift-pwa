@@ -288,18 +288,10 @@ const saveAndContinue = async () => {
     agentStore.primaryRegion = selectedCountry.value;
 
     // ==========================================
-    // 2. HÁTTÉRADATBÁZIS ÉPÍTÉS INDÍTÁSA (SEEDER)
-    // ==========================================
-    // Nem várjuk meg (nincs await), azonnal megy tovább a kód!
-    $api("/api/util/seed-region", {
-      method: "POST",
-      body: { country: selectedCountry.value },
-    }).catch((err) => console.warn("Background seeder API failed:", err));
-
-    // 3. UX miatti minimális várakozás (hogy látszódjon a "Finalizing..." gomb)
+    // 2. UX miatti minimális várakozás (hogy látszódjon a "Finalizing..." gomb)
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    // 4. Állapotgép (State Machine) frissítése a Guard miatt
+    // 3. Állapotgép (State Machine) frissítése a Guard miatt
     if (authStore.user) {
       authStore.user.onboardingStep = 1;
       authStore.user.primaryRegion = selectedCountry.value; // NEW: Sync state
@@ -312,7 +304,7 @@ const saveAndContinue = async () => {
       }
     }
 
-    // 5. Tovább a következő oldalra
+    // 4. Tovább a következő oldalra
     navigate.push("/source-calibration");
   } catch (error) {
     console.error("Navigation error:", error);
