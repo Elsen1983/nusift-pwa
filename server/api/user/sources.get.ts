@@ -1,13 +1,10 @@
 // server/api/user/sources.get.ts
 import { prisma } from '../../utils/prisma';
-import { verifySessionToken } from "../../utils/auth";
+import { requireUserId } from '../../utils/require-user';
 
 export default defineEventHandler(async (event) => {
-  // 1. Autentikáció
-  const token = getCookie(event, 'auth_token');
-  if (!token) throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
-
-  const userId = verifySessionToken(token).userId;
+  // 1. Autentikáció (session-guard validates tokenVersion)
+  const userId = requireUserId(event);
 
   try {
     // 2. Felhasználói kvóta (Tier) lekérése

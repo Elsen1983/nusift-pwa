@@ -1,11 +1,10 @@
 // server/api/user/sources/[id].delete.ts
 import { prisma } from '../../../utils/prisma';
-import { verifySessionToken } from "../../../utils/auth";
+import { requireUserId } from '../../../utils/require-user';
 
 export default defineEventHandler(async (event) => {
-  const token = getCookie(event, 'auth_token');
-  if (!token) throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
-  const userId = verifySessionToken(token).userId;
+  // Authentication (session-guard validates tokenVersion)
+  const userId = requireUserId(event);
   // Kinyerjük az ID-t az URL-ből (pl. /api/user/sources/1234-uuid-5678)
   const subscriptionId = getRouterParam(event, 'id');
 

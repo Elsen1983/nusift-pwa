@@ -1,20 +1,10 @@
 // server/api/user/update-interests.post.ts
 import { prisma } from '../../utils/prisma';
-import { verifySessionToken } from "../../utils/auth";
+import { requireUserId } from '../../utils/require-user';
 
 export default defineEventHandler(async (event) => {
-  // 1. Read the JWT Token from the HTTP-Only cookie
-  const token = getCookie(event, 'auth_token');
-  
-  if (!token) {
-    throw createError({ statusCode: 401, statusMessage: "Unauthorized: Missing token." });
-  }
-
-  const currentUserId = verifySessionToken(token).userId;
-
-  if (!currentUserId) {
-    throw createError({ statusCode: 401, statusMessage: "Unauthorized: Invalid token payload." });
-  }
+  // 1. Authentication (session-guard validates tokenVersion)
+  const currentUserId = requireUserId(event);
 
   // 3. Extract the updated interests from the frontend payload
   const body = await readBody(event);
