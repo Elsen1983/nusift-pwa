@@ -1,6 +1,7 @@
 // server/api/user/finalize-onboarding.post.ts
 import { prisma } from "../../utils/prisma";
 import { executeTargetedDiscovery } from "../../utils/discovery";
+import { runNewsPipeline } from "../../utils/news-pipeline/orchestrator";
 import { requireUserId } from "../../utils/require-user";
 import { validateHostname, SSRFError } from "../../utils/ssrf-guard";
 import { ISO_LANG_CODES } from "../../utils/langCodes"; // ÚJ: Importáljuk a nyelv-Set-et (Ellenőrizd az elérési utat!)
@@ -12,6 +13,17 @@ type OnboardingBody = {
   sources?: unknown;
   interests?: string[] | null;
 };
+
+function normalizeRssStatus(
+  status: "PENDING_DISCOVERY" | "NO_RSS_FOUND" | "ACTIVE",
+  rssFeedUrl?: string | null,
+) {
+  if (status === "ACTIVE" && !rssFeedUrl) {
+    return "NO_RSS_FOUND" as const;
+  }
+
+  return status;
+}
 
 // 1. FALLBACK HEURISTIC: Used only if the frontend payload loses the language
 const guessLanguageFromUrl = (urlString: string): string => {
@@ -96,7 +108,7 @@ export default defineEventHandler(async (event) => {
 
     const maxActiveLimit = currentUser.tier === "PRO" ? 15 : 5;
     let currentlyActiveCount = 0;
-    const targetedSourceIds: string[] = [];
+    const targetedSourceIds = new Set<string>();
 
     for (const rawSourceItem of submittedSources) {
       try {
@@ -155,6 +167,7 @@ export default defineEventHandler(async (event) => {
           let rootId = null;
           if (parentRoot) {
             rootId = parentRoot.id;
+            if (shouldBeActive) targetedSourceIds.add(rootId);
           } else {
             // SAFE UPSERT WITH FINAL LANGUAGE
             const newRoot = await prisma.newsSource.upsert({
@@ -162,14 +175,14 @@ export default defineEventHandler(async (event) => {
               create: {
                 frontPageUrl: pureRootUrl,
                 mediaName: cleanIncomingHostname,
-                rssStatus: "PENDING_DISCOVERY",
+                rssStatus: normalizeRssStatus("PENDING_DISCOVERY", null),
                 isSystemImported: false,
                 language: finalSourceLanguage,
               },
               update: {},
             });
             rootId = newRoot.id;
-            targetedSourceIds.push(rootId);
+            if (shouldBeActive) targetedSourceIds.add(rootId);
           }
 
           await prisma.userSourceSubscription.upsert({
@@ -186,6 +199,7 @@ export default defineEventHandler(async (event) => {
         } else {
           // --- KATEGÓRIA ---
           if (exactCategory) {
+            if (shouldBeActive) targetedSourceIds.add(exactCategory.newsSourceId);
             await prisma.userCategorySubscription.upsert({
               where: {
                 userId_categoryId: {
@@ -204,6 +218,7 @@ export default defineEventHandler(async (event) => {
             let rootIdForCategory = null;
             if (parentRoot) {
               rootIdForCategory = parentRoot.id;
+              if (shouldBeActive) targetedSourceIds.add(rootIdForCategory);
             } else {
               // SAFE UPSERT FOR PARENT ROOT
               const newRoot = await prisma.newsSource.upsert({
@@ -211,14 +226,14 @@ export default defineEventHandler(async (event) => {
                 create: {
                   frontPageUrl: pureRootUrl,
                   mediaName: cleanIncomingHostname,
-                  rssStatus: "PENDING_DISCOVERY",
+                  rssStatus: normalizeRssStatus("PENDING_DISCOVERY", null),
                   isSystemImported: false,
                   language: finalSourceLanguage,
                 },
                 update: {},
               });
               rootIdForCategory = newRoot.id;
-              targetedSourceIds.push(rootIdForCategory);
+              if (shouldBeActive) targetedSourceIds.add(rootIdForCategory);
             }
 
             const newCat = await prisma.sourceCategory.create({
@@ -229,7 +244,7 @@ export default defineEventHandler(async (event) => {
                   .replace(/\//g, " - "),
                 pathUrl: rawUrl,
                 isUserRequested: true,
-                rssStatus: "PENDING_DISCOVERY",
+                rssStatus: normalizeRssStatus("PENDING_DISCOVERY", null),
               },
             });
 
@@ -258,13 +273,19 @@ export default defineEventHandler(async (event) => {
       }
     }
 
-    if (targetedSourceIds.length > 0) {
+    if (targetedSourceIds.size > 0) {
+      const sourceIds = [...targetedSourceIds];
       event.waitUntil(
-        executeTargetedDiscovery(targetedSourceIds).catch((err) =>
+        executeTargetedDiscovery(sourceIds).catch((err) =>
           console.error(
             "[Orchestrator] Background discovery loop crashed:",
             err,
           ),
+        ),
+      );
+      event.waitUntil(
+        runNewsPipeline(sourceIds).catch((err) =>
+          console.error("[Orchestrator] Background ingest pipeline crashed:", err),
         ),
       );
     }

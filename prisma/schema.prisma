@@ -311,6 +311,14 @@ model Article {
   source     NewsSource      @relation(fields: [sourceId], references: [id], onDelete: Cascade)
   categoryId String?
   category   SourceCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  sourceUrl  String?
+  canonicalUrl String?       @unique
+  rssGuid    String?         @unique
+  contentHash String?        @unique
+  bodyText   String?         @db.Text
+  publishedAt DateTime?
+  processingStage String     @default("PENDING")
+  processingStatus String    @default("PENDING")
   date       DateTime // Időbélyeg a performáns szűrésekhez (frontend string formázást igényel)
   score      Int             @default(0)
   isPaywall  Boolean         @default(false)

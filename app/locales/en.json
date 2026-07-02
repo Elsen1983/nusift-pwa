@@ -295,6 +295,10 @@
             "categories_label": "Categories",
             "all_categories": "All Categories"
         },
+        "empty": {
+            "title": "No articles yet",
+            "description": "The feed is ready, but no processed articles have been stored in the News Lake yet."
+        },
         "filters": {
             "dates": {
                 "today": "Today",
@@ -432,6 +436,13 @@
             "statusFriend": "Already friends",
             "statusPending": "Request pending",
             "statusBlocked": "Blocked"
+        },
+        "deleteAccount": {
+            "title": "Delete Account",
+            "summary": "Permanently remove your NuSift account and all user-linked profile data.",
+            "button": "Delete Account",
+            "deleting": "Deleting...",
+            "caption": "This action is final. Your account and associated personal data cannot be restored afterward."
         },
         "billingAddress": {
             "title": "Address & Billing Information",
@@ -579,6 +590,14 @@
         "description": "Are you sure you want to end your secure session? Any unsaved agent configurations or calibration data might be lost.",
         "btn_cancel": "Cancel",
         "btn_terminate": "Quit"
+    },
+    "deleteAccountModal": {
+        "title": "Delete Account?",
+        "description": "This permanently deletes your account, profile, subscriptions, friends, bookmarks, and other user-linked data.",
+        "warning": "This action cannot be undone or restored later.",
+        "btn_cancel": "Cancel",
+        "btn_confirm": "Delete",
+        "btn_deleting": "Deleting..."
     },
     "appSettings": {
         "title": "App Settings",

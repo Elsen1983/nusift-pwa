@@ -261,6 +261,37 @@
           </div>
         </div>
       </div>
+
+      <div class="rounded-3xl border border-error/20 bg-surface-container-low p-5 shadow-lg">
+        <div class="flex items-start gap-4">
+          <div class="mt-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-error/20 bg-error/10">
+            <span class="material-symbols-outlined text-error">delete_forever</span>
+          </div>
+          <div class="min-w-0 flex-1">
+            <h5 class="font-headline text-base font-bold uppercase tracking-wide text-on-surface">
+              {{ $t("myProfile.deleteAccount.title") }}
+            </h5>
+            <p class="mt-1 text-sm leading-relaxed text-on-surface-variant">
+              {{ $t("myProfile.deleteAccount.summary") }}
+            </p>
+
+            <button
+              class="mt-4 inline-flex min-h-11 items-center justify-center rounded-2xl border border-error/30 bg-error/10 px-5 py-3 text-sm font-bold uppercase tracking-widest text-error transition-colors hover:bg-error hover:text-on-error disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="isDeletingAccount"
+              @click="openDeleteAccountModal"
+            >
+              {{ isDeletingAccount ? $t("myProfile.deleteAccount.deleting") : $t("myProfile.deleteAccount.button") }}
+            </button>
+
+            <p class="mt-3 text-xs leading-relaxed text-on-surface-variant">
+              {{ $t("myProfile.deleteAccount.caption") }}
+            </p>
+            <p v-if="deleteAccountError" class="mt-2 text-xs leading-relaxed text-error">
+              {{ deleteAccountError }}
+            </p>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- SOURCE STATUS -->
@@ -493,6 +524,13 @@
       </span>
     </div>
   </div>
+
+  <DeleteAccountModal
+    :is-open="isDeleteAccountModalOpen"
+    :is-deleting="isDeletingAccount"
+    @close="isDeleteAccountModalOpen = false"
+    @confirm="deleteAccount"
+  />
 </template>
 
 <script setup lang="ts">
@@ -592,6 +630,9 @@ const friendSearchResults = ref<FriendItem[]>([]);
 const friendSearchDone = ref(false);
 const isSearchingFriends = ref(false);
 const sendingInviteId = ref("");
+const isDeleteAccountModalOpen = ref(false);
+const isDeletingAccount = ref(false);
+const deleteAccountError = ref("");
 
 const loadFriends = async () => {
   try {
@@ -662,6 +703,41 @@ const removeFriend = async (friend: FriendItem) => {
     await loadFriends();
   } catch (error) {
     console.error("Failed to remove friend:", error);
+  }
+};
+
+const openDeleteAccountModal = () => {
+  deleteAccountError.value = "";
+  isDeleteAccountModalOpen.value = true;
+};
+
+const deleteAccount = async () => {
+  if (isDeletingAccount.value) return;
+
+  isDeletingAccount.value = true;
+  deleteAccountError.value = "";
+
+  try {
+    await $api("/api/user/account", {
+      method: "DELETE",
+    });
+
+    authStore.$reset();
+    if (import.meta.client) {
+      window.location.href = "/auth";
+    }
+  } catch (error: any) {
+    console.error("Failed to delete account:", error);
+    deleteAccountError.value =
+      error?.response?._data?.normalizedMessage ||
+      error?.data?.statusMessage ||
+      error?.message ||
+      "Failed to delete account.";
+  } finally {
+    isDeletingAccount.value = false;
+    if (!deleteAccountError.value) {
+      isDeleteAccountModalOpen.value = false;
+    }
   }
 };
 

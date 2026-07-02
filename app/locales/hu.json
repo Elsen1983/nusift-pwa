@@ -433,6 +433,13 @@
             "statusPending": "Kérés függőben",
             "statusBlocked": "Blokkolva"
         },
+        "deleteAccount": {
+            "title": "Fiók törlése",
+            "summary": "A NuSift fiók és az összes felhasználóhoz kötött profiladat végleges eltávolítása.",
+            "button": "Fiók törlése",
+            "deleting": "Törlés...",
+            "caption": "Ez a művelet végleges. A fiók és a kapcsolódó személyes adatok később nem állíthatók vissza."
+        },
         "billingAddress": {
             "title": "Cím és Számlázási Információk",
             "firstName": "Keresztnév",
@@ -579,6 +586,14 @@
         "description": "Biztosan be akarod fejezni a biztonságos munkamenetet? Minden nem mentett ügynök-konfiguráció vagy kalibrációs adat elveszhet.",
         "btn_cancel": "Mégsem",
         "btn_terminate": "Kilépés"
+    },
+    "deleteAccountModal": {
+        "title": "Fiók törlése?",
+        "description": "Ez véglegesen törli a fiókodat, a profilodat, az előfizetéseidet, a barátaidat, a mentéseidet és minden más felhasználóhoz kötött adatot.",
+        "warning": "Ez a művelet nem vonható vissza, és később sem állítható helyre.",
+        "btn_cancel": "Mégsem",
+        "btn_confirm": "Törlés",
+        "btn_deleting": "Törlés..."
     },
     "appSettings": {
         "title": "Alkalmazás Beállításai",

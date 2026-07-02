@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { prisma } from '../../utils/prisma';
 import { RssStatus } from '@prisma/client';
+import { normalizeActiveRssStatus } from '../../utils/news-pipeline/rss-status';
 
 // 1. Biztonságos importálás mind a kód, mind a JSON esetén
 import * as isoPackage from 'i18n-iso-countries';
@@ -109,6 +110,8 @@ function processJson(filePath: string, defaultStatus: RssStatus) {
     for (const item of locObj.content) {
       const frontUrl = normalizeUrl(item.front_page_url);
       if (!frontUrl) continue;
+      const rssFeedUrl = cleanField(item.rss_feed_url);
+      const finalStatus = normalizeActiveRssStatus(defaultStatus, rssFeedUrl);
 
       sources.push({
         frontPageUrl: frontUrl,
@@ -124,8 +127,8 @@ function processJson(filePath: string, defaultStatus: RssStatus) {
         contactName: cleanField(item.name),
         contactEmail: cleanField(item.email),
         contactPhone: cleanField(item.phone),
-        rssFeedUrl: cleanField(item.rss_feed_url),
-        rssStatus: defaultStatus,
+        rssFeedUrl,
+        rssStatus: finalStatus,
       });
     }
   }

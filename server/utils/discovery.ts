@@ -2,6 +2,7 @@
 import { prisma } from "./prisma";
 import { RssStatus } from "@prisma/client";
 import { safeFetch, SSRFError } from "./ssrf-guard";
+import { normalizeActiveRssStatus } from "./news-pipeline/rss-status";
 
 // ANCHOR: WAF & Paywall Trap Signatures (Ugyanaz a lista)
 const WAF_AND_PAYWALL_PATTERNS = [
@@ -176,7 +177,7 @@ export async function executeTargetedDiscovery(
       await prisma.newsSource.update({
         where: { id: source.id },
         data: {
-          rssStatus: newStatus,
+          rssStatus: normalizeActiveRssStatus(newStatus, finalFeedUrl),
           rssFeedUrl: finalFeedUrl,
         },
       });

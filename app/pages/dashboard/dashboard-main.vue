@@ -154,6 +154,29 @@
       class="px-4 space-y-2 max-w-2xl mx-auto pt-[90px]"
       @click="closeArticleInteractions"
     >
+      <div
+        v-if="!isLoading && articles.length === 0"
+        class="rounded-2xl border border-dashed border-outline-variant/40 bg-surface-container px-5 py-8 text-center"
+      >
+        <h2 class="font-headline text-base font-bold text-on-surface">
+          {{ $t("dashboard.empty.title") }}
+        </h2>
+        <p class="mt-2 text-sm text-on-surface-variant">
+          {{ $t("dashboard.empty.description") }}
+        </p>
+      </div>
+
+      <div
+        v-if="toast.show"
+        class="fixed bottom-4 left-1/2 z-[120] w-[min(92vw,28rem)] -translate-x-1/2 rounded-2xl border px-4 py-3 shadow-2xl backdrop-blur-md"
+        :class="toastClass"
+      >
+        <div class="flex items-start gap-3">
+          <span class="material-symbols-outlined text-[20px] mt-0.5">{{ toastIcon }}</span>
+          <p class="text-sm font-medium leading-snug">{{ toast.message }}</p>
+        </div>
+      </div>
+
       <NewsCard
         v-for="article in articles"
         :key="article.id"
@@ -186,6 +209,104 @@
         </div>
       </section>
 
+      <div
+        v-if="isDev"
+        class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4 space-y-4"
+      >
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Dev pipeline trigger
+              </h3>
+              <span
+                class="rounded-full border border-primary-container/30 bg-primary-container/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary-container"
+              >
+                Dev only
+              </span>
+            </div>
+            <p class="mt-1 text-xs text-on-surface-variant">
+              Manually run the news pipeline and refresh the feed.
+            </p>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            <button
+              @click="fixRssStatus"
+              :disabled="isFixingRssStatus"
+              class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm font-bold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ isFixingRssStatus ? "Fixing..." : "Fix RSS status" }}
+            </button>
+            <button
+              @click="runManualPipeline"
+              :disabled="isPipelineRunning"
+              class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ isPipelineRunning ? "Running..." : "Run pipeline" }}
+            </button>
+          </div>
+        </div>
+
+        <div class="border-t border-outline-variant/20 pt-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h4 class="font-headline text-sm font-bold text-on-surface">
+                Agent logs
+              </h4>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Recent backend pipeline activity.
+              </p>
+              <p class="mt-1 text-[11px] text-on-surface-variant">
+                {{ agentSourceCount }} user-linked source(s) currently eligible for pipeline runs.
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                @click="loadAgentLogs"
+                class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface"
+              >
+                Refresh logs
+              </button>
+              <button
+                @click="clearAgentLogs"
+                :disabled="isClearingLogs"
+                class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {{ isClearingLogs ? "Clearing..." : "Clear pipeline" }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="agentLogs.length === 0" class="mt-3 text-xs text-on-surface-variant">
+            No agent logs yet.
+          </div>
+
+          <div v-else class="mt-3 space-y-2 max-h-72 overflow-y-auto pr-1">
+            <div
+              v-for="log in agentLogs"
+              :key="log.id"
+              class="rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-2"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-xs font-bold text-on-surface">{{ log.status }}</span>
+                    <span v-if="log.sourceId" class="text-[10px] text-on-surface-variant">source: {{ log.sourceId }}</span>
+                  </div>
+                  <p class="mt-1 text-xs text-on-surface-variant line-clamp-2">
+                    {{ log.errorLog || "No details." }}
+                  </p>
+                </div>
+                <div class="text-right text-[10px] text-on-surface-variant shrink-0">
+                  <div>{{ formatLogTime(log.createdAt) }}</div>
+                  <div>{{ log.executionTimeMs }}ms</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <PaywallModal
         v-model="showPaywallModal"
         @browser="openInBrowser"
@@ -209,12 +330,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useAuthStore } from "~/stores/auth";
+import { useFeedStore } from "~/stores/feedStore";
 import { $api } from "~/utils/api";
 
 const { t } = useI18n();
 const authStore = useAuthStore();
+const feedStore = useFeedStore();
 
 const isUserFreeTier = computed(() => {
   return !authStore.user?.tier || authStore.user.tier === "FREE";
@@ -236,6 +359,7 @@ interface Article {
   id: number;
   title: string;
   source: string;
+  sourceUrl?: string;
   date: string;
   score: number;
   isPaywall: boolean;
@@ -258,88 +382,144 @@ const vClickOutside = {
   },
 };
 
-const articles = ref<Article[]>([
-  {
-    id: 1,
-    title: "Global Energy Shifts: Rise of Decentralized Power Grids",
-    source: "reuters.com",
-    date: "24 OCT 2023",
-    score: 9,
-    isPaywall: true,
-    tags: ["Energy Sector", "Infrastructure"],
-    reasoning:
-      "Prioritized based on your interest in decentralized infrastructure trends and historical engagement levels.",
-    signals: [
-      "Significant shift in renewable energy policy in the EU.",
-      "New funding for decentralized grid infrastructure projects.",
-      "Potential for cross-border energy trading protocols.",
-      "Increased investment in smart grid technologies by major utilities.",
-      "Emergence of community energy projects in key regions.",
-    ],
-  },
-  {
-    id: 2,
-    title: "The Evolution of AI Agents in Decentralized Markets",
-    source: "wired.com",
-    date: "22 OCT 2023",
-    score: 9,
-    isPaywall: false,
-    tags: ["React Nuance"],
-    reasoning:
-      "Direct relevance to your current project on autonomous sift protocols and agent logic.",
-    signals: [
-      "Emergence of highly autonomous negotiation agents.",
-      "Integration of LLMs in financial smart contracts.",
-    ],
-  },
-  {
-    id: 3,
-    title: "Major Tech Hub Approved for Bandon with NuSift Protocol",
-    source: "bandonnews.ie",
-    date: "24 OCT 2023",
-    score: 8,
-    isPaywall: true,
-    tags: ["Bandon Market node", "Infrastructure"],
-    reasoning:
-      "High correlation with Bandon Market protocol updates and infrastructure development in followed tech nodes.",
-    signals: [
-      "First major tech hub approval in West Cork region.",
-      "NuSift protocol selected for secure data exchange.",
-      "Impact on local tech node infrastructure development.",
-    ],
-  },
-  {
-    id: 4,
-    title: "Quantum Computing Breakthrough in Atom Trapping",
-    source: "science-nature.org",
-    date: "23 OCT 2023",
-    score: 7,
-    isPaywall: false,
-    tags: ["Quantum Tech"],
-    reasoning:
-      "Significant breakthrough in Physics nodes that precede major shifts in your technical stack.",
-    signals: [
-      "Breakthrough in stable atom trapping at room temperature.",
-      "Potential to scale quantum processors for niche industrial use.",
-    ],
-  },
-  {
-    id: 5,
-    title: "New Privacy Regulations Proposed for EU Tech Nodes",
-    source: "techcrunch.com",
-    date: "23 OCT 2023",
-    score: 6,
-    isPaywall: true,
-    tags: ["EU Compliance"],
-    reasoning:
-      "Impacts your data compliance modules and cross-border protocol developments.",
-    signals: [
-      "Stricter data residency requirements proposed for 2024.",
-      "Potential conflict with current cross-border data transfer protocols.",
-      "EU compliance framework update expected in Q1.",
-    ],
-  },
-]);
+const articles = computed(() => feedStore.articles as Article[]);
+const isLoading = computed(() => feedStore.isLoading);
+const isPipelineRunning = ref(false);
+const isFixingRssStatus = ref(false);
+const isDev = import.meta.env.DEV;
+const isClearingLogs = ref(false);
+const agentLogs = ref<Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
+const agentSourceCount = ref(0);
+const toast = ref({ show: false, message: "", type: "success" as "success" | "error" });
+
+const toastClass = computed(() =>
+  toast.value.type === "success"
+    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
+    : "border-rose-500/30 bg-rose-500/10 text-rose-100",
+);
+
+const toastIcon = computed(() => (toast.value.type === "success" ? "check_circle" : "error"));
+
+onMounted(() => {
+  if (feedStore.articles.length === 0) {
+    feedStore.fetchFeed();
+  }
+  if (isDev) {
+    void refreshDevPanel();
+  }
+});
+
+const formatLogTime = (value: string) =>
+  new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+const loadAgentLogs = async () => {
+  if (!isDev) return;
+  const response = await $api<{ ok: boolean; logs: Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }> }>("/api/dev/agent-logs");
+  agentLogs.value = response.logs || [];
+};
+
+const loadEligibleSourceCount = async () => {
+  if (!isDev) return;
+  const response = await $api<{ ok: boolean; count: number }>("/api/dev/agent-source-count");
+  agentSourceCount.value = response.count || 0;
+};
+
+const refreshDevPanel = async () => {
+  await Promise.all([loadAgentLogs(), loadEligibleSourceCount()]);
+};
+
+const fixRssStatus = async () => {
+  if (isFixingRssStatus.value) return;
+
+  isFixingRssStatus.value = true;
+  try {
+    const response = await $api<{ ok: boolean; fixedCount: number }>("/api/dev/fix-rss-status", {
+      method: "POST",
+    });
+    toast.value = {
+      show: true,
+      message: `Fixed ${response.fixedCount ?? 0} source RSS status record(s).`,
+      type: "success",
+    };
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 3000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Failed to fix RSS status records.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 4500);
+  } finally {
+    isFixingRssStatus.value = false;
+  }
+};
+
+const clearAgentLogs = async () => {
+  if (!isDev || isClearingLogs.value) return;
+  isClearingLogs.value = true;
+  try {
+    const response = await $api<{ ok: boolean; deletedCount: number; articleCount?: number }>("/api/dev/agent-logs", {
+      method: "DELETE",
+    });
+    agentLogs.value = [];
+    await feedStore.fetchFeed();
+    toast.value = {
+      show: true,
+      message: `Cleared ${response.articleCount ?? 0} article(s) and ${response.deletedCount ?? 0} agent log(s).`,
+      type: "success",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 3000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Failed to clear logs.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 4500);
+  } finally {
+    isClearingLogs.value = false;
+  }
+};
+
+const runManualPipeline = async () => {
+  if (isPipelineRunning.value) return;
+
+  isPipelineRunning.value = true;
+  try {
+    const response = await $api<{ ok: boolean; result?: any }>("/api/dev/run-news-pipeline", {
+      method: "POST",
+    });
+    toast.value = {
+      show: true,
+      message: `Pipeline finished: ${response.result?.inserted ?? 0} inserted, ${response.result?.skipped ?? 0} skipped, ${response.result?.failed ?? 0} failed.`,
+      type: "success",
+    };
+    await feedStore.fetchFeed();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 3500);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Pipeline run failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 4500);
+  } finally {
+    isPipelineRunning.value = false;
+  }
+};
 
 const dateOptions = [
   { key: "today", value: "Today", isPro: false },

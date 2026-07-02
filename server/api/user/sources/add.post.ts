@@ -2,6 +2,7 @@
 import { prisma } from "../../../utils/prisma";
 import { requireUserId } from "../../../utils/require-user";
 import { executeTargetedDiscovery } from "../../../utils/discovery";
+import { runNewsPipeline } from "../../../utils/news-pipeline/orchestrator";
 
 export default defineEventHandler(async (event) => {
   // 1. Authentication (session-guard validates tokenVersion)
@@ -21,6 +22,7 @@ export default defineEventHandler(async (event) => {
   const finalLanguage = sourceLanguage || 'en';
 
   try {
+    const targetedSourceIds = new Set<string>();
     // 2. STORAGE LIMIT (Max 50 total)
     const totalCount =
       (await prisma.userSourceSubscription.count({ where: { userId } })) +
@@ -147,6 +149,9 @@ export default defineEventHandler(async (event) => {
         },
         update: { isActive: shouldBeActive },
       });
+      if (shouldBeActive && existingCategory.newsSource?.id) {
+        targetedSourceIds.add(existingCategory.newsSource.id);
+      }
     } else if (existingRoot) {
       console.log(`[Source-Manager] Linked to existing ROOT source: ${existingRoot.id}`);
 
@@ -155,6 +160,9 @@ export default defineEventHandler(async (event) => {
         create: { userId, sourceId: existingRoot.id, isActive: shouldBeActive },
         update: { isActive: shouldBeActive },
       });
+      if (shouldBeActive) {
+        targetedSourceIds.add(existingRoot.id);
+      }
     } else {
       // ESET 3: Teljesen ismeretlen link.
       const pureRootUrl = `${urlObj.protocol}//${urlObj.hostname}`;
@@ -172,6 +180,9 @@ export default defineEventHandler(async (event) => {
         update: {} 
       });
       console.log(`[Source-Manager] Created completely new ROOT: ${newRoot.frontPageUrl}`);
+      if (shouldBeActive) {
+        targetedSourceIds.add(newRoot.id);
+      }
 
       if (path === "/" || path === "") {
         await prisma.userSourceSubscription.upsert({
@@ -198,10 +209,19 @@ export default defineEventHandler(async (event) => {
         console.log(`[Source-Manager] Created completely new CATEGORY: ${newCat.pathUrl}`);
       }
 
-      console.log(`[Source-Manager] Dispatching background agent for new source...`);
+    }
+
+    if (targetedSourceIds.size > 0) {
+      const sourceIds = [...targetedSourceIds];
+      console.log(`[Source-Manager] Dispatching background agent for ${sourceIds.length} source(s)...`);
       event.waitUntil(
-        executeTargetedDiscovery([newRoot.id]).catch((err) =>
+        executeTargetedDiscovery(sourceIds).catch((err) =>
           console.error("[Source-Manager] Discovery failed:", err),
+        ),
+      );
+      event.waitUntil(
+        runNewsPipeline(sourceIds).catch((err) =>
+          console.error("[Source-Manager] Ingest pipeline failed:", err),
         ),
       );
     }
