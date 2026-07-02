@@ -231,6 +231,13 @@
           </div>
           <div class="flex shrink-0 items-center gap-2">
             <button
+              @click="reimportRss"
+              :disabled="isImportingRss"
+              class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-2 text-sm font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ isImportingRss ? "Importing..." : "Reimport RSS" }}
+            </button>
+            <button
               @click="fixRssStatus"
               :disabled="isFixingRssStatus"
               class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm font-bold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -258,6 +265,9 @@
               </p>
               <p class="mt-1 text-[11px] text-on-surface-variant">
                 {{ agentSourceCount }} user-linked source(s) currently eligible for pipeline runs.
+              </p>
+              <p v-if="rssReimportProgressText" class="mt-1 text-[11px] font-medium text-sky-200">
+                {{ rssReimportProgressText }}
               </p>
             </div>
             <div class="flex items-center gap-2">
@@ -386,6 +396,7 @@ const articles = computed(() => feedStore.articles as Article[]);
 const isLoading = computed(() => feedStore.isLoading);
 const isPipelineRunning = ref(false);
 const isFixingRssStatus = ref(false);
+const isImportingRss = ref(false);
 const isDev = import.meta.env.DEV;
 const isClearingLogs = ref(false);
 const agentLogs = ref<Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
@@ -399,6 +410,39 @@ const toastClass = computed(() =>
 );
 
 const toastIcon = computed(() => (toast.value.type === "success" ? "check_circle" : "error"));
+let devPanelPollTimer: ReturnType<typeof window.setInterval> | null = null;
+const DEV_PANEL_POLL_MS = 10000;
+
+const rssReimportProgressText = computed(() => {
+  const currentLog = agentLogs.value.find((log) =>
+    ["RSS_REIMPORT_STARTED", "RSS_REIMPORT_PROGRESS", "RSS_REIMPORT_FINISHED"].includes(log.status),
+  );
+
+  if (!currentLog) return "";
+
+  if (currentLog.status === "RSS_REIMPORT_FINISHED") {
+    return `Last reimport: ${currentLog.errorLog || "completed."}`;
+  }
+
+  if (currentLog.status === "RSS_REIMPORT_STARTED") {
+    return currentLog.errorLog || "RSS reimport started.";
+  }
+
+  return currentLog.errorLog || "";
+});
+
+const startDevPanelPolling = () => {
+  if (!import.meta.client || devPanelPollTimer) return;
+  devPanelPollTimer = window.setInterval(() => {
+    void refreshDevPanel();
+  }, DEV_PANEL_POLL_MS);
+};
+
+const stopDevPanelPolling = () => {
+  if (!import.meta.client || !devPanelPollTimer) return;
+  window.clearInterval(devPanelPollTimer);
+  devPanelPollTimer = null;
+};
 
 onMounted(() => {
   if (feedStore.articles.length === 0) {
@@ -414,18 +458,32 @@ const formatLogTime = (value: string) =>
 
 const loadAgentLogs = async () => {
   if (!isDev) return;
-  const response = await $api<{ ok: boolean; logs: Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }> }>("/api/dev/agent-logs");
-  agentLogs.value = response.logs || [];
+  try {
+    const response = await $api<{ ok: boolean; logs: Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }> }>("/api/dev/agent-logs");
+    agentLogs.value = response.logs || [];
+  } catch (error: any) {
+    if (error?.response?.status === 429 || error?.status === 429) return;
+    throw error;
+  }
 };
 
 const loadEligibleSourceCount = async () => {
   if (!isDev) return;
-  const response = await $api<{ ok: boolean; count: number }>("/api/dev/agent-source-count");
-  agentSourceCount.value = response.count || 0;
+  try {
+    const response = await $api<{ ok: boolean; count: number }>("/api/dev/agent-source-count");
+    agentSourceCount.value = response.count || 0;
+  } catch (error: any) {
+    if (error?.response?.status === 429 || error?.status === 429) return;
+    throw error;
+  }
 };
 
 const refreshDevPanel = async () => {
-  await Promise.all([loadAgentLogs(), loadEligibleSourceCount()]);
+  try {
+    await Promise.all([loadAgentLogs(), loadEligibleSourceCount()]);
+  } catch (error) {
+    console.error("Failed to refresh dev panel:", error);
+  }
 };
 
 const fixRssStatus = async () => {
@@ -456,6 +514,51 @@ const fixRssStatus = async () => {
     }, 4500);
   } finally {
     isFixingRssStatus.value = false;
+  }
+};
+
+const reimportRss = async () => {
+  if (isImportingRss.value) return;
+
+  isImportingRss.value = true;
+  startDevPanelPolling();
+  try {
+    const response = await $api<{
+      success: boolean;
+      message: string;
+      created: number;
+      updated: number;
+      patched: number;
+      verifiedActive: number;
+      verifiedFailed: number;
+      verifiedNoRss: number;
+    }>("/api/dev/import-rss", {
+      method: "GET",
+    });
+    toast.value = {
+      show: true,
+      message:
+        response.message ||
+        `RSS import completed. Created ${response.created}, patched ${response.patched}, active ${response.verifiedActive}.`,
+      type: "success",
+    };
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "RSS import failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isImportingRss.value = false;
+    await refreshDevPanel();
+    stopDevPanelPolling();
   }
 };
 
@@ -494,6 +597,7 @@ const runManualPipeline = async () => {
   if (isPipelineRunning.value) return;
 
   isPipelineRunning.value = true;
+  startDevPanelPolling();
   try {
     const response = await $api<{ ok: boolean; result?: any }>("/api/dev/run-news-pipeline", {
       method: "POST",
@@ -518,6 +622,8 @@ const runManualPipeline = async () => {
     }, 4500);
   } finally {
     isPipelineRunning.value = false;
+    await refreshDevPanel();
+    stopDevPanelPolling();
   }
 };
 
