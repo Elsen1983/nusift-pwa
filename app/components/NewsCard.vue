@@ -34,7 +34,7 @@
       <div class="flex items-center gap-3">
         <span
           class="font-label text-[10px] uppercase tracking-widest text-on-surface-variant"
-          >{{ article.date }}</span
+          >{{ formattedDate }}</span
         >
         <!-- Rating Badge -->
         <div
@@ -214,8 +214,12 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue";
+import { useI18n } from "vue-i18n";
+import { formatDateByLocale } from "~/utils/date";
+
 // Define what data the parent needs to pass in
-defineProps<{
+const props = defineProps<{
   article: any;
   activeActionMenu: number | null;
   activeOverlay: number | null;
@@ -223,4 +227,10 @@ defineProps<{
 
 // Define what events this component can send back to the parent
 defineEmits(["readNow", "toggleMenu", "openOverlay", "openRating"]);
+
+const { locale } = useI18n();
+
+const formattedDate = computed(() =>
+  formatDateByLocale(props.article?.date || "", locale.value),
+);
 </script>

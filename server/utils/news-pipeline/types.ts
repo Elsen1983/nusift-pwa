@@ -2,6 +2,7 @@ export type ProcessingStatus = "PENDING" | "SUCCESS" | "SKIPPED" | "FAILED";
 
 export interface IngestCandidate {
   sourceId: string;
+  categoryId?: string | null;
   sourceUrl: string;
   canonicalUrl: string;
   rssGuid?: string | null;

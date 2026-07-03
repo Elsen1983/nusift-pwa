@@ -212,7 +212,31 @@
         v-if="isDev"
         class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4 space-y-4"
       >
-        <div class="flex items-start justify-between gap-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            @click="reimportRss"
+            :disabled="isImportingRss"
+            class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-2 text-sm font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ isImportingRss ? "Importing..." : "Reimport RSS" }}
+          </button>
+          <button
+            @click="fixRssStatus"
+            :disabled="isFixingRssStatus"
+            class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm font-bold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ isFixingRssStatus ? "Fixing..." : "Fix RSS status" }}
+          </button>
+          <button
+            @click="backfillArticleCategories"
+            :disabled="isBackfillingArticleCategories"
+            class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm font-bold text-emerald-100 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ isBackfillingArticleCategories ? "Backfilling..." : "Backfill article categories" }}
+          </button>
+        </div>
+
+        <div class="flex flex-col gap-3 rounded-xl border border-outline-variant/20 bg-surface-container px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
               <h3 class="font-headline text-sm font-bold text-on-surface">
@@ -228,21 +252,7 @@
               Manually run the news pipeline and refresh the feed.
             </p>
           </div>
-          <div class="flex shrink-0 items-center gap-2">
-            <button
-              @click="reimportRss"
-              :disabled="isImportingRss"
-              class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-2 text-sm font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {{ isImportingRss ? "Importing..." : "Reimport RSS" }}
-            </button>
-            <button
-              @click="fixRssStatus"
-              :disabled="isFixingRssStatus"
-              class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm font-bold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {{ isFixingRssStatus ? "Fixing..." : "Fix RSS status" }}
-            </button>
+          <div class="flex items-center">
             <button
               @click="runManualPipeline"
               :disabled="isPipelineRunning"
@@ -263,7 +273,7 @@
                 Recent backend pipeline activity.
               </p>
               <p class="mt-1 text-[11px] text-on-surface-variant">
-                {{ agentSourceCount }} user-linked source(s) currently eligible for pipeline runs.
+                {{ agentSourceCount }} subscribed source(s) currently eligible for pipeline runs.
               </p>
               <p v-if="rssReimportProgressText" class="mt-1 text-[11px] font-medium text-sky-200">
                 {{ rssReimportProgressText }}
@@ -398,6 +408,7 @@ const currentPage = ref(1);
 const isPipelineRunning = ref(false);
 const isFixingRssStatus = ref(false);
 const isImportingRss = ref(false);
+const isBackfillingArticleCategories = ref(false);
 const isDev = import.meta.env.DEV;
 const isClearingLogs = ref(false);
 const agentLogs = ref<Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
@@ -584,6 +595,44 @@ const reimportRss = async () => {
     }, 5000);
   } finally {
     isImportingRss.value = false;
+    await refreshDevPanel();
+    stopDevPanelPolling();
+  }
+};
+
+const backfillArticleCategories = async () => {
+  if (isBackfillingArticleCategories.value) return;
+
+  isBackfillingArticleCategories.value = true;
+  startDevPanelPolling();
+  try {
+    const response = await $api<{ ok: boolean; scanned: number; updated: number; matchedSources: number }>(
+      "/api/dev/backfill-article-categories",
+      {
+        method: "POST",
+      },
+    );
+    toast.value = {
+      show: true,
+      message: `Backfill finished: ${response.updated ?? 0} article(s) updated from ${response.scanned ?? 0} scanned across ${response.matchedSources ?? 0} source(s).`,
+      type: "success",
+    };
+    await feedStore.fetchFeed();
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 4500);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Article category backfill failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isBackfillingArticleCategories.value = false;
     await refreshDevPanel();
     stopDevPanelPolling();
   }

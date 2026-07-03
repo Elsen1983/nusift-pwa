@@ -137,15 +137,33 @@ const extractPageMetadata = (html: string) => {
     html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
     html.match(/<meta[^>]+name=["']twitter:description["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
     "";
+  const publishedAtRaw =
+    html.match(/<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']article:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+property=["']og:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']pubdate["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']publishdate["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<time[^>]+datetime=["']([^"']+)["']/i)?.[1] ||
+    "";
   return {
     title: stripHtml(title),
     description: stripHtml(description),
+    publishedAt: toDate(publishedAtRaw),
   };
+};
+
+const MAX_ARTICLE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export const isWithinFreshnessWindow = (publishedAt: Date | null, now = new Date()) => {
+  if (!publishedAt) return false;
+  const diff = now.getTime() - publishedAt.getTime();
+  return diff >= 0 && diff <= MAX_ARTICLE_AGE_MS;
 };
 
 const extractHtmlCandidates = async (html: string, sourceUrl: string, sourceId: string) => {
   const candidates: IngestCandidate[] = [];
   const seen = new Set<string>();
+  const now = new Date();
 
   const linkMatches = [...html.matchAll(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
   const links = linkMatches
@@ -193,6 +211,7 @@ const extractHtmlCandidates = async (html: string, sourceUrl: string, sourceId: 
     if (!canonicalUrl || isBlockedFallbackPath(canonicalUrl)) continue;
     const itemTitle = meta.title || canonicalUrl;
     if (!itemTitle || itemTitle.length < 12) continue;
+    if (!isWithinFreshnessWindow(meta.publishedAt, now)) continue;
     const bodyText = meta.description || stripHtml(detailHtml).slice(0, 600);
     const contentHash = await hashText([itemTitle, canonicalUrl, bodyText].filter(Boolean).join("|"));
 
@@ -202,7 +221,7 @@ const extractHtmlCandidates = async (html: string, sourceUrl: string, sourceId: 
       canonicalUrl,
       rssGuid: null,
       title: itemTitle,
-      publishedAt: null,
+      publishedAt: meta.publishedAt,
       bodyText: bodyText || null,
       contentHash,
       isPaywall: /paywall|subscribe|premium/i.test(html),
@@ -221,6 +240,85 @@ const toDate = (value: string) => {
 };
 
 const canonicalFromLink = (link: string) => normalizeUrl(link);
+
+type SourceCategoryMatcher = {
+  id: string;
+  normalizedPath: string;
+};
+
+const normalizePathForCategoryMatch = (url: string) => {
+  try {
+    const pathname = new URL(url).pathname.replace(/\/+$/, "") || "/";
+    return pathname.toLowerCase();
+  } catch {
+    return "/";
+  }
+};
+
+export const matchCategoryIdForUrl = (
+  canonicalUrl: string,
+  categories: SourceCategoryMatcher[],
+) => {
+  const articlePath = normalizePathForCategoryMatch(canonicalUrl);
+  const orderedCategories = [...categories].sort(
+    (a, b) => b.normalizedPath.length - a.normalizedPath.length,
+  );
+
+  for (const category of orderedCategories) {
+    if (category.normalizedPath === "/") continue;
+    if (
+      articlePath === category.normalizedPath ||
+      articlePath.startsWith(`${category.normalizedPath}/`)
+    ) {
+      return category.id;
+    }
+  }
+
+  return null;
+};
+
+const attachCategoryIds = async (candidates: IngestCandidate[]) => {
+  const sourceIds = [...new Set(candidates.map((candidate) => candidate.sourceId))];
+  if (sourceIds.length === 0) return candidates;
+
+  const categories = await prisma.sourceCategory.findMany({
+    where: {
+      newsSourceId: { in: sourceIds },
+    },
+    select: {
+      id: true,
+      newsSourceId: true,
+      pathUrl: true,
+    },
+  });
+
+  const categoriesBySource = new Map<string, SourceCategoryMatcher[]>();
+  for (const category of categories) {
+    const normalizedPath = normalizePathForCategoryMatch(category.pathUrl);
+    if (!normalizedPath || normalizedPath === "/") continue;
+
+    const existing = categoriesBySource.get(category.newsSourceId) || [];
+    existing.push({
+      id: category.id,
+      normalizedPath,
+    });
+    categoriesBySource.set(category.newsSourceId, existing);
+  }
+
+  for (const entry of categoriesBySource.values()) {
+    entry.sort((a, b) => b.normalizedPath.length - a.normalizedPath.length);
+  }
+
+  return candidates.map((candidate) => ({
+    ...candidate,
+    categoryId:
+      candidate.categoryId ||
+      matchCategoryIdForUrl(
+        candidate.canonicalUrl,
+        categoriesBySource.get(candidate.sourceId) || [],
+      ),
+  }));
+};
 
 const formatPrismaError = (error: any) => {
   if (!error) return "Unknown Prisma error";
@@ -315,6 +413,7 @@ export async function ingestSource(sourceId: string) {
 
     const candidates: IngestCandidate[] = [];
     const parsedFeed = parseFeedItems(xml);
+    const now = new Date();
 
     for (const item of parsedFeed.items) {
       const rawLink = item.link.trim();
@@ -329,6 +428,16 @@ export async function ingestSource(sourceId: string) {
       }
 
       const canonicalUrl = canonicalFromLink(rawLink);
+      const publishedAt = toDate(item.pubDate);
+      if (!isWithinFreshnessWindow(publishedAt, now)) {
+        await logAgentScan({
+          sourceId,
+          status: "ITEM_SKIPPED_STALE",
+          executionTimeMs: 0,
+          errorLog: `Skipped stale/undated item: ${item.title || canonicalUrl}. pubDate=${item.pubDate || "(missing)"}`,
+        });
+        continue;
+      }
       const title = stripHtml(item.title || canonicalUrl);
       const bodyText = stripHtml(item.description || "");
       const contentHash = await hashText(
@@ -341,7 +450,7 @@ export async function ingestSource(sourceId: string) {
         canonicalUrl,
         rssGuid: item.guid.trim() || null,
         title,
-        publishedAt: toDate(item.pubDate),
+        publishedAt,
         bodyText: bodyText || null,
         contentHash,
         isPaywall: /paywall|subscribe|premium/i.test(xml),
@@ -407,7 +516,7 @@ export async function ingestSource(sourceId: string) {
       errorLog: `Prepared ${candidates.length} candidate(s).`,
     });
 
-    return { sourceId, candidates, failed: 0 };
+    return { sourceId, candidates: await attachCategoryIds(candidates), failed: 0 };
   } catch (error: any) {
     const isSecurityError = error instanceof SSRFError;
     await logAgentScan({
@@ -436,7 +545,11 @@ export async function ingestSource(sourceId: string) {
               executionTimeMs: Date.now() - startedAt,
               errorLog: `Security/RSS path failed, HTML fallback produced ${htmlCandidates.length} candidate(s).`,
             });
-            return { sourceId, candidates: htmlCandidates, failed: 0 };
+            return {
+              sourceId,
+              candidates: await attachCategoryIds(htmlCandidates),
+              failed: 0,
+            };
           }
         }
       } catch (fallbackError: any) {
@@ -486,6 +599,7 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
         data: {
           title: candidate.title,
           sourceId: candidate.sourceId,
+          categoryId: candidate.categoryId,
           sourceUrl: candidate.sourceUrl,
           canonicalUrl: candidate.canonicalUrl,
           rssGuid: candidate.rssGuid,
