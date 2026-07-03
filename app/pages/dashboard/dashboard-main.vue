@@ -4,7 +4,7 @@
     <div
       class="fixed top-[60px] inset-x-0 mx-auto w-full max-w-2xl bg-surface/95 backdrop-blur-md shadow-sm z-[90] border-b border-outline-variant/30"
     >
-      <div class="px-4 py-3 flex gap-3 flex-row relative">
+      <div class="px-4 py-3 flex gap-3 flex-col relative">
         <div class="flex items-end gap-3 w-full">
           <div
             class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
@@ -124,6 +124,67 @@
               </div>
             </div>
           </div>
+        </div>
+
+        <div class="flex items-end gap-3 w-full">
+          <div
+            class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
+            v-click-outside="() => (isSourceDropdownOpen = false)"
+          >
+            <span
+              class="font-label text-[10px] uppercase tracking-wider font-bold text-on-surface-variant"
+              >{{ $t("dashboard.header.sources_label") }}</span
+            >
+            <div
+              @click="toggleSourceDropdown"
+              class="relative flex justify-between items-center bg-surface-container-highest px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors cursor-pointer text-xs h-[36px] border border-solid border-primary-container/30 outline outline-1 outline-primary-container/20"
+            >
+              <div class="flex flex-col w-full h-full justify-center min-w-0">
+                <div class="flex justify-between items-center w-full min-w-0">
+                  <span class="font-label font-medium text-on-surface-variant truncate">
+                    {{
+                      selectedSources.length > 0
+                        ? localizedSelectedSources
+                        : $t("dashboard.header.all_sources")
+                    }}
+                  </span>
+                  <span
+                    class="material-symbols-outlined text-[18px] text-primary-container flex-shrink-0 ml-2"
+                    >expand_more</span
+                  >
+                </div>
+              </div>
+            </div>
+            <div
+              v-show="isSourceDropdownOpen"
+              class="absolute top-full mt-1 left-0 w-full z-[60] shadow-xl bg-surface-container-highest border border-outline-variant/30 rounded-lg flex flex-col gap-y-2 p-3 pt-2 max-h-56 overflow-y-auto"
+            >
+              <div
+                @click="selectSource('All Sources')"
+                :class="[
+                  'text-[13px] font-bold hover:text-primary-container transition-colors py-0.5 cursor-pointer',
+                  selectedSources.length === 0
+                    ? 'text-primary-container'
+                    : 'text-on-surface-variant/100',
+                ]"
+              >
+                {{ $t("dashboard.header.all_sources") }}
+              </div>
+              <div
+                v-for="source in availableSources"
+                :key="source.id"
+                @click="selectSource(source.id)"
+                :class="[
+                  'text-[13px] font-bold hover:text-primary-container transition-colors py-0.5 cursor-pointer',
+                  selectedSources.includes(source.id)
+                    ? 'text-primary-container'
+                    : 'text-on-surface-variant/90',
+                ]"
+              >
+                {{ source.name }}
+              </div>
+            </div>
+          </div>
 
           <div class="flex-shrink-0 flex items-center justify-center">
             <!-- REFACTORED: Removed hardcoded shadow and #00E5FF, injected CSS variables -->
@@ -151,11 +212,11 @@
     </div>
 
     <main
-      class="px-4 space-y-2 max-w-2xl mx-auto pt-[90px]"
+      class="px-4 space-y-2 max-w-2xl mx-auto pt-[165px]"
       @click="closeArticleInteractions"
     >
       <div
-        v-if="!isLoading && articles.length === 0"
+        v-if="!isLoading && filteredArticles.length === 0"
         class="rounded-2xl border border-dashed border-outline-variant/40 bg-surface-container px-5 py-8 text-center"
       >
         <h2 class="font-headline text-base font-bold text-on-surface">
@@ -177,18 +238,20 @@
         </div>
       </div>
 
-      <NewsCard
-        v-for="article in paginatedArticles"
-        :key="article.id"
-        :article="article"
-        :activeActionMenu="activeActionMenu"
-        :activeOverlay="activeOverlay"
-        @readNow="handleReadNow"
-        @toggleMenu="toggleActionMenu"
-        @openOverlay="openOverlay"
-        @openRating="openRatingModal"
-        style="margin-bottom: 0.75rem !important;"
-      />
+      <div :class="isRefreshing ? 'pointer-events-none opacity-60' : ''">
+        <NewsCard
+          v-for="article in paginatedArticles"
+          :key="article.id"
+          :article="article"
+          :activeActionMenu="activeActionMenu"
+          :activeOverlay="activeOverlay"
+          @readNow="handleReadNow"
+          @toggleMenu="toggleActionMenu"
+          @openOverlay="openOverlay"
+          @openRating="openRatingModal"
+          style="margin-bottom: 0.75rem !important;"
+        />
+      </div>
 
       <section v-if="totalPages > 1" class="flex justify-center items-center gap-2 py-4">
         <div class="flex items-center gap-3 text-xs font-medium">
@@ -379,12 +442,21 @@ interface Article {
   title: string;
   source: string;
   sourceUrl?: string;
+  canonicalUrl?: string;
+  categoryPathUrl?: string | null;
   date: string;
   score: number;
   isPaywall: boolean;
   tags: string[];
   reasoning: string;
   signals: string[];
+}
+
+interface SourceFilterOption {
+  id: string;
+  type: "ROOT" | "CATEGORY";
+  url: string;
+  name: string;
 }
 
 const vClickOutside = {
@@ -413,6 +485,7 @@ const isDev = import.meta.env.DEV;
 const isClearingLogs = ref(false);
 const agentLogs = ref<Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
 const agentSourceCount = ref(0);
+const availableSources = ref<SourceFilterOption[]>([]);
 const toast = ref({ show: false, message: "", type: "success" as "success" | "error" });
 
 const toastClass = computed(() =>
@@ -422,7 +495,7 @@ const toastClass = computed(() =>
 );
 
 const toastIcon = computed(() => (toast.value.type === "success" ? "check_circle" : "error"));
-let devPanelPollTimer: ReturnType<typeof window.setInterval> | null = null;
+let devPanelPollTimer: number | null = null;
 const DEV_PANEL_POLL_MS = 10000;
 
 const rssReimportProgressText = computed(() => {
@@ -460,6 +533,7 @@ onMounted(() => {
   if (feedStore.articles.length === 0) {
     feedStore.fetchFeed();
   }
+  void loadAvailableSources();
   if (isDev) {
     void refreshDevPanel();
   }
@@ -498,13 +572,69 @@ const refreshDevPanel = async () => {
   }
 };
 
+const normalizeFilterUrl = (value?: string | null) =>
+  (value || "").replace(/\/+$/, "").toLowerCase();
+
+const matchesAppliedDateFilter = (article: Article) => {
+  const articleDate = new Date(article.date);
+  if (Number.isNaN(articleDate.getTime())) return false;
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffMs = now.getTime() - articleDate.getTime();
+
+  switch (appliedSelectedDateKey.value) {
+    case "today":
+      return articleDate >= startOfToday;
+    case "last_48h":
+      return diffMs <= 48 * 60 * 60 * 1000;
+    case "last_1w":
+      return diffMs <= 7 * 24 * 60 * 60 * 1000;
+    case "last_2w":
+      return diffMs <= 14 * 24 * 60 * 60 * 1000;
+    default:
+      return true;
+  }
+};
+
+const matchesAppliedCategoryFilter = (article: Article) => {
+  if (appliedSelectedCategories.value.length === 0) return true;
+  return article.tags.some((tag) => appliedSelectedCategories.value.includes(tag));
+};
+
+const matchesAppliedSourceFilter = (article: Article) => {
+  if (appliedSelectedSources.value.length === 0) return true;
+
+  const articleSourceUrl = normalizeFilterUrl(article.sourceUrl);
+  const articleCategoryPathUrl = normalizeFilterUrl(article.categoryPathUrl);
+
+  return appliedSelectedSources.value.some((selectedSourceId) => {
+    const selectedSource = availableSources.value.find((source) => source.id === selectedSourceId);
+    if (!selectedSource) return false;
+
+    const selectedUrl = normalizeFilterUrl(selectedSource.url);
+    return selectedSource.type === "CATEGORY"
+      ? articleCategoryPathUrl === selectedUrl
+      : articleSourceUrl === selectedUrl;
+  });
+};
+
+const filteredArticles = computed(() =>
+  articles.value.filter(
+    (article) =>
+      matchesAppliedDateFilter(article) &&
+      matchesAppliedCategoryFilter(article) &&
+      matchesAppliedSourceFilter(article),
+  ),
+);
+
 const totalPages = computed(() =>
-  Math.max(1, Math.ceil(articles.value.length / ARTICLES_PER_PAGE)),
+  Math.max(1, Math.ceil(filteredArticles.value.length / ARTICLES_PER_PAGE)),
 );
 
 const paginatedArticles = computed(() => {
   const start = (currentPage.value - 1) * ARTICLES_PER_PAGE;
-  return articles.value.slice(start, start + ARTICLES_PER_PAGE);
+  return filteredArticles.value.slice(start, start + ARTICLES_PER_PAGE);
 });
 
 const visiblePageNumbers = computed(() => {
@@ -710,6 +840,32 @@ const dateOptions = [
   { key: "last_2w", value: "Last 2 Week (Pro)", isPro: true },
 ];
 
+const loadAvailableSources = async () => {
+  try {
+    const response = await $api<{
+      success: boolean;
+      sources: Array<{
+        id: string;
+        type: "ROOT" | "CATEGORY";
+        url: string;
+        name: string;
+        isActive: boolean;
+      }>;
+    }>("/api/user/sources");
+
+    availableSources.value = (response.sources || [])
+      .filter((source) => source.isActive)
+      .map((source) => ({
+        id: source.id,
+        type: source.type,
+        url: source.url,
+        name: source.name,
+      }));
+  } catch (error) {
+    console.error("Failed to load available sources:", error);
+  }
+};
+
 const availableCategories = computed<{ key: string; value: string }[]>(() => {
   if (!authStore.user?.topInterests) return [];
 
@@ -730,12 +886,15 @@ const availableCategories = computed<{ key: string; value: string }[]>(() => {
 
 const isDateDropdownOpen = ref(false);
 const isCategoryDropdownOpen = ref(false);
+const isSourceDropdownOpen = ref(false);
 
 const currentSelectedDateKey = ref("today");
 const selectedCategories = ref<string[]>([]);
+const selectedSources = ref<string[]>([]);
 
 const appliedSelectedDateKey = ref("today");
 const appliedSelectedCategories = ref<string[]>([]);
+const appliedSelectedSources = ref<string[]>([]);
 const isRefreshing = ref(false);
 
 const localizedSelectedCategories = computed(() => {
@@ -751,23 +910,40 @@ const localizedSelectedCategories = computed(() => {
     .join(", ");
 });
 
+const localizedSelectedSources = computed(() =>
+  selectedSources.value
+    .map((id) => availableSources.value.find((source) => source.id === id)?.name || id)
+    .join(", "),
+);
+
 const hasPendingFilters = computed(() => {
   const dateChanged =
     currentSelectedDateKey.value !== appliedSelectedDateKey.value;
   const catChanged =
     JSON.stringify(selectedCategories.value) !==
     JSON.stringify(appliedSelectedCategories.value);
-  return dateChanged || catChanged;
+  const sourceChanged =
+    JSON.stringify(selectedSources.value) !==
+    JSON.stringify(appliedSelectedSources.value);
+  return dateChanged || catChanged || sourceChanged;
 });
 
 const toggleDateDropdown = () => {
   isDateDropdownOpen.value = !isDateDropdownOpen.value;
   isCategoryDropdownOpen.value = false;
+  isSourceDropdownOpen.value = false;
 };
 
 const toggleCategoryDropdown = () => {
   isCategoryDropdownOpen.value = !isCategoryDropdownOpen.value;
   isDateDropdownOpen.value = false;
+  isSourceDropdownOpen.value = false;
+};
+
+const toggleSourceDropdown = () => {
+  isSourceDropdownOpen.value = !isSourceDropdownOpen.value;
+  isDateDropdownOpen.value = false;
+  isCategoryDropdownOpen.value = false;
 };
 
 const selectDate = (key: string) => {
@@ -788,6 +964,19 @@ const selectCategory = (catValue: string) => {
   }
 };
 
+const selectSource = (sourceId: string) => {
+  if (sourceId === "All Sources") {
+    selectedSources.value = [];
+  } else {
+    const index = selectedSources.value.indexOf(sourceId);
+    if (index === -1) {
+      selectedSources.value.push(sourceId);
+    } else {
+      selectedSources.value.splice(index, 1);
+    }
+  }
+};
+
 const applyFilters = () => {
   if (!hasPendingFilters.value || isRefreshing.value) return;
 
@@ -795,6 +984,9 @@ const applyFilters = () => {
   setTimeout(() => {
     appliedSelectedDateKey.value = currentSelectedDateKey.value;
     appliedSelectedCategories.value = [...selectedCategories.value];
+    appliedSelectedSources.value = [...selectedSources.value];
+    currentPage.value = 1;
+    closeArticleInteractions();
     isRefreshing.value = false;
   }, 600);
 };
@@ -818,7 +1010,7 @@ const toggleActionMenu = (id: number) => {
 };
 
 watch(
-  () => articles.value.length,
+  () => filteredArticles.value.length,
   () => {
     if (currentPage.value > totalPages.value) {
       currentPage.value = totalPages.value;
@@ -871,7 +1063,11 @@ const openReaderFromModal = () => {
 };
 
 const openInBrowser = () => {
-  alert("Opening in system default browser...");
+  const targetUrl =
+    activeArticleData.value?.canonicalUrl || activeArticleData.value?.sourceUrl;
+  if (import.meta.client && targetUrl) {
+    window.open(targetUrl, "_blank", "noopener,noreferrer");
+  }
   showPaywallModal.value = false;
 };
 

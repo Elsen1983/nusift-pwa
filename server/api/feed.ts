@@ -51,6 +51,7 @@ export default defineEventHandler(async (event) => {
     select: {
       id: true,
       title: true,
+      canonicalUrl: true,
       date: true,
       score: true,
       isPaywall: true,
@@ -63,6 +64,11 @@ export default defineEventHandler(async (event) => {
           mediaName: true,
         },
       },
+      category: {
+        select: {
+          pathUrl: true,
+        },
+      },
     },
   });
 
@@ -71,6 +77,8 @@ export default defineEventHandler(async (event) => {
     title: article.title,
     source: article.source.mediaName || toSourceLabel(article.source.frontPageUrl),
     sourceUrl: article.source.frontPageUrl,
+    canonicalUrl: article.canonicalUrl || article.source.frontPageUrl,
+    categoryPathUrl: article.category?.pathUrl || null,
     date: article.date.toISOString(),
     score: article.score,
     isPaywall: article.isPaywall,

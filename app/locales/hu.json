@@ -293,7 +293,9 @@
         "header": {
             "date_label": "Dátum",
             "categories_label": "Kategóriák",
-            "all_categories": "Összes Kategória"
+            "all_categories": "Összes Kategória",
+            "sources_label": "Források",
+            "all_sources": "Összes Forrás"
         },
         "filters": {
             "dates": {

@@ -28,6 +28,15 @@
               <div class="font-body text-sm md:text-base text-on-surface-variant leading-relaxed space-y-5">{{ strippedContent }}</div>
             </template>
           </ClientOnly>
+
+          <div class="mt-8 flex justify-center">
+            <button
+              @click="$emit('browser')"
+              class="w-full max-w-[320px] py-3 px-4 bg-primary-container text-on-primary-container hover:brightness-110 font-bold rounded-xl text-[14px] uppercase tracking-wider shadow-md shadow-primary-container/20"
+            >
+              {{ $t('articleReaderModal.btn_browser') }}
+            </button>
+          </div>
           
           <div v-if="article.isPaywall" class="absolute bottom-0 left-0 w-full h-[400px] bg-gradient-to-t from-background via-background/95 to-transparent flex flex-col items-center justify-end pb-12 px-6 z-10">
             <div class="pointer-events-auto flex flex-col items-center w-full pb-12">

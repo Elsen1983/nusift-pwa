@@ -293,7 +293,9 @@
         "header": {
             "date_label": "Date",
             "categories_label": "Categories",
-            "all_categories": "All Categories"
+            "all_categories": "All Categories",
+            "sources_label": "Sources",
+            "all_sources": "All Sources"
         },
         "empty": {
             "title": "No articles yet",

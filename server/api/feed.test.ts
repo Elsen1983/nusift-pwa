@@ -53,6 +53,7 @@ describe("/api/feed", () => {
       {
         id: 11,
         title: "Scoped article",
+        canonicalUrl: "https://example.com/article-1",
         date: new Date("2026-07-02T12:00:00.000Z"),
         score: 7,
         isPaywall: false,
@@ -62,6 +63,9 @@ describe("/api/feed", () => {
         source: {
           frontPageUrl: "https://example.com",
           mediaName: "Example",
+        },
+        category: {
+          pathUrl: "https://example.com/section",
         },
       },
     ]);
@@ -103,6 +107,8 @@ describe("/api/feed", () => {
         title: "Scoped article",
         source: "Example",
         sourceUrl: "https://example.com",
+        canonicalUrl: "https://example.com/article-1",
+        categoryPathUrl: "https://example.com/section",
         date: "2026-07-02T12:00:00.000Z",
         score: 7,
         isPaywall: false,

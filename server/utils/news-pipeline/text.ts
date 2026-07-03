@@ -50,6 +50,7 @@ export const normalizeUrl = (rawUrl: string) => {
 export const stripHtml = (input: string) =>
   decodeHtmlEntities(
     input
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ")
