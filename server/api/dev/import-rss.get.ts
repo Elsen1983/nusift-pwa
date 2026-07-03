@@ -48,7 +48,7 @@ export default defineEventHandler(async (event) => {
     console.log(`[RSS_REIMPORT] started total=${allSources.length} concurrency=${concurrency}`);
 
     const processSource = async (source: (typeof allSources)[number]) => {
-      const verification = await verifyImportedRssFeed(source.rssFeedUrl);
+      const verification = await verifyImportedRssFeed(source.rssFeedUrl || null);
       const verifiedStatus = source.rssFeedUrl ? verification.status : RssStatus.NO_RSS_FOUND;
       const existing = await prisma.newsSource.findUnique({
         where: { frontPageUrl: source.frontPageUrl },

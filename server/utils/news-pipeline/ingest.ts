@@ -4,6 +4,7 @@ import { SSRFError } from "../ssrf-guard";
 import { logAgentScan } from "./log";
 import { hashText, normalizeUrl, stripHtml } from "./text";
 import type { IngestCandidate } from "./types";
+import { buildFeedUrlCandidates } from "./import-rss";
 
 const parseRssItems = (xml: string) => {
   const items: Array<Record<string, string>> = [];
@@ -62,6 +63,9 @@ const parseFeedItems = (xml: string) => {
   return { format: "unknown" as const, items: [] as Array<Record<string, string>> };
 };
 
+const getContentType = (response: Response) =>
+  response.headers.get("content-type") || "unknown";
+
 const getRootHost = (url: string) => {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -87,6 +91,38 @@ const isLikelyArticleLink = (href: string, sourceUrl: string) => {
     return false;
   } catch {
     return false;
+  }
+};
+
+const BLOCKED_HTML_FALLBACK_PATTERNS = [
+  /^\/?$/,
+  /^\/news\/?$/i,
+  /^\/sport\/?$/i,
+  /^\/business\/?$/i,
+  /^\/showbiz\/?$/i,
+  /^\/whatson\/?$/i,
+  /^\/all-about\//i,
+  /^\/tag\//i,
+  /^\/topics?\//i,
+  /^\/newsletter/i,
+  /^\/newsletters/i,
+  /^\/newsletter-preference/i,
+  /^\/preferences/i,
+  /^\/about/i,
+  /^\/contact/i,
+  /^\/privacy/i,
+  /^\/terms/i,
+  /^\/advertising/i,
+  /^\/sitemap/i,
+  /^\/auth/i,
+];
+
+const isBlockedFallbackPath = (href: string) => {
+  try {
+    const pathname = new URL(href).pathname.replace(/\/+$/, "") || "/";
+    return BLOCKED_HTML_FALLBACK_PATTERNS.some((pattern) => pattern.test(pathname));
+  } catch {
+    return true;
   }
 };
 
@@ -123,6 +159,8 @@ const extractHtmlCandidates = async (html: string, sourceUrl: string, sourceId: 
       }
     })
     .filter((href): href is string => Boolean(href))
+    .filter((href) => isLikelyArticleLink(href, sourceUrl))
+    .filter((href) => !isBlockedFallbackPath(href))
     .filter((href) => {
       try {
         const current = new URL(href);
@@ -152,7 +190,9 @@ const extractHtmlCandidates = async (html: string, sourceUrl: string, sourceId: 
     const detailHtml = await detailResponse.text();
     const meta = extractPageMetadata(detailHtml);
     const canonicalUrl = normalizeUrl(link);
+    if (!canonicalUrl || isBlockedFallbackPath(canonicalUrl)) continue;
     const itemTitle = meta.title || canonicalUrl;
+    if (!itemTitle || itemTitle.length < 12) continue;
     const bodyText = meta.description || stripHtml(detailHtml).slice(0, 600);
     const contentHash = await hashText([itemTitle, canonicalUrl, bodyText].filter(Boolean).join("|"));
 
@@ -220,43 +260,61 @@ export async function ingestSource(sourceId: string) {
     errorLog: `Fetching from ${source.rssFeedUrl || source.frontPageUrl} (rss=${Boolean(source.rssFeedUrl)})`,
   });
 
-  const feedUrl = source.rssFeedUrl || source.frontPageUrl;
+  const feedUrls = buildFeedUrlCandidates(source.rssFeedUrl || null, source.frontPageUrl);
   try {
-    const response = await safeFetch(feedUrl, {
-      headers: {
-        "User-Agent": "NuSift/1.0 Ingest-Agent",
-        Accept: "application/rss+xml, application/xml, text/xml, text/html",
-      },
-    });
+    let response: Response | null = null;
+    let xml = "";
+    let feedUrl = feedUrls[0] || source.frontPageUrl;
+    let lastFeedFetchError = "";
 
-    if (!response.ok) {
-      const statusLabel = response.status === 403 ? "SOURCE_FETCH_BLOCKED_403" : `SOURCE_FETCH_FAILED_${response.status}`;
-      await logAgentScan({
-        sourceId,
-        status: statusLabel,
-        executionTimeMs: Date.now() - startedAt,
-        errorLog: `Fetch failed for ${feedUrl} with HTTP ${response.status}.`,
-      });
-      if (response.status === 403 && source.rssFeedUrl) {
+    for (const candidateFeedUrl of feedUrls) {
+      try {
+        const candidateResponse = await safeFetch(candidateFeedUrl, {
+          headers: {
+            "User-Agent": "NuSift/1.0 Ingest-Agent",
+            Accept: "application/rss+xml, application/xml, text/xml, text/html",
+          },
+        });
+
+        if (!candidateResponse.ok) {
+          lastFeedFetchError = `Fetch failed for ${candidateFeedUrl} with HTTP ${candidateResponse.status}.`;
+          continue;
+        }
+
+        const candidateXml = await candidateResponse.text();
+        const parsedCandidateFeed = parseFeedItems(candidateXml);
         await logAgentScan({
           sourceId,
-          status: "RSS_BLOCKED_FALLBACK_HTML",
+          status: parsedCandidateFeed.format === "rss" ? "RSS_PARSED" : parsedCandidateFeed.format === "atom" ? "ATOM_PARSED" : "FEED_EMPTY",
           executionTimeMs: Date.now() - startedAt,
-          errorLog: `RSS blocked with HTTP 403 for ${source.rssFeedUrl}; trying HTML fallback at ${source.frontPageUrl}.`,
+          errorLog: `Parsed ${parsedCandidateFeed.items.length} ${parsedCandidateFeed.format.toUpperCase()} item(s) from ${candidateFeedUrl}. contentType=${getContentType(candidateResponse)} bodyLength=${candidateXml.length}.`,
         });
+
+        if (parsedCandidateFeed.items.length > 0) {
+          response = candidateResponse;
+          xml = candidateXml;
+          feedUrl = candidateFeedUrl;
+          break;
+        }
+
+        lastFeedFetchError = `No RSS/Atom items found for ${candidateFeedUrl}.`;
+      } catch (error: any) {
+        lastFeedFetchError = `${error?.message || String(error)} for ${candidateFeedUrl}`;
       }
     }
 
-    const xml = await response.text();
+    if (!response) {
+      await logAgentScan({
+        sourceId,
+        status: "FEED_EMPTY",
+        executionTimeMs: Date.now() - startedAt,
+        errorLog: lastFeedFetchError || `No usable feed response from ${feedUrls.join(", ")}.`,
+      });
+      throw new Error(lastFeedFetchError || "No usable feed response.");
+    }
+
     const candidates: IngestCandidate[] = [];
     const parsedFeed = parseFeedItems(xml);
-
-    await logAgentScan({
-      sourceId,
-      status: parsedFeed.format === "rss" ? "RSS_PARSED" : parsedFeed.format === "atom" ? "ATOM_PARSED" : "FEED_EMPTY",
-      executionTimeMs: Date.now() - startedAt,
-      errorLog: `Parsed ${parsedFeed.items.length} ${parsedFeed.format.toUpperCase()} item(s) from ${feedUrl}.`,
-    });
 
     for (const item of parsedFeed.items) {
       const rawLink = item.link.trim();

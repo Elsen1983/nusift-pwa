@@ -48,7 +48,6 @@ export default defineEventHandler(async (event) => {
       ].filter(Boolean) as any,
     },
     orderBy: [{ date: "desc" }, { id: "desc" }],
-    take: 50,
     select: {
       id: true,
       title: true,

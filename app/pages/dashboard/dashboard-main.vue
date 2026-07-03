@@ -178,7 +178,7 @@
       </div>
 
       <NewsCard
-        v-for="article in articles"
+        v-for="article in paginatedArticles"
         :key="article.id"
         :article="article"
         :activeActionMenu="activeActionMenu"
@@ -190,21 +190,20 @@
         style="margin-bottom: 0.75rem !important;"
       />
 
-      <section class="flex justify-center items-center gap-2 py-4">
+      <section v-if="totalPages > 1" class="flex justify-center items-center gap-2 py-4">
         <div class="flex items-center gap-3 text-xs font-medium">
-          <!-- REFACTORED: text-[#00E5FF] changed to text-primary-container -->
-          <button class="text-primary-container font-bold transition-colors">1</button>
-          <span class="text-outline-variant/30 text-[10px]">|</span>
           <button
-            class="text-on-surface-variant hover:text-primary-container transition-colors"
+            v-for="page in visiblePageNumbers"
+            :key="page"
+            class="transition-colors"
+            :class="
+              page === currentPage
+                ? 'text-primary-container font-bold'
+                : 'text-on-surface-variant hover:text-primary-container'
+            "
+            @click="setPage(page)"
           >
-            2
-          </button>
-          <span class="text-outline-variant/30 text-[10px]">|</span>
-          <button
-            class="text-on-surface-variant hover:text-primary-container transition-colors"
-          >
-            3
+            {{ page }}
           </button>
         </div>
       </section>
@@ -394,6 +393,8 @@ const vClickOutside = {
 
 const articles = computed(() => feedStore.articles as Article[]);
 const isLoading = computed(() => feedStore.isLoading);
+const ARTICLES_PER_PAGE = 10;
+const currentPage = ref(1);
 const isPipelineRunning = ref(false);
 const isFixingRssStatus = ref(false);
 const isImportingRss = ref(false);
@@ -483,6 +484,32 @@ const refreshDevPanel = async () => {
     await Promise.all([loadAgentLogs(), loadEligibleSourceCount()]);
   } catch (error) {
     console.error("Failed to refresh dev panel:", error);
+  }
+};
+
+const totalPages = computed(() =>
+  Math.max(1, Math.ceil(articles.value.length / ARTICLES_PER_PAGE)),
+);
+
+const paginatedArticles = computed(() => {
+  const start = (currentPage.value - 1) * ARTICLES_PER_PAGE;
+  return articles.value.slice(start, start + ARTICLES_PER_PAGE);
+});
+
+const visiblePageNumbers = computed(() => {
+  const pages: number[] = [];
+  for (let i = 1; i <= totalPages.value; i += 1) {
+    pages.push(i);
+  }
+  return pages;
+});
+
+const setPage = (page: number) => {
+  currentPage.value = Math.min(Math.max(page, 1), totalPages.value);
+  activeActionMenu.value = null;
+  activeOverlay.value = null;
+  if (import.meta.client) {
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 };
 
@@ -740,6 +767,15 @@ const toggleActionMenu = (id: number) => {
     activeActionMenu.value = activeActionMenu.value === id ? null : id;
   }
 };
+
+watch(
+  () => articles.value.length,
+  () => {
+    if (currentPage.value > totalPages.value) {
+      currentPage.value = totalPages.value;
+    }
+  },
+);
 
 const openOverlay = (id: number) => {
   activeActionMenu.value = null;

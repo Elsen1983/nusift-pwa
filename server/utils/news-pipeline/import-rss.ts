@@ -140,6 +140,35 @@ export function loadImportSources() {
   ];
 }
 
+export function buildFeedUrlCandidates(feedUrl: string | null, frontPageUrl?: string | null) {
+  const candidates = new Set<string>();
+
+  const add = (value?: string | null) => {
+    if (!value) return;
+    candidates.add(value);
+  };
+
+  add(feedUrl);
+
+  try {
+    if (feedUrl) {
+      const parsed = new URL(feedUrl);
+      if (parsed.pathname.replace(/\/+$/, "").toLowerCase() === "/rss.xml") {
+        add(`${parsed.protocol}//${parsed.hostname}/?service=rss`);
+      }
+    }
+  } catch {}
+
+  try {
+    if (frontPageUrl) {
+      const parsedFront = new URL(frontPageUrl);
+      add(`${parsedFront.protocol}//${parsedFront.hostname}/?service=rss`);
+    }
+  } catch {}
+
+  return [...candidates];
+}
+
 const looksLikeFeed = (body: string) => {
   const sample = body.slice(0, 4000).toLowerCase();
   return (
@@ -157,44 +186,45 @@ export async function verifyImportedRssFeed(rssFeedUrl: string | null) {
     return { verified: false, status: RssStatus.NO_RSS_FOUND, reason: "No rss_feed_url in import data." };
   }
 
-  try {
-    const response = await safeFetch(rssFeedUrl, {
-      signal: AbortSignal.timeout(8000),
-      headers: {
-        "User-Agent": "NuSift/1.0 RSS-Verify",
-        Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-      },
-    });
+  const urlsToTry = buildFeedUrlCandidates(rssFeedUrl);
+  let lastReason = "Feed verification failed.";
 
-    if (!response.ok) {
+  for (const candidateUrl of urlsToTry) {
+    try {
+      const response = await safeFetch(candidateUrl, {
+        signal: AbortSignal.timeout(8000),
+        headers: {
+          "User-Agent": "NuSift/1.0 RSS-Verify",
+          Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+        },
+      });
+
+      if (!response.ok) {
+        lastReason = `Feed returned HTTP ${response.status} for ${candidateUrl}.`;
+        continue;
+      }
+
+      const body = await response.text();
+      if (!looksLikeFeed(body)) {
+        lastReason = `URL responded, but payload did not look like RSS or Atom for ${candidateUrl}.`;
+        continue;
+      }
+
       return {
-        verified: false,
-        status: response.status === 404 ? RssStatus.NO_RSS_FOUND : RssStatus.FAILED,
-        reason: `Feed returned HTTP ${response.status}.`,
+        verified: true,
+        status: RssStatus.ACTIVE,
+        reason: `Feed URL verified successfully via ${candidateUrl}.`,
       };
+    } catch (error: any) {
+      lastReason = `${error?.message || String(error)} via ${candidateUrl}`;
     }
-
-    const body = await response.text();
-    if (!looksLikeFeed(body)) {
-      return {
-        verified: false,
-        status: RssStatus.FAILED,
-        reason: "URL responded, but payload did not look like RSS or Atom.",
-      };
-    }
-
-    return {
-      verified: true,
-      status: RssStatus.ACTIVE,
-      reason: "Feed URL verified successfully.",
-    };
-  } catch (error: any) {
-    return {
-      verified: false,
-      status: RssStatus.FAILED,
-      reason: error?.message || String(error),
-    };
   }
+
+  return {
+    verified: false,
+    status: RssStatus.FAILED,
+    reason: lastReason,
+  };
 }
 
 export function getImportRssReportPath() {
