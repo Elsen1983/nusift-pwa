@@ -416,6 +416,9 @@
           <SourceTimelineChart
             :timeline-data="rawTimelineData"
             :is-loading="isAnalyticsLoading"
+            :selected-year="selectedTimelineYear"
+            :available-years="availableTimelineYears"
+            @year-change="handleTimelineYearChange"
           />
         </div>
       </div>
@@ -586,6 +589,11 @@ const limit = ref(5);
 
 const rawTimelineData = ref([]);
 const isAnalyticsLoading = ref(true);
+const selectedTimelineYear = ref(new Date().getFullYear());
+const availableTimelineYears = computed(() => {
+  const currentYear = new Date().getFullYear();
+  return [currentYear, currentYear - 1, currentYear - 2];
+});
 
 const impactMetrics = ref({
   timeSaved: 14, // Óra ebben a hónapban
@@ -755,6 +763,33 @@ watch(
   { immediate: true, deep: true },
 );
 
+const loadTimelineAnalytics = async (year: number) => {
+  isAnalyticsLoading.value = true;
+  try {
+    const analyticsTimelineResponse = await $api<any>(
+      `/api/user/analytics-timeline?year=${year}`,
+    );
+
+    if (analyticsTimelineResponse?.success && analyticsTimelineResponse.data) {
+      rawTimelineData.value = analyticsTimelineResponse.data;
+      return;
+    }
+
+    rawTimelineData.value = [];
+  } catch (error) {
+    console.error("Failed to load timeline analytics:", error);
+    rawTimelineData.value = [];
+  } finally {
+    isAnalyticsLoading.value = false;
+  }
+};
+
+const handleTimelineYearChange = async (year: number) => {
+  if (year === selectedTimelineYear.value) return;
+  selectedTimelineYear.value = year;
+  await loadTimelineAnalytics(year);
+};
+
 onMounted(async () => {
   // Refresh the authenticated profile first so the avatar reflects the latest
   // saved value even after a hard refresh.
@@ -769,10 +804,9 @@ onMounted(async () => {
   }
 
   try {
-const [sourcesResponse, analyticsMetricsResponse, analyticsTimelineResponse] = await Promise.all([
+    const [sourcesResponse, analyticsMetricsResponse] = await Promise.all([
       $api<any>("/api/user/sources"),
       $api<any>("/api/user/analytics-metrics"),
-      $api<any>("/api/user/analytics-timeline"),
     ]);
 
     if (sourcesResponse && sourcesResponse.success) {
@@ -798,20 +832,6 @@ const [sourcesResponse, analyticsMetricsResponse, analyticsTimelineResponse] = a
       ).length;
     }
 
-    if (analyticsTimelineResponse && analyticsTimelineResponse.success) {
-      console.log("Analytics timeline API response:", analyticsTimelineResponse);
-
-      if (analyticsTimelineResponse.data) {
-        console.log(
-          "Received timeline data from analytics timeline API:",
-          analyticsTimelineResponse.data,
-        );
-        rawTimelineData.value = analyticsTimelineResponse.data;
-      } else {
-        console.warn("Analytics timeline API response does not contain 'data'.");
-      }
-    }
-
     if (analyticsMetricsResponse && analyticsMetricsResponse.success) {
       if (analyticsMetricsResponse.metrics) {
         console.log(
@@ -826,6 +846,8 @@ const [sourcesResponse, analyticsMetricsResponse, analyticsTimelineResponse] = a
         };
       }
     }
+
+    await loadTimelineAnalytics(selectedTimelineYear.value);
   } catch (error) {
     console.error("Nem sikerült lekérni a profil kvóta adatait:", error);
 

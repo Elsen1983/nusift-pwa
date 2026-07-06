@@ -10,6 +10,11 @@ type TimelineEntry = {
   data: number[];
 };
 
+type ActiveAnalyticsTargets = {
+  activeSourceIds: string[];
+  activeCategoryIds: string[];
+};
+
 const getTimelineCachePath = (userId: string, year: number) =>
   path.join(process.cwd(), "data", `user-analytics-timeline-${userId}-${year}.json`);
 
@@ -117,6 +122,70 @@ async function buildTimelineData(userId: string, currentYear: number) {
   return Array.from(chartDataMap.values());
 }
 
+async function getActiveAnalyticsTargets(userId: string): Promise<ActiveAnalyticsTargets> {
+  const [sourceSubs, categorySubs] = await Promise.all([
+    prisma.userSourceSubscription.findMany({
+      where: { userId, isActive: true },
+      select: { sourceId: true },
+    }),
+    prisma.userCategorySubscription.findMany({
+      where: { userId, isActive: true },
+      select: { categoryId: true },
+    }),
+  ]);
+
+  return {
+    activeSourceIds: sourceSubs.map((sub) => sub.sourceId),
+    activeCategoryIds: categorySubs.map((sub) => sub.categoryId),
+  };
+}
+
+async function hasTimelineCacheExpired(
+  userId: string,
+  currentYear: number,
+  generatedAtMs: number,
+) {
+  if (Date.now() - generatedAtMs >= TIMELINE_CACHE_TTL_MS) {
+    return true;
+  }
+
+  const { activeSourceIds, activeCategoryIds } = await getActiveAnalyticsTargets(userId);
+  if (activeSourceIds.length === 0 && activeCategoryIds.length === 0) {
+    return false;
+  }
+
+  const latestArticle = await prisma.article.findFirst({
+    where: {
+      OR: [
+        { sourceId: { in: activeSourceIds } },
+        { categoryId: { in: activeCategoryIds } },
+      ],
+      date: {
+        gte: new Date(`${currentYear}-01-01T00:00:00.000Z`),
+        lt: new Date(`${currentYear + 1}-01-01T00:00:00.000Z`),
+      },
+    },
+    select: {
+      updatedAt: true,
+      createdAt: true,
+    },
+    orderBy: {
+      updatedAt: "desc",
+    },
+  });
+
+  if (!latestArticle) {
+    return false;
+  }
+
+  const latestKnownChangeMs = Math.max(
+    latestArticle.updatedAt.getTime(),
+    latestArticle.createdAt.getTime(),
+  );
+
+  return latestKnownChangeMs > generatedAtMs;
+}
+
 export async function getUserAnalyticsTimeline(userId: string, currentYear: number) {
   const cachePath = getTimelineCachePath(userId, currentYear);
 
@@ -127,7 +196,10 @@ export async function getUserAnalyticsTimeline(userId: string, currentYear: numb
         data: TimelineEntry[];
       };
       const generatedAt = new Date(cached.generatedAt).getTime();
-      if (!Number.isNaN(generatedAt) && Date.now() - generatedAt < TIMELINE_CACHE_TTL_MS) {
+      if (
+        !Number.isNaN(generatedAt) &&
+        !(await hasTimelineCacheExpired(userId, currentYear, generatedAt))
+      ) {
         return { data: cached.data, cached: true };
       }
     } catch {}

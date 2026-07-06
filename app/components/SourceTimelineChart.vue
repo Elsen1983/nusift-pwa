@@ -55,10 +55,18 @@ interface TimelineData {
 const props = defineProps<{
   timelineData: TimelineData[];
   isLoading: boolean;
+  selectedYear?: number;
+  availableYears?: number[];
 }>();
 
-const selectedYear = ref(new Date().getFullYear());
-const availableYears = ref([2026]);
+const emit = defineEmits<{
+  yearChange: [year: number];
+}>();
+
+const selectedYear = ref(props.selectedYear || new Date().getFullYear());
+const availableYears = computed(() => props.availableYears?.length
+  ? props.availableYears
+  : [new Date().getFullYear()]);
 const chartData = ref<any>(null);
 const isLoading = ref(props.isLoading || false);
 
@@ -180,6 +188,19 @@ watch(
   },
   { deep: true, immediate: true }
 );
+
+watch(
+  () => props.selectedYear,
+  (year) => {
+    if (typeof year === "number" && year !== selectedYear.value) {
+      selectedYear.value = year;
+    }
+  },
+);
+
+watch(selectedYear, (year) => {
+  emit("yearChange", year);
+});
 
 onMounted(() => {
   fetchTimelineData();
