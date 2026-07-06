@@ -300,6 +300,7 @@
         "filters": {
             "dates": {
                 "today": "Mai nap",
+                "last_24h": "Elmúlt 24 óra",
                 "last_48h": "Elmúlt 48 óra",
                 "last_1w": "Elmúlt 1 Hét (Pro)",
                 "last_2w": "Elmúlt 2 Hét (Pro)"

@@ -275,7 +275,7 @@
         v-if="isDev"
         class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4 space-y-4"
       >
-        <div class="flex flex-wrap items-center gap-2">
+        <div v-if="false" class="flex flex-wrap items-center gap-2">
           <button
             @click="reimportRss"
             :disabled="isImportingRss"
@@ -296,6 +296,27 @@
             class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm font-bold text-emerald-100 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {{ isBackfillingArticleCategories ? "Backfilling..." : "Backfill article categories" }}
+          </button>
+          <button
+            @click="normalizeHttpSources"
+            :disabled="isNormalizingHttpSources"
+            class="rounded-lg border border-violet-500/20 bg-violet-500/10 px-4 py-2 text-sm font-bold text-violet-100 transition-colors hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ isNormalizingHttpSources ? "Normalizing..." : "Normalize HTTP sources" }}
+          </button>
+          <button
+            @click="auditHttpSourceMerge"
+            :disabled="isAuditingHttpSourceMerge"
+            class="rounded-lg border border-indigo-500/20 bg-indigo-500/10 px-4 py-2 text-sm font-bold text-indigo-100 transition-colors hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ isAuditingHttpSourceMerge ? "Auditing..." : "Audit HTTP source merges" }}
+          </button>
+          <button
+            @click="deleteSafeHttpDuplicates"
+            :disabled="isDeletingSafeHttpDuplicates"
+            class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-4 py-2 text-sm font-bold text-rose-100 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ isDeletingSafeHttpDuplicates ? "Deleting..." : "Delete safe HTTP duplicates" }}
           </button>
           <button
             @click="auditScopedRss"
@@ -321,7 +342,7 @@
         </div>
 
         <div
-          v-if="scopedSourceAuditSummary"
+          v-if="false && scopedSourceAuditSummary"
           class="rounded-xl border border-outline-variant/20 bg-surface-container px-4 py-3"
         >
           <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
@@ -540,6 +561,9 @@ const isPipelineRunning = ref(false);
 const isFixingRssStatus = ref(false);
 const isImportingRss = ref(false);
 const isBackfillingArticleCategories = ref(false);
+const isNormalizingHttpSources = ref(false);
+const isAuditingHttpSourceMerge = ref(false);
+const isDeletingSafeHttpDuplicates = ref(false);
 const isAuditingScopedRss = ref(false);
 const isNormalizingScopedSources = ref(false);
 const isPruningScopedSources = ref(false);
@@ -686,6 +710,8 @@ const matchesAppliedDateFilter = (article: Article) => {
   const diffMs = now.getTime() - articleDate.getTime();
 
   switch (appliedSelectedDateKey.value) {
+    case "last_24h":
+      return diffMs <= 24 * 60 * 60 * 1000;
     case "today":
       return articleDate >= startOfToday;
     case "last_48h":
@@ -867,6 +893,118 @@ const backfillArticleCategories = async () => {
     isBackfillingArticleCategories.value = false;
     await refreshDevPanel();
     stopDevPanelPolling();
+  }
+};
+
+const normalizeHttpSources = async () => {
+  if (isNormalizingHttpSources.value) return;
+
+  isNormalizingHttpSources.value = true;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      updated: number;
+      rssUpdated: number;
+      conflicts: number;
+      runtimeConflicts: number;
+      invalidUrls: number;
+    }>("/api/dev/http-source-normalization", {
+      method: "POST",
+    });
+    toast.value = {
+      show: true,
+      message: `HTTP source normalization finished: ${response.updated ?? 0} frontPageUrl and ${response.rssUpdated ?? 0} rssFeedUrl updated, ${response.conflicts ?? 0} total conflict(s) (${response.runtimeConflicts ?? 0} at runtime) and ${response.invalidUrls ?? 0} invalid URL(s) written to report.`,
+      type: "success",
+    };
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "HTTP source normalization failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isNormalizingHttpSources.value = false;
+  }
+};
+
+const auditHttpSourceMerge = async () => {
+  if (isAuditingHttpSourceMerge.value) return;
+
+  isAuditingHttpSourceMerge.value = true;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      summary: {
+        totalConflictPairs: number;
+        safeDeleteHttpSource: number;
+        needsMergeBeforeDelete: number;
+        manualReview: number;
+      };
+    }>("/api/dev/http-source-merge-audit", {
+      method: "POST",
+    });
+    toast.value = {
+      show: true,
+      message: `HTTP source merge audit ready: ${response.summary?.safeDeleteHttpSource ?? 0} safe delete, ${response.summary?.needsMergeBeforeDelete ?? 0} need merge, ${response.summary?.manualReview ?? 0} manual review.`,
+      type: "success",
+    };
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "HTTP source merge audit failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isAuditingHttpSourceMerge.value = false;
+  }
+};
+
+const deleteSafeHttpDuplicates = async () => {
+  if (isDeletingSafeHttpDuplicates.value) return;
+
+  isDeletingSafeHttpDuplicates.value = true;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      attempted: number;
+      deleted: number;
+    }>("/api/dev/http-source-safe-delete", {
+      method: "POST",
+    });
+    toast.value = {
+      show: true,
+      message: `Safe HTTP duplicate cleanup finished: ${response.deleted ?? 0}/${response.attempted ?? 0} source(s) deleted.`,
+      type: "success",
+    };
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Safe HTTP duplicate cleanup failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isDeletingSafeHttpDuplicates.value = false;
   }
 };
 
@@ -1061,6 +1199,7 @@ const runManualPipeline = async () => {
 
 const dateOptions = [
   { key: "today", value: "Today", isPro: false },
+  { key: "last_24h", value: "Last 24h", isPro: false },
   { key: "last_48h", value: "Last 48h (Free)", isPro: false },
   { key: "last_1w", value: "Last 1 Week (Pro)", isPro: true },
   { key: "last_2w", value: "Last 2 Week (Pro)", isPro: true },
@@ -1114,11 +1253,11 @@ const isDateDropdownOpen = ref(false);
 const isCategoryDropdownOpen = ref(false);
 const isSourceDropdownOpen = ref(false);
 
-const currentSelectedDateKey = ref("today");
+const currentSelectedDateKey = ref("last_24h");
 const selectedCategories = ref<string[]>([]);
 const selectedSources = ref<string[]>([]);
 
-const appliedSelectedDateKey = ref("today");
+const appliedSelectedDateKey = ref("last_24h");
 const appliedSelectedCategories = ref<string[]>([]);
 const appliedSelectedSources = ref<string[]>([]);
 const isRefreshing = ref(false);
