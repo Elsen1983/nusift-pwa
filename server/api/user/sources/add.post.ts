@@ -2,6 +2,7 @@
 import { prisma } from "../../../utils/prisma";
 import { requireUserId } from "../../../utils/require-user";
 import { executeTargetedDiscovery } from "../../../utils/discovery";
+import { executeTargetedCategoryDiscovery } from "../../../utils/discovery";
 import { runNewsPipeline } from "../../../utils/news-pipeline/orchestrator";
 import { shouldRevalidateExistingSource } from "../../../utils/source-trust";
 
@@ -24,6 +25,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     const targetedSourceIds = new Set<string>();
+    const targetedCategoryIds = new Set<string>();
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -186,12 +188,14 @@ export default defineEventHandler(async (event) => {
       });
       if (shouldBeActive && existingCategory.newsSource?.id) {
         targetedSourceIds.add(existingCategory.newsSource.id);
+        targetedCategoryIds.add(existingCategory.id);
       }
       if (
         existingCategory.newsSource &&
         shouldRevalidateExistingSource(existingCategory.newsSource)
       ) {
         targetedSourceIds.add(existingCategory.newsSource.id);
+        targetedCategoryIds.add(existingCategory.id);
       }
     } else if (existingRoot) {
       console.log(`[Source-Manager] Linked to existing ROOT source: ${existingRoot.id}`);
@@ -251,23 +255,31 @@ export default defineEventHandler(async (event) => {
           update: { isActive: shouldBeActive },
         });
         console.log(`[Source-Manager] Created completely new CATEGORY: ${newCat.pathUrl}`);
+        if (shouldBeActive) {
+          targetedCategoryIds.add(newCat.id);
+        }
       }
 
     }
 
-    if (targetedSourceIds.size > 0) {
+    if (targetedSourceIds.size > 0 || targetedCategoryIds.size > 0) {
       const sourceIds = [...targetedSourceIds];
-      console.log(`[Source-Manager] Dispatching background agent for ${sourceIds.length} source(s)...`);
-      event.waitUntil(
-        executeTargetedDiscovery(sourceIds).catch((err) =>
-          console.error("[Source-Manager] Discovery failed:", err),
-        ),
-      );
-      event.waitUntil(
-        runNewsPipeline(sourceIds).catch((err) =>
-          console.error("[Source-Manager] Ingest pipeline failed:", err),
-        ),
-      );
+      const categoryIds = [...targetedCategoryIds];
+      event.waitUntil((async () => {
+        if (categoryIds.length > 0) {
+          console.log(`[Source-Manager] Dispatching category discovery for ${categoryIds.length} category target(s)...`);
+          await executeTargetedCategoryDiscovery(categoryIds);
+        }
+        if (sourceIds.length > 0) {
+          console.log(`[Source-Manager] Dispatching background agent for ${sourceIds.length} source(s)...`);
+          await executeTargetedDiscovery(sourceIds);
+        }
+        await runNewsPipeline(sourceIds, categoryIds);
+      })().catch((err) =>
+        console.error("[Source-Manager] Background source processing failed:", err),
+      ));
+    } else {
+      console.log("[Source-Manager] No active discovery or pipeline targets were queued.");
     }
 
     return {

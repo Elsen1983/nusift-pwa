@@ -122,11 +122,17 @@
                 <input
                   id="source-url-input"
                   v-model="newSourceUrl"
+                  @input="handleSourceUrlInput"
                   @keyup.enter="addNewSource"
                   class="source-url-input w-full bg-surface-container-highest focus:bg-surface-bright transition-colors duration-300 border-none rounded-lg text-on-surface placeholder:text-outline/50 focus:ring-1 focus:ring-neon-cyan/30 font-body h-[52px] text-[16px] font-bold px-4 disabled:opacity-50 outline-none"
                   :style="sourceUrlInputStyle"
                   :placeholder="$t('sourceManager.input.placeholder')"
                   type="text"
+                  inputmode="url"
+                  autocapitalize="off"
+                  autocomplete="off"
+                  autocorrect="off"
+                  spellcheck="false"
                   :disabled="isProcessing"
                 />
               </div>
@@ -439,6 +445,19 @@ const sourceUrlInputStyle = computed(() =>
     ? { backgroundColor: "rgb(var(--color-surface-container-lowest))" }
     : { backgroundColor: "rgb(var(--color-surface-container-highest))" },
 );
+
+const handleSourceUrlInput = (event: Event) => {
+  const target = event.target as HTMLInputElement | null;
+  if (!target) return;
+
+  const normalizedValue = target.value.toLowerCase();
+  if (normalizedValue !== newSourceUrl.value) {
+    newSourceUrl.value = normalizedValue;
+  }
+  if (target.value !== normalizedValue) {
+    target.value = normalizedValue;
+  }
+};
 
 // Restricted Array
 const restrictedSources = computed(() => {

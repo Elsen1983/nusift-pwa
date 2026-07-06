@@ -16,6 +16,11 @@ export interface IngestCandidate {
   reasoning: string;
 }
 
+export interface PipelineTarget {
+  sourceId: string;
+  categoryId?: string | null;
+}
+
 export interface PipelineResult {
   sourcesScanned: number;
   candidatesFound: number;

@@ -1,7 +1,7 @@
 import { prisma } from "../prisma";
 import { logAgentScan } from "./log";
 import { ingestSource, persistCandidates } from "./ingest";
-import type { PipelineResult } from "./types";
+import type { PipelineResult, PipelineTarget } from "./types";
 
 export async function resolveUserSourceIds(userId: string) {
   const [sourceSubs, categorySubs] = await Promise.all([
@@ -45,10 +45,48 @@ export async function resolveActivePipelineSourceIds() {
   return [...ids];
 }
 
-export async function runNewsPipeline(sourceIds?: string[]): Promise<PipelineResult> {
+export async function resolveActivePipelineTargets() {
+  const [sourceSubs, categorySubs] = await Promise.all([
+    prisma.userSourceSubscription.findMany({
+      where: { isActive: true },
+      select: { sourceId: true },
+    }),
+    prisma.userCategorySubscription.findMany({
+      where: { isActive: true },
+      select: { categoryId: true, category: { select: { newsSourceId: true } } },
+    }),
+  ]);
+
+  const targets: PipelineTarget[] = [];
+  const seen = new Set<string>();
+
+  for (const sub of sourceSubs) {
+    const key = `${sub.sourceId}|`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ sourceId: sub.sourceId });
+  }
+
+  for (const sub of categorySubs) {
+    if (!sub.category?.newsSourceId) continue;
+    const key = `${sub.category.newsSourceId}|${sub.categoryId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ sourceId: sub.category.newsSourceId, categoryId: sub.categoryId });
+  }
+
+  return targets;
+}
+
+export async function runNewsPipeline(
+  sourceIds?: string[],
+  categoryIds?: string[],
+): Promise<PipelineResult> {
   const startedAt = Date.now();
-  const resolvedSourceIds =
-    sourceIds && sourceIds.length > 0 ? sourceIds : await resolveActivePipelineSourceIds();
+  const resolvedTargets =
+    sourceIds && sourceIds.length > 0
+      ? await hydratePipelineTargets(sourceIds, categoryIds || [])
+      : await resolveActivePipelineTargets();
 
   let candidatesFound = 0;
   let inserted = 0;
@@ -58,12 +96,12 @@ export async function runNewsPipeline(sourceIds?: string[]): Promise<PipelineRes
   await logAgentScan({
     status: "PIPELINE_STARTED",
     executionTimeMs: 0,
-    errorLog: `Pipeline started for ${resolvedSourceIds.length} source(s).`,
+    errorLog: `Pipeline started for ${resolvedTargets.length} target(s).`,
   });
 
-  for (const sourceId of resolvedSourceIds) {
+  for (const target of resolvedTargets) {
     try {
-      const result = await ingestSource(sourceId);
+      const result = await ingestSource(target.sourceId, target.categoryId || undefined);
       candidatesFound += result.candidates.length;
       const persisted = await persistCandidates(result.candidates);
       inserted += persisted.inserted;
@@ -77,14 +115,44 @@ export async function runNewsPipeline(sourceIds?: string[]): Promise<PipelineRes
   await logAgentScan({
     status: "PIPELINE_FINISHED",
     executionTimeMs: Date.now() - startedAt,
-    errorLog: `Pipeline finished. sources=${resolvedSourceIds.length}, candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}.`,
+    errorLog: `Pipeline finished. targets=${resolvedTargets.length}, candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}.`,
   });
 
   return {
-    sourcesScanned: resolvedSourceIds.length,
+    sourcesScanned: resolvedTargets.length,
     candidatesFound,
     inserted,
     skipped,
     failed,
   };
+}
+
+async function hydratePipelineTargets(sourceIds: string[], categoryIds: string[]) {
+  const targets: PipelineTarget[] = [];
+  const seen = new Set<string>();
+  const categories = categoryIds.length
+    ? await prisma.sourceCategory.findMany({
+        where: { id: { in: categoryIds } },
+        select: { id: true, newsSourceId: true },
+      })
+    : [];
+  const categoryById = new Map(categories.map((category) => [category.id, category.newsSourceId]));
+
+  for (const sourceId of sourceIds) {
+    const key = `${sourceId}|`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ sourceId });
+  }
+
+  for (const categoryId of categoryIds) {
+    const mappedSourceId = categoryById.get(categoryId);
+    if (!mappedSourceId) continue;
+    const key = `${mappedSourceId}|${categoryId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ sourceId: mappedSourceId, categoryId });
+  }
+
+  return targets;
 }

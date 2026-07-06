@@ -38,6 +38,12 @@ describe("isWithinFreshnessWindow", () => {
   });
 });
 
+describe("publish date fallback behavior", () => {
+  it("still treats missing dates as stale before fallback resolution", () => {
+    expect(isWithinFreshnessWindow(null, new Date("2026-07-06T12:00:00.000Z"))).toBe(false);
+  });
+});
+
 describe("cleanFeedValue", () => {
   it("unwraps CDATA-wrapped links so they remain valid URLs", () => {
     expect(

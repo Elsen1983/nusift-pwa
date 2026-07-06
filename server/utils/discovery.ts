@@ -1,10 +1,10 @@
-// server/utils/discovery.ts
 import { prisma } from "./prisma";
 import { RssStatus } from "@prisma/client";
 import { safeFetch, SSRFError } from "./ssrf-guard";
 import { normalizeActiveRssStatus } from "./news-pipeline/rss-status";
+import { logAgentScan } from "./news-pipeline/log";
+import { discoverFeedForUrl } from "./news-pipeline/feed-discovery";
 
-// ANCHOR: WAF & Paywall Trap Signatures (Ugyanaz a lista)
 const WAF_AND_PAYWALL_PATTERNS = [
   "/cdn-cgi/challenge-platform",
   "/cdn-cgi/bm/cv",
@@ -60,10 +60,6 @@ const generateAcceptLanguageHeader = (langCode?: string) => {
   }
 };
 
-/**
- * Célzott RSS felfedező motor.
- * Közvetlenül hívható a finalize-onboarding-ból vagy Cron jobokból.
- */
 export async function executeTargetedDiscovery(
   sourceIds: string[],
 ): Promise<void> {
@@ -72,7 +68,6 @@ export async function executeTargetedDiscovery(
     return;
   }
 
-  // 1. Csak a pending állapotú források lekérése
   const pendingSources = await prisma.newsSource.findMany({
     where: {
       id: { in: sourceIds },
@@ -81,9 +76,7 @@ export async function executeTargetedDiscovery(
   });
 
   if (pendingSources.length === 0) {
-    console.log(
-      "[Targeted-Discovery] All requested sources are already processed.",
-    );
+    console.log("[Targeted-Discovery] All requested sources are already processed.");
     return;
   }
 
@@ -91,20 +84,14 @@ export async function executeTargetedDiscovery(
     `[Targeted-Discovery] Initiating direct scan for ${pendingSources.length} specific sources....`,
   );
 
-  // 2. Iteráció és Web Scraping
   for (const source of pendingSources) {
     try {
-      // Dinamikus fejléc generálása az adatbázisban lévő nyelv alapján
-      const acceptLangHeader = generateAcceptLanguageHeader(
-        source.language || "en",
-      );
+      const acceptLangHeader = generateAcceptLanguageHeader(source.language || "en");
 
-      // RÉSZLETES LOG: Indul a letöltés
       console.log(
         `[Targeted-Discovery][Fetch] Scanning frontPageUrl: "${source.frontPageUrl}" using Sovereign-Agent UA.`,
       );
 
-      // SSRF-protected fetch: validates DNS/IP even for DB-stored URLs (defence-in-depth)
       const response = await safeFetch(source.frontPageUrl, {
         headers: {
           "User-Agent":
@@ -112,81 +99,60 @@ export async function executeTargetedDiscovery(
           Accept: "text/html,application/xhtml+xml",
           "Accept-Language": acceptLangHeader,
         },
-        // allowIp defaults to false — hostname-only validation + DNS IP check for defence-in-depth
       });
 
-      // WAF-Aware Response Handling
       if (!response.ok) {
         if (response.status === 403 || response.status === 503) {
-          throw new Error(`WAF_BLOCKED_${response.status}`); // Custom error flag
+          throw new Error(`WAF_BLOCKED_${response.status}`);
         }
         throw new Error(`HTTP Error: ${response.status}`);
       }
 
-      // Cross-domain redirect is now enforced inside safeFetch (SSRF guard).
-      // If safeFetch throws SSRFError, the catch block marks the source as FAILED.
-
-      // Soft WAF / Paywall csapda (Hibát dobunk, hogy a catch blokk FAILED-re tegye)
       const finalUrlObj = new URL(response.url);
       const isWafTrap = WAF_AND_PAYWALL_PATTERNS.some((pattern) =>
         finalUrlObj.pathname.toLowerCase().includes(pattern),
       );
 
       if (isWafTrap) {
-        const sourceHost = new URL(source.frontPageUrl).hostname.replace(/^www\./, '').toLowerCase();
+        const sourceHost = new URL(source.frontPageUrl).hostname
+          .replace(/^www\./, "")
+          .toLowerCase();
         console.warn(
           `[Targeted-Discovery] Soft WAF/Paywall Trap detected on ${sourceHost}. Path: ${finalUrlObj.pathname}`,
         );
-        throw new Error(`WAF_BLOCKED_REDIRECT`);
+        throw new Error("WAF_BLOCKED_REDIRECT");
       }
 
       const html = await response.text();
       console.log(
-        `[Targeted-Discovery][Fetch] Successfully downloaded HTML from "${source.frontPageUrl}" (${html.length} bytes). Parsing regex...`,
+        `[Targeted-Discovery][Fetch] Successfully downloaded HTML from "${source.frontPageUrl}" (${html.length} bytes). Probing feed candidates...`,
       );
 
-      const rssRegex =
-        /<link[^>]+type=["']application\/(rss\+xml|atom\+xml)["'][^>]+href=["']([^"']+)["']/i;
-      const match = html.match(rssRegex);
+      const discovery = await discoverFeedForUrl({
+        pageUrl: source.frontPageUrl,
+        existingFeedUrl: source.rssFeedUrl || null,
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NuSift/1.0 Sovereign-Agent",
+        acceptLanguage: acceptLangHeader,
+      });
 
-      let newStatus: RssStatus = RssStatus.NO_RSS_FOUND;
-      let finalFeedUrl = null;
+      const nextStatus = normalizeActiveRssStatus(
+        discovery.feedUrl ? RssStatus.ACTIVE : RssStatus.NO_RSS_FOUND,
+        discovery.feedUrl,
+      );
 
-      if (match && match[2]) {
-        newStatus = RssStatus.ACTIVE;
-        let rawFeedUrl = match[2];
-
-        if (rawFeedUrl.startsWith("/")) {
-          const urlObj = new URL(source.frontPageUrl);
-          finalFeedUrl = `${urlObj.origin}${rawFeedUrl}`;
-        } else {
-          finalFeedUrl = rawFeedUrl;
-        }
-        // RÉSZLETES LOG: Találat esetén
-        console.log(
-          `[Targeted-Discovery][Match] FOUND VALID FEED. Raw Regex Link: "${rawFeedUrl}" -> Resolved absolute URL: "${finalFeedUrl}"`,
-        );
-      } else {
-        // RÉSZLETES LOG: Ha nincs RSS a HTML-ben
-        console.warn(
-          `[Targeted-Discovery][Match] No RSS/Atom link tags found in the HTML header of "${source.frontPageUrl}".`,
-        );
-      }
-
-      // Adatbázis frissítése
       await prisma.newsSource.update({
         where: { id: source.id },
         data: {
-          rssStatus: normalizeActiveRssStatus(newStatus, finalFeedUrl),
-          rssFeedUrl: finalFeedUrl,
+          rssStatus: nextStatus,
+          rssFeedUrl: discovery.feedUrl,
+          lastRssCheckAt: new Date(),
         },
       });
 
       console.log(
-        `[Targeted-Discovery][Database] Updated ID ${source.id} (${source.frontPageUrl}) status to: ${newStatus}`,
+        `[Targeted-Discovery][Database] Updated ID ${source.id} (${source.frontPageUrl}) status to: ${nextStatus}`,
       );
     } catch (error: any) {
-      // SSRF guard violations → mark as DOMAIN_DEAD (likely poisoned DB entry)
       if (error instanceof SSRFError) {
         console.warn(
           `[Targeted-Discovery][SSRF] Blocked unsafe URL: ${error.detail}. Marking as DOMAIN_DEAD.`,
@@ -198,7 +164,6 @@ export async function executeTargetedDiscovery(
         continue;
       }
 
-      // Graceful Logging for Firewalls
       if (error.message.includes("WAF_BLOCKED")) {
         console.warn(
           `[Targeted-Discovery][Blocked] Firewall prevented scanning of "${source.frontPageUrl}". Marking as FAILED.`,
@@ -213,6 +178,91 @@ export async function executeTargetedDiscovery(
       await prisma.newsSource.update({
         where: { id: source.id },
         data: { rssStatus: "FAILED" },
+      });
+    }
+  }
+}
+
+export async function executeTargetedCategoryDiscovery(
+  categoryIds: string[],
+): Promise<void> {
+  if (!Array.isArray(categoryIds) || categoryIds.length === 0) {
+    return;
+  }
+
+  const categories = await prisma.sourceCategory.findMany({
+    where: {
+      id: { in: categoryIds },
+    },
+    select: {
+      id: true,
+      pathUrl: true,
+      newsSourceId: true,
+      newsSource: {
+        select: {
+          language: true,
+        },
+      },
+    },
+  });
+
+  for (const category of categories) {
+    const startedAt = Date.now();
+    await logAgentScan({
+      sourceId: category.newsSourceId,
+      categoryId: category.id,
+      status: "CATEGORY_DISCOVERY_STARTED",
+      executionTimeMs: 0,
+      errorLog: `Scanning category path ${category.pathUrl}`,
+    });
+
+    try {
+      const acceptLangHeader = generateAcceptLanguageHeader(
+        category.newsSource?.language || "en",
+      );
+
+      const discovery = await discoverFeedForUrl({
+        pageUrl: category.pathUrl,
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NuSift/1.0 Sovereign-Agent",
+        acceptLanguage: acceptLangHeader,
+        preferScopedDirectFeed: true,
+      });
+
+      const nextStatus = normalizeActiveRssStatus(
+        discovery.feedUrl ? RssStatus.ACTIVE : RssStatus.NO_RSS_FOUND,
+        discovery.feedUrl,
+      );
+
+      await prisma.sourceCategory.update({
+        where: { id: category.id },
+        data: {
+          rssFeedUrl: discovery.feedUrl,
+          rssStatus: nextStatus,
+          lastRssCheckAt: new Date(),
+        },
+      });
+
+      await logAgentScan({
+        sourceId: category.newsSourceId,
+        categoryId: category.id,
+        status: "CATEGORY_DISCOVERY_COMPLETED",
+        executionTimeMs: Date.now() - startedAt,
+        errorLog: discovery.feedUrl
+          ? `Resolved category feed ${discovery.feedUrl}.`
+          : `No category feed found for ${category.pathUrl}. ${discovery.lastError || ""}`.trim(),
+      });
+    } catch (error: any) {
+      await prisma.sourceCategory.update({
+        where: { id: category.id },
+        data: { rssStatus: "FAILED", lastRssCheckAt: new Date() },
+      });
+
+      await logAgentScan({
+        sourceId: category.newsSourceId,
+        categoryId: category.id,
+        status: "CATEGORY_DISCOVERY_FAILED",
+        executionTimeMs: Date.now() - startedAt,
+        errorLog: error?.message || String(error),
       });
     }
   }

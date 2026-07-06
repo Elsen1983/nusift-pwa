@@ -5,6 +5,7 @@ import { logAgentScan } from "./log";
 import { cleanFeedValue, hashText, normalizeUrl, stripHtml } from "./text";
 import type { IngestCandidate } from "./types";
 import { buildFeedUrlCandidates } from "./import-rss";
+import { discoverFeedForUrl } from "./feed-discovery";
 
 const parseRssItems = (xml: string) => {
   const items: Array<Record<string, string>> = [];
@@ -156,6 +157,32 @@ const extractPageMetadata = (html: string) => {
   };
 };
 
+const resolvePublishedAtForFeedItem = async (rawPubDate: string, canonicalUrl: string) => {
+  const directDate = toDate(rawPubDate);
+  if (directDate) {
+    return directDate;
+  }
+
+  try {
+    const response = await safeFetch(canonicalUrl, {
+      headers: {
+        "User-Agent": "NuSift/1.0 Ingest-Agent",
+        Accept: "text/html,application/xhtml+xml",
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const html = await response.text();
+    const meta = extractPageMetadata(html);
+    return meta.publishedAt;
+  } catch {
+    return null;
+  }
+};
+
 const MAX_ARTICLE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const isWithinFreshnessWindow = (publishedAt: Date | null, now = new Date()) => {
@@ -259,6 +286,17 @@ const normalizePathForCategoryMatch = (url: string) => {
   }
 };
 
+const isUrlWithinCategoryPath = (url: string, categoryPathUrl: string) => {
+  const categoryPath = normalizePathForCategoryMatch(categoryPathUrl);
+  const articlePath = normalizePathForCategoryMatch(url);
+
+  if (categoryPath === "/") {
+    return true;
+  }
+
+  return articlePath === categoryPath || articlePath.startsWith(`${categoryPath}/`);
+};
+
 export const matchCategoryIdForUrl = (
   canonicalUrl: string,
   categories: SourceCategoryMatcher[],
@@ -324,6 +362,57 @@ const attachCategoryIds = async (candidates: IngestCandidate[]) => {
   }));
 };
 
+const resolveCategoryFeedUrl = async (
+  sourceId: string,
+  category: { id: string; pathUrl: string; rssFeedUrl: string | null } | null,
+) => {
+  if (!category || category.rssFeedUrl) {
+    return category?.rssFeedUrl || null;
+  }
+
+  try {
+    const discovery = await discoverFeedForUrl({
+      pageUrl: category.pathUrl,
+      existingFeedUrl: category.rssFeedUrl,
+      userAgent: "NuSift/1.0 Ingest-Agent",
+      preferScopedDirectFeed: true,
+    });
+    const discoveredFeedUrl = discovery.feedUrl;
+
+    await prisma.sourceCategory.update({
+      where: { id: category.id },
+      data: {
+        rssFeedUrl: discoveredFeedUrl,
+        rssStatus: discoveredFeedUrl ? "ACTIVE" : "NO_RSS_FOUND",
+        lastRssCheckAt: new Date(),
+      },
+    });
+
+    await logAgentScan({
+      sourceId,
+      categoryId: category.id,
+      status: discoveredFeedUrl
+        ? "CATEGORY_DISCOVERY_COMPLETED"
+        : "CATEGORY_DISCOVERY_FAILED",
+      executionTimeMs: 0,
+      errorLog: discoveredFeedUrl
+        ? `Resolved category feed ${discoveredFeedUrl} during pipeline ingest.`
+        : `No category feed found for ${category.pathUrl} during pipeline ingest.`,
+    });
+
+    return discoveredFeedUrl;
+  } catch (error: any) {
+    await logAgentScan({
+      sourceId,
+      categoryId: category.id,
+      status: "CATEGORY_DISCOVERY_FAILED",
+      executionTimeMs: 0,
+      errorLog: error?.message || String(error),
+    });
+    return null;
+  }
+};
+
 const formatPrismaError = (error: any) => {
   if (!error) return "Unknown Prisma error";
   const code = error.code ? `code=${error.code}` : null;
@@ -333,17 +422,29 @@ const formatPrismaError = (error: any) => {
   return [name, code, meta, message].filter(Boolean).join(" | ");
 };
 
-export async function ingestSource(sourceId: string) {
+export async function ingestSource(sourceId: string, categoryId?: string) {
   const startedAt = Date.now();
-  const source = await prisma.newsSource.findUnique({
-    where: { id: sourceId },
-    select: {
-      id: true,
-      frontPageUrl: true,
-      rssFeedUrl: true,
-      mediaName: true,
-    },
-  });
+  const [source, category] = await Promise.all([
+    prisma.newsSource.findUnique({
+      where: { id: sourceId },
+      select: {
+        id: true,
+        frontPageUrl: true,
+        rssFeedUrl: true,
+        mediaName: true,
+      },
+    }),
+    categoryId
+      ? prisma.sourceCategory.findUnique({
+          where: { id: categoryId },
+          select: {
+            id: true,
+            pathUrl: true,
+            rssFeedUrl: true,
+          },
+        })
+      : Promise.resolve(null),
+  ]);
 
   if (!source) {
     await logAgentScan({
@@ -355,19 +456,43 @@ export async function ingestSource(sourceId: string) {
     return { sourceId, candidates: [], failed: 1 };
   }
 
+  const categoryFeedUrl = await resolveCategoryFeedUrl(sourceId, category);
+  const isUsingDedicatedCategoryFeed = Boolean(categoryId && categoryFeedUrl);
+
   await logAgentScan({
     sourceId,
+    categoryId,
     status: "SOURCE_FETCH_STARTED",
     executionTimeMs: 0,
-    errorLog: `Fetching from ${source.rssFeedUrl || source.frontPageUrl} (rss=${Boolean(source.rssFeedUrl)})`,
+    errorLog: `Fetching from ${categoryFeedUrl || source.rssFeedUrl || category?.pathUrl || source.frontPageUrl} (rss=${Boolean(categoryFeedUrl || source.rssFeedUrl)})`,
   });
 
-  const feedUrls = buildFeedUrlCandidates(source.rssFeedUrl || null, source.frontPageUrl);
+  const preferredFeedUrl = categoryFeedUrl || source.rssFeedUrl || null;
+  const preferredFrontPageUrl = category?.pathUrl || source.frontPageUrl;
+  const feedUrls = buildFeedUrlCandidates(preferredFeedUrl, preferredFrontPageUrl);
   try {
     let response: Response | null = null;
     let xml = "";
-    let feedUrl = feedUrls[0] || source.frontPageUrl;
+    let feedUrl = feedUrls[0] || preferredFrontPageUrl;
     let lastFeedFetchError = "";
+
+    if (categoryFeedUrl) {
+      await logAgentScan({
+        sourceId,
+        categoryId,
+        status: "CATEGORY_FEED_USED",
+        executionTimeMs: 0,
+        errorLog: `Using category feed ${categoryFeedUrl}.`,
+      });
+    } else if (categoryId) {
+      await logAgentScan({
+        sourceId,
+        categoryId,
+        status: "CATEGORY_FEED_FALLBACK_TO_ROOT",
+        executionTimeMs: 0,
+        errorLog: `No category feed set. Falling back to root feed ${source.rssFeedUrl || source.frontPageUrl}.`,
+      });
+    }
 
     for (const candidateFeedUrl of feedUrls) {
       try {
@@ -387,6 +512,7 @@ export async function ingestSource(sourceId: string) {
         const parsedCandidateFeed = parseFeedItems(candidateXml);
         await logAgentScan({
           sourceId,
+          categoryId,
           status: parsedCandidateFeed.format === "rss" ? "RSS_PARSED" : parsedCandidateFeed.format === "atom" ? "ATOM_PARSED" : "FEED_EMPTY",
           executionTimeMs: Date.now() - startedAt,
           errorLog: `Parsed ${parsedCandidateFeed.items.length} ${parsedCandidateFeed.format.toUpperCase()} item(s) from ${candidateFeedUrl}. contentType=${getContentType(candidateResponse)} bodyLength=${candidateXml.length}.`,
@@ -408,6 +534,7 @@ export async function ingestSource(sourceId: string) {
     if (!response) {
       await logAgentScan({
         sourceId,
+        categoryId,
         status: "FEED_EMPTY",
         executionTimeMs: Date.now() - startedAt,
         errorLog: lastFeedFetchError || `No usable feed response from ${feedUrls.join(", ")}.`,
@@ -429,7 +556,15 @@ export async function ingestSource(sourceId: string) {
       }
 
       const canonicalUrl = canonicalFromLink(rawLink);
-      const publishedAt = toDate(item.pubDate);
+      if (
+        category?.pathUrl &&
+        !isUsingDedicatedCategoryFeed &&
+        !isUrlWithinCategoryPath(canonicalUrl, category.pathUrl)
+      ) {
+        skippedEmptyLink += 1;
+        continue;
+      }
+      const publishedAt = await resolvePublishedAtForFeedItem(item.pubDate, canonicalUrl);
       if (!isWithinFreshnessWindow(publishedAt, now)) {
         skippedStale += 1;
         continue;
@@ -442,6 +577,7 @@ export async function ingestSource(sourceId: string) {
 
       candidates.push({
         sourceId: source.id,
+        categoryId: categoryId || undefined,
         sourceUrl: source.frontPageUrl,
         canonicalUrl,
         rssGuid: item.guid.trim() || null,
@@ -459,15 +595,16 @@ export async function ingestSource(sourceId: string) {
     if (candidates.length === 0) {
       await logAgentScan({
         sourceId,
+        categoryId,
         status: "HTML_FALLBACK_ATTEMPTED",
         executionTimeMs: Date.now() - startedAt,
-        errorLog: `No RSS/Atom candidates found for ${feedUrl}. Trying HTML fallback at ${source.frontPageUrl}.`,
+        errorLog: `No RSS/Atom candidates found for ${feedUrl}. Trying HTML fallback at ${preferredFrontPageUrl}.`,
       });
 
       try {
-        const htmlResponse = feedUrl === source.frontPageUrl
+        const htmlResponse = feedUrl === preferredFrontPageUrl
           ? response
-          : await safeFetch(source.frontPageUrl, {
+          : await safeFetch(preferredFrontPageUrl, {
               headers: {
                 "User-Agent": "NuSift/1.0 Ingest-Agent",
                 Accept: "text/html,application/xhtml+xml",
@@ -477,26 +614,38 @@ export async function ingestSource(sourceId: string) {
         if (!htmlResponse.ok) {
           await logAgentScan({
             sourceId,
+            categoryId,
             status: `HTML_FALLBACK_FAILED_${htmlResponse.status}`,
             executionTimeMs: Date.now() - startedAt,
-            errorLog: `HTML fallback failed for ${source.frontPageUrl} with HTTP ${htmlResponse.status}.`,
+            errorLog: `HTML fallback failed for ${preferredFrontPageUrl} with HTTP ${htmlResponse.status}.`,
           });
           return { sourceId, candidates: [], failed: 1 };
         }
 
         const html = await htmlResponse.text();
-        const htmlCandidates = await extractHtmlCandidates(html, source.frontPageUrl, source.id);
+        const htmlCandidates = (await extractHtmlCandidates(html, preferredFrontPageUrl, source.id))
+          .filter((candidate) =>
+            category?.pathUrl && !isUsingDedicatedCategoryFeed
+              ? isUrlWithinCategoryPath(candidate.canonicalUrl, category.pathUrl)
+              : true,
+          )
+          .map((candidate) => ({
+            ...candidate,
+            categoryId: categoryId || candidate.categoryId,
+          }));
         candidates.push(...htmlCandidates);
 
         await logAgentScan({
           sourceId,
+          categoryId,
           status: "HTML_FALLBACK_COMPLETED",
           executionTimeMs: Date.now() - startedAt,
-          errorLog: `Prepared ${htmlCandidates.length} HTML fallback candidate(s) from ${source.frontPageUrl}.`,
+          errorLog: `Prepared ${htmlCandidates.length} HTML fallback candidate(s) from ${preferredFrontPageUrl}.`,
         });
       } catch (fallbackError: any) {
         await logAgentScan({
           sourceId,
+          categoryId,
           status: "HTML_FALLBACK_EXCEPTION",
           executionTimeMs: Date.now() - startedAt,
           errorLog: fallbackError?.message || String(fallbackError),
@@ -507,6 +656,7 @@ export async function ingestSource(sourceId: string) {
 
     await logAgentScan({
       sourceId,
+      categoryId,
       status: "SOURCE_FETCH_COMPLETED",
       executionTimeMs: Date.now() - startedAt,
       errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skippedEmptyLink}, skippedStale=${skippedStale}.`,
@@ -517,6 +667,7 @@ export async function ingestSource(sourceId: string) {
     const isSecurityError = error instanceof SSRFError;
     await logAgentScan({
       sourceId,
+      categoryId,
       status: isSecurityError ? "SOURCE_FETCH_BLOCKED_SECURITY" : "SOURCE_FETCH_EXCEPTION",
       executionTimeMs: Date.now() - startedAt,
       errorLog: error?.message || String(error),

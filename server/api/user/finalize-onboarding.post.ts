@@ -1,6 +1,7 @@
 // server/api/user/finalize-onboarding.post.ts
 import { prisma } from "../../utils/prisma";
 import { executeTargetedDiscovery } from "../../utils/discovery";
+import { executeTargetedCategoryDiscovery } from "../../utils/discovery";
 import { runNewsPipeline } from "../../utils/news-pipeline/orchestrator";
 import { requireUserId } from "../../utils/require-user";
 import { validateHostname, SSRFError } from "../../utils/ssrf-guard";
@@ -118,6 +119,7 @@ export default defineEventHandler(async (event) => {
     const maxActiveLimit = currentUser.tier === "PRO" ? 15 : 5;
     let currentlyActiveCount = 0;
     const targetedSourceIds = new Set<string>();
+    const targetedCategoryIds = new Set<string>();
 
     for (const rawSourceItem of submittedSources) {
       try {
@@ -225,8 +227,10 @@ export default defineEventHandler(async (event) => {
           // --- KATEGÓRIA ---
           if (exactCategory) {
             if (shouldBeActive) targetedSourceIds.add(exactCategory.newsSourceId);
+            if (shouldBeActive) targetedCategoryIds.add(exactCategory.id);
             if (exactCategory.newsSource && shouldRevalidateExistingSource(exactCategory.newsSource)) {
               targetedSourceIds.add(exactCategory.newsSource.id);
+              targetedCategoryIds.add(exactCategory.id);
             }
             await prisma.userCategorySubscription.upsert({
               where: {
@@ -293,6 +297,9 @@ export default defineEventHandler(async (event) => {
               },
               update: { isActive: shouldBeActive },
             });
+            if (shouldBeActive) {
+              targetedCategoryIds.add(newCat.id);
+            }
           }
         }
 
@@ -304,21 +311,20 @@ export default defineEventHandler(async (event) => {
       }
     }
 
-    if (targetedSourceIds.size > 0) {
+    if (targetedSourceIds.size > 0 || targetedCategoryIds.size > 0) {
       const sourceIds = [...targetedSourceIds];
-      event.waitUntil(
-        executeTargetedDiscovery(sourceIds).catch((err) =>
-          console.error(
-            "[Orchestrator] Background discovery loop crashed:",
-            err,
-          ),
-        ),
-      );
-      event.waitUntil(
-        runNewsPipeline(sourceIds).catch((err) =>
-          console.error("[Orchestrator] Background ingest pipeline crashed:", err),
-        ),
-      );
+      const categoryIds = [...targetedCategoryIds];
+      event.waitUntil((async () => {
+        if (categoryIds.length > 0) {
+          await executeTargetedCategoryDiscovery(categoryIds);
+        }
+        if (sourceIds.length > 0) {
+          await executeTargetedDiscovery(sourceIds);
+        }
+        await runNewsPipeline(sourceIds, categoryIds);
+      })().catch((err) =>
+        console.error("[Orchestrator] Background source processing crashed:", err),
+      ));
     }
 
     // Persist user profile changes AFTER all sources validated & processed
