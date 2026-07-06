@@ -60,6 +60,24 @@ const generateAcceptLanguageHeader = (langCode?: string) => {
   }
 };
 
+const formatDiscoveryEvidence = (discovery: {
+  detection: string;
+  scopeConfidence?: string;
+  score?: number;
+  topCandidates?: Array<{ feedUrl: string; detection: string; score: number }>;
+  lastError?: string;
+}) => {
+  const candidates =
+    discovery.topCandidates?.length
+      ? discovery.topCandidates
+          .slice(0, 3)
+          .map((candidate) => `${candidate.detection}:${candidate.score}:${candidate.feedUrl}`)
+          .join(" | ")
+      : "none";
+
+  return `method=${discovery.detection}, confidence=${discovery.scopeConfidence || "n/a"}, score=${discovery.score ?? 0}, candidates=${candidates}${discovery.lastError ? `, lastError=${discovery.lastError}` : ""}`;
+};
+
 export async function executeTargetedDiscovery(
   sourceIds: string[],
 ): Promise<void> {
@@ -152,6 +170,14 @@ export async function executeTargetedDiscovery(
       console.log(
         `[Targeted-Discovery][Database] Updated ID ${source.id} (${source.frontPageUrl}) status to: ${nextStatus}`,
       );
+      await logAgentScan({
+        sourceId: source.id,
+        status: "ROOT_DISCOVERY_COMPLETED",
+        executionTimeMs: 0,
+        errorLog: discovery.feedUrl
+          ? `Resolved root feed ${discovery.feedUrl}. ${formatDiscoveryEvidence(discovery)}`
+          : `No root feed found for ${source.frontPageUrl}. ${formatDiscoveryEvidence(discovery)}`,
+      });
     } catch (error: any) {
       if (error instanceof SSRFError) {
         console.warn(
@@ -248,8 +274,8 @@ export async function executeTargetedCategoryDiscovery(
         status: "CATEGORY_DISCOVERY_COMPLETED",
         executionTimeMs: Date.now() - startedAt,
         errorLog: discovery.feedUrl
-          ? `Resolved category feed ${discovery.feedUrl}.`
-          : `No category feed found for ${category.pathUrl}. ${discovery.lastError || ""}`.trim(),
+          ? `Resolved category feed ${discovery.feedUrl}. ${formatDiscoveryEvidence(discovery)}`
+          : `No category feed found for ${category.pathUrl}. ${formatDiscoveryEvidence(discovery)}`.trim(),
       });
     } catch (error: any) {
       await prisma.sourceCategory.update({

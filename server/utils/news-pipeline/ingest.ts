@@ -54,15 +54,49 @@ const parseAtomItems = (xml: string) => {
   return items;
 };
 
-const parseFeedItems = (xml: string) => {
-  const rssItems = parseRssItems(xml);
+const parseJsonFeedItems = (body: string) => {
+  try {
+    const parsed = JSON.parse(body);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      typeof parsed.version !== "string" ||
+      !parsed.version.toLowerCase().includes("jsonfeed") ||
+      !Array.isArray(parsed.items)
+    ) {
+      return [];
+    }
+
+    return parsed.items.map((item: any) => ({
+      title: cleanFeedValue(String(item?.title || "")),
+      link: cleanFeedValue(String(item?.url || item?.external_url || "")),
+      guid: cleanFeedValue(String(item?.id || item?.url || "")),
+      pubDate: cleanFeedValue(
+        String(item?.date_published || item?.date_modified || ""),
+      ),
+      description: cleanFeedValue(
+        String(item?.summary || item?.content_text || item?.content_html || ""),
+      ),
+    }));
+  } catch {
+    return [];
+  }
+};
+
+const parseFeedItems = (body: string) => {
+  const rssItems = parseRssItems(body);
   if (rssItems.length > 0) {
     return { format: "rss" as const, items: rssItems };
   }
 
-  const atomItems = parseAtomItems(xml);
+  const atomItems = parseAtomItems(body);
   if (atomItems.length > 0) {
     return { format: "atom" as const, items: atomItems };
+  }
+
+  const jsonItems = parseJsonFeedItems(body);
+  if (jsonItems.length > 0) {
+    return { format: "json" as const, items: jsonItems };
   }
 
   return { format: "unknown" as const, items: [] as Array<Record<string, string>> };
@@ -396,8 +430,8 @@ const resolveCategoryFeedUrl = async (
         : "CATEGORY_DISCOVERY_FAILED",
       executionTimeMs: 0,
       errorLog: discoveredFeedUrl
-        ? `Resolved category feed ${discoveredFeedUrl} during pipeline ingest.`
-        : `No category feed found for ${category.pathUrl} during pipeline ingest.`,
+        ? `Resolved category feed ${discoveredFeedUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}`
+        : `No category feed found for ${category.pathUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}${discovery.lastError ? `, lastError=${discovery.lastError}` : ""}`,
     });
 
     return discoveredFeedUrl;
@@ -513,7 +547,14 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
         await logAgentScan({
           sourceId,
           categoryId,
-          status: parsedCandidateFeed.format === "rss" ? "RSS_PARSED" : parsedCandidateFeed.format === "atom" ? "ATOM_PARSED" : "FEED_EMPTY",
+          status:
+            parsedCandidateFeed.format === "rss"
+              ? "RSS_PARSED"
+              : parsedCandidateFeed.format === "atom"
+                ? "ATOM_PARSED"
+                : parsedCandidateFeed.format === "json"
+                  ? "JSON_FEED_PARSED"
+                  : "FEED_EMPTY",
           executionTimeMs: Date.now() - startedAt,
           errorLog: `Parsed ${parsedCandidateFeed.items.length} ${parsedCandidateFeed.format.toUpperCase()} item(s) from ${candidateFeedUrl}. contentType=${getContentType(candidateResponse)} bodyLength=${candidateXml.length}.`,
         });
