@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isWithinFreshnessWindow, matchCategoryIdForUrl } from "./ingest";
+import { cleanFeedValue } from "./text";
 
 describe("matchCategoryIdForUrl", () => {
   it("matches the most specific category path for article URLs", () => {
@@ -34,5 +35,25 @@ describe("isWithinFreshnessWindow", () => {
   it("rejects articles older than 7 days or missing dates", () => {
     expect(isWithinFreshnessWindow(new Date("2026-06-26T11:59:59.000Z"), now)).toBe(false);
     expect(isWithinFreshnessWindow(null, now)).toBe(false);
+  });
+});
+
+describe("cleanFeedValue", () => {
+  it("unwraps CDATA-wrapped links so they remain valid URLs", () => {
+    expect(
+      cleanFeedValue(
+        "<![CDATA[https://www.szon.hu/helyi-sport/2026/07/atletika-valogatott-kovacs-lili-anita-tilki-flora]]>",
+      ),
+    ).toBe(
+      "https://www.szon.hu/helyi-sport/2026/07/atletika-valogatott-kovacs-lili-anita-tilki-flora",
+    );
+  });
+
+  it("decodes CDATA-wrapped titles and entities without stripping content", () => {
+    expect(
+      cleanFeedValue(
+        "<![CDATA[West Cork mum&apos;s urgent vaccination plea after losing daughter]]>",
+      ),
+    ).toBe("West Cork mum's urgent vaccination plea after losing daughter");
   });
 });

@@ -14,35 +14,45 @@ export default defineEventHandler(async (event) => {
   try {
     // 1. QUOTA GUARD: Only allow activation if there is available space
     if (isActive) {
-      const user = await prisma.user.findUnique({ where: { id: userId }, select: { tier: true } });
-      const maxLimit = user?.tier === 'PRO' ? 15 : 5;
-      
-      // We must calculate the active count using the exact same inheritance logic as the GET endpoint.
-      const rootSubscriptions = await prisma.userSourceSubscription.findMany({
-        where: { userId, isActive: true },
-        include: { newsSource: { select: { rssStatus: true } } }
-      });
-
-      const categorySubscriptions = await prisma.userCategorySubscription.findMany({
-        where: { userId, isActive: true },
-        include: {
-          category: {
-            select: { 
-              rssStatus: true,
-              newsSource: { select: { rssStatus: true } } 
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          tier: true,
+          sourceSubscriptions: {
+            select: {
+              id: true,
+              isActive: true,
+              newsSource: { select: { rssStatus: true } }
+            }
+          },
+          categorySubscriptions: {
+            select: {
+              id: true,
+              isActive: true,
+              category: {
+                select: {
+                  rssStatus: true,
+                  newsSource: { select: { rssStatus: true } }
+                }
+              }
             }
           }
         }
       });
 
+      const maxLimit = user?.tier === 'PRO' ? 15 : 5;
+
       // Calculate Root active count
-      const activeRoots = rootSubscriptions.filter(sub => 
+      const activeRoots = (user?.sourceSubscriptions || []).filter(sub => 
+        sub.isActive &&
         sub.newsSource.rssStatus !== 'FAILED' && 
         sub.newsSource.rssStatus !== 'DOMAIN_DEAD'
       ).length;
 
       // Calculate Category active count using hierarchical logic
-      const activeCats = categorySubscriptions.filter(sub => {
+      const activeCats = (user?.categorySubscriptions || []).filter(sub => {
+        if (!sub.isActive) return false;
+
         let finalStatus = sub.category.rssStatus;
         const parentStatus = sub.category.newsSource.rssStatus;
 

@@ -769,9 +769,10 @@ onMounted(async () => {
   }
 
   try {
-    const [sourcesResponse, analyticsResponse] = await Promise.all([
+const [sourcesResponse, analyticsMetricsResponse, analyticsTimelineResponse] = await Promise.all([
       $api<any>("/api/user/sources"),
-      $api<any>("/api/user/analytics"), // Az új, kibővített endpointod
+      $api<any>("/api/user/analytics-metrics"),
+      $api<any>("/api/user/analytics-timeline"),
     ]);
 
     if (sourcesResponse && sourcesResponse.success) {
@@ -797,30 +798,31 @@ onMounted(async () => {
       ).length;
     }
 
-    if (analyticsResponse && analyticsResponse.success) {
-      console.log("Analytics API response:", analyticsResponse); // Debug log az API válaszról
+    if (analyticsTimelineResponse && analyticsTimelineResponse.success) {
+      console.log("Analytics timeline API response:", analyticsTimelineResponse);
 
-      if (analyticsResponse.data) {
+      if (analyticsTimelineResponse.data) {
         console.log(
-          "Received timeline data from analytics API:",
-          analyticsResponse.data,
-        ); // Debug log a timeline adatokkal
-        rawTimelineData.value = analyticsResponse.data; // Átadjuk a prop-nak
+          "Received timeline data from analytics timeline API:",
+          analyticsTimelineResponse.data,
+        );
+        rawTimelineData.value = analyticsTimelineResponse.data;
       } else {
-        console.warn("Analytics API válasz nem tartalmaz 'data' mezőt.");
+        console.warn("Analytics timeline API response does not contain 'data'.");
       }
+    }
 
-      // Valós metrikák bekötése az új API válaszból
-      if (analyticsResponse.metrics) {
+    if (analyticsMetricsResponse && analyticsMetricsResponse.success) {
+      if (analyticsMetricsResponse.metrics) {
         console.log(
-          "Received metrics from analytics API:",
-          analyticsResponse.metrics,
-        ); // Debug log a metrikákról
+          "Received metrics from analytics metrics API:",
+          analyticsMetricsResponse.metrics,
+        );
         articlesStateMetrics.value = {
-          readArticles: analyticsResponse.metrics.read,
-          savedArticles: analyticsResponse.metrics.saved,
-          sharedArticles: analyticsResponse.metrics.shared,
-          rejectedArticles: analyticsResponse.metrics.rejected,
+          readArticles: analyticsMetricsResponse.metrics.read,
+          savedArticles: analyticsMetricsResponse.metrics.saved,
+          sharedArticles: analyticsMetricsResponse.metrics.shared,
+          rejectedArticles: analyticsMetricsResponse.metrics.rejected,
         };
       }
     }

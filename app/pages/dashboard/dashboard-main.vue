@@ -297,6 +297,65 @@
           >
             {{ isBackfillingArticleCategories ? "Backfilling..." : "Backfill article categories" }}
           </button>
+          <button
+            @click="auditScopedRss"
+            :disabled="isAuditingScopedRss"
+            class="rounded-lg border border-fuchsia-500/20 bg-fuchsia-500/10 px-4 py-2 text-sm font-bold text-fuchsia-100 transition-colors hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ isAuditingScopedRss ? "Building..." : "Build scoped source report" }}
+          </button>
+          <button
+            @click="normalizeScopedSources"
+            :disabled="isNormalizingScopedSources"
+            class="rounded-lg border border-violet-500/20 bg-violet-500/10 px-4 py-2 text-sm font-bold text-violet-100 transition-colors hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ isNormalizingScopedSources ? "Normalizing..." : "Normalize source URLs" }}
+          </button>
+          <button
+            @click="pruneScopedSources"
+            :disabled="isPruningScopedSources"
+            class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-4 py-2 text-sm font-bold text-rose-100 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ isPruningScopedSources ? "Pruning..." : "Prune invalid scoped sources" }}
+          </button>
+        </div>
+
+        <div
+          v-if="scopedSourceAuditSummary"
+          class="rounded-xl border border-outline-variant/20 bg-surface-container px-4 py-3"
+        >
+          <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Scoped source report
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Last report: {{ formatLogTime(scopedSourceAuditSummary.generatedAt) }} · {{ scopedSourceAuditSummary.totalSubPathSources }} sub-path source(s)
+              </p>
+            </div>
+          </div>
+          <div class="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+            <div class="rounded-lg bg-surface-container-highest px-3 py-2 text-on-surface-variant">
+              <span class="block text-[10px] uppercase tracking-wide">Keep</span>
+              <span class="mt-1 block text-sm font-bold text-on-surface">{{ scopedSourceAuditSummary.keep }}</span>
+            </div>
+            <div class="rounded-lg bg-surface-container-highest px-3 py-2 text-violet-200">
+              <span class="block text-[10px] uppercase tracking-wide">Normalize</span>
+              <span class="mt-1 block text-sm font-bold">{{ scopedSourceAuditSummary.normalizeToHttps }}</span>
+            </div>
+            <div class="rounded-lg bg-surface-container-highest px-3 py-2 text-rose-200">
+              <span class="block text-[10px] uppercase tracking-wide">Delete</span>
+              <span class="mt-1 block text-sm font-bold">{{ scopedSourceAuditSummary.candidateDeleteInvalidSubpath }}</span>
+            </div>
+            <div class="rounded-lg bg-surface-container-highest px-3 py-2 text-fuchsia-200">
+              <span class="block text-[10px] uppercase tracking-wide">Shared root</span>
+              <span class="mt-1 block text-sm font-bold">{{ scopedSourceAuditSummary.candidateSharedRootOnly }}</span>
+            </div>
+            <div class="rounded-lg bg-surface-container-highest px-3 py-2 text-amber-200">
+              <span class="block text-[10px] uppercase tracking-wide">Manual review</span>
+              <span class="mt-1 block text-sm font-bold">{{ scopedSourceAuditSummary.needsManualReview }}</span>
+            </div>
+          </div>
         </div>
 
         <div class="flex flex-col gap-3 rounded-xl border border-outline-variant/20 bg-surface-container px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -481,10 +540,22 @@ const isPipelineRunning = ref(false);
 const isFixingRssStatus = ref(false);
 const isImportingRss = ref(false);
 const isBackfillingArticleCategories = ref(false);
+const isAuditingScopedRss = ref(false);
+const isNormalizingScopedSources = ref(false);
+const isPruningScopedSources = ref(false);
 const isDev = import.meta.env.DEV;
 const isClearingLogs = ref(false);
 const agentLogs = ref<Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
 const agentSourceCount = ref(0);
+const scopedSourceAuditSummary = ref<null | {
+  generatedAt: string;
+  totalSubPathSources: number;
+  keep: number;
+  normalizeToHttps: number;
+  candidateDeleteInvalidSubpath: number;
+  candidateSharedRootOnly: number;
+  needsManualReview: number;
+}>(null);
 const availableSources = ref<SourceFilterOption[]>([]);
 const toast = ref({ show: false, message: "", type: "success" as "success" | "error" });
 
@@ -530,9 +601,7 @@ const stopDevPanelPolling = () => {
 };
 
 onMounted(() => {
-  if (feedStore.articles.length === 0) {
-    feedStore.fetchFeed();
-  }
+  void feedStore.fetchFeed();
   void loadAvailableSources();
   if (isDev) {
     void refreshDevPanel();
@@ -564,9 +633,42 @@ const loadEligibleSourceCount = async () => {
   }
 };
 
+const loadScopedSourceAuditSummary = async () => {
+  if (!isDev) return;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      report: null | {
+        generatedAt: string;
+        summary: {
+          totalSubPathSources: number;
+          keep: number;
+          normalizeToHttps: number;
+          candidateDeleteInvalidSubpath: number;
+          candidateSharedRootOnly: number;
+          needsManualReview: number;
+        };
+      };
+    }>("/api/dev/scoped-source-audit");
+
+    if (!response.report) {
+      scopedSourceAuditSummary.value = null;
+      return;
+    }
+
+    scopedSourceAuditSummary.value = {
+      generatedAt: response.report.generatedAt,
+      ...response.report.summary,
+    };
+  } catch (error: any) {
+    if (error?.response?.status === 429 || error?.status === 429) return;
+    throw error;
+  }
+};
+
 const refreshDevPanel = async () => {
   try {
-    await Promise.all([loadAgentLogs(), loadEligibleSourceCount()]);
+    await Promise.all([loadAgentLogs(), loadEligibleSourceCount(), loadScopedSourceAuditSummary()]);
   } catch (error) {
     console.error("Failed to refresh dev panel:", error);
   }
@@ -747,7 +849,7 @@ const backfillArticleCategories = async () => {
       message: `Backfill finished: ${response.updated ?? 0} article(s) updated from ${response.scanned ?? 0} scanned across ${response.matchedSources ?? 0} source(s).`,
       type: "success",
     };
-    await feedStore.fetchFeed();
+    await feedStore.fetchFeed({ force: true });
     await refreshDevPanel();
     window.setTimeout(() => {
       toast.value.show = false;
@@ -768,6 +870,130 @@ const backfillArticleCategories = async () => {
   }
 };
 
+const auditScopedRss = async () => {
+  if (isAuditingScopedRss.value) return;
+
+  isAuditingScopedRss.value = true;
+  startDevPanelPolling();
+  try {
+    const response = await $api<{
+      ok: boolean;
+      reportPath: string;
+      summary: {
+        totalSubPathSources: number;
+        normalizeToHttps: number;
+        candidateDeleteInvalidSubpath: number;
+        candidateSharedRootOnly: number;
+        needsManualReview: number;
+      };
+    }>("/api/dev/scoped-source-audit", {
+      method: "POST",
+    });
+    toast.value = {
+      show: true,
+      message: `Scoped source report ready: normalize ${response.summary?.normalizeToHttps ?? 0}, delete candidates ${response.summary?.candidateDeleteInvalidSubpath ?? 0}, shared-root ${response.summary?.candidateSharedRootOnly ?? 0}.`,
+      type: "success",
+    };
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Scoped source audit failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isAuditingScopedRss.value = false;
+    await refreshDevPanel();
+    stopDevPanelPolling();
+  }
+};
+
+const normalizeScopedSources = async () => {
+  if (isNormalizingScopedSources.value) return;
+
+  isNormalizingScopedSources.value = true;
+  startDevPanelPolling();
+  try {
+    const response = await $api<{
+      ok: boolean;
+      attempted: number;
+      updated: number;
+      remaining: number;
+    }>("/api/dev/scoped-source-normalize", {
+      method: "POST",
+      body: { limit: 25 },
+    });
+    toast.value = {
+      show: true,
+      message: `Scoped source normalization finished: ${response.updated ?? 0}/${response.attempted ?? 0} updated, ${response.remaining ?? 0} remaining in report.`,
+      type: "success",
+    };
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Scoped source normalization failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isNormalizingScopedSources.value = false;
+    await refreshDevPanel();
+    stopDevPanelPolling();
+  }
+};
+
+const pruneScopedSources = async () => {
+  if (isPruningScopedSources.value) return;
+
+  isPruningScopedSources.value = true;
+  startDevPanelPolling();
+  try {
+    const response = await $api<{
+      ok: boolean;
+      attempted: number;
+      deleted: number;
+      remaining: number;
+    }>("/api/dev/scoped-source-prune", {
+      method: "POST",
+      body: { limit: 25 },
+    });
+    toast.value = {
+      show: true,
+      message: `Scoped source prune finished: ${response.deleted ?? 0}/${response.attempted ?? 0} deleted, ${response.remaining ?? 0} remaining in report.`,
+      type: "success",
+    };
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Scoped source prune failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isPruningScopedSources.value = false;
+    await refreshDevPanel();
+    stopDevPanelPolling();
+  }
+};
+
 const clearAgentLogs = async () => {
   if (!isDev || isClearingLogs.value) return;
   isClearingLogs.value = true;
@@ -776,7 +1002,7 @@ const clearAgentLogs = async () => {
       method: "DELETE",
     });
     agentLogs.value = [];
-    await feedStore.fetchFeed();
+    await feedStore.fetchFeed({ force: true });
     toast.value = {
       show: true,
       message: `Cleared ${response.articleCount ?? 0} article(s) and ${response.deletedCount ?? 0} agent log(s).`,
@@ -813,7 +1039,7 @@ const runManualPipeline = async () => {
       message: `Pipeline finished: ${response.result?.inserted ?? 0} inserted, ${response.result?.skipped ?? 0} skipped, ${response.result?.failed ?? 0} failed.`,
       type: "success",
     };
-    await feedStore.fetchFeed();
+    await feedStore.fetchFeed({ force: true });
     window.setTimeout(() => {
       toast.value.show = false;
     }, 3500);

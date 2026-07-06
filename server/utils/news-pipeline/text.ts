@@ -33,6 +33,12 @@ export const decodeHtmlEntities = (input: string) =>
     return HTML_ENTITY_MAP[entity.toLowerCase()] ?? _match;
   });
 
+export const stripCdata = (input: string) =>
+  input.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1");
+
+export const cleanFeedValue = (input: string) =>
+  decodeHtmlEntities(stripCdata(input).trim());
+
 export const normalizeUrl = (rawUrl: string) => {
   const url = new URL(rawUrl);
   url.hash = "";

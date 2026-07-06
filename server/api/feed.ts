@@ -12,29 +12,22 @@ const toSourceLabel = (frontPageUrl: string) => {
 export default defineEventHandler(async (event) => {
   const userId = requireUserId(event);
 
-  const [rootSubscriptions, categorySubscriptions] = await Promise.all([
-    prisma.userSourceSubscription.findMany({
-      where: {
-        userId,
-        isActive: true,
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      sourceSubscriptions: {
+        where: { isActive: true },
+        select: { sourceId: true },
       },
-      select: {
-        sourceId: true,
+      categorySubscriptions: {
+        where: { isActive: true },
+        select: { categoryId: true },
       },
-    }),
-    prisma.userCategorySubscription.findMany({
-      where: {
-        userId,
-        isActive: true,
-      },
-      select: {
-        categoryId: true,
-      },
-    }),
-  ]);
+    },
+  });
 
-  const sourceIds = rootSubscriptions.map((subscription) => subscription.sourceId);
-  const categoryIds = categorySubscriptions.map((subscription) => subscription.categoryId);
+  const sourceIds = user?.sourceSubscriptions.map((subscription) => subscription.sourceId) || [];
+  const categoryIds = user?.categorySubscriptions.map((subscription) => subscription.categoryId) || [];
 
   if (sourceIds.length === 0 && categoryIds.length === 0) {
     return [];

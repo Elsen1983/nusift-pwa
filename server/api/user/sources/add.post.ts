@@ -3,6 +3,7 @@ import { prisma } from "../../../utils/prisma";
 import { requireUserId } from "../../../utils/require-user";
 import { executeTargetedDiscovery } from "../../../utils/discovery";
 import { runNewsPipeline } from "../../../utils/news-pipeline/orchestrator";
+import { shouldRevalidateExistingSource } from "../../../utils/source-trust";
 
 export default defineEventHandler(async (event) => {
   // 1. Authentication (session-guard validates tokenVersion)
@@ -23,10 +24,43 @@ export default defineEventHandler(async (event) => {
 
   try {
     const targetedSourceIds = new Set<string>();
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        tier: true,
+        sourceSubscriptions: {
+          select: {
+            id: true,
+            isActive: true,
+            newsSource: { select: { rssStatus: true } },
+          },
+        },
+        categorySubscriptions: {
+          select: {
+            id: true,
+            isActive: true,
+            category: {
+              select: {
+                rssStatus: true,
+                newsSource: { select: { rssStatus: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw createError({
+        statusCode: 404,
+        statusMessage: "Not Found",
+        message: "Felhasználó nem található.",
+      });
+    }
+
     // 2. STORAGE LIMIT (Max 50 total)
     const totalCount =
-      (await prisma.userSourceSubscription.count({ where: { userId } })) +
-      (await prisma.userCategorySubscription.count({ where: { userId } }));
+      user.sourceSubscriptions.length + user.categorySubscriptions.length;
 
     if (totalCount >= 50) {
       throw createError({
@@ -37,38 +71,18 @@ export default defineEventHandler(async (event) => {
     }
 
     // 3. ACTIVATION QUOTA (5 or 15 active - Hierarchical Filter Sync)
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { tier: true }, // CORRECTED: Removed preferredLanguage
-    });
+    const maxActiveLimit = user.tier === "PRO" ? 15 : 5;
 
-    const maxActiveLimit = user?.tier === "PRO" ? 15 : 5;
-
-    const rootSubscriptions = await prisma.userSourceSubscription.findMany({
-      where: { userId, isActive: true },
-      include: { newsSource: { select: { rssStatus: true } } },
-    });
-
-    const categorySubscriptions =
-      await prisma.userCategorySubscription.findMany({
-        where: { userId, isActive: true },
-        include: {
-          category: {
-            select: {
-              rssStatus: true,
-              newsSource: { select: { rssStatus: true } },
-            },
-          },
-        },
-      });
-
-    const activeRoots = rootSubscriptions.filter(
+    const activeRoots = user.sourceSubscriptions.filter(
       (sub) =>
+        sub.isActive &&
         sub.newsSource.rssStatus !== "FAILED" &&
         sub.newsSource.rssStatus !== "DOMAIN_DEAD",
     ).length;
 
-    const activeCats = categorySubscriptions.filter((sub) => {
+    const activeCats = user.categorySubscriptions.filter((sub) => {
+      if (!sub.isActive) return false;
+
       let finalStatus = sub.category.rssStatus;
       const parentStatus = sub.category.newsSource.rssStatus;
 
@@ -98,6 +112,14 @@ export default defineEventHandler(async (event) => {
         frontPageUrl: { contains: cleanIncomingHostname, mode: "insensitive" }
         // CORRECTED: Removed language filtering entirely to allow deduplication
       },
+      select: {
+        id: true,
+        frontPageUrl: true,
+        rssFeedUrl: true,
+        rssStatus: true,
+        lastRssCheckAt: true,
+        isSystemImported: true,
+      },
     });
 
     const existingRoot = potentialRootMatches.find((dbSource) => {
@@ -118,7 +140,20 @@ export default defineEventHandler(async (event) => {
       where: {
         pathUrl: { contains: cleanIncomingHostname, mode: "insensitive" },
       },
-      include: { newsSource: true }, 
+      select: {
+        id: true,
+        pathUrl: true,
+        newsSource: {
+          select: {
+            id: true,
+            frontPageUrl: true,
+            rssFeedUrl: true,
+            rssStatus: true,
+            lastRssCheckAt: true,
+            isSystemImported: true,
+          },
+        },
+      },
     });
 
     const existingCategory = potentialCategoryMatches.find((dbCat) => {
@@ -152,6 +187,12 @@ export default defineEventHandler(async (event) => {
       if (shouldBeActive && existingCategory.newsSource?.id) {
         targetedSourceIds.add(existingCategory.newsSource.id);
       }
+      if (
+        existingCategory.newsSource &&
+        shouldRevalidateExistingSource(existingCategory.newsSource)
+      ) {
+        targetedSourceIds.add(existingCategory.newsSource.id);
+      }
     } else if (existingRoot) {
       console.log(`[Source-Manager] Linked to existing ROOT source: ${existingRoot.id}`);
 
@@ -161,6 +202,9 @@ export default defineEventHandler(async (event) => {
         update: { isActive: shouldBeActive },
       });
       if (shouldBeActive) {
+        targetedSourceIds.add(existingRoot.id);
+      }
+      if (shouldRevalidateExistingSource(existingRoot)) {
         targetedSourceIds.add(existingRoot.id);
       }
     } else {

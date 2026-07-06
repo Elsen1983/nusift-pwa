@@ -169,6 +169,290 @@ export function buildFeedUrlCandidates(feedUrl: string | null, frontPageUrl?: st
   return [...candidates];
 }
 
+const normalizeUrlForCompare = (value: string) => value.replace(/\/+$/, "").toLowerCase();
+
+const extractFeedLinks = (body: string) => {
+  const links: string[] = [];
+  const itemRegex = /<item\b[\s\S]*?<\/item>/gi;
+  const entryRegex = /<entry\b[\s\S]*?<\/entry>/gi;
+
+  for (const match of body.matchAll(itemRegex)) {
+    const block = match[0] || "";
+    const link = block.match(/<link[^>]*>([\s\S]*?)<\/link>/i)?.[1]?.trim();
+    if (link) links.push(link);
+  }
+
+  for (const match of body.matchAll(entryRegex)) {
+    const block = match[0] || "";
+    const link =
+      block.match(/<link[^>]+href=["']([^"']+)["'][^>]*\/?>/i)?.[1]?.trim() ||
+      block.match(/<id[^>]*>([\s\S]*?)<\/id>/i)?.[1]?.trim();
+    if (link) links.push(link);
+  }
+
+  return links;
+};
+
+const toComparablePath = (rawUrl: string) => {
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.pathname.replace(/\/+$/, "").toLowerCase() || "/";
+  } catch {
+    return "/";
+  }
+};
+
+export const isInvalidSubPathRedirect = (
+  requestedFrontPageUrl: string,
+  finalResolvedUrl: string,
+) => {
+  const requestedPath = toComparablePath(requestedFrontPageUrl);
+  const finalPath = toComparablePath(finalResolvedUrl);
+
+  if (requestedPath === "/") return false;
+  if (finalPath === requestedPath || finalPath.startsWith(`${requestedPath}/`)) {
+    return false;
+  }
+
+  return true;
+};
+
+const toComparableHost = (rawUrl: string) => {
+  try {
+    return new URL(rawUrl).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+};
+
+export const normalizeFrontPageUrlForAudit = (rawUrl: string) => {
+  const parsed = new URL(rawUrl);
+  parsed.protocol = "https:";
+
+  if (!parsed.pathname || parsed.pathname === "") {
+    parsed.pathname = "/";
+  }
+
+  if (parsed.pathname !== "/" && !parsed.pathname.endsWith("/")) {
+    parsed.pathname = `${parsed.pathname}/`;
+  }
+
+  parsed.hash = "";
+  return parsed.toString();
+};
+
+export const isSameSourceAfterProtocolNormalization = (
+  requestedFrontPageUrl: string,
+  finalResolvedUrl: string,
+) => {
+  return (
+    toComparableHost(requestedFrontPageUrl) === toComparableHost(finalResolvedUrl) &&
+    toComparablePath(requestedFrontPageUrl) === toComparablePath(finalResolvedUrl)
+  );
+};
+
+export const classifyFeedForSource = (
+  frontPageUrl: string,
+  candidateFeedUrl: string,
+  feedBody: string,
+) => {
+  const sourcePath = toComparablePath(frontPageUrl);
+  if (sourcePath === "/") {
+    return "ROOT" as const;
+  }
+
+  const links = extractFeedLinks(feedBody);
+  const normalizedSource = normalizeUrlForCompare(frontPageUrl);
+  const directMatches = links.filter((link) => {
+    const normalizedLink = normalizeUrlForCompare(link);
+    return normalizedLink === normalizedSource || normalizedLink.startsWith(`${normalizedSource}/`);
+  });
+
+  if (directMatches.length > 0) {
+    return "SCOPED" as const;
+  }
+
+  try {
+    const sourceHost = new URL(frontPageUrl).hostname.replace(/^www\./, "").toLowerCase();
+    const feedPath = toComparablePath(candidateFeedUrl);
+    const isRootFeedPath = ["/rss", "/rss.xml", "/feed"].includes(feedPath) || candidateFeedUrl.includes("?service=rss");
+    const sameHostItems = links.filter((link) => {
+      try {
+        return new URL(link).hostname.replace(/^www\./, "").toLowerCase() === sourceHost;
+      } catch {
+        return false;
+      }
+    });
+
+    if (isRootFeedPath && sameHostItems.length > 0) {
+      return "SHARED_ROOT" as const;
+    }
+  } catch {}
+
+  return "UNRELATED" as const;
+};
+
+export async function discoverScopedFeedForSource(
+  frontPageUrl: string,
+  currentRssFeedUrl?: string | null,
+) {
+  const normalizedFrontPageUrl = normalizeFrontPageUrlForAudit(frontPageUrl);
+  const sourceUrl = new URL(normalizedFrontPageUrl);
+  const sourcePath = sourceUrl.pathname.replace(/\/+$/, "");
+  const candidateUrls = new Set<string>();
+  const inspectedCandidates: Array<{
+    candidateUrl: string;
+    status: "verified" | "failed";
+    scope: "SCOPED" | "SHARED_ROOT" | "UNRELATED" | "ROOT" | "UNKNOWN";
+    reason: string;
+  }> = [];
+
+  const addCandidate = (value?: string | null) => {
+    if (!value) return;
+    candidateUrls.add(value);
+  };
+
+  addCandidate(currentRssFeedUrl || null);
+  addCandidate(`${sourceUrl.origin}${sourcePath}/rss`);
+  addCandidate(`${sourceUrl.origin}${sourcePath}/rss.xml`);
+  addCandidate(`${sourceUrl.origin}${sourcePath}/feed`);
+  addCandidate(`${sourceUrl.origin}${sourcePath}?service=rss`);
+
+  let pageValidation: {
+    exists: boolean;
+    invalidSubPath: boolean;
+    reason: string;
+    finalUrl?: string;
+    normalizedUrl: string;
+    shouldUpdateFrontPageUrl: boolean;
+  } = {
+    exists: true,
+    invalidSubPath: false,
+    reason: "Front page responded successfully.",
+    normalizedUrl: normalizedFrontPageUrl,
+    shouldUpdateFrontPageUrl: normalizedFrontPageUrl !== frontPageUrl,
+  };
+
+  try {
+    const response = await safeFetch(normalizedFrontPageUrl, {
+      signal: AbortSignal.timeout(8000),
+      headers: {
+        "User-Agent": "NuSift/1.0 RSS-Scope-Audit",
+        Accept: "text/html,application/xhtml+xml",
+      },
+    });
+
+    if (!response.ok) {
+      pageValidation = {
+        exists: false,
+        invalidSubPath: response.status === 404 || response.status === 410,
+        reason: `Front page returned HTTP ${response.status}.`,
+        finalUrl: response.url,
+        normalizedUrl: normalizedFrontPageUrl,
+        shouldUpdateFrontPageUrl: normalizedFrontPageUrl !== frontPageUrl,
+      };
+    } else {
+      if (
+        !isSameSourceAfterProtocolNormalization(normalizedFrontPageUrl, response.url) &&
+        isInvalidSubPathRedirect(normalizedFrontPageUrl, response.url)
+      ) {
+        pageValidation = {
+          exists: false,
+          invalidSubPath: true,
+          reason: `Front page redirected away from requested sub-path to ${response.url}.`,
+          finalUrl: response.url,
+          normalizedUrl: normalizedFrontPageUrl,
+          shouldUpdateFrontPageUrl: normalizedFrontPageUrl !== frontPageUrl,
+        };
+      }
+      const html = await response.text();
+      const alternateMatches = html.matchAll(
+        /<link[^>]+type=["']application\/(?:rss\+xml|atom\+xml|xml|rdf\+xml)["'][^>]+href=["']([^"']+)["']/gi,
+      );
+
+      for (const match of alternateMatches) {
+        const rawHref = match[1];
+        if (!rawHref) continue;
+        try {
+          addCandidate(new URL(rawHref, normalizedFrontPageUrl).toString());
+        } catch {}
+      }
+    }
+  } catch (error: any) {
+    pageValidation = {
+      exists: false,
+      invalidSubPath: false,
+      reason: error?.message || String(error),
+      normalizedUrl: normalizedFrontPageUrl,
+      shouldUpdateFrontPageUrl: normalizedFrontPageUrl !== frontPageUrl,
+    };
+  }
+
+  let scopedFeedUrl: string | null = null;
+  let sharedRootFeedUrl: string | null = null;
+
+  for (const candidateUrl of candidateUrls) {
+    try {
+      const response = await safeFetch(candidateUrl, {
+        signal: AbortSignal.timeout(8000),
+        headers: {
+          "User-Agent": "NuSift/1.0 RSS-Scope-Audit",
+          Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+        },
+      });
+
+      if (!response.ok) {
+        inspectedCandidates.push({
+          candidateUrl,
+          status: "failed",
+          scope: "UNKNOWN",
+          reason: `HTTP ${response.status}`,
+        });
+        continue;
+      }
+
+      const body = await response.text();
+      if (!looksLikeFeed(body)) {
+        inspectedCandidates.push({
+          candidateUrl,
+          status: "failed",
+          scope: "UNKNOWN",
+          reason: "Payload did not look like a feed.",
+        });
+        continue;
+      }
+
+      const scope = classifyFeedForSource(frontPageUrl, candidateUrl, body);
+      inspectedCandidates.push({
+        candidateUrl,
+        status: "verified",
+        scope,
+        reason: `Verified ${scope.toLowerCase()} feed candidate.`,
+      });
+
+      if (scope === "SCOPED" && !scopedFeedUrl) {
+        scopedFeedUrl = candidateUrl;
+      } else if (scope === "SHARED_ROOT" && !sharedRootFeedUrl) {
+        sharedRootFeedUrl = candidateUrl;
+      }
+    } catch (error: any) {
+      inspectedCandidates.push({
+        candidateUrl,
+        status: "failed",
+        scope: "UNKNOWN",
+        reason: error?.message || String(error),
+      });
+    }
+  }
+
+  return {
+    pageValidation,
+    scopedFeedUrl,
+    sharedRootFeedUrl,
+    inspectedCandidates,
+  };
+}
+
 const looksLikeFeed = (body: string) => {
   const sample = body.slice(0, 4000).toLowerCase();
   return (
@@ -229,4 +513,8 @@ export async function verifyImportedRssFeed(rssFeedUrl: string | null) {
 
 export function getImportRssReportPath() {
   return path.join(process.cwd(), "data", "import-rss-report.json");
+}
+
+export function getScopedRssAuditReportPath() {
+  return path.join(process.cwd(), "data", "scoped-rss-audit-report.json");
 }

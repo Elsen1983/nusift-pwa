@@ -2,7 +2,7 @@ import { prisma } from "../prisma";
 import { safeFetch } from "../ssrf-guard";
 import { SSRFError } from "../ssrf-guard";
 import { logAgentScan } from "./log";
-import { hashText, normalizeUrl, stripHtml } from "./text";
+import { cleanFeedValue, hashText, normalizeUrl, stripHtml } from "./text";
 import type { IngestCandidate } from "./types";
 import { buildFeedUrlCandidates } from "./import-rss";
 
@@ -10,8 +10,10 @@ const parseRssItems = (xml: string) => {
   const items: Array<Record<string, string>> = [];
   const itemRegex = /<item\b[\s\S]*?<\/item>/gi;
   const readTag = (block: string, tag: string) =>
-    block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"))?.[1] ||
-    "";
+    cleanFeedValue(
+      block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"))?.[1] ||
+        "",
+    );
 
   for (const match of xml.matchAll(itemRegex)) {
     const block = match[0] || "";
@@ -31,15 +33,17 @@ const parseAtomItems = (xml: string) => {
   const items: Array<Record<string, string>> = [];
   const entryRegex = /<entry\b[\s\S]*?<\/entry>/gi;
   const readTag = (block: string, tag: string) =>
-    block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"))?.[1] ||
-    "";
+    cleanFeedValue(
+      block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"))?.[1] ||
+        "",
+    );
 
   for (const match of xml.matchAll(entryRegex)) {
     const block = match[0] || "";
     const linkMatch = block.match(/<link[^>]+href=["']([^"']+)["'][^>]*\/?>/i);
     items.push({
       title: readTag(block, "title"),
-      link: linkMatch?.[1] || "",
+      link: cleanFeedValue(linkMatch?.[1] || ""),
       guid: readTag(block, "id"),
       pubDate: readTag(block, "updated") || readTag(block, "published"),
       description: readTag(block, "summary") || readTag(block, "content"),
@@ -414,28 +418,20 @@ export async function ingestSource(sourceId: string) {
     const candidates: IngestCandidate[] = [];
     const parsedFeed = parseFeedItems(xml);
     const now = new Date();
+    let skippedEmptyLink = 0;
+    let skippedStale = 0;
 
     for (const item of parsedFeed.items) {
       const rawLink = item.link.trim();
       if (!rawLink) {
-        await logAgentScan({
-          sourceId,
-          status: "ITEM_SKIPPED_EMPTY_LINK",
-          executionTimeMs: 0,
-          errorLog: `Skipped feed item without link: ${item.title || "(untitled)"}.`,
-        });
+        skippedEmptyLink += 1;
         continue;
       }
 
       const canonicalUrl = canonicalFromLink(rawLink);
       const publishedAt = toDate(item.pubDate);
       if (!isWithinFreshnessWindow(publishedAt, now)) {
-        await logAgentScan({
-          sourceId,
-          status: "ITEM_SKIPPED_STALE",
-          executionTimeMs: 0,
-          errorLog: `Skipped stale/undated item: ${item.title || canonicalUrl}. pubDate=${item.pubDate || "(missing)"}`,
-        });
+        skippedStale += 1;
         continue;
       }
       const title = stripHtml(item.title || canonicalUrl);
@@ -513,7 +509,7 @@ export async function ingestSource(sourceId: string) {
       sourceId,
       status: "SOURCE_FETCH_COMPLETED",
       executionTimeMs: Date.now() - startedAt,
-      errorLog: `Prepared ${candidates.length} candidate(s).`,
+      errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skippedEmptyLink}, skippedStale=${skippedStale}.`,
     });
 
     return { sourceId, candidates: await attachCategoryIds(candidates), failed: 0 };
@@ -567,71 +563,115 @@ export async function ingestSource(sourceId: string) {
 }
 
 export async function persistCandidates(candidates: IngestCandidate[]) {
+  if (candidates.length === 0) {
+    return { inserted: 0, skipped: 0, failed: 0 };
+  }
+
   let inserted = 0;
   let skipped = 0;
   let failed = 0;
 
-  for (const candidate of candidates) {
-    const duplicate = await prisma.article.findFirst({
-      where: {
-        OR: [
-          candidate.rssGuid ? { rssGuid: candidate.rssGuid } : undefined,
-          { canonicalUrl: candidate.canonicalUrl },
-          { contentHash: candidate.contentHash },
-        ].filter(Boolean) as any,
-      },
-      select: { id: true },
-    });
+  const dedupedCandidates: IngestCandidate[] = [];
+  const seenKeys = new Set<string>();
 
-    if (duplicate) {
+  for (const candidate of candidates) {
+    const dedupeKey = [
+      candidate.rssGuid || "",
+      candidate.canonicalUrl || "",
+      candidate.contentHash || "",
+    ].join("|");
+
+    if (seenKeys.has(dedupeKey)) {
       skipped += 1;
-      await logAgentScan({
-        sourceId: candidate.sourceId,
-        status: "ARTICLE_DUPLICATE_SKIPPED",
-        executionTimeMs: 0,
-        errorLog: `Skipped duplicate article: ${candidate.title} | ${candidate.canonicalUrl}`,
-      });
       continue;
     }
 
-    try {
-      await prisma.article.create({
-        data: {
-          title: candidate.title,
-          sourceId: candidate.sourceId,
-          categoryId: candidate.categoryId,
-          sourceUrl: candidate.sourceUrl,
-          canonicalUrl: candidate.canonicalUrl,
-          rssGuid: candidate.rssGuid,
-          contentHash: candidate.contentHash,
-          bodyText: candidate.bodyText,
-          publishedAt: candidate.publishedAt,
-          date: candidate.publishedAt || new Date(),
-          processingStage: "INGESTED",
-          processingStatus: "SUCCESS",
-          isPaywall: candidate.isPaywall,
-          tags: candidate.rawTags,
-          signals: candidate.rawSignals,
-          reasoning: candidate.reasoning,
-        },
-      });
-      inserted += 1;
-      await logAgentScan({
-        sourceId: candidate.sourceId,
-        status: "ARTICLE_INSERTED",
-        executionTimeMs: 0,
-        errorLog: `Inserted article: ${candidate.title} | ${candidate.canonicalUrl}`,
-      });
-    } catch (error: any) {
-      failed += 1;
-      const prismaErrorDetails = formatPrismaError(error);
-      await logAgentScan({
-        sourceId: candidate.sourceId,
-        status: "ARTICLE_INSERT_FAILED",
-        executionTimeMs: 0,
-        errorLog: `Insert failed for article: ${candidate.title} | ${candidate.canonicalUrl} | ${prismaErrorDetails}`,
-      });
+    seenKeys.add(dedupeKey);
+    dedupedCandidates.push(candidate);
+  }
+
+  const rssGuids = [...new Set(dedupedCandidates.map((candidate) => candidate.rssGuid).filter(Boolean))] as string[];
+  const canonicalUrls = [...new Set(dedupedCandidates.map((candidate) => candidate.canonicalUrl).filter(Boolean))] as string[];
+  const contentHashes = [...new Set(dedupedCandidates.map((candidate) => candidate.contentHash).filter(Boolean))] as string[];
+
+  const existingArticles =
+    rssGuids.length || canonicalUrls.length || contentHashes.length
+      ? await prisma.article.findMany({
+          where: {
+            OR: [
+              rssGuids.length ? { rssGuid: { in: rssGuids } } : undefined,
+              canonicalUrls.length ? { canonicalUrl: { in: canonicalUrls } } : undefined,
+              contentHashes.length ? { contentHash: { in: contentHashes } } : undefined,
+            ].filter(Boolean) as any,
+          },
+          select: {
+            rssGuid: true,
+            canonicalUrl: true,
+            contentHash: true,
+          },
+        })
+      : [];
+
+  const existingRssGuids = new Set(existingArticles.map((article) => article.rssGuid).filter(Boolean));
+  const existingCanonicalUrls = new Set(existingArticles.map((article) => article.canonicalUrl).filter(Boolean));
+  const existingContentHashes = new Set(existingArticles.map((article) => article.contentHash).filter(Boolean));
+
+  const newCandidates = dedupedCandidates.filter((candidate) => {
+    const isDuplicate =
+      (candidate.rssGuid && existingRssGuids.has(candidate.rssGuid)) ||
+      (candidate.canonicalUrl && existingCanonicalUrls.has(candidate.canonicalUrl)) ||
+      (candidate.contentHash && existingContentHashes.has(candidate.contentHash));
+
+    if (isDuplicate) {
+      skipped += 1;
+      return false;
     }
+
+    return true;
+  });
+
+  if (newCandidates.length === 0) {
+    return { inserted, skipped, failed };
+  }
+
+  try {
+    const result = await prisma.article.createMany({
+      data: newCandidates.map((candidate) => ({
+        title: candidate.title,
+        sourceId: candidate.sourceId,
+        categoryId: candidate.categoryId,
+        sourceUrl: candidate.sourceUrl,
+        canonicalUrl: candidate.canonicalUrl,
+        rssGuid: candidate.rssGuid,
+        contentHash: candidate.contentHash,
+        bodyText: candidate.bodyText,
+        publishedAt: candidate.publishedAt,
+        date: candidate.publishedAt || new Date(),
+        processingStage: "INGESTED",
+        processingStatus: "SUCCESS",
+        isPaywall: candidate.isPaywall,
+        tags: candidate.rawTags,
+        signals: candidate.rawSignals,
+        reasoning: candidate.reasoning,
+      })),
+      skipDuplicates: true,
+    });
+    inserted += result.count;
+    skipped += newCandidates.length - result.count;
+  } catch (error: any) {
+    failed = newCandidates.length;
+    const prismaErrorDetails = formatPrismaError(error);
+    const sources = [...new Set(newCandidates.map((candidate) => candidate.sourceId))];
+    await Promise.all(
+      sources.map((sourceId) =>
+        logAgentScan({
+          sourceId,
+          status: "ARTICLE_INSERT_FAILED",
+          executionTimeMs: 0,
+          errorLog: `Batch insert failed for ${newCandidates.length} article(s). ${prismaErrorDetails}`,
+        }),
+      ),
+    );
   }
 
   return { inserted, skipped, failed };

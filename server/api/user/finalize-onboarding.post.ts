@@ -4,6 +4,7 @@ import { executeTargetedDiscovery } from "../../utils/discovery";
 import { runNewsPipeline } from "../../utils/news-pipeline/orchestrator";
 import { requireUserId } from "../../utils/require-user";
 import { validateHostname, SSRFError } from "../../utils/ssrf-guard";
+import { shouldRevalidateExistingSource } from "../../utils/source-trust";
 import { ISO_LANG_CODES } from "../../utils/langCodes"; // ÚJ: Importáljuk a nyelv-Set-et (Ellenőrizd az elérési utat!)
 
 const MAX_SUBMITTED_SOURCES = 20;
@@ -69,6 +70,14 @@ async function findParentRoot(cleanIncomingHostname: string) {
   const potentialRoots = await prisma.newsSource.findMany({
     where: {
       frontPageUrl: { contains: cleanIncomingHostname, mode: "insensitive" },
+    },
+    select: {
+      id: true,
+      frontPageUrl: true,
+      rssFeedUrl: true,
+      rssStatus: true,
+      lastRssCheckAt: true,
+      isSystemImported: true,
     },
   });
 
@@ -144,6 +153,21 @@ export default defineEventHandler(async (event) => {
             where: {
               pathUrl: { contains: cleanIncomingHostname, mode: "insensitive" },
             },
+            select: {
+              id: true,
+              pathUrl: true,
+              newsSourceId: true,
+              newsSource: {
+                select: {
+                  id: true,
+                  frontPageUrl: true,
+                  rssFeedUrl: true,
+                  rssStatus: true,
+                  lastRssCheckAt: true,
+                  isSystemImported: true,
+                },
+              },
+            },
           });
           exactCategory = potentialCats.find((dbCat) => {
             try {
@@ -168,6 +192,7 @@ export default defineEventHandler(async (event) => {
           if (parentRoot) {
             rootId = parentRoot.id;
             if (shouldBeActive) targetedSourceIds.add(rootId);
+            if (shouldRevalidateExistingSource(parentRoot)) targetedSourceIds.add(rootId);
           } else {
             // SAFE UPSERT WITH FINAL LANGUAGE
             const newRoot = await prisma.newsSource.upsert({
@@ -200,6 +225,9 @@ export default defineEventHandler(async (event) => {
           // --- KATEGÓRIA ---
           if (exactCategory) {
             if (shouldBeActive) targetedSourceIds.add(exactCategory.newsSourceId);
+            if (exactCategory.newsSource && shouldRevalidateExistingSource(exactCategory.newsSource)) {
+              targetedSourceIds.add(exactCategory.newsSource.id);
+            }
             await prisma.userCategorySubscription.upsert({
               where: {
                 userId_categoryId: {
@@ -219,6 +247,9 @@ export default defineEventHandler(async (event) => {
             if (parentRoot) {
               rootIdForCategory = parentRoot.id;
               if (shouldBeActive) targetedSourceIds.add(rootIdForCategory);
+              if (shouldRevalidateExistingSource(parentRoot)) {
+                targetedSourceIds.add(rootIdForCategory);
+              }
             } else {
               // SAFE UPSERT FOR PARENT ROOT
               const newRoot = await prisma.newsSource.upsert({

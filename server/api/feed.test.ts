@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const requireUserIdMock = vi.fn();
-const userSourceSubscriptionFindManyMock = vi.fn();
-const userCategorySubscriptionFindManyMock = vi.fn();
+const userFindUniqueMock = vi.fn();
 const articleFindManyMock = vi.fn();
 
 vi.mock("../utils/require-user", () => ({
@@ -11,11 +10,8 @@ vi.mock("../utils/require-user", () => ({
 
 vi.mock("../utils/prisma", () => ({
   prisma: {
-    userSourceSubscription: {
-      findMany: userSourceSubscriptionFindManyMock,
-    },
-    userCategorySubscription: {
-      findMany: userCategorySubscriptionFindManyMock,
+    user: {
+      findUnique: userFindUniqueMock,
     },
     article: {
       findMany: articleFindManyMock,
@@ -31,8 +27,10 @@ describe("/api/feed", () => {
   });
 
   it("returns an empty array when the user has no active subscriptions", async () => {
-    userSourceSubscriptionFindManyMock.mockResolvedValue([]);
-    userCategorySubscriptionFindManyMock.mockResolvedValue([]);
+    userFindUniqueMock.mockResolvedValue({
+      sourceSubscriptions: [],
+      categorySubscriptions: [],
+    });
 
     const mod = await import("./feed");
     const result = await mod.default({} as any);
@@ -42,13 +40,15 @@ describe("/api/feed", () => {
   });
 
   it("queries articles only for the active source and category subscriptions of the current user", async () => {
-    userSourceSubscriptionFindManyMock.mockResolvedValue([
-      { sourceId: "source-a" },
-      { sourceId: "source-b" },
-    ]);
-    userCategorySubscriptionFindManyMock.mockResolvedValue([
-      { categoryId: "category-x" },
-    ]);
+    userFindUniqueMock.mockResolvedValue({
+      sourceSubscriptions: [
+        { sourceId: "source-a" },
+        { sourceId: "source-b" },
+      ],
+      categorySubscriptions: [
+        { categoryId: "category-x" },
+      ],
+    });
     articleFindManyMock.mockResolvedValue([
       {
         id: 11,
@@ -73,22 +73,19 @@ describe("/api/feed", () => {
     const mod = await import("./feed");
     const result = await mod.default({} as any);
 
-    expect(userSourceSubscriptionFindManyMock).toHaveBeenCalledWith({
+    expect(userFindUniqueMock).toHaveBeenCalledWith({
       where: {
-        userId: "user-1",
-        isActive: true,
+        id: "user-1",
       },
       select: {
-        sourceId: true,
-      },
-    });
-    expect(userCategorySubscriptionFindManyMock).toHaveBeenCalledWith({
-      where: {
-        userId: "user-1",
-        isActive: true,
-      },
-      select: {
-        categoryId: true,
+        sourceSubscriptions: {
+          where: { isActive: true },
+          select: { sourceId: true },
+        },
+        categorySubscriptions: {
+          where: { isActive: true },
+          select: { categoryId: true },
+        },
       },
     });
     expect(articleFindManyMock).toHaveBeenCalledWith(

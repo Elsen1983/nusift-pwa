@@ -49,15 +49,6 @@ export async function runNewsPipeline(sourceIds?: string[]): Promise<PipelineRes
   const startedAt = Date.now();
   const resolvedSourceIds =
     sourceIds && sourceIds.length > 0 ? sourceIds : await resolveActivePipelineSourceIds();
-  const sources = resolvedSourceIds.length
-    ? await prisma.newsSource.findMany({
-        where: { id: { in: resolvedSourceIds } },
-        select: { id: true },
-      })
-    : await prisma.newsSource.findMany({
-        where: { id: { in: [] } },
-        select: { id: true },
-      });
 
   let candidatesFound = 0;
   let inserted = 0;
@@ -67,12 +58,12 @@ export async function runNewsPipeline(sourceIds?: string[]): Promise<PipelineRes
   await logAgentScan({
     status: "PIPELINE_STARTED",
     executionTimeMs: 0,
-    errorLog: `Pipeline started for ${sources.length} source(s).`,
+    errorLog: `Pipeline started for ${resolvedSourceIds.length} source(s).`,
   });
 
-  for (const source of sources) {
+  for (const sourceId of resolvedSourceIds) {
     try {
-      const result = await ingestSource(source.id);
+      const result = await ingestSource(sourceId);
       candidatesFound += result.candidates.length;
       const persisted = await persistCandidates(result.candidates);
       inserted += persisted.inserted;
@@ -86,11 +77,11 @@ export async function runNewsPipeline(sourceIds?: string[]): Promise<PipelineRes
   await logAgentScan({
     status: "PIPELINE_FINISHED",
     executionTimeMs: Date.now() - startedAt,
-    errorLog: `Pipeline finished. sources=${sources.length}, candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}.`,
+    errorLog: `Pipeline finished. sources=${resolvedSourceIds.length}, candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}.`,
   });
 
   return {
-    sourcesScanned: sources.length,
+    sourcesScanned: resolvedSourceIds.length,
     candidatesFound,
     inserted,
     skipped,

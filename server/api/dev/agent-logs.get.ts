@@ -13,6 +13,14 @@ export default defineEventHandler(async (event) => {
   await assertRateLimit(event, "agent-logs", 10, 60 * 1000);
 
   const logs = await prisma.agentScanLog.findMany({
+    select: {
+      id: true,
+      status: true,
+      sourceId: true,
+      errorLog: true,
+      createdAt: true,
+      executionTimeMs: true,
+    },
     orderBy: { createdAt: "desc" },
     take: 50,
   });
