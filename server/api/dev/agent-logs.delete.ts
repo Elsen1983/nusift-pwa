@@ -12,10 +12,31 @@ export default defineEventHandler(async (event) => {
 
   await assertRateLimit(event, "agent-logs-delete", 3, 10 * 60 * 1000);
 
-  const [articleResult, logResult] = await prisma.$transaction([
+  const prismaAny = prisma as any;
+  const operations = [
     prisma.article.deleteMany({}),
     prisma.agentScanLog.deleteMany({}),
-  ]);
+  ];
 
-  return { ok: true, deletedCount: logResult.count, articleCount: articleResult.count };
+  if (prismaAny.pipelineArtifact?.deleteMany) {
+    operations.push(prismaAny.pipelineArtifact.deleteMany({}));
+  }
+
+  if (prismaAny.pipelineRun?.deleteMany) {
+    operations.push(prismaAny.pipelineRun.deleteMany({}));
+  }
+
+  const results = await prisma.$transaction(operations);
+  const articleResult = results[0];
+  const logResult = results[1];
+  const artifactResult = results[2] || { count: 0 };
+  const runResult = results[3] || { count: 0 };
+
+  return {
+    ok: true,
+    deletedCount: logResult.count,
+    articleCount: articleResult.count,
+    artifactCount: artifactResult.count,
+    runCount: runResult.count,
+  };
 });

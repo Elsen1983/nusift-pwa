@@ -1136,14 +1136,14 @@ const clearAgentLogs = async () => {
   if (!isDev || isClearingLogs.value) return;
   isClearingLogs.value = true;
   try {
-    const response = await $api<{ ok: boolean; deletedCount: number; articleCount?: number }>("/api/dev/agent-logs", {
+    const response = await $api<{ ok: boolean; deletedCount: number; articleCount?: number; artifactCount?: number; runCount?: number }>("/api/dev/agent-logs", {
       method: "DELETE",
     });
     agentLogs.value = [];
     await feedStore.fetchFeed({ force: true });
     toast.value = {
       show: true,
-      message: `Cleared ${response.articleCount ?? 0} article(s) and ${response.deletedCount ?? 0} agent log(s).`,
+      message: `Cleared ${response.articleCount ?? 0} article(s), ${response.deletedCount ?? 0} agent log(s), ${response.artifactCount ?? 0} artifact(s), and ${response.runCount ?? 0} pipeline run(s).`,
       type: "success",
     };
     window.setTimeout(() => {

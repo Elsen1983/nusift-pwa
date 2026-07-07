@@ -119,6 +119,128 @@ describe("discoverFeedForUrl", () => {
     expect(result.topCandidates.some((candidate: any) => candidate.contentType === "application/feed+json")).toBe(true);
   });
 
+  it("detects HTML autodiscovery links regardless of attribute order", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+      "https://example.com/world",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head><link href="/rss/world.xml" title="World" type="application/rss+xml" rel="alternate" /></head></html>`,
+        {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        },
+      ),
+      "https://example.com/world",
+    );
+
+    const feedResponse = setResponseUrl(
+      makeResponse(`<?xml version="1.0"?><rss><channel><item><title>Story</title><link>https://example.com/world/story-1</link></item></channel></rss>`, {
+        headers: { "content-type": "application/rss+xml" },
+      }),
+      "https://example.com/rss/world.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/world") return htmlResponse;
+      if (url === "https://example.com/rss/world.xml") return feedResponse;
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/world",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBe("https://example.com/rss/world.xml");
+    expect(result.detection).toBe("html-link");
+  });
+
+  it("extracts feed-like URLs embedded in HTML when no formal autodiscovery tag exists", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+      "https://example.com/politics",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head><script>window.__CONFIG__ = {"feed":"https://cdn.example.com/feeds/politics.xml"}</script></head><body></body></html>`,
+        {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        },
+      ),
+      "https://example.com/politics",
+    );
+
+    const feedResponse = setResponseUrl(
+      makeResponse(`<?xml version="1.0"?><rss><channel><item><title>Story</title><link>https://example.com/politics/story-1</link></item></channel></rss>`, {
+        headers: { "content-type": "application/rss+xml" },
+      }),
+      "https://cdn.example.com/feeds/politics.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/politics") return htmlResponse;
+      if (url === "https://cdn.example.com/feeds/politics.xml") return feedResponse;
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/politics",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBe("https://cdn.example.com/feeds/politics.xml");
+    expect(result.detection).toBe("html-raw-url");
+  });
+
+  it("does not treat feedback links as feed candidates", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+      "https://example.com",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><body><a href="https://example.com/contact/feedback-complaints/">Feedback</a></body></html>`,
+        {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        },
+      ),
+      "https://example.com/",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com") return htmlResponse;
+      if (url === "https://example.com/") return htmlResponse;
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBeNull();
+    expect(
+      result.topCandidates.some((candidate: any) =>
+        String(candidate.feedUrl || "").includes("feedback-complaints")),
+    ).toBe(false);
+  });
+
   it("uses CMS fingerprint candidates when explicit autodiscovery is missing", async () => {
     const headResponse = setResponseUrl(
       makeResponse("", {
@@ -163,6 +285,47 @@ describe("discoverFeedForUrl", () => {
     expect(result.feedUrl).toBe("https://example.com/local-news.rss");
     expect(result.detection).toBe("cms-fingerprint");
     expect(["medium", "high"]).toContain(result.scopeConfidence);
+  });
+
+  it("returns structured rejected candidates when verification fails", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", {
+        headers: {
+          link: '<https://example.com/feed.xml>; rel="alternate"; type="application/rss+xml"',
+          "content-type": "text/html; charset=utf-8",
+        },
+      }),
+      "https://example.com/news",
+    );
+
+    const invalidFeedResponse = setResponseUrl(
+      makeResponse("<html><body>not a feed</body></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+      "https://example.com/feed.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/feed.xml") return invalidFeedResponse;
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/news",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBeNull();
+    expect(result.rejectedCandidates.length).toBeGreaterThanOrEqual(1);
+    expect(
+      result.rejectedCandidates.some((candidate: any) => candidate.feedUrl === "https://example.com/feed.xml"),
+    ).toBe(true);
+    expect(
+      result.rejectedCandidates.some((candidate: any) =>
+        String(candidate.reason || "").includes("did not validate as a feed")),
+    ).toBe(true);
   });
 
   it("derives scoped candidates from robots/news sitemap context", async () => {
@@ -243,5 +406,13 @@ describe("discoverFeedForUrl", () => {
 
     expect(result.feedUrl).toBe("https://example.com/county/cork/rss.xml");
     expect(["medium", "high"]).toContain(result.scopeConfidence);
+  });
+
+  it("derives scoped candidates from sitemap URL paths even when entries are not feed URLs", async () => {
+    const { buildCandidatesFromSitemapUrl } = await import("./feed-discovery");
+    const result = buildCandidatesFromSitemapUrl("https://example.com/sport/sitemap.xml");
+
+    expect(result).toContain("https://example.com/sport/rss.xml");
+    expect(result).toContain("https://example.com/sport/feed.xml");
   });
 });

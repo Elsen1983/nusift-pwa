@@ -223,10 +223,12 @@ model NewsSource {
   rssStatus      RssStatus @default(PENDING_DISCOVERY)
   lastRssCheckAt DateTime?
   nextRetryAt    DateTime?
+  discoveryEvidence Json?
 
-  articles    Article[]
-  categories  SourceCategory[]
-  subscribers UserSourceSubscription[]
+  articles          Article[]
+  categories        SourceCategory[]
+  subscribers       UserSourceSubscription[]
+  pipelineArtifacts PipelineArtifact[]
 
   @@index([continent, countryCode])
   @@index([rssStatus, nextRetryAt])
@@ -249,10 +251,12 @@ model SourceCategory {
   rssStatus      RssStatus @default(PENDING_DISCOVERY)
   lastRssCheckAt DateTime?
   nextRetryAt    DateTime?
+  discoveryEvidence Json?
 
   // ÚJ: Kapcsolat a feliratkozók felé (Explicit)
-  subscribers UserCategorySubscription[]
-  articles    Article[]
+  subscribers      UserCategorySubscription[]
+  articles         Article[]
+  pipelineArtifacts PipelineArtifact[]
 
   @@unique([newsSourceId, pathUrl])
   @@index([isUserRequested])
@@ -388,6 +392,55 @@ model AgentScanLog {
 
   // Helps debug why a Deep Scan failed on a specific EU news site
   errorLog String? @db.Text
+}
+
+model PipelineRun {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+  status     String
+
+  targetCount     Int  @default(0)
+  candidatesFound Int  @default(0)
+  inserted        Int  @default(0)
+  skipped         Int  @default(0)
+  failed          Int  @default(0)
+  artifactCount   Int  @default(0)
+  summary         Json?
+
+  artifacts PipelineArtifact[]
+
+  @@index([createdAt])
+  @@index([status, createdAt])
+}
+
+model PipelineArtifact {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pipelineRunId String
+  pipelineRun   PipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+
+  sourceId   String?
+  categoryId String?
+
+  source   NewsSource?     @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  category SourceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  artifactType   String
+  status         String
+  candidateCount Int    @default(0)
+  payload        Json
+  errorLog       String? @db.Text
+
+  @@index([pipelineRunId, createdAt])
+  @@index([sourceId, createdAt])
+  @@index([categoryId, createdAt])
+  @@index([artifactType, status])
 }
 
 // ANCHOR USER READ ACTIVITIES

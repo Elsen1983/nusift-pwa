@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import { Prisma } from "@prisma/client";
 import { RssStatus } from "@prisma/client";
 import { safeFetch, SSRFError } from "./ssrf-guard";
 import { normalizeActiveRssStatus } from "./news-pipeline/rss-status";
@@ -77,6 +78,32 @@ const formatDiscoveryEvidence = (discovery: {
 
   return `method=${discovery.detection}, confidence=${discovery.scopeConfidence || "n/a"}, score=${discovery.score ?? 0}, candidates=${candidates}${discovery.lastError ? `, lastError=${discovery.lastError}` : ""}`;
 };
+
+const buildDiscoveryEvidencePayload = (
+  targetUrl: string,
+  discovery: {
+    feedUrl: string | null;
+    discoveredVia: string | null;
+    detection: string;
+    scopeConfidence?: string;
+    score?: number;
+    topCandidates?: Array<{ feedUrl: string; detection: string; score: number; contentType?: string | null }>;
+    rejectedCandidates?: Array<{ feedUrl: string; detection: string; score: number; contentType?: string | null; reason: string }>;
+    lastError?: string;
+  },
+) =>
+  ({
+    evaluatedAt: new Date().toISOString(),
+    targetUrl,
+    feedUrl: discovery.feedUrl,
+    discoveredVia: discovery.discoveredVia,
+    detection: discovery.detection,
+    scopeConfidence: discovery.scopeConfidence || "low",
+    score: discovery.score ?? 0,
+    topCandidates: discovery.topCandidates || [],
+    rejectedCandidates: discovery.rejectedCandidates || [],
+    lastError: discovery.lastError || null,
+  }) satisfies Prisma.InputJsonValue;
 
 export async function executeTargetedDiscovery(
   sourceIds: string[],
@@ -164,6 +191,10 @@ export async function executeTargetedDiscovery(
           rssStatus: nextStatus,
           rssFeedUrl: discovery.feedUrl,
           lastRssCheckAt: new Date(),
+          discoveryEvidence: buildDiscoveryEvidencePayload(
+            source.frontPageUrl,
+            discovery,
+          ),
         },
       });
 
@@ -185,7 +216,21 @@ export async function executeTargetedDiscovery(
         );
         await prisma.newsSource.update({
           where: { id: source.id },
-          data: { rssStatus: "DOMAIN_DEAD" },
+          data: {
+            rssStatus: "DOMAIN_DEAD",
+            discoveryEvidence: {
+              evaluatedAt: new Date().toISOString(),
+              targetUrl: source.frontPageUrl,
+              feedUrl: null,
+              discoveredVia: null,
+              detection: "blocked-security",
+              scopeConfidence: "low",
+              score: 0,
+              topCandidates: [],
+              rejectedCandidates: [],
+              lastError: error.detail,
+            } satisfies Prisma.InputJsonValue,
+          },
         });
         continue;
       }
@@ -203,7 +248,21 @@ export async function executeTargetedDiscovery(
 
       await prisma.newsSource.update({
         where: { id: source.id },
-        data: { rssStatus: "FAILED" },
+        data: {
+          rssStatus: "FAILED",
+          discoveryEvidence: {
+            evaluatedAt: new Date().toISOString(),
+            targetUrl: source.frontPageUrl,
+            feedUrl: null,
+            discoveredVia: null,
+            detection: "failed",
+            scopeConfidence: "low",
+            score: 0,
+            topCandidates: [],
+            rejectedCandidates: [],
+            lastError: error?.message || String(error),
+          } satisfies Prisma.InputJsonValue,
+        },
       });
     }
   }
@@ -265,6 +324,10 @@ export async function executeTargetedCategoryDiscovery(
           rssFeedUrl: discovery.feedUrl,
           rssStatus: nextStatus,
           lastRssCheckAt: new Date(),
+          discoveryEvidence: buildDiscoveryEvidencePayload(
+            category.pathUrl,
+            discovery,
+          ),
         },
       });
 
@@ -280,7 +343,22 @@ export async function executeTargetedCategoryDiscovery(
     } catch (error: any) {
       await prisma.sourceCategory.update({
         where: { id: category.id },
-        data: { rssStatus: "FAILED", lastRssCheckAt: new Date() },
+        data: {
+          rssStatus: "FAILED",
+          lastRssCheckAt: new Date(),
+          discoveryEvidence: {
+            evaluatedAt: new Date().toISOString(),
+            targetUrl: category.pathUrl,
+            feedUrl: null,
+            discoveredVia: null,
+            detection: "failed",
+            scopeConfidence: "low",
+            score: 0,
+            topCandidates: [],
+            rejectedCandidates: [],
+            lastError: error?.message || String(error),
+          } satisfies Prisma.InputJsonValue,
+        },
       });
 
       await logAgentScan({

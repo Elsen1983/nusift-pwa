@@ -1,9 +1,16 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { safeFetch } from "../ssrf-guard";
 import { SSRFError } from "../ssrf-guard";
 import { logAgentScan } from "./log";
-import { cleanFeedValue, hashText, normalizeUrl, stripHtml } from "./text";
-import type { IngestCandidate } from "./types";
+import { cleanFeedValue, hashText, normalizeFeedText, normalizeUrl, stripHtml } from "./text";
+import { normalizeFeedTextDetailed } from "./normalize-feed-text";
+import type {
+  IngestCandidate,
+  IngestRejectedItem,
+  IngestResult,
+  IngestSkipSummary,
+} from "./types";
 import { buildFeedUrlCandidates } from "./import-rss";
 import { discoverFeedForUrl } from "./feed-discovery";
 
@@ -102,6 +109,22 @@ const parseFeedItems = (body: string) => {
   return { format: "unknown" as const, items: [] as Array<Record<string, string>> };
 };
 
+const emptySkipSummary = (): IngestSkipSummary => ({
+  emptyLink: 0,
+  outOfScope: 0,
+  staleOrMissingPublishedAt: 0,
+  htmlFallbackNonArticle: 0,
+  htmlFallbackStale: 0,
+});
+
+const pushRejectedItem = (
+  rejectedItems: IngestRejectedItem[],
+  item: IngestRejectedItem,
+) => {
+  if (rejectedItems.length >= 50) return;
+  rejectedItems.push(item);
+};
+
 const getContentType = (response: Response) =>
   response.headers.get("content-type") || "unknown";
 
@@ -112,6 +135,43 @@ const getRootHost = (url: string) => {
     return "";
   }
 };
+
+const buildDiscoveryEvidencePayload = (
+  targetUrl: string,
+  discovery: {
+    feedUrl: string | null;
+    discoveredVia?: string | null;
+    detection: string;
+    scopeConfidence?: string;
+    score?: number;
+    topCandidates?: Array<{
+      feedUrl: string;
+      detection: string;
+      score: number;
+      contentType?: string | null;
+    }>;
+    rejectedCandidates?: Array<{
+      feedUrl: string;
+      detection: string;
+      score: number;
+      contentType?: string | null;
+      reason: string;
+    }>;
+    lastError?: string;
+  },
+) =>
+  ({
+    evaluatedAt: new Date().toISOString(),
+    targetUrl,
+    feedUrl: discovery.feedUrl,
+    discoveredVia: discovery.discoveredVia || null,
+    detection: discovery.detection,
+    scopeConfidence: discovery.scopeConfidence || "low",
+    score: discovery.score ?? 0,
+    topCandidates: discovery.topCandidates || [],
+    rejectedCandidates: discovery.rejectedCandidates || [],
+    lastError: discovery.lastError || null,
+  }) satisfies Prisma.InputJsonValue;
 
 const isLikelyArticleLink = (href: string, sourceUrl: string) => {
   try {
@@ -225,10 +285,17 @@ export const isWithinFreshnessWindow = (publishedAt: Date | null, now = new Date
   return diff >= 0 && diff <= MAX_ARTICLE_AGE_MS;
 };
 
-const extractHtmlCandidates = async (html: string, sourceUrl: string, sourceId: string) => {
+const extractHtmlCandidates = async (
+  html: string,
+  sourceUrl: string,
+  sourceId: string,
+  categoryPathUrl?: string | null,
+) => {
   const candidates: IngestCandidate[] = [];
   const seen = new Set<string>();
   const now = new Date();
+  const rejectedItems: IngestRejectedItem[] = [];
+  const skipSummary = emptySkipSummary();
 
   const linkMatches = [...html.matchAll(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
   const links = linkMatches
@@ -273,11 +340,57 @@ const extractHtmlCandidates = async (html: string, sourceUrl: string, sourceId: 
     const detailHtml = await detailResponse.text();
     const meta = extractPageMetadata(detailHtml);
     const canonicalUrl = normalizeUrl(link);
-    if (!canonicalUrl || isBlockedFallbackPath(canonicalUrl)) continue;
-    const itemTitle = meta.title || canonicalUrl;
-    if (!itemTitle || itemTitle.length < 12) continue;
-    if (!isWithinFreshnessWindow(meta.publishedAt, now)) continue;
-    const bodyText = meta.description || stripHtml(detailHtml).slice(0, 600);
+    if (!canonicalUrl || isBlockedFallbackPath(canonicalUrl)) {
+      skipSummary.htmlFallbackNonArticle += 1;
+      pushRejectedItem(rejectedItems, {
+        reason: "html_fallback_non_article",
+        rawLink: link,
+        canonicalUrl: canonicalUrl || null,
+        title: meta.title || null,
+        publishedAt: meta.publishedAt ? meta.publishedAt.toISOString() : null,
+      });
+      continue;
+    }
+    if (categoryPathUrl && !isUrlWithinCategoryPath(canonicalUrl, categoryPathUrl)) {
+      skipSummary.outOfScope += 1;
+      pushRejectedItem(rejectedItems, {
+        reason: "out_of_scope",
+        rawLink: link,
+        canonicalUrl,
+        title: meta.title || null,
+        publishedAt: meta.publishedAt ? meta.publishedAt.toISOString() : null,
+      });
+      continue;
+    }
+    const previewTitle = meta.title || canonicalUrl;
+    if (!previewTitle || previewTitle.length < 12) {
+      skipSummary.htmlFallbackNonArticle += 1;
+      pushRejectedItem(rejectedItems, {
+        reason: "html_fallback_non_article",
+        rawLink: link,
+        canonicalUrl,
+        title: previewTitle || null,
+        publishedAt: meta.publishedAt ? meta.publishedAt.toISOString() : null,
+      });
+      continue;
+    }
+    if (!isWithinFreshnessWindow(meta.publishedAt, now)) {
+      skipSummary.htmlFallbackStale += 1;
+      pushRejectedItem(rejectedItems, {
+        reason: "html_fallback_stale",
+        rawLink: link,
+        canonicalUrl,
+        title: previewTitle,
+        publishedAt: meta.publishedAt ? meta.publishedAt.toISOString() : null,
+      });
+      continue;
+    }
+    const rawTitle = meta.title || canonicalUrl;
+    const rawBodyText = meta.description || stripHtml(detailHtml).slice(0, 600);
+    const normalizedTitle = normalizeFeedTextDetailed(rawTitle);
+    const normalizedBody = normalizeFeedTextDetailed(rawBodyText);
+    const itemTitle = normalizedTitle.value || canonicalUrl;
+    const bodyText = normalizedBody.value;
     const contentHash = await hashText([itemTitle, canonicalUrl, bodyText].filter(Boolean).join("|"));
 
     candidates.push({
@@ -285,18 +398,32 @@ const extractHtmlCandidates = async (html: string, sourceUrl: string, sourceId: 
       sourceUrl,
       canonicalUrl,
       rssGuid: null,
+      rawTitle,
       title: itemTitle,
       publishedAt: meta.publishedAt,
+      rawBodyText,
       bodyText: bodyText || null,
       contentHash,
       isPaywall: /paywall|subscribe|premium/i.test(html),
       rawTags: [],
       rawSignals: [],
       reasoning: `HTML detail fallback from ${link}`,
+      normalizationFlags: [...new Set([
+        ...(normalizedTitle.changed ? normalizedTitle.flags : []),
+        ...(normalizedBody.changed ? normalizedBody.flags : []),
+      ])],
+      provenance: {
+        origin: "html_fallback",
+        feedUrl: null,
+        feedFormat: null,
+        discoveredFromCategoryFeed: false,
+        sourcePageUrl: sourceUrl,
+        fetchedAt: new Date().toISOString(),
+      },
     });
   }
 
-  return candidates;
+  return { candidates, skipSummary, rejectedItems };
 };
 
 const toDate = (value: string) => {
@@ -419,6 +546,10 @@ const resolveCategoryFeedUrl = async (
         rssFeedUrl: discoveredFeedUrl,
         rssStatus: discoveredFeedUrl ? "ACTIVE" : "NO_RSS_FOUND",
         lastRssCheckAt: new Date(),
+        discoveryEvidence: buildDiscoveryEvidencePayload(
+          category.pathUrl,
+          discovery,
+        ),
       },
     });
 
@@ -447,6 +578,62 @@ const resolveCategoryFeedUrl = async (
   }
 };
 
+const resolveSourceFeedUrl = async (
+  source: {
+    id: string;
+    frontPageUrl: string;
+    rssFeedUrl: string | null;
+    rssStatus?: string | null;
+  },
+) => {
+  if (source.rssFeedUrl && source.rssStatus !== "NO_RSS_FOUND") {
+    return source.rssFeedUrl;
+  }
+
+  try {
+    const discovery = await discoverFeedForUrl({
+      pageUrl: source.frontPageUrl,
+      existingFeedUrl: source.rssFeedUrl,
+      userAgent: "NuSift/1.0 Ingest-Agent",
+    });
+    const discoveredFeedUrl = discovery.feedUrl;
+
+    await prisma.newsSource.update({
+      where: { id: source.id },
+      data: {
+        rssFeedUrl: discoveredFeedUrl,
+        rssStatus: discoveredFeedUrl ? "ACTIVE" : "NO_RSS_FOUND",
+        lastRssCheckAt: new Date(),
+        discoveryEvidence: buildDiscoveryEvidencePayload(
+          source.frontPageUrl,
+          discovery,
+        ),
+      },
+    });
+
+    await logAgentScan({
+      sourceId: source.id,
+      status: discoveredFeedUrl
+        ? "SOURCE_DISCOVERY_COMPLETED"
+        : "SOURCE_DISCOVERY_FAILED",
+      executionTimeMs: 0,
+      errorLog: discoveredFeedUrl
+        ? `Resolved source feed ${discoveredFeedUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}`
+        : `No source feed found for ${source.frontPageUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}${discovery.lastError ? `, lastError=${discovery.lastError}` : ""}`,
+    });
+
+    return discoveredFeedUrl;
+  } catch (error: any) {
+    await logAgentScan({
+      sourceId: source.id,
+      status: "SOURCE_DISCOVERY_FAILED",
+      executionTimeMs: 0,
+      errorLog: error?.message || String(error),
+    });
+    return null;
+  }
+};
+
 const formatPrismaError = (error: any) => {
   if (!error) return "Unknown Prisma error";
   const code = error.code ? `code=${error.code}` : null;
@@ -456,7 +643,7 @@ const formatPrismaError = (error: any) => {
   return [name, code, meta, message].filter(Boolean).join(" | ");
 };
 
-export async function ingestSource(sourceId: string, categoryId?: string) {
+export async function ingestSource(sourceId: string, categoryId?: string): Promise<IngestResult> {
   const startedAt = Date.now();
   const [source, category] = await Promise.all([
     prisma.newsSource.findUnique({
@@ -465,6 +652,7 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
         id: true,
         frontPageUrl: true,
         rssFeedUrl: true,
+        rssStatus: true,
         mediaName: true,
       },
     }),
@@ -487,10 +675,20 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
       executionTimeMs: Date.now() - startedAt,
       errorLog: "No matching NewsSource record.",
     });
-    return { sourceId, candidates: [], failed: 1 };
+    return {
+      sourceId,
+      categoryId: categoryId || null,
+      candidates: [],
+      failed: 1,
+      feedUrl: null,
+      feedFormat: null,
+      skipSummary: emptySkipSummary(),
+      rejectedItems: [],
+    };
   }
 
   const categoryFeedUrl = await resolveCategoryFeedUrl(sourceId, category);
+  const sourceFeedUrl = await resolveSourceFeedUrl(source);
   const isUsingDedicatedCategoryFeed = Boolean(categoryId && categoryFeedUrl);
 
   await logAgentScan({
@@ -498,10 +696,10 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
     categoryId,
     status: "SOURCE_FETCH_STARTED",
     executionTimeMs: 0,
-    errorLog: `Fetching from ${categoryFeedUrl || source.rssFeedUrl || category?.pathUrl || source.frontPageUrl} (rss=${Boolean(categoryFeedUrl || source.rssFeedUrl)})`,
+    errorLog: `Fetching from ${categoryFeedUrl || sourceFeedUrl || category?.pathUrl || source.frontPageUrl} (rss=${Boolean(categoryFeedUrl || sourceFeedUrl)})`,
   });
 
-  const preferredFeedUrl = categoryFeedUrl || source.rssFeedUrl || null;
+  const preferredFeedUrl = categoryFeedUrl || sourceFeedUrl || null;
   const preferredFrontPageUrl = category?.pathUrl || source.frontPageUrl;
   const feedUrls = buildFeedUrlCandidates(preferredFeedUrl, preferredFrontPageUrl);
   try {
@@ -524,7 +722,7 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
         categoryId,
         status: "CATEGORY_FEED_FALLBACK_TO_ROOT",
         executionTimeMs: 0,
-        errorLog: `No category feed set. Falling back to root feed ${source.rssFeedUrl || source.frontPageUrl}.`,
+        errorLog: `No category feed set. Falling back to root feed ${sourceFeedUrl || source.frontPageUrl}.`,
       });
     }
 
@@ -586,13 +784,20 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
     const candidates: IngestCandidate[] = [];
     const parsedFeed = parseFeedItems(xml);
     const now = new Date();
-    let skippedEmptyLink = 0;
-    let skippedStale = 0;
+    const skipSummary = emptySkipSummary();
+    const rejectedItems: IngestRejectedItem[] = [];
 
     for (const item of parsedFeed.items) {
       const rawLink = item.link.trim();
       if (!rawLink) {
-        skippedEmptyLink += 1;
+        skipSummary.emptyLink += 1;
+        pushRejectedItem(rejectedItems, {
+          reason: "empty_link",
+          rawLink: null,
+          canonicalUrl: null,
+          title: item.title || null,
+          publishedAt: null,
+        });
         continue;
       }
 
@@ -602,16 +807,34 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
         !isUsingDedicatedCategoryFeed &&
         !isUrlWithinCategoryPath(canonicalUrl, category.pathUrl)
       ) {
-        skippedEmptyLink += 1;
+        skipSummary.outOfScope += 1;
+        pushRejectedItem(rejectedItems, {
+          reason: "out_of_scope",
+          rawLink,
+          canonicalUrl,
+          title: item.title || null,
+          publishedAt: null,
+        });
         continue;
       }
       const publishedAt = await resolvePublishedAtForFeedItem(item.pubDate, canonicalUrl);
       if (!isWithinFreshnessWindow(publishedAt, now)) {
-        skippedStale += 1;
+        skipSummary.staleOrMissingPublishedAt += 1;
+        pushRejectedItem(rejectedItems, {
+          reason: "stale_or_missing_published_at",
+          rawLink,
+          canonicalUrl,
+          title: item.title || null,
+          publishedAt: publishedAt ? publishedAt.toISOString() : null,
+        });
         continue;
       }
-      const title = stripHtml(item.title || canonicalUrl);
-      const bodyText = stripHtml(item.description || "");
+      const rawTitle = item.title || canonicalUrl;
+      const rawBodyText = item.description || "";
+      const normalizedTitle = normalizeFeedTextDetailed(rawTitle);
+      const normalizedBody = normalizeFeedTextDetailed(rawBodyText);
+      const title = stripHtml(normalizedTitle.value);
+      const bodyText = stripHtml(normalizedBody.value);
       const contentHash = await hashText(
         [title, canonicalUrl, bodyText].filter(Boolean).join("|"),
       );
@@ -622,14 +845,28 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
         sourceUrl: source.frontPageUrl,
         canonicalUrl,
         rssGuid: item.guid.trim() || null,
+        rawTitle,
         title,
         publishedAt,
+        rawBodyText,
         bodyText: bodyText || null,
         contentHash,
         isPaywall: /paywall|subscribe|premium/i.test(xml),
         rawTags: [],
         rawSignals: [],
         reasoning: `${parsedFeed.format.toUpperCase()} ingest from ${source.mediaName || source.frontPageUrl}`,
+        normalizationFlags: [...new Set([
+          ...(normalizedTitle.changed ? normalizedTitle.flags : []),
+          ...(normalizedBody.changed ? normalizedBody.flags : []),
+        ])],
+        provenance: {
+          origin: parsedFeed.format,
+          feedUrl,
+          feedFormat: parsedFeed.format,
+          discoveredFromCategoryFeed: isUsingDedicatedCategoryFeed,
+          sourcePageUrl: preferredFrontPageUrl,
+          fetchedAt: new Date().toISOString(),
+        },
       });
     }
 
@@ -660,16 +897,30 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
             executionTimeMs: Date.now() - startedAt,
             errorLog: `HTML fallback failed for ${preferredFrontPageUrl} with HTTP ${htmlResponse.status}.`,
           });
-          return { sourceId, candidates: [], failed: 1 };
+          return {
+            sourceId,
+            categoryId: categoryId || null,
+            candidates: [],
+            failed: 1,
+            feedUrl,
+            feedFormat: parsedFeed.format,
+            skipSummary,
+            rejectedItems,
+          };
         }
 
         const html = await htmlResponse.text();
-        const htmlCandidates = (await extractHtmlCandidates(html, preferredFrontPageUrl, source.id))
-          .filter((candidate) =>
-            category?.pathUrl && !isUsingDedicatedCategoryFeed
-              ? isUrlWithinCategoryPath(candidate.canonicalUrl, category.pathUrl)
-              : true,
-          )
+        const htmlFallback = await extractHtmlCandidates(
+          html,
+          preferredFrontPageUrl,
+          source.id,
+          category?.pathUrl && !isUsingDedicatedCategoryFeed ? category.pathUrl : null,
+        );
+        skipSummary.outOfScope += htmlFallback.skipSummary.outOfScope;
+        skipSummary.htmlFallbackNonArticle += htmlFallback.skipSummary.htmlFallbackNonArticle;
+        skipSummary.htmlFallbackStale += htmlFallback.skipSummary.htmlFallbackStale;
+        rejectedItems.push(...htmlFallback.rejectedItems);
+        const htmlCandidates = htmlFallback.candidates
           .map((candidate) => ({
             ...candidate,
             categoryId: categoryId || candidate.categoryId,
@@ -691,7 +942,16 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
           executionTimeMs: Date.now() - startedAt,
           errorLog: fallbackError?.message || String(fallbackError),
         });
-        return { sourceId, candidates: [], failed: 1 };
+        return {
+          sourceId,
+          categoryId: categoryId || null,
+          candidates: [],
+          failed: 1,
+          feedUrl,
+          feedFormat: parsedFeed.format,
+          skipSummary,
+          rejectedItems,
+        };
       }
     }
 
@@ -700,10 +960,19 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
       categoryId,
       status: "SOURCE_FETCH_COMPLETED",
       executionTimeMs: Date.now() - startedAt,
-      errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skippedEmptyLink}, skippedStale=${skippedStale}.`,
+      errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skipSummary.emptyLink}, skippedOutOfScope=${skipSummary.outOfScope}, skippedStale=${skipSummary.staleOrMissingPublishedAt}, skippedHtmlNonArticle=${skipSummary.htmlFallbackNonArticle}, skippedHtmlStale=${skipSummary.htmlFallbackStale}.`,
     });
 
-    return { sourceId, candidates: await attachCategoryIds(candidates), failed: 0 };
+    return {
+      sourceId,
+      categoryId: categoryId || null,
+      candidates: await attachCategoryIds(candidates),
+      failed: 0,
+      feedUrl,
+      feedFormat: parsedFeed.format,
+      skipSummary,
+      rejectedItems,
+    };
   } catch (error: any) {
     const isSecurityError = error instanceof SSRFError;
     await logAgentScan({
@@ -714,7 +983,7 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
       errorLog: error?.message || String(error),
     });
 
-    if (source.rssFeedUrl && source.frontPageUrl) {
+    if (sourceFeedUrl && source.frontPageUrl) {
       try {
         const htmlResponse = await safeFetch(source.frontPageUrl, {
           headers: {
@@ -725,18 +994,27 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
 
         if (htmlResponse.ok) {
           const html = await htmlResponse.text();
-          const htmlCandidates = await extractHtmlCandidates(html, source.frontPageUrl, source.id);
-          if (htmlCandidates.length > 0) {
+          const htmlFallback = await extractHtmlCandidates(
+            html,
+            source.frontPageUrl,
+            source.id,
+          );
+          if (htmlFallback.candidates.length > 0) {
             await logAgentScan({
               sourceId,
               status: "HTML_FALLBACK_COMPLETED",
               executionTimeMs: Date.now() - startedAt,
-              errorLog: `Security/RSS path failed, HTML fallback produced ${htmlCandidates.length} candidate(s).`,
+              errorLog: `Security/RSS path failed, HTML fallback produced ${htmlFallback.candidates.length} candidate(s).`,
             });
             return {
               sourceId,
-              candidates: await attachCategoryIds(htmlCandidates),
+              categoryId: categoryId || null,
+              candidates: await attachCategoryIds(htmlFallback.candidates),
               failed: 0,
+              feedUrl: source.frontPageUrl,
+              feedFormat: "unknown",
+              skipSummary: htmlFallback.skipSummary,
+              rejectedItems: htmlFallback.rejectedItems,
             };
           }
         }
@@ -750,7 +1028,16 @@ export async function ingestSource(sourceId: string, categoryId?: string) {
       }
     }
 
-    return { sourceId, candidates: [], failed: 1 };
+    return {
+      sourceId,
+      categoryId: categoryId || null,
+      candidates: [],
+      failed: 1,
+      feedUrl: source.rssFeedUrl || source.frontPageUrl,
+      feedFormat: null,
+      skipSummary: emptySkipSummary(),
+      rejectedItems: [],
+    };
   }
 }
 

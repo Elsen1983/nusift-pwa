@@ -62,4 +62,38 @@ describe("cleanFeedValue", () => {
       ),
     ).toBe("West Cork mum's urgent vaccination plea after losing daughter");
   });
+
+  it("repairs common UTF-8 mojibake sequences from misdecoded feeds", () => {
+    expect(
+      cleanFeedValue(
+        "Ferencz Orsolya: â€žA csalÃ¡domnak sokszor mÃ©ltatlan tÃ¡madÃ¡sokat kellett elviselnieâ€",
+      ),
+    ).toBe(
+      "Ferencz Orsolya: „A családomnak sokszor méltatlan támadásokat kellett elviselnie”",
+    );
+  });
+
+  it("repairs quoted apostrophe style mojibake from english feeds", () => {
+    expect(
+      cleanFeedValue(
+        "â€˜We could be sick about that until Christmas. But weâ€™ll drive onâ€™",
+      ),
+    ).toBe(
+      "‘We could be sick about that until Christmas. But we’ll drive on’",
+    );
+  });
+
+  it("repairs euro and accented names seen in live feeds", () => {
+    expect(
+      cleanFeedValue("Man, 30s, arrested as more than â‚¬1.6m of cannabis seized in Cork"),
+    ).toBe("Man, 30s, arrested as more than €1.6m of cannabis seized in Cork");
+
+    expect(
+      cleanFeedValue("Met Ã‰ireann issues warning as temps to hit 'low 30s'"),
+    ).toBe("Met Éireann issues warning as temps to hit 'low 30s'");
+
+    expect(
+      cleanFeedValue("Mum of brave FÃ©ile O'Sullivan tells of road to recovery"),
+    ).toBe("Mum of brave Féile O'Sullivan tells of road to recovery");
+  });
 });

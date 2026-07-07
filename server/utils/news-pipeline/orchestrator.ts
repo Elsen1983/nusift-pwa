@@ -1,4 +1,9 @@
 import { prisma } from "../prisma";
+import {
+  createPipelineRun,
+  finalizePipelineRun,
+  persistPipelineArtifact,
+} from "./artifacts";
 import { logAgentScan } from "./log";
 import { ingestSource, persistCandidates } from "./ingest";
 import type { PipelineResult, PipelineTarget } from "./types";
@@ -92,17 +97,24 @@ export async function runNewsPipeline(
   let inserted = 0;
   let skipped = 0;
   let failed = 0;
+  let artifactCount = 0;
+  const pipelineRun = await createPipelineRun(resolvedTargets.length);
 
   await logAgentScan({
     status: "PIPELINE_STARTED",
     executionTimeMs: 0,
-    errorLog: `Pipeline started for ${resolvedTargets.length} target(s).`,
+    errorLog: `Pipeline started for ${resolvedTargets.length} target(s). runId=${pipelineRun.id}.`,
   });
 
   for (const target of resolvedTargets) {
     try {
       const result = await ingestSource(target.sourceId, target.categoryId || undefined);
       candidatesFound += result.candidates.length;
+      await persistPipelineArtifact({
+        pipelineRunId: pipelineRun.id,
+        result,
+      });
+      artifactCount += 1;
       const persisted = await persistCandidates(result.candidates);
       inserted += persisted.inserted;
       skipped += persisted.skipped;
@@ -112,19 +124,27 @@ export async function runNewsPipeline(
     }
   }
 
-  await logAgentScan({
-    status: "PIPELINE_FINISHED",
-    executionTimeMs: Date.now() - startedAt,
-    errorLog: `Pipeline finished. targets=${resolvedTargets.length}, candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}.`,
-  });
-
-  return {
+  const result: PipelineResult = {
     sourcesScanned: resolvedTargets.length,
     candidatesFound,
     inserted,
     skipped,
     failed,
+    artifactCount,
   };
+
+  await finalizePipelineRun({
+    pipelineRunId: pipelineRun.id,
+    result,
+  });
+
+  await logAgentScan({
+    status: "PIPELINE_FINISHED",
+    executionTimeMs: Date.now() - startedAt,
+    errorLog: `Pipeline finished. runId=${pipelineRun.id}, targets=${resolvedTargets.length}, candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}, artifacts=${artifactCount}.`,
+  });
+
+  return result;
 }
 
 async function hydratePipelineTargets(sourceIds: string[], categoryIds: string[]) {

@@ -1,7 +1,10 @@
 import { createError } from "h3";
 import { requireUserId } from "../../utils/require-user";
 import { assertRateLimit } from "../../utils/rate-limit";
-import { resolveActivePipelineSourceIds, runNewsPipeline } from "../../utils/news-pipeline/orchestrator";
+import {
+  resolveActivePipelineTargets,
+  runNewsPipeline,
+} from "../../utils/news-pipeline/orchestrator";
 
 export default defineEventHandler(async (event) => {
   requireUserId(event);
@@ -13,11 +16,26 @@ export default defineEventHandler(async (event) => {
   await assertRateLimit(event, "run-news-pipeline", 3, 10 * 60 * 1000);
 
   const body = await readBody(event).catch(() => ({}));
-  const activeSourceIds = await resolveActivePipelineSourceIds();
+  const activeTargets = await resolveActivePipelineTargets();
+  const activeSourceIds = [...new Set(activeTargets.map((target) => target.sourceId))];
+  const activeCategoryIds = [
+    ...new Set(
+      activeTargets
+        .map((target) => target.categoryId)
+        .filter((categoryId): categoryId is string => Boolean(categoryId)),
+    ),
+  ];
+
   const sourceIds = Array.isArray(body?.sourceIds)
     ? body.sourceIds.map(String).filter((id: string) => activeSourceIds.includes(id))
-    : activeSourceIds;
+    : undefined;
 
-  const result = await runNewsPipeline(sourceIds);
+  const categoryIds = Array.isArray(body?.categoryIds)
+    ? body.categoryIds
+        .map(String)
+        .filter((id: string) => activeCategoryIds.includes(id))
+    : undefined;
+
+  const result = await runNewsPipeline(sourceIds, categoryIds);
   return { ok: true, result };
 });
