@@ -272,7 +272,7 @@
       </section>
 
       <div
-        v-if="isDev"
+        v-if="showDevPanel"
         class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4 space-y-4"
       >
         <div v-if="false" class="flex flex-wrap items-center gap-2">
@@ -568,6 +568,7 @@ const isAuditingScopedRss = ref(false);
 const isNormalizingScopedSources = ref(false);
 const isPruningScopedSources = ref(false);
 const isDev = import.meta.env.DEV;
+const canAccessDevPanel = ref(false);
 const isClearingLogs = ref(false);
 const agentLogs = ref<Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
 const agentSourceCount = ref(0);
@@ -590,6 +591,7 @@ const toastClass = computed(() =>
 );
 
 const toastIcon = computed(() => (toast.value.type === "success" ? "check_circle" : "error"));
+const showDevPanel = computed(() => isDev && canAccessDevPanel.value);
 let devPanelPollTimer: number | null = null;
 const DEV_PANEL_POLL_MS = 10000;
 
@@ -612,7 +614,7 @@ const rssReimportProgressText = computed(() => {
 });
 
 const startDevPanelPolling = () => {
-  if (!import.meta.client || devPanelPollTimer) return;
+  if (!import.meta.client || devPanelPollTimer || !showDevPanel.value) return;
   devPanelPollTimer = window.setInterval(() => {
     void refreshDevPanel();
   }, DEV_PANEL_POLL_MS);
@@ -628,15 +630,59 @@ onMounted(() => {
   void feedStore.fetchFeed();
   void loadAvailableSources();
   if (isDev) {
-    void refreshDevPanel();
+    void initializeDevPanel();
   }
 });
+
+watch(
+  () => authStore.user?.id || null,
+  (userId) => {
+    if (!isDev) return;
+    if (!userId) {
+      canAccessDevPanel.value = false;
+      stopDevPanelPolling();
+      return;
+    }
+    void initializeDevPanel();
+  },
+);
 
 const formatLogTime = (value: string) =>
   new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
+const checkDevPanelAccess = async () => {
+  if (!isDev) {
+    canAccessDevPanel.value = false;
+    return false;
+  }
+
+  try {
+    await $api<{ ok: boolean; canAccess: boolean }>("/api/dev/access");
+    canAccessDevPanel.value = true;
+    return true;
+  } catch (error: any) {
+    if (
+      error?.response?.status === 401 ||
+      error?.response?.status === 403 ||
+      error?.status === 401 ||
+      error?.status === 403
+    ) {
+      canAccessDevPanel.value = false;
+      stopDevPanelPolling();
+      return false;
+    }
+    throw error;
+  }
+};
+
+const initializeDevPanel = async () => {
+  const hasAccess = await checkDevPanelAccess();
+  if (!hasAccess) return;
+  await refreshDevPanel();
+};
+
 const loadAgentLogs = async () => {
-  if (!isDev) return;
+  if (!showDevPanel.value) return;
   try {
     const response = await $api<{ ok: boolean; logs: Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }> }>("/api/dev/agent-logs");
     agentLogs.value = response.logs || [];
@@ -647,7 +693,7 @@ const loadAgentLogs = async () => {
 };
 
 const loadEligibleSourceCount = async () => {
-  if (!isDev) return;
+  if (!showDevPanel.value) return;
   try {
     const response = await $api<{ ok: boolean; count: number }>("/api/dev/agent-source-count");
     agentSourceCount.value = response.count || 0;
@@ -658,7 +704,7 @@ const loadEligibleSourceCount = async () => {
 };
 
 const loadScopedSourceAuditSummary = async () => {
-  if (!isDev) return;
+  if (!showDevPanel.value) return;
   try {
     const response = await $api<{
       ok: boolean;
@@ -691,6 +737,7 @@ const loadScopedSourceAuditSummary = async () => {
 };
 
 const refreshDevPanel = async () => {
+  if (!showDevPanel.value) return;
   try {
     await Promise.all([loadAgentLogs(), loadEligibleSourceCount(), loadScopedSourceAuditSummary()]);
   } catch (error) {
@@ -1133,7 +1180,7 @@ const pruneScopedSources = async () => {
 };
 
 const clearAgentLogs = async () => {
-  if (!isDev || isClearingLogs.value) return;
+  if (!showDevPanel.value || isClearingLogs.value) return;
   isClearingLogs.value = true;
   try {
     const response = await $api<{ ok: boolean; deletedCount: number; articleCount?: number; artifactCount?: number; runCount?: number }>("/api/dev/agent-logs", {
@@ -1164,6 +1211,7 @@ const clearAgentLogs = async () => {
 };
 
 const runManualPipeline = async () => {
+  if (!showDevPanel.value) return;
   if (isPipelineRunning.value) return;
 
   isPipelineRunning.value = true;

@@ -1,11 +1,15 @@
 // server/api/dev/import-rss.get.ts
 import fs from 'fs';
+import { createError } from 'h3';
+import { requireAdminId } from '../../utils/require-admin';
 import { prisma } from '../../utils/prisma';
 import { RssStatus } from '@prisma/client';
 import { getImportRssReportPath, loadImportSources, verifyImportedRssFeed } from '../../utils/news-pipeline/import-rss';
 import { logAgentScan } from '../../utils/news-pipeline/log';
 
 export default defineEventHandler(async (event) => {
+  await requireAdminId(event);
+
   if (process.env.NODE_ENV === 'production') {
     throw createError({ statusCode: 403, statusMessage: "Forbidden in production" });
   }

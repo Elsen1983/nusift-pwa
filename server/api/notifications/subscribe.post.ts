@@ -20,38 +20,52 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 500, statusMessage: "Push is not configured." });
   }
 
-  await prisma.pushSubscription.upsert({
+  const userAgent = getHeader(event, "user-agent") || null;
+  const platform = /iphone|ipad|ipod/i.test(userAgent || "")
+    ? "ios"
+    : /android/i.test(userAgent || "")
+      ? "android"
+      : "web";
+  const existingSubscription = await prisma.pushSubscription.findUnique({
     where: { endpoint: subscription.endpoint },
-    update: {
-      userId,
-      p256dh: subscription.keys.p256dh,
-      auth: subscription.keys.auth,
-      expirationTime,
-      isActive: true,
-      lastSeenAt: new Date(),
-      userAgent: getHeader(event, "user-agent") || null,
-      platform: /iphone|ipad|ipod/i.test(getHeader(event, "user-agent") || "")
-        ? "ios"
-        : /android/i.test(getHeader(event, "user-agent") || "")
-          ? "android"
-          : "web",
-    },
-    create: {
-      userId,
-      endpoint: subscription.endpoint,
-      p256dh: subscription.keys.p256dh,
-      auth: subscription.keys.auth,
-      expirationTime,
-      isActive: true,
-      lastSeenAt: new Date(),
-      userAgent: getHeader(event, "user-agent") || null,
-      platform: /iphone|ipad|ipod/i.test(getHeader(event, "user-agent") || "")
-        ? "ios"
-        : /android/i.test(getHeader(event, "user-agent") || "")
-          ? "android"
-          : "web",
-    },
+    select: { id: true, userId: true },
   });
+
+  if (existingSubscription && existingSubscription.userId !== userId) {
+    throw createError({
+      statusCode: 409,
+      statusMessage: "Push subscription already belongs to another user.",
+    });
+  }
+
+  if (existingSubscription) {
+    await prisma.pushSubscription.update({
+      where: { id: existingSubscription.id },
+      data: {
+        p256dh: subscription.keys.p256dh,
+        auth: subscription.keys.auth,
+        expirationTime,
+        isActive: true,
+        lastSeenAt: new Date(),
+        userAgent,
+        platform,
+      },
+    });
+  } else {
+    await prisma.pushSubscription.create({
+      data: {
+        userId,
+        endpoint: subscription.endpoint,
+        p256dh: subscription.keys.p256dh,
+        auth: subscription.keys.auth,
+        expirationTime,
+        isActive: true,
+        lastSeenAt: new Date(),
+        userAgent,
+        platform,
+      },
+    });
+  }
 
   return { ok: true };
 });

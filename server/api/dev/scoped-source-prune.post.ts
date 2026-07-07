@@ -1,11 +1,11 @@
 import { createError } from "h3";
-import { requireUserId } from "../../utils/require-user";
+import { requireAdminId } from "../../utils/require-admin";
 import { assertRateLimit } from "../../utils/rate-limit";
 import { prisma } from "../../utils/prisma";
 import { readScopedSourceAuditReport } from "../../utils/news-pipeline/scoped-source-audit";
 
 export default defineEventHandler(async (event) => {
-  requireUserId(event);
+  await requireAdminId(event);
 
   if (process.env.NODE_ENV === "production") {
     throw createError({ statusCode: 403, statusMessage: "Forbidden in production" });

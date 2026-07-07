@@ -66,6 +66,11 @@ enum NotificationScheduleSlot {
   EVENING
 }
 
+enum UserRole {
+  USER
+  ADMIN
+}
+
 // ---------------
 // ANCHOR MODELS
 // ---------------
@@ -74,6 +79,7 @@ enum NotificationScheduleSlot {
 model User {
   id                   String    @id @default(uuid()) // Sovereign ID (UUID v4)
   email                String    @unique
+  role                 UserRole  @default(USER)
   passwordHash         String? // MUST BE OPTIONAL (?) FOR OAUTH USERS
   isVerified           Boolean   @default(false)
   tier                 UserTier  @default(FREE)
