@@ -2,6 +2,7 @@ import { prisma } from "../prisma";
 import {
   createPipelineRun,
   finalizePipelineRun,
+  persistHardCaseDiscoveryArtifacts,
   persistPipelineArtifact,
 } from "./artifacts";
 import { logAgentScan } from "./log";
@@ -115,6 +116,20 @@ export async function runNewsPipeline(
         result,
       });
       artifactCount += 1;
+      const hardCaseArtifactCount = await persistHardCaseDiscoveryArtifacts({
+        pipelineRunId: pipelineRun.id,
+        result,
+      });
+      artifactCount += hardCaseArtifactCount;
+      if (hardCaseArtifactCount > 0) {
+        await logAgentScan({
+          sourceId: target.sourceId,
+          categoryId: target.categoryId || undefined,
+          status: "HARD_CASE_DISCOVERY_QUEUED",
+          executionTimeMs: 0,
+          errorLog: `Queued ${hardCaseArtifactCount} hard-case discovery target(s) for later headless processing. runId=${pipelineRun.id}.`,
+        });
+      }
       const persisted = await persistCandidates(result.candidates);
       inserted += persisted.inserted;
       skipped += persisted.skipped;

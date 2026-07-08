@@ -22,7 +22,7 @@ export default defineEventHandler(async (event) => {
   let runtimeConflicts = 0;
 
   for (const item of report.items) {
-    if (item.action === "update_to_https") {
+    if (item.action === "update_to_https" && item.normalizedHttpsUrl) {
       try {
         const result = await prisma.newsSource.updateMany({
           where: {

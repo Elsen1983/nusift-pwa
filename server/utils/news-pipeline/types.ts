@@ -30,6 +30,39 @@ export interface IngestSkipSummary {
   htmlFallbackStale: number;
 }
 
+export interface HardCaseDiscoveryCandidate {
+  targetType: "source" | "category";
+  sourceId: string;
+  categoryId?: string | null;
+  targetUrl: string;
+  existingFeedUrl?: string | null;
+  queueReason:
+    | "no_feed_discovered"
+    | "candidate_verification_failed"
+    | "blocked_or_fetch_failed";
+  discovery: {
+    feedUrl: string | null;
+    discoveredVia?: string | null;
+    detection: string;
+    score?: number;
+    scopeConfidence?: string;
+    topCandidates?: Array<{
+      feedUrl: string;
+      detection: string;
+      score: number;
+      contentType?: string | null;
+    }>;
+    rejectedCandidates?: Array<{
+      feedUrl: string;
+      detection: string;
+      score: number;
+      contentType?: string | null;
+      reason: string;
+    }>;
+    lastError?: string;
+  };
+}
+
 export interface IngestCandidate {
   sourceId: string;
   categoryId?: string | null;
@@ -56,9 +89,10 @@ export interface IngestResult {
   candidates: IngestCandidate[];
   failed: number;
   feedUrl?: string | null;
-  feedFormat?: "rss" | "atom" | "json" | "unknown" | null;
+  feedFormat?: "rss" | "atom" | "json" | "html_fallback" | "unknown" | null;
   skipSummary: IngestSkipSummary;
   rejectedItems: IngestRejectedItem[];
+  hardCaseQueueCandidates?: HardCaseDiscoveryCandidate[];
 }
 
 export interface PipelineTarget {

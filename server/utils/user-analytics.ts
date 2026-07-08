@@ -115,7 +115,7 @@ async function buildTimelineData(userId: string, currentYear: number) {
     const monthIndex = article.date.getMonth();
     const entry = chartDataMap.get(article.sourceId);
     if (entry) {
-      entry.data[monthIndex] += 1;
+      entry.data[monthIndex] = (entry.data[monthIndex] || 0) + 1;
     }
   });
 

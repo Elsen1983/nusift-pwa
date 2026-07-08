@@ -684,7 +684,24 @@ export async function discoverFeedForUrl(input: {
   userAgent: string;
   acceptLanguage?: string;
   preferScopedDirectFeed?: boolean;
-}) {
+}): Promise<{
+  feedUrl: string | null;
+  discoveredVia: string | null;
+  detection:
+    | "direct-feed"
+    | "html-link"
+    | "html-raw-url"
+    | "http-link"
+    | "robots-sitemap"
+    | "cms-fingerprint"
+    | "none";
+  contentType?: SupportedFeedType | null;
+  score: number;
+  scopeConfidence: "high" | "medium" | "low";
+  topCandidates: DiscoverySummaryCandidate[];
+  rejectedCandidates: RejectedCandidate[];
+  lastError?: string;
+}> {
   let lastError = "No feed candidates succeeded.";
   const candidateUrls = buildScopedFeedCandidates(input.pageUrl, input.existingFeedUrl || null);
   const acceptedCandidates: FeedCandidate[] = [];

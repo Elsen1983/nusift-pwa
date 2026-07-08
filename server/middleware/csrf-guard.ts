@@ -21,11 +21,12 @@ export default defineEventHandler((event) => {
 
   const config = useRuntimeConfig();
   const appUrl: string = config.public.appUrl || "http://localhost:3000";
+  const isProduction = process.env.NODE_ENV === "production";
 
   // Build allowed origins list from the configured app URL
   const allowedOrigins = new Set<string>([appUrl]);
   // In development, also allow common localhost variants
-  if (appUrl.includes("localhost") || appUrl.includes("127.0.0.1")) {
+  if (!isProduction && (appUrl.includes("localhost") || appUrl.includes("127.0.0.1"))) {
     allowedOrigins.add("http://localhost:3000");
     allowedOrigins.add("http://localhost:3001");
     allowedOrigins.add("http://127.0.0.1:3000");

@@ -1,7 +1,9 @@
 // server/api/util/get-regional-sources.ts
+import { assertRateLimit } from '../../utils/rate-limit';
 
 // A defineCachedEventHandler a Nuxt/Nitro beépített eszköze a memóriaszintű cache-eléshez.
 export default defineCachedEventHandler(async (event) => {
+  await assertRateLimit(event, 'util-get-regional-sources', 20, 60_000);
   // 1. URL paraméter kiolvasása (pl. ?country=HU)
   const query = getQuery(event);
   const country = (query.country as string) || 'US';

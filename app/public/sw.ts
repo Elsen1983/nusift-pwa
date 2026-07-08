@@ -45,10 +45,8 @@ self.addEventListener("push", (event) => {
     icon: "/pwa-192x192.png",
     badge: "/pwa-192x192.png",
     tag: data.type || "NUSIFT_NOTIFICATION",
-    renotify: true,
     requireInteraction: true,
     silent: false,
-    vibrate: [200, 100, 200],
     data: { url: data.url || "/dashboard", type: data.type || "DAILY_DIGEST" },
   };
   event.waitUntil(

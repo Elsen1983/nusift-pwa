@@ -6,6 +6,7 @@ import { logAgentScan } from "./log";
 import { cleanFeedValue, hashText, normalizeFeedText, normalizeUrl, stripHtml } from "./text";
 import { normalizeFeedTextDetailed } from "./normalize-feed-text";
 import type {
+  HardCaseDiscoveryCandidate,
   IngestCandidate,
   IngestRejectedItem,
   IngestResult,
@@ -172,6 +173,79 @@ const buildDiscoveryEvidencePayload = (
     rejectedCandidates: discovery.rejectedCandidates || [],
     lastError: discovery.lastError || null,
   }) satisfies Prisma.InputJsonValue;
+
+const getHardCaseQueueReason = (discovery: {
+  topCandidates?: unknown[];
+  rejectedCandidates?: unknown[];
+  lastError?: string;
+}) => {
+  if ((discovery.rejectedCandidates?.length || 0) > 0) {
+    return "candidate_verification_failed" as const;
+  }
+
+  if (String(discovery.lastError || "").trim().length > 0) {
+    return "blocked_or_fetch_failed" as const;
+  }
+
+  return "no_feed_discovered" as const;
+};
+
+export const shouldQueueHardCaseDiscovery = (discovery: {
+  feedUrl: string | null;
+  topCandidates?: unknown[];
+  rejectedCandidates?: unknown[];
+  lastError?: string;
+}) => {
+  if (discovery.feedUrl) return false;
+  return (
+    (discovery.topCandidates?.length || 0) > 0 ||
+    (discovery.rejectedCandidates?.length || 0) > 0 ||
+    String(discovery.lastError || "").trim().length > 0
+  );
+};
+
+const buildHardCaseDiscoveryCandidate = (input: {
+  targetType: "source" | "category";
+  sourceId: string;
+  categoryId?: string | null;
+  targetUrl: string;
+  existingFeedUrl?: string | null;
+  discovery: {
+    feedUrl: string | null;
+    discoveredVia?: string | null;
+    detection: string;
+    score?: number;
+    scopeConfidence?: string;
+    topCandidates?: Array<{
+      feedUrl: string;
+      detection: string;
+      score: number;
+      contentType?: string | null;
+    }>;
+    rejectedCandidates?: Array<{
+      feedUrl: string;
+      detection: string;
+      score: number;
+      contentType?: string | null;
+      reason: string;
+    }>;
+    lastError?: string;
+  };
+}): HardCaseDiscoveryCandidate | null => {
+  if (!shouldQueueHardCaseDiscovery(input.discovery)) {
+    return null;
+  }
+
+  return {
+    targetType: input.targetType,
+    sourceId: input.sourceId,
+    categoryId: input.categoryId || null,
+    targetUrl: input.targetUrl,
+    existingFeedUrl: input.existingFeedUrl || null,
+    queueReason: getHardCaseQueueReason(input.discovery),
+    discovery: input.discovery,
+  };
+};
 
 const isLikelyArticleLink = (href: string, sourceUrl: string) => {
   try {
@@ -528,7 +602,10 @@ const resolveCategoryFeedUrl = async (
   category: { id: string; pathUrl: string; rssFeedUrl: string | null } | null,
 ) => {
   if (!category || category.rssFeedUrl) {
-    return category?.rssFeedUrl || null;
+    return {
+      feedUrl: category?.rssFeedUrl || null,
+      hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
+    };
   }
 
   try {
@@ -565,16 +642,46 @@ const resolveCategoryFeedUrl = async (
         : `No category feed found for ${category.pathUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}${discovery.lastError ? `, lastError=${discovery.lastError}` : ""}`,
     });
 
-    return discoveredFeedUrl;
+    return {
+      feedUrl: discoveredFeedUrl,
+      hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
+        targetType: "category",
+        sourceId,
+        categoryId: category.id,
+        targetUrl: category.pathUrl,
+        existingFeedUrl: category.rssFeedUrl,
+        discovery,
+      }),
+    };
   } catch (error: any) {
+    const errorMessage = error?.message || String(error);
     await logAgentScan({
       sourceId,
       categoryId: category.id,
       status: "CATEGORY_DISCOVERY_FAILED",
       executionTimeMs: 0,
-      errorLog: error?.message || String(error),
+      errorLog: errorMessage,
     });
-    return null;
+    return {
+      feedUrl: null,
+      hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
+        targetType: "category",
+        sourceId,
+        categoryId: category.id,
+        targetUrl: category.pathUrl,
+        existingFeedUrl: category.rssFeedUrl,
+        discovery: {
+          feedUrl: null,
+          discoveredVia: null,
+          detection: "none",
+          score: 0,
+          scopeConfidence: "low",
+          topCandidates: [],
+          rejectedCandidates: [],
+          lastError: errorMessage,
+        },
+      }),
+    };
   }
 };
 
@@ -587,7 +694,10 @@ const resolveSourceFeedUrl = async (
   },
 ) => {
   if (source.rssFeedUrl && source.rssStatus !== "NO_RSS_FOUND") {
-    return source.rssFeedUrl;
+    return {
+      feedUrl: source.rssFeedUrl,
+      hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
+    };
   }
 
   try {
@@ -622,15 +732,43 @@ const resolveSourceFeedUrl = async (
         : `No source feed found for ${source.frontPageUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}${discovery.lastError ? `, lastError=${discovery.lastError}` : ""}`,
     });
 
-    return discoveredFeedUrl;
+    return {
+      feedUrl: discoveredFeedUrl,
+      hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
+        targetType: "source",
+        sourceId: source.id,
+        targetUrl: source.frontPageUrl,
+        existingFeedUrl: source.rssFeedUrl,
+        discovery,
+      }),
+    };
   } catch (error: any) {
+    const errorMessage = error?.message || String(error);
     await logAgentScan({
       sourceId: source.id,
       status: "SOURCE_DISCOVERY_FAILED",
       executionTimeMs: 0,
-      errorLog: error?.message || String(error),
+      errorLog: errorMessage,
     });
-    return null;
+    return {
+      feedUrl: null,
+      hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
+        targetType: "source",
+        sourceId: source.id,
+        targetUrl: source.frontPageUrl,
+        existingFeedUrl: source.rssFeedUrl,
+        discovery: {
+          feedUrl: null,
+          discoveredVia: null,
+          detection: "none",
+          score: 0,
+          scopeConfidence: "low",
+          topCandidates: [],
+          rejectedCandidates: [],
+          lastError: errorMessage,
+        },
+      }),
+    };
   }
 };
 
@@ -687,9 +825,15 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
     };
   }
 
-  const categoryFeedUrl = await resolveCategoryFeedUrl(sourceId, category);
-  const sourceFeedUrl = await resolveSourceFeedUrl(source);
+  const categoryFeedResolution = await resolveCategoryFeedUrl(sourceId, category);
+  const sourceFeedResolution = await resolveSourceFeedUrl(source);
+  const categoryFeedUrl = categoryFeedResolution.feedUrl;
+  const sourceFeedUrl = sourceFeedResolution.feedUrl;
   const isUsingDedicatedCategoryFeed = Boolean(categoryId && categoryFeedUrl);
+  const hardCaseQueueCandidates = [
+    categoryFeedResolution.hardCaseQueueCandidate,
+    sourceFeedResolution.hardCaseQueueCandidate,
+  ].filter(Boolean) as HardCaseDiscoveryCandidate[];
 
   await logAgentScan({
     sourceId,
@@ -783,6 +927,8 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
 
     const candidates: IngestCandidate[] = [];
     const parsedFeed = parseFeedItems(xml);
+    const parsedCandidateOrigin: "rss" | "atom" | "json" =
+      parsedFeed.format === "unknown" ? "rss" : parsedFeed.format;
     const now = new Date();
     const skipSummary = emptySkipSummary();
     const rejectedItems: IngestRejectedItem[] = [];
@@ -854,15 +1000,15 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         isPaywall: /paywall|subscribe|premium/i.test(xml),
         rawTags: [],
         rawSignals: [],
-        reasoning: `${parsedFeed.format.toUpperCase()} ingest from ${source.mediaName || source.frontPageUrl}`,
+        reasoning: `${parsedCandidateOrigin.toUpperCase()} ingest from ${source.mediaName || source.frontPageUrl}`,
         normalizationFlags: [...new Set([
           ...(normalizedTitle.changed ? normalizedTitle.flags : []),
           ...(normalizedBody.changed ? normalizedBody.flags : []),
         ])],
         provenance: {
-          origin: parsedFeed.format,
+          origin: parsedCandidateOrigin,
           feedUrl,
-          feedFormat: parsedFeed.format,
+          feedFormat: parsedCandidateOrigin,
           discoveredFromCategoryFeed: isUsingDedicatedCategoryFeed,
           sourcePageUrl: preferredFrontPageUrl,
           fetchedAt: new Date().toISOString(),
@@ -906,6 +1052,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             feedFormat: parsedFeed.format,
             skipSummary,
             rejectedItems,
+            hardCaseQueueCandidates,
           };
         }
 
@@ -951,6 +1098,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
           feedFormat: parsedFeed.format,
           skipSummary,
           rejectedItems,
+          hardCaseQueueCandidates,
         };
       }
     }
@@ -972,6 +1120,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       feedFormat: parsedFeed.format,
       skipSummary,
       rejectedItems,
+      hardCaseQueueCandidates,
     };
   } catch (error: any) {
     const isSecurityError = error instanceof SSRFError;
@@ -1012,9 +1161,10 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
               candidates: await attachCategoryIds(htmlFallback.candidates),
               failed: 0,
               feedUrl: source.frontPageUrl,
-              feedFormat: "unknown",
+              feedFormat: "html_fallback",
               skipSummary: htmlFallback.skipSummary,
               rejectedItems: htmlFallback.rejectedItems,
+              hardCaseQueueCandidates,
             };
           }
         }
@@ -1037,6 +1187,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       feedFormat: null,
       skipSummary: emptySkipSummary(),
       rejectedItems: [],
+      hardCaseQueueCandidates,
     };
   }
 }

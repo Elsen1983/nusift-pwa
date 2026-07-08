@@ -27,8 +27,8 @@ export default defineEventHandler(async (event) => {
   }
 
   const results = await prisma.$transaction(operations);
-  const articleResult = results[0];
-  const logResult = results[1];
+  const articleResult = results[0] || { count: 0 };
+  const logResult = results[1] || { count: 0 };
   const artifactResult = results[2] || { count: 0 };
   const runResult = results[3] || { count: 0 };
 

@@ -12,7 +12,7 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 400, statusMessage: 'Verification token is missing.' });
     }
 
-    // 1. Megkeressük a usert a token alapján
+    // 1. Find the user by verification token
     const user = await prisma.user.findUnique({
       where: { verificationToken: token }
     });
@@ -21,16 +21,13 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 401, statusMessage: 'Invalid or expired verification token.' });
     }
 
-    // SECURITY: Reject expired verification tokens.
-    // Backward-compat: If verificationTokenExpires is null (pre-migration users or
-    // tokens created before this field existed), the check is skipped — those tokens
-    // remain valid indefinitely. Once all users have rotated through the verification
-    // flow, this null-skip can be removed to enforce expiry strictly.
-    if (user.verificationTokenExpires && user.verificationTokenExpires < new Date()) {
+    // SECURITY: verification tokens are valid only when an explicit expiry exists
+    // and that expiry is still in the future.
+    if (!user.verificationTokenExpires || user.verificationTokenExpires < new Date()) {
       throw createError({ statusCode: 401, statusMessage: 'Verification token has expired. Please request a new one.' });
     }
 
-    // 2. Frissítjük a DB-ben: isVerified = true, tokent töröljük
+    // 2. Update DB state and clear the one-time token
     const updatedUser = await prisma.user.update({
       where: { id: user.id },
       data: {
@@ -40,11 +37,10 @@ export default defineEventHandler(async (event) => {
       }
     });
 
-    // 3. Automatikus Beléptetés (JWT generálás)
-    // SENIOR PROTOCOL: Dual-Zone Expiration
+    // 3. Auto-login with the existing dual-zone expiration policy
     const isFullyOnboarded = user.onboardingStep >= 3;
     const tokenExpirationStr = isFullyOnboarded ? '7d' : '1h';
-    const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60; // second-based
+    const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60;
 
     const sessionToken = signSessionToken(
       {
@@ -58,9 +54,9 @@ export default defineEventHandler(async (event) => {
 
     setSessionCookies(event, sessionToken, cookieMaxAge);
 
-    return { 
-      success: true, 
-      message: 'Email verified successfully. Logging in.' 
+    return {
+      success: true,
+      message: 'Email verified successfully. Logging in.'
     };
 
   } catch (error: any) {

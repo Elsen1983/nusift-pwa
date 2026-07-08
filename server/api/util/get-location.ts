@@ -1,5 +1,8 @@
 // server/api/util/get-location.ts
+import { assertRateLimit } from '../../utils/rate-limit';
+
 export default defineEventHandler(async (event) => {
+  await assertRateLimit(event, 'util-get-location', 10, 60_000);
 
   const vercelCountry = getHeader(event, 'x-vercel-ip-country');
 

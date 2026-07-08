@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/internal/run-hard-case-discovery?limit=10",
+      "schedule": "0 4 * * *"
+    }
+  ]
+}

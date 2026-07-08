@@ -1,8 +1,26 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
-import type { IngestCandidate, IngestRejectedItem, IngestResult, IngestSkipSummary, PipelineResult } from "./types";
+import type {
+  HardCaseDiscoveryCandidate,
+  IngestCandidate,
+  IngestRejectedItem,
+  IngestResult,
+  IngestSkipSummary,
+  PipelineResult,
+} from "./types";
 
-const serializeCandidate = (candidate: IngestCandidate) => ({
+const serializeCandidateProvenance = (
+  provenance: IngestCandidate["provenance"],
+): Prisma.InputJsonObject => ({
+  origin: provenance.origin,
+  feedUrl: provenance.feedUrl || null,
+  feedFormat: provenance.feedFormat || null,
+  discoveredFromCategoryFeed: provenance.discoveredFromCategoryFeed || false,
+  sourcePageUrl: provenance.sourcePageUrl || null,
+  fetchedAt: provenance.fetchedAt,
+});
+
+const serializeCandidate = (candidate: IngestCandidate): Prisma.InputJsonObject => ({
   sourceId: candidate.sourceId,
   categoryId: candidate.categoryId || null,
   sourceUrl: candidate.sourceUrl,
@@ -18,8 +36,45 @@ const serializeCandidate = (candidate: IngestCandidate) => ({
   rawTags: candidate.rawTags,
   rawSignals: candidate.rawSignals,
   reasoning: candidate.reasoning,
-  provenance: candidate.provenance,
+  provenance: serializeCandidateProvenance(candidate.provenance),
   normalizationFlags: candidate.normalizationFlags || [],
+});
+
+const serializeSkipSummary = (skipSummary: IngestSkipSummary) => ({
+  emptyLink: skipSummary.emptyLink,
+  outOfScope: skipSummary.outOfScope,
+  staleOrMissingPublishedAt: skipSummary.staleOrMissingPublishedAt,
+  htmlFallbackNonArticle: skipSummary.htmlFallbackNonArticle,
+  htmlFallbackStale: skipSummary.htmlFallbackStale,
+});
+
+const serializeRejectedItem = (item: IngestRejectedItem) => ({
+  reason: item.reason,
+  rawLink: item.rawLink || null,
+  canonicalUrl: item.canonicalUrl || null,
+  title: item.title || null,
+  publishedAt: item.publishedAt || null,
+});
+
+const serializeHardCaseDiscoveryCandidate = (
+  candidate: HardCaseDiscoveryCandidate,
+): Prisma.InputJsonObject => ({
+  targetType: candidate.targetType,
+  sourceId: candidate.sourceId,
+  categoryId: candidate.categoryId || null,
+  targetUrl: candidate.targetUrl,
+  existingFeedUrl: candidate.existingFeedUrl || null,
+  queueReason: candidate.queueReason,
+  discovery: {
+    feedUrl: candidate.discovery.feedUrl,
+    discoveredVia: candidate.discovery.discoveredVia || null,
+    detection: candidate.discovery.detection,
+    score: candidate.discovery.score ?? 0,
+    scopeConfidence: candidate.discovery.scopeConfidence || "low",
+    topCandidates: candidate.discovery.topCandidates || [],
+    rejectedCandidates: candidate.discovery.rejectedCandidates || [],
+    lastError: candidate.discovery.lastError || null,
+  } satisfies Prisma.InputJsonValue,
 });
 
 export async function createPipelineRun(targetCount: number) {
@@ -38,7 +93,7 @@ export async function persistPipelineArtifact(input: {
   pipelineRunId: string;
   result: IngestResult;
 }) {
-  const payload = {
+  const payload: Prisma.InputJsonObject = {
     sourceId: input.result.sourceId,
     categoryId: input.result.categoryId || null,
     capturedAt: new Date().toISOString(),
@@ -46,10 +101,10 @@ export async function persistPipelineArtifact(input: {
     failed: input.result.failed,
     feedUrl: input.result.feedUrl || null,
     feedFormat: input.result.feedFormat || null,
-    skipSummary: input.result.skipSummary satisfies IngestSkipSummary,
-    rejectedItems: input.result.rejectedItems satisfies IngestRejectedItem[],
-    candidates: input.result.candidates.map(serializeCandidate),
-  } satisfies Prisma.InputJsonValue;
+    skipSummary: serializeSkipSummary(input.result.skipSummary),
+    rejectedItems: input.result.rejectedItems.map(serializeRejectedItem),
+    candidates: input.result.candidates.map(serializeCandidate) as Prisma.InputJsonArray,
+  };
 
   return prisma.pipelineArtifact.create({
     data: {
@@ -66,6 +121,31 @@ export async function persistPipelineArtifact(input: {
           : null,
     },
   });
+}
+
+export async function persistHardCaseDiscoveryArtifacts(input: {
+  pipelineRunId: string;
+  result: IngestResult;
+}) {
+  const queueCandidates = input.result.hardCaseQueueCandidates || [];
+  if (queueCandidates.length === 0) {
+    return 0;
+  }
+
+  await prisma.pipelineArtifact.createMany({
+    data: queueCandidates.map((candidate) => ({
+      pipelineRunId: input.pipelineRunId,
+      sourceId: candidate.sourceId,
+      categoryId: candidate.categoryId || null,
+      artifactType: "hard_case_discovery_candidate",
+      status: "PENDING_HEADLESS",
+      candidateCount: 0,
+      payload: serializeHardCaseDiscoveryCandidate(candidate),
+      errorLog: `Queued ${candidate.targetType} hard-case discovery for ${candidate.targetUrl}. reason=${candidate.queueReason}.`,
+    })),
+  });
+
+  return queueCandidates.length;
 }
 
 export async function finalizePipelineRun(input: {

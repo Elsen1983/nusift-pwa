@@ -13,7 +13,9 @@ export default defineEventHandler(async (event) => {
 
   await assertRateLimit(event, "scoped-source-normalize", 3, 10 * 60 * 1000);
 
-  const body = await readBody<{ limit?: number }>(event).catch(() => ({}));
+  const body = (await readBody<{ limit?: number }>(event).catch(() => null)) as
+    | { limit?: number }
+    | null;
   const limit = Math.max(1, Math.min(50, Number(body?.limit) || 25));
   const report = readScopedSourceAuditReport();
   const targets = report.items

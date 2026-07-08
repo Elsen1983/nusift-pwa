@@ -1,8 +1,11 @@
 // server/api/util/get-regional-whitelist.ts
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { assertRateLimit } from '../../utils/rate-limit';
 
 export default defineEventHandler(async (event) => {
+  await assertRateLimit(event, 'util-get-regional-whitelist', 30, 60_000);
+
   const query = getQuery(event);
   const country = (query.country as string)?.toUpperCase();
 

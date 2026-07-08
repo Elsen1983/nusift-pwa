@@ -395,7 +395,14 @@
               Manually run the news pipeline and refresh the feed.
             </p>
           </div>
-          <div class="flex items-center">
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              @click="runHardCaseQueue"
+              :disabled="isHardCaseQueueRunning"
+              class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-2 text-sm font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ isHardCaseQueueRunning ? "Running..." : "Run hard-case queue" }}
+            </button>
             <button
               @click="runManualPipeline"
               :disabled="isPipelineRunning"
@@ -558,6 +565,7 @@ const isLoading = computed(() => feedStore.isLoading);
 const ARTICLES_PER_PAGE = 10;
 const currentPage = ref(1);
 const isPipelineRunning = ref(false);
+const isHardCaseQueueRunning = ref(false);
 const isFixingRssStatus = ref(false);
 const isImportingRss = ref(false);
 const isBackfillingArticleCategories = ref(false);
@@ -572,7 +580,16 @@ const canAccessDevPanel = ref(false);
 const isClearingLogs = ref(false);
 const agentLogs = ref<Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
 const agentSourceCount = ref(0);
-const scopedSourceAuditSummary = ref<null | {
+const createEmptyScopedSourceAuditSummary = () => ({
+  generatedAt: "",
+  totalSubPathSources: 0,
+  keep: 0,
+  normalizeToHttps: 0,
+  candidateDeleteInvalidSubpath: 0,
+  candidateSharedRootOnly: 0,
+  needsManualReview: 0,
+});
+const scopedSourceAuditSummary = ref<{
   generatedAt: string;
   totalSubPathSources: number;
   keep: number;
@@ -580,7 +597,7 @@ const scopedSourceAuditSummary = ref<null | {
   candidateDeleteInvalidSubpath: number;
   candidateSharedRootOnly: number;
   needsManualReview: number;
-}>(null);
+}>(createEmptyScopedSourceAuditSummary());
 const availableSources = ref<SourceFilterOption[]>([]);
 const toast = ref({ show: false, message: "", type: "success" as "success" | "error" });
 
@@ -722,7 +739,7 @@ const loadScopedSourceAuditSummary = async () => {
     }>("/api/dev/scoped-source-audit");
 
     if (!response.report) {
-      scopedSourceAuditSummary.value = null;
+      scopedSourceAuditSummary.value = createEmptyScopedSourceAuditSummary();
       return;
     }
 
@@ -1240,6 +1257,50 @@ const runManualPipeline = async () => {
     }, 4500);
   } finally {
     isPipelineRunning.value = false;
+    await refreshDevPanel();
+    stopDevPanelPolling();
+  }
+};
+
+const runHardCaseQueue = async () => {
+  if (!showDevPanel.value) return;
+  if (isHardCaseQueueRunning.value) return;
+
+  isHardCaseQueueRunning.value = true;
+  startDevPanelPolling();
+  try {
+    const response = await $api<{
+      ok: boolean;
+      result?: {
+        processed: number;
+        resolved: number;
+        failedFinal: number;
+        invalid: number;
+      };
+    }>("/api/dev/run-hard-case-discovery", {
+      method: "POST",
+      body: { limit: 10 },
+    });
+    toast.value = {
+      show: true,
+      message: `Hard-case queue finished: ${response.result?.resolved ?? 0} resolved, ${response.result?.failedFinal ?? 0} failed, ${response.result?.invalid ?? 0} invalid. Run the main pipeline after this to ingest from newly resolved feeds.`,
+      type: "success",
+    };
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Hard-case queue run failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isHardCaseQueueRunning.value = false;
     await refreshDevPanel();
     stopDevPanelPolling();
   }

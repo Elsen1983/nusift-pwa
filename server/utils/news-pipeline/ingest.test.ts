@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isWithinFreshnessWindow, matchCategoryIdForUrl } from "./ingest";
+import { isWithinFreshnessWindow, matchCategoryIdForUrl, shouldQueueHardCaseDiscovery } from "./ingest";
 import { cleanFeedValue } from "./text";
 
 describe("matchCategoryIdForUrl", () => {
@@ -41,6 +41,30 @@ describe("isWithinFreshnessWindow", () => {
 describe("publish date fallback behavior", () => {
   it("still treats missing dates as stale before fallback resolution", () => {
     expect(isWithinFreshnessWindow(null, new Date("2026-07-06T12:00:00.000Z"))).toBe(false);
+  });
+});
+
+describe("shouldQueueHardCaseDiscovery", () => {
+  it("queues unresolved targets when discovery surfaced evidence but no usable feed", () => {
+    expect(
+      shouldQueueHardCaseDiscovery({
+        feedUrl: null,
+        topCandidates: [{ feedUrl: "https://example.com/feed.xml" }],
+        rejectedCandidates: [],
+        lastError: "",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not queue when a usable feed was already resolved", () => {
+    expect(
+      shouldQueueHardCaseDiscovery({
+        feedUrl: "https://example.com/feed.xml",
+        topCandidates: [],
+        rejectedCandidates: [],
+        lastError: "",
+      }),
+    ).toBe(false);
   });
 });
 
