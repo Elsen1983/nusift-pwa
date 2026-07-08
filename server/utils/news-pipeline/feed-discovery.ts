@@ -1,5 +1,6 @@
 import { safeFetch } from "../ssrf-guard";
 import { buildFeedUrlCandidates } from "./import-rss";
+import type { FeedDiscoveryResult, ScopeMatch, TaxonomyEvidence } from "./types";
 
 type SupportedFeedType =
   | "application/rss+xml"
@@ -10,9 +11,10 @@ type SupportedFeedType =
 type FeedCandidate = {
   feedUrl: string;
   discoveredVia: string;
-  detection: "direct-feed" | "html-link" | "html-raw-url" | "http-link" | "robots-sitemap" | "cms-fingerprint";
+  detection: "direct-feed" | "html-link" | "html-raw-url" | "http-link" | "robots-sitemap" | "cms-fingerprint" | "taxonomy-extraction";
   contentType?: SupportedFeedType | null;
   score: number;
+  scopeMatch: ScopeMatch;
 };
 
 type DiscoverySummaryCandidate = {
@@ -20,6 +22,7 @@ type DiscoverySummaryCandidate = {
   detection: FeedCandidate["detection"];
   score: number;
   contentType?: SupportedFeedType | null;
+  scopeMatch: ScopeMatch;
 };
 
 type RejectedCandidate = DiscoverySummaryCandidate & {
@@ -520,15 +523,17 @@ const collectSitemapFeedCandidates = async (
           continue;
         }
 
-        const candidate = {
+        const candidateBase = {
           feedUrl: loc,
           discoveredVia: sitemapUrl,
           detection: "robots-sitemap" as const,
           contentType: null,
         };
+        const { score: baseScore, scopeMatch } = computeCandidateScore(input, candidateBase);
         acceptedCandidates.push({
-          ...candidate,
-          score: computeCandidateScore(input, candidate) + relevanceBonus,
+          ...candidateBase,
+          score: baseScore + relevanceBonus,
+          scopeMatch,
         });
         seenAcceptedFeeds.add(loc);
       }
@@ -569,6 +574,457 @@ export const buildScopedFeedCandidates = (pageUrl: string, existingFeedUrl?: str
   return [...candidates].filter(Boolean);
 };
 
+// ─── Scope Classification ────────────────────────────────────────────────────
+
+const emptyTaxonomyEvidence = (): TaxonomyEvidence => ({
+  sectionIds: [],
+  tagIds: [],
+  categorySlugs: [],
+  collectionIds: [],
+  routeNames: [],
+  canonicalSectionHandles: [],
+  feedParams: [],
+  matchedFeedUrls: [],
+});
+
+/**
+ * Accumulate taxonomy evidence from a source into a target accumulator in-place.
+ * Deduplicates each array after merging.
+ */
+const accumulateTaxonomyEvidence = (
+  target: TaxonomyEvidence,
+  source: TaxonomyEvidence,
+): void => {
+  target.sectionIds.push(...source.sectionIds);
+  target.tagIds.push(...source.tagIds);
+  target.categorySlugs.push(...source.categorySlugs);
+  target.collectionIds.push(...source.collectionIds);
+  target.routeNames.push(...source.routeNames);
+  target.canonicalSectionHandles.push(...source.canonicalSectionHandles);
+  target.feedParams.push(...source.feedParams);
+  target.matchedFeedUrls.push(...source.matchedFeedUrls);
+
+  // Deduplicate all arrays in-place
+  target.sectionIds = [...new Set(target.sectionIds)];
+  target.tagIds = [...new Set(target.tagIds)];
+  target.categorySlugs = [...new Set(target.categorySlugs)];
+  target.collectionIds = [...new Set(target.collectionIds)];
+  target.routeNames = [...new Set(target.routeNames)];
+  target.canonicalSectionHandles = [...new Set(target.canonicalSectionHandles)];
+  target.feedParams = [...new Set(target.feedParams)];
+  target.matchedFeedUrls = [...new Set(target.matchedFeedUrls)];
+};
+
+/**
+ * Extract taxonomy/section evidence from inline JSON blocks, script text,
+ * and feed URLs with taxonomy query parameters.
+ *
+ * This is purely regex-based (no DOM required) to complement the DOM-level
+ * extraction in browser-feed-resolver.ts.
+ *
+ * Extracts:
+ * - Section/category/tag IDs from inline JSON (e.g., Next.js __NEXT_DATA__,
+ *   WordPress config, Ghost config, Drupal settings)
+ * - Feed URLs with taxonomy parameters (e.g., ?cat=5, ?tag=nba)
+ * - Route names and canonical section handles from page content
+ */
+export const extractTaxonomyEvidence = (
+  html: string,
+  pageUrl: string,
+): TaxonomyEvidence => {
+  const evidence = emptyTaxonomyEvidence();
+
+  try {
+    const parsed = new URL(pageUrl);
+    const pathSlug = parsed.pathname.replace(/^\/+|\/+$/g, "");
+    if (pathSlug) {
+      const segments = pathSlug.split("/").filter(Boolean);
+      if (segments.length > 0) {
+        const lastSegment = segments[segments.length - 1];
+        if (lastSegment && lastSegment.length >= 2 && lastSegment.length <= 80) {
+          evidence.canonicalSectionHandles.push(lastSegment);
+        }
+      }
+    }
+  } catch {}
+
+  // 1. Extract section/category/tag IDs from inline JSON blocks
+  const jsonBlockPattern =
+    /<(?:script)[^>]*type=["']application\/?(?:ld\+)?json[^>]*>[\s\S]*?<\/script>/gi;
+  const scriptBlocks = html.match(jsonBlockPattern) || [];
+
+  for (const block of scriptBlocks) {
+    const jsonContent = block.replace(/<[^>]+>/g, "").trim();
+    if (!jsonContent) continue;
+
+    try {
+      const parsed = JSON.parse(jsonContent);
+      extractTaxonomyFromJson(parsed, evidence);
+    } catch {}
+  }
+
+  // 2. Extract taxonomy IDs from script text (WordPress, Ghost, Drupal patterns)
+  const scriptTextPattern = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+  let scriptMatch: RegExpExecArray | null;
+  while ((scriptMatch = scriptTextPattern.exec(html)) !== null) {
+    const content = scriptMatch[1] || "";
+
+    // WordPress: wp-json category/tag IDs
+    const wpCategoryIds = content.match(/['"](?:cat|category_id|term_id)["']\s*[:=]\s*['"]?(\d+)['"]?/gi);
+    if (wpCategoryIds) {
+      for (const m of wpCategoryIds) {
+        const id = m.match(/\d+/)?.[0];
+        if (id) evidence.sectionIds.push(id);
+      }
+    }
+
+    // WordPress: category/tag slugs in localized data
+    const wpSlugs = content.match(/['"](?:category_slug|tag_slug|term_slug)["']\s*[:=]\s*['"]([a-z0-9_-]+)['"]?/gi);
+    if (wpSlugs) {
+      for (const m of wpSlugs) {
+        const slug = m.match(/['"]([a-z0-9_-]+)['"]?$/i)?.[1];
+        if (slug) evidence.categorySlugs.push(slug);
+      }
+    }
+
+    // Ghost: section/tag slugs from JSON config blocks
+    const ghostSlugs = content.match(/['"]slug['"]\s*:\s*['"]([a-z0-9_-]+)['"]?/gi);
+    if (ghostSlugs) {
+      for (const m of ghostSlugs) {
+        const slug = m.match(/['"]([a-z0-9_-]+)['"]?$/i)?.[1];
+        if (slug) evidence.categorySlugs.push(slug);
+      }
+    }
+
+    // Drupal: taxonomy term IDs
+    const drupalTermIds = content.match(/['"]tid['"]\s*:\s*['"]?(\d+)['"]?/gi);
+    if (drupalTermIds) {
+      for (const m of drupalTermIds) {
+        const id = m.match(/\d+/)?.[0];
+        if (id) evidence.tagIds.push(id);
+      }
+    }
+
+    // Generic: route names / section IDs from common frameworks
+    const routeNames = content.match(/['"](?:route|section|department|category)["']\s*[:=]\s*['"]([a-z0-9_/-]+)['"]?/gi);
+    if (routeNames) {
+      for (const m of routeNames) {
+        const name = m.match(/['"]([a-z0-9_/-]+)['"]?$/i)?.[1];
+        if (name && name.length >= 2) evidence.routeNames.push(name);
+      }
+    }
+  }
+
+  // 3. Extract feed URLs with taxonomy query parameters from the HTML.
+  // Matches URLs like /feed?cat=5, /rss.xml?tag=nba, https://example.com/feed?cat=5
+  // The regex structure: optional scheme+host, slash, path segments, feed keyword,
+  // optional extension, then query string.
+  const feedUrlWithParamsPattern =
+    /((?:https?:\/\/[^"'\s<>]+)?\/[^"'\s<>]*?(?:rss|feed|atom)(?:\.[a-z]+)?[^"'\s<>]*\?[^"'\s<>]+)/gi;
+  let feedUrlMatch: RegExpExecArray | null;
+  while ((feedUrlMatch = feedUrlWithParamsPattern.exec(html)) !== null) {
+    const url = feedUrlMatch[1];
+    if (!url) continue;
+
+    const paramPatterns = [/[?&]cat(?:egory)?=([^&"'\s]+)/gi, /[?&]tag=([^&"'\s]+)/gi, /[?&]term=([^&"'\s]+)/gi, /[?&]section=([^&"'\s]+)/gi];
+    for (const pattern of paramPatterns) {
+      let paramMatch: RegExpExecArray | null;
+      while ((paramMatch = pattern.exec(url)) !== null) {
+        const value = paramMatch[1];
+        if (value) evidence.feedParams.push(value);
+      }
+    }
+    evidence.matchedFeedUrls.push(url);
+  }
+
+  // 4. Extract collection IDs from meta tags
+  const collectionMeta = html.match(/<meta[^>]+name=["'](?:collection|section|category)[_-]?id["'][^>]+content=["']([^"']+)["']/gi);
+  if (collectionMeta) {
+    for (const m of collectionMeta) {
+      const id = m.match(/content=["']([^"']+)["']/i)?.[1];
+      if (id) evidence.collectionIds.push(id);
+    }
+  }
+
+  return evidence;
+};
+
+/**
+ * Walk a parsed JSON object and extract taxonomy-related values.
+ * Populates the evidence object in-place.
+ */
+function extractTaxonomyFromJson(obj: unknown, evidence: TaxonomyEvidence): void {
+  if (!obj || typeof obj !== "object") return;
+
+  if (Array.isArray(obj)) {
+    for (const item of obj) extractTaxonomyFromJson(item, evidence);
+    return;
+  }
+
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const lowerKey = key.toLowerCase();
+
+    // Extract section/category/tag IDs
+    if (typeof value === "string" || typeof value === "number") {
+      const strValue = String(value);
+      if (/(?:section|category|department)Id$/i.test(lowerKey) && strValue) {
+        evidence.sectionIds.push(strValue);
+      }
+      if (/(?:tag|term)Id$/i.test(lowerKey) && strValue) {
+        evidence.tagIds.push(strValue);
+      }
+      if (lowerKey === "slug" && typeof value === "string" && value.length >= 2 && value.length <= 80) {
+        evidence.categorySlugs.push(value);
+      }
+      if (lowerKey === "handle" && typeof value === "string" && value.length >= 2 && value.length <= 80) {
+        evidence.canonicalSectionHandles.push(value);
+      }
+
+    }
+
+    if (value && typeof value === "object") {
+      extractTaxonomyFromJson(value, evidence);
+    }
+  }
+}
+
+/**
+ * Build feed candidates from site-specific heuristics and taxonomy evidence.
+ * Only produces candidates for scoped targets — never for root/source targets.
+ *
+ * Heuristics are domain-scoped and produce candidates that still flow through
+ * normal verification and scoring.
+ *
+ * Supported CMS patterns:
+ * - WordPress: query parameter feeds (?cat=<id>, ?tag=<slug>)
+ * - Ghost: section/tag RSS paths (/section/<slug>/rss/)
+ * - Drupal: taxonomy term feed paths (/taxonomy/term/<id>/feed)
+ * - Generic: section feed paths from extracted slugs/handles
+ */
+export const buildTaxonomyHeuristicCandidates = (
+  pageUrl: string,
+  evidence: TaxonomyEvidence,
+  fingerprints: string[],
+): string[] => {
+  const candidates: string[] = [];
+
+  try {
+    const parsed = new URL(pageUrl);
+    const origin = parsed.origin;
+    const scopePath = parsed.pathname.replace(/\/+$/, "");
+    const isWordPress = fingerprints.includes("wordpress");
+    const isGhost = fingerprints.includes("ghost");
+    const isDrupal = fingerprints.includes("drupal");
+
+    // WordPress: category query parameter feeds
+    if (isWordPress) {
+      for (const id of evidence.sectionIds) {
+        candidates.push(`${origin}/?feed=rss2&cat=${id}`);
+        candidates.push(`${origin}/?cat=${id}&feed=rss2`);
+      }
+      for (const slug of evidence.categorySlugs) {
+        candidates.push(`${origin}/category/${slug}/feed/`);
+        candidates.push(`${origin}/tag/${slug}/feed/`);
+      }
+    }
+
+    // Ghost: section/tag RSS paths
+    if (isGhost) {
+      for (const slug of evidence.categorySlugs) {
+        candidates.push(`${origin}/${slug}/rss/`);
+        candidates.push(`${origin}${scopePath}/${slug}/rss/`);
+      }
+    }
+
+    // Drupal: taxonomy term feed paths
+    if (isDrupal) {
+      for (const id of evidence.tagIds) {
+        candidates.push(`${origin}/taxonomy/term/${id}/feed`);
+      }
+      for (const id of evidence.sectionIds) {
+        candidates.push(`${origin}/taxonomy/term/${id}/feed`);
+      }
+    }
+
+    // Generic: section feeds from extracted slugs/handles
+    if (!isWordPress && !isGhost && !isDrupal) {
+      for (const slug of evidence.canonicalSectionHandles) {
+        candidates.push(`${origin}/${slug}/rss`);
+        candidates.push(`${origin}/${slug}/feed`);
+        candidates.push(`${origin}/${slug}/rss.xml`);
+      }
+      for (const slug of evidence.categorySlugs) {
+        candidates.push(`${origin}/${slug}/rss`);
+        candidates.push(`${origin}/${slug}/feed`);
+      }
+    }
+
+    // Feed URLs with taxonomy parameters found in the page
+    for (const url of evidence.matchedFeedUrls) {
+      const resolved = resolveRelativeUrl(url, pageUrl);
+      if (resolved) candidates.push(resolved);
+    }
+  } catch {}
+
+  // Filter out blocked paths before returning
+  const blockedPattern = /\/(?:feedback|contact|about|privacy|terms)(?:\/|$)/i;
+  return [...new Set(candidates)]
+    .filter((url) => {
+      if (!url) return false;
+      try {
+        return !blockedPattern.test(new URL(url).pathname);
+      } catch {
+        return false;
+      }
+    });
+};
+
+/**
+ * Classify how well a candidate URL matches the target URL's scope.
+ *
+ * - exact: paths match or candidate is a direct scoped feed for the target
+ * - probable: candidate is under the target scope, shares path segments,
+ *   or has taxonomy query parameters that match extracted evidence
+ * - generic: candidate is a root-level feed (/, /rss, /feed)
+ * - unrelated: candidate belongs to a different scope entirely
+ */
+const classifyScopeMatch = (
+  targetUrl: string,
+  candidateUrl: string,
+  taxonomyEvidence?: TaxonomyEvidence,
+): ScopeMatch => {
+  const targetPath = normalizePath(targetUrl);
+  const candidatePath = normalizePath(candidateUrl);
+
+  // Root target → all valid candidates are generic
+  if (targetPath === "/") {
+    // Exception: if the candidate has taxonomy query parameters matching evidence,
+    // it's a scoped feed even though the path is root (e.g., /?feed=rss2&cat=5)
+    if (taxonomyEvidence && hasTaxonomyQueryParams(candidateUrl, taxonomyEvidence)) {
+      return "probable";
+    }
+    return candidatePath === "/" ? "generic" : "unrelated";
+  }
+
+  // Exact path match
+  if (candidatePath === targetPath || candidatePath.startsWith(`${targetPath}/`)) {
+    return "exact";
+  }
+
+  // Candidate contains target scope as path segment
+  const scopeSegments = targetPath.split("/").filter(Boolean);
+  const candidateSegments = candidatePath.split("/").filter(Boolean);
+  if (scopeSegments.some((seg) => candidateSegments.includes(seg))) {
+    return "probable";
+  }
+
+  // Candidate has taxonomy query parameters matching extracted evidence
+  if (taxonomyEvidence && hasTaxonomyQueryParams(candidateUrl, taxonomyEvidence)) {
+    return "probable";
+  }
+
+  // Generic root-level feed paths (including common feed file extensions)
+  if (
+    candidatePath === "/rss" ||
+    candidatePath === "/feed" ||
+    candidatePath === "/" ||
+    /^\/(?:rss|feed|atom)\.[a-z]+$/.test(candidatePath) ||
+    /^\/(?:rss|feed|atom)(?:\/.*)?$/.test(candidatePath)
+  ) {
+    return "generic";
+  }
+
+  return "unrelated";
+};
+
+/**
+ * Check if a candidate URL has taxonomy query parameters that match
+ * extracted taxonomy evidence. Used to identify scoped feeds served
+ * via query parameters (e.g., /?feed=rss2&cat=5).
+ */
+const hasTaxonomyQueryParams = (
+  candidateUrl: string,
+  evidence: TaxonomyEvidence,
+): boolean => {
+  try {
+    const search = new URL(candidateUrl).search.toLowerCase();
+    if (!search) return false;
+
+    const paramPatterns = [/[?&]cat(?:egory)?=([^&]+)/gi, /[?&]tag=([^&]+)/gi, /[?&]term=([^&]+)/gi, /[?&]section=([^&]+)/gi];
+    for (const pattern of paramPatterns) {
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(search)) !== null) {
+        const value = decodeURIComponent(match[1] || "").toLowerCase();
+        if (
+          evidence.sectionIds.some((id) => id.toLowerCase() === value) ||
+          evidence.tagIds.some((id) => id.toLowerCase() === value) ||
+          evidence.categorySlugs.some((slug) => slug.toLowerCase() === value) ||
+          evidence.feedParams.some((param) => param.toLowerCase() === value)
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Compute the scope-aware score with taxonomy evidence and generic penalties.
+ *
+ * When preferScopedDirectFeed is true (category targets):
+ * - Scoped candidates get a taxonomy bonus if they match extracted evidence
+ * - Generic/root feeds receive a strong penalty to prevent them from winning
+ *   over weaker but legitimately scoped candidates
+ *
+ * When preferScopedDirectFeed is false (source targets):
+ * - Taxonomy evidence still provides a small bonus
+ * - No generic penalty applied (root feeds are preferred)
+ */
+const computeScopeAwareScore = (
+  baseScore: number,
+  targetUrl: string,
+  candidateUrl: string,
+  preferScopedDirectFeed: boolean | undefined,
+  taxonomyEvidence: TaxonomyEvidence,
+  scopeMatch: ScopeMatch,
+): number => {
+  let score = baseScore;
+
+  // Generic penalty: when preferScopedDirectFeed is true (category targets),
+  // penalize root-level feeds so scoped candidates can win even with lower base scores.
+  if (preferScopedDirectFeed && scopeMatch === "generic") {
+    score -= 30;
+  }
+
+  // Taxonomy evidence bonus: boost candidates that align with extracted evidence.
+  // Uses path-segment-aware matching to avoid false positives from substring matches
+  // (e.g., scope token "art" should not match path "/smart/rss").
+  if (taxonomyEvidence.sectionIds.length > 0 || taxonomyEvidence.categorySlugs.length > 0 || taxonomyEvidence.tagIds.length > 0) {
+    try {
+      const candidateSegments = normalizePath(candidateUrl).split("/").filter(Boolean);
+      const scopeSegments = normalizePath(targetUrl).split("/").filter(Boolean);
+
+      const hasMatchingSlug = taxonomyEvidence.categorySlugs.some(
+        (slug) => candidateSegments.includes(slug),
+      );
+      const hasMatchingHandle = taxonomyEvidence.canonicalSectionHandles.some(
+        (handle) => candidateSegments.includes(handle),
+      );
+
+      if (hasMatchingSlug || hasMatchingHandle) {
+        score += 20;
+      } else if (scopeSegments.length > 0 && scopeSegments.every((seg) => candidateSegments.includes(seg))) {
+        score += 12;
+      }
+    } catch {}
+  }
+
+  return score;
+};
+
 const normalizePath = (url: string) => {
   try {
     return new URL(url).pathname.replace(/\/+$/, "").toLowerCase() || "/";
@@ -594,24 +1050,43 @@ const computeScopeScore = (targetUrl: string, candidateUrl: string, preferScoped
 
 const computeCandidateScore = (
   input: { pageUrl: string; preferScopedDirectFeed?: boolean },
-  candidate: Omit<FeedCandidate, "score">,
+  candidate: Omit<FeedCandidate, "score" | "scopeMatch">,
+  taxonomyEvidence: TaxonomyEvidence = emptyTaxonomyEvidence(),
 ) => {
   let score = 0;
 
+  // Base detection method score
   if (candidate.detection === "direct-feed") score += 30;
   if (candidate.detection === "http-link") score += 35;
   if (candidate.detection === "html-link") score += 25;
   if (candidate.detection === "html-raw-url") score += 20;
   if (candidate.detection === "robots-sitemap") score += 18;
   if (candidate.detection === "cms-fingerprint") score += 22;
+  if (candidate.detection === "taxonomy-extraction") score += 28;
 
+  // Content type score
   if (candidate.contentType === "application/rss+xml") score += 10;
   if (candidate.contentType === "application/atom+xml") score += 10;
   if (candidate.contentType === "application/feed+json") score += 12;
   if (candidate.contentType === "application/json") score += 6;
 
+  // Base scope score from path affinity
   score += computeScopeScore(input.pageUrl, candidate.feedUrl, input.preferScopedDirectFeed);
-  return score;
+
+  // Scope classification (uses taxonomy evidence to detect query-param scoped feeds)
+  const scopeMatch = classifyScopeMatch(input.pageUrl, candidate.feedUrl, taxonomyEvidence);
+
+  // Apply taxonomy evidence bonus and generic penalty
+  score = computeScopeAwareScore(
+    score,
+    input.pageUrl,
+    candidate.feedUrl,
+    input.preferScopedDirectFeed,
+    taxonomyEvidence,
+    scopeMatch,
+  );
+
+  return { score, scopeMatch };
 };
 
 const toScopeConfidence = (score: number) => {
@@ -629,6 +1104,7 @@ const summarizeTopCandidates = (candidates: FeedCandidate[], limit = 5): Discove
       detection: candidate.detection,
       score: candidate.score,
       contentType: candidate.contentType,
+      scopeMatch: candidate.scopeMatch,
     }));
 
 const summarizeRejectedCandidate = (
@@ -639,6 +1115,7 @@ const summarizeRejectedCandidate = (
   detection: candidate.detection,
   score: candidate.score,
   contentType: candidate.contentType,
+  scopeMatch: candidate.scopeMatch,
   reason,
 });
 
@@ -684,29 +1161,15 @@ export async function discoverFeedForUrl(input: {
   userAgent: string;
   acceptLanguage?: string;
   preferScopedDirectFeed?: boolean;
-}): Promise<{
-  feedUrl: string | null;
-  discoveredVia: string | null;
-  detection:
-    | "direct-feed"
-    | "html-link"
-    | "html-raw-url"
-    | "http-link"
-    | "robots-sitemap"
-    | "cms-fingerprint"
-    | "none";
-  contentType?: SupportedFeedType | null;
-  score: number;
-  scopeConfidence: "high" | "medium" | "low";
-  topCandidates: DiscoverySummaryCandidate[];
-  rejectedCandidates: RejectedCandidate[];
-  lastError?: string;
-}> {
+}): Promise<FeedDiscoveryResult> {
   let lastError = "No feed candidates succeeded.";
   const candidateUrls = buildScopedFeedCandidates(input.pageUrl, input.existingFeedUrl || null);
   const acceptedCandidates: FeedCandidate[] = [];
   const seenAcceptedFeeds = new Set<string>();
   const rejectedCandidates: RejectedCandidate[] = [];
+  const taxonomyEvidence = emptyTaxonomyEvidence();
+  let mainPageFingerprints: string[] = [];
+
   const resolveBestVerifiedCandidate = async () => {
     acceptedCandidates.sort((a, b) => b.score - a.score);
     for (const candidate of acceptedCandidates) {
@@ -719,6 +1182,8 @@ export async function discoverFeedForUrl(input: {
           contentType: verified.contentType,
           score: candidate.score,
           scopeConfidence: toScopeConfidence(candidate.score),
+          scopeMatch: candidate.scopeMatch,
+          taxonomyEvidence,
           topCandidates: summarizeTopCandidates(acceptedCandidates),
           rejectedCandidates,
         };
@@ -732,6 +1197,7 @@ export async function discoverFeedForUrl(input: {
     return null;
   };
 
+  // ── Step 1: Probe page header and extract initial metadata ─────────────
   try {
     const headResponse = await safeFetch(input.pageUrl, {
       method: "HEAD",
@@ -745,31 +1211,27 @@ export async function discoverFeedForUrl(input: {
     if (headResponse.ok) {
       const contentType = normalizeSupportedContentType(headResponse.headers.get("content-type"));
       if (isDefinitiveFeedContentType(contentType) && !seenAcceptedFeeds.has(headResponse.url)) {
-        const candidate = {
+        const candidateBase = {
           feedUrl: headResponse.url,
           discoveredVia: input.pageUrl,
           detection: "direct-feed" as const,
           contentType,
         };
-        acceptedCandidates.push({
-          ...candidate,
-          score: computeCandidateScore(input, candidate),
-        });
+        const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+        acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
         seenAcceptedFeeds.add(headResponse.url);
       }
 
       for (const headerFeed of parseLinkHeaderFeeds(headResponse.headers.get("link"), headResponse.url || input.pageUrl)) {
         if (seenAcceptedFeeds.has(headerFeed.feedUrl)) continue;
-        const candidate = {
+        const candidateBase = {
           feedUrl: headerFeed.feedUrl,
           discoveredVia: input.pageUrl,
           detection: "http-link" as const,
           contentType: headerFeed.contentType,
         };
-        acceptedCandidates.push({
-          ...candidate,
-          score: computeCandidateScore(input, candidate),
-        });
+        const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+        acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
         seenAcceptedFeeds.add(headerFeed.feedUrl);
       }
     }
@@ -784,6 +1246,7 @@ export async function discoverFeedForUrl(input: {
     }
   }
 
+  // ── Step 2: Probe candidate URLs, extract taxonomy evidence, apply heuristics
   for (const candidateUrl of candidateUrls) {
     try {
       const response = await safeFetch(candidateUrl, {
@@ -800,86 +1263,114 @@ export async function discoverFeedForUrl(input: {
       }
 
       const body = await response.text();
+      const resolvedUrl = response.url || input.pageUrl;
       const detectedContentType = normalizeSupportedContentType(response.headers.get("content-type"));
+
+      // Extract taxonomy evidence from the main page URL only (not every candidate).
+      // This avoids redundant regex passes on 15+ candidate URLs and prevents
+      // noise from unrelated pages polluting the evidence accumulator.
+      // isDefinitiveFeedContentType covers rss/atom/feed+json — anything else
+      // (text/html, null, etc.) is safe to treat as a page worth extracting from.
+      const isMainPage = resolvedUrl === input.pageUrl || candidateUrl === input.pageUrl;
+      if (isMainPage && !isDefinitiveFeedContentType(detectedContentType)) {
+        const pageEvidence = extractTaxonomyEvidence(body, resolvedUrl);
+        accumulateTaxonomyEvidence(taxonomyEvidence, pageEvidence);
+      }
+
+      // Detect CMS fingerprints (used for both regular and taxonomy heuristics)
+      const fingerprints = detectCmsFingerprints(body, resolvedUrl, response.headers);
+      mainPageFingerprints = fingerprints;
+
+      // ── Regular candidate extraction ────────────────────────────────
       if (
         looksLikeFeed(body) ||
         looksLikeJsonFeed(body) ||
         isDefinitiveFeedContentType(detectedContentType)
       ) {
         if (!seenAcceptedFeeds.has(response.url)) {
-          const candidate = {
+          const candidateBase = {
             feedUrl: response.url,
             discoveredVia: candidateUrl,
             detection: "direct-feed" as const,
             contentType: detectedContentType,
           };
-          acceptedCandidates.push({
-            ...candidate,
-            score: computeCandidateScore(input, candidate),
-          });
+          const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+          acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
           seenAcceptedFeeds.add(response.url);
         }
       }
 
-      for (const declaredFeed of resolveHtmlDeclaredFeeds(body, response.url || input.pageUrl)) {
+      for (const declaredFeed of resolveHtmlDeclaredFeeds(body, resolvedUrl)) {
         if (seenAcceptedFeeds.has(declaredFeed.feedUrl)) continue;
-        const candidate = {
+        const candidateBase = {
           feedUrl: declaredFeed.feedUrl,
           discoveredVia: candidateUrl,
           detection: "html-link" as const,
           contentType: declaredFeed.contentType,
         };
-        acceptedCandidates.push({
-          ...candidate,
-          score: computeCandidateScore(input, candidate),
-        });
+        const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+        acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
         seenAcceptedFeeds.add(declaredFeed.feedUrl);
       }
 
-      for (const headerFeed of parseLinkHeaderFeeds(response.headers.get("link"), response.url || input.pageUrl)) {
+      for (const headerFeed of parseLinkHeaderFeeds(response.headers.get("link"), resolvedUrl)) {
         if (seenAcceptedFeeds.has(headerFeed.feedUrl)) continue;
-        const candidate = {
+        const candidateBase = {
           feedUrl: headerFeed.feedUrl,
           discoveredVia: candidateUrl,
           detection: "http-link" as const,
           contentType: headerFeed.contentType,
         };
-        acceptedCandidates.push({
-          ...candidate,
-          score: computeCandidateScore(input, candidate),
-        });
+        const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+        acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
         seenAcceptedFeeds.add(headerFeed.feedUrl);
       }
 
-      for (const extractedFeedUrl of extractFeedLikeUrlsFromHtml(body, response.url || input.pageUrl)) {
+      for (const extractedFeedUrl of extractFeedLikeUrlsFromHtml(body, resolvedUrl)) {
         if (seenAcceptedFeeds.has(extractedFeedUrl)) continue;
-        const candidate = {
+        const candidateBase = {
           feedUrl: extractedFeedUrl,
           discoveredVia: candidateUrl,
           detection: "html-raw-url" as const,
           contentType: null,
         };
-        acceptedCandidates.push({
-          ...candidate,
-          score: computeCandidateScore(input, candidate),
-        });
+        const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+        acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
         seenAcceptedFeeds.add(extractedFeedUrl);
       }
 
-      const fingerprints = detectCmsFingerprints(body, response.url || input.pageUrl, response.headers);
-      for (const fingerprintCandidate of buildCmsFingerprintCandidates(response.url || input.pageUrl, fingerprints)) {
+      for (const fingerprintCandidate of buildCmsFingerprintCandidates(resolvedUrl, fingerprints)) {
         if (seenAcceptedFeeds.has(fingerprintCandidate)) continue;
-        const candidate = {
+        const candidateBase = {
           feedUrl: fingerprintCandidate,
           discoveredVia: `${candidateUrl}#${fingerprints.join(",")}`,
           detection: "cms-fingerprint" as const,
           contentType: null,
         };
-        acceptedCandidates.push({
-          ...candidate,
-          score: computeCandidateScore(input, candidate),
-        });
+        const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+        acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
         seenAcceptedFeeds.add(fingerprintCandidate);
+      }
+
+      // ── Taxonomy heuristic candidates (scoped targets only) ─────────
+      if (input.preferScopedDirectFeed) {
+        const heuristicUrls = buildTaxonomyHeuristicCandidates(
+          resolvedUrl,
+          taxonomyEvidence,
+          fingerprints,
+        );
+        for (const heuristicUrl of heuristicUrls) {
+          if (seenAcceptedFeeds.has(heuristicUrl)) continue;
+          const candidateBase = {
+            feedUrl: heuristicUrl,
+            discoveredVia: `${candidateUrl}#taxonomy-heuristic`,
+            detection: "taxonomy-extraction" as const,
+            contentType: null,
+          };
+          const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+          acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
+          seenAcceptedFeeds.add(heuristicUrl);
+        }
       }
 
       if (acceptedCandidates.length > 0) {
@@ -902,6 +1393,7 @@ export async function discoverFeedForUrl(input: {
     }
   }
 
+  // ── Step 3: Sitemap-based discovery ──────────────────────────────────
   const sitemapCandidates = await collectSitemapFeedCandidates(input, seenAcceptedFeeds);
   if (sitemapCandidates.length > 0) {
     acceptedCandidates.push(...sitemapCandidates);
@@ -911,12 +1403,41 @@ export async function discoverFeedForUrl(input: {
     }
   }
 
+  // ── Step 4: Final taxonomy heuristics (last resort for scoped targets) ──
+  if (input.preferScopedDirectFeed && acceptedCandidates.length === 0) {
+    const lastResortUrls = buildTaxonomyHeuristicCandidates(
+      input.pageUrl,
+      taxonomyEvidence,
+      mainPageFingerprints,
+    );
+    for (const url of lastResortUrls) {
+      if (seenAcceptedFeeds.has(url)) continue;
+      const candidateBase = {
+        feedUrl: url,
+        discoveredVia: `${input.pageUrl}#taxonomy-heuristic`,
+        detection: "taxonomy-extraction" as const,
+        contentType: null,
+      };
+      const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+      acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
+      seenAcceptedFeeds.add(url);
+    }
+    if (acceptedCandidates.length > 0) {
+      const winner = await resolveBestVerifiedCandidate();
+      if (winner) {
+        return winner;
+      }
+    }
+  }
+
   return {
     feedUrl: null,
     discoveredVia: null,
     detection: "none" as const,
     score: 0,
     scopeConfidence: "low" as const,
+    scopeMatch: "unrelated" as const,
+    taxonomyEvidence,
     topCandidates: summarizeTopCandidates(acceptedCandidates),
     rejectedCandidates,
     lastError,

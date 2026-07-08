@@ -7,6 +7,7 @@ import type {
   IngestResult,
   IngestSkipSummary,
   PipelineResult,
+  ScopeMatch,
 } from "./types";
 
 const serializeCandidateProvenance = (
@@ -67,12 +68,14 @@ const serializeHardCaseDiscoveryCandidate = (
   queueReason: candidate.queueReason,
   discovery: {
     feedUrl: candidate.discovery.feedUrl,
-    discoveredVia: candidate.discovery.discoveredVia || null,
+    discoveredVia: candidate.discovery.discoveredVia,
     detection: candidate.discovery.detection,
-    score: candidate.discovery.score ?? 0,
-    scopeConfidence: candidate.discovery.scopeConfidence || "low",
-    topCandidates: candidate.discovery.topCandidates || [],
-    rejectedCandidates: candidate.discovery.rejectedCandidates || [],
+    score: candidate.discovery.score,
+    scopeConfidence: candidate.discovery.scopeConfidence,
+    scopeMatch: candidate.discovery.scopeMatch || "generic",
+    taxonomyEvidence: candidate.discovery.taxonomyEvidence || null,
+    topCandidates: candidate.discovery.topCandidates,
+    rejectedCandidates: candidate.discovery.rejectedCandidates,
     lastError: candidate.discovery.lastError || null,
   } satisfies Prisma.InputJsonValue,
 });

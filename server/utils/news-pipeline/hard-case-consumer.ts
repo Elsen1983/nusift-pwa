@@ -8,7 +8,7 @@ import {
   type BrowserResolveResult,
 } from "./browser-feed-resolver";
 import { runNewsPipeline } from "./orchestrator";
-import type { PipelineResult, PipelineTarget } from "./types";
+import type { FeedDiscoveryResult, PipelineResult, PipelineTarget } from "./types";
 
 // ─── Payload Types ──────────────────────────────────────────────────────────
 
@@ -60,28 +60,7 @@ export type ResolutionMeta = {
   browserError: string | null;
 };
 
-type FeedDiscoveryResult = {
-  feedUrl: string | null;
-  discoveredVia: string | null;
-  detection: string;
-  contentType?: string | null;
-  score: number;
-  scopeConfidence: "high" | "medium" | "low";
-  topCandidates: Array<{
-    feedUrl: string;
-    detection: string;
-    score: number;
-    contentType?: string | null;
-  }>;
-  rejectedCandidates: Array<{
-    feedUrl: string;
-    detection: string;
-    score: number;
-    contentType?: string | null;
-    reason: string;
-  }>;
-  lastError?: string;
-};
+// FeedDiscoveryResult is imported from ./types
 
 /** Combined return from the browser-augmented discovery flow. */
 export type HardCaseResolution = {
@@ -278,9 +257,9 @@ export async function discoverFeedWithBrowserFallback(
   }
 
   // ── Step 5: Verify browser candidates ───────────────────────────────────
-  const browserTopCandidates: Array<{ feedUrl: string; detection: string; score: number; contentType?: string | null }> =
+  const browserTopCandidates: FeedDiscoveryResult["topCandidates"] =
     [...fetchResult.topCandidates];
-  const browserRejectedCandidates: Array<{ feedUrl: string; detection: string; score: number; contentType?: string | null; reason: string }> =
+  const browserRejectedCandidates: FeedDiscoveryResult["rejectedCandidates"] =
     [...fetchResult.rejectedCandidates];
   let bestVerified: {
     feedUrl: string;
@@ -303,6 +282,7 @@ export async function discoverFeedWithBrowserFallback(
         detection,
         score,
         contentType: verified.contentType,
+        scopeMatch: "generic" as const,
       });
 
       if (!bestVerified || score > bestVerified.score) {
@@ -321,6 +301,7 @@ export async function discoverFeedWithBrowserFallback(
         detection,
         score: baseScore,
         contentType: null,
+        scopeMatch: "generic" as const,
         reason: `browser-verify: ${reason}`,
       });
     }
@@ -356,6 +337,8 @@ export async function discoverFeedWithBrowserFallback(
         contentType: bestVerified.contentType,
         score: bestVerified.score,
         scopeConfidence,
+        scopeMatch: fetchResult.scopeMatch,
+        taxonomyEvidence: fetchResult.taxonomyEvidence,
         topCandidates: browserTopCandidates.slice(0, 5),
         rejectedCandidates: browserRejectedCandidates,
         lastError: undefined,
@@ -386,6 +369,8 @@ export async function discoverFeedWithBrowserFallback(
       detection: "none",
       score: 0,
       scopeConfidence: "low",
+      scopeMatch: fetchResult.scopeMatch,
+      taxonomyEvidence: fetchResult.taxonomyEvidence,
       topCandidates: browserTopCandidates.slice(0, 5),
       rejectedCandidates: browserRejectedCandidates,
       lastError: `Browser resolution found ${newBrowserCandidates.length} candidate(s) but none verified. ${fetchResult.lastError || ""}`,
@@ -411,13 +396,15 @@ const buildDiscoveryEvidencePayload = (
   evaluatedAt: new Date().toISOString(),
   targetUrl,
   feedUrl: discovery.feedUrl,
-  discoveredVia: discovery.discoveredVia || null,
+  discoveredVia: discovery.discoveredVia,
   detection: discovery.detection,
-  scopeConfidence: discovery.scopeConfidence || "low",
-  score: discovery.score ?? 0,
-  topCandidates: discovery.topCandidates || [],
-  rejectedCandidates: discovery.rejectedCandidates || [],
-  lastError: discovery.lastError || null,
+  scopeConfidence: discovery.scopeConfidence,
+  scopeMatch: discovery.scopeMatch,
+  taxonomyEvidence: discovery.taxonomyEvidence,
+  score: discovery.score,
+  topCandidates: discovery.topCandidates,
+  rejectedCandidates: discovery.rejectedCandidates,
+  lastError: discovery.lastError ?? null,
   resolverPath: meta.resolverPath,
   browserAttempted: meta.browserAttempted,
   browserMethod: meta.browserMethod,
@@ -592,13 +579,15 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
             headlessAttemptedAt: new Date().toISOString(),
             headlessResult: {
               feedUrl: discovery.feedUrl,
-              discoveredVia: discovery.discoveredVia || null,
+              discoveredVia: discovery.discoveredVia,
               detection: discovery.detection,
-              score: discovery.score ?? 0,
-              scopeConfidence: discovery.scopeConfidence || "low",
-              topCandidates: discovery.topCandidates || [],
-              rejectedCandidates: discovery.rejectedCandidates || [],
-              lastError: discovery.lastError || null,
+              score: discovery.score,
+              scopeConfidence: discovery.scopeConfidence,
+              scopeMatch: discovery.scopeMatch,
+              taxonomyEvidence: discovery.taxonomyEvidence,
+              topCandidates: discovery.topCandidates,
+              rejectedCandidates: discovery.rejectedCandidates,
+              lastError: discovery.lastError ?? null,
               resolverPath: meta.resolverPath,
               browserAttempted: meta.browserAttempted,
               browserMethod: meta.browserMethod,
@@ -640,6 +629,8 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
               detection: "none",
               score: 0,
               scopeConfidence: "low",
+              scopeMatch: "unrelated",
+              taxonomyEvidence: null,
               topCandidates: [],
               rejectedCandidates: [],
               lastError: errorMessage,

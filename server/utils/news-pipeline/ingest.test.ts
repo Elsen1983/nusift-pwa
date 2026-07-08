@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { isWithinFreshnessWindow, matchCategoryIdForUrl, shouldQueueHardCaseDiscovery } from "./ingest";
+import { buildDiscoveryEvidencePayload, isWithinFreshnessWindow, matchCategoryIdForUrl, shouldQueueHardCaseDiscovery } from "./ingest";
 import { cleanFeedValue } from "./text";
+import type { ScopeMatch, TaxonomyEvidence } from "./types";
 
 describe("matchCategoryIdForUrl", () => {
   it("matches the most specific category path for article URLs", () => {
@@ -119,5 +120,123 @@ describe("cleanFeedValue", () => {
     expect(
       cleanFeedValue("Mum of brave FÃ©ile O'Sullivan tells of road to recovery"),
     ).toBe("Mum of brave Féile O'Sullivan tells of road to recovery");
+  });
+});
+
+describe("buildDiscoveryEvidencePayload", () => {
+  const makeEvidence = (overrides: Record<string, unknown> = {}) => ({
+    feedUrl: "https://example.com/sport/rss" as string | null,
+    discoveredVia: "https://example.com/sport" as string | null,
+    detection: "html-link",
+    scopeConfidence: "medium",
+    scopeMatch: "exact" as ScopeMatch,
+    taxonomyEvidence: {
+      sectionIds: ["42"],
+      tagIds: [],
+      categorySlugs: ["sport"],
+      collectionIds: [],
+      routeNames: [],
+      canonicalSectionHandles: ["sport"],
+      feedParams: [],
+      matchedFeedUrls: [],
+    } as TaxonomyEvidence,
+    score: 65,
+    topCandidates: [
+      {
+        feedUrl: "https://example.com/sport/rss",
+        detection: "html-link",
+        score: 65,
+        contentType: "application/rss+xml",
+        scopeMatch: "exact" as ScopeMatch,
+      },
+    ],
+    rejectedCandidates: [
+      {
+        feedUrl: "https://example.com/rss.xml",
+        detection: "html-link",
+        score: 30,
+        contentType: null as string | null,
+        reason: "did not validate",
+        scopeMatch: "generic" as ScopeMatch,
+      },
+    ],
+    lastError: undefined as string | undefined,
+    ...overrides,
+  });
+
+  it("preserves structured taxonomyEvidence as an object, not flattened", () => {
+    const taxonomyEvidence: TaxonomyEvidence = {
+      sectionIds: ["42"],
+      tagIds: ["7"],
+      categorySlugs: ["sport", "football"],
+      collectionIds: ["c1"],
+      routeNames: ["sportRoute"],
+      canonicalSectionHandles: ["sport"],
+      feedParams: ["42"],
+      matchedFeedUrls: ["https://example.com/sport/rss"],
+    };
+
+    const result = buildDiscoveryEvidencePayload(
+      "https://example.com/sport",
+      makeEvidence({ taxonomyEvidence }),
+    );
+
+    expect(result.taxonomyEvidence).toBeDefined();
+    expect(typeof result.taxonomyEvidence).toBe("object");
+    expect(Array.isArray(result.taxonomyEvidence)).toBe(false);
+
+    const te = result.taxonomyEvidence as TaxonomyEvidence;
+    expect(te.sectionIds).toEqual(["42"]);
+    expect(te.tagIds).toEqual(["7"]);
+    expect(te.categorySlugs).toEqual(["sport", "football"]);
+    expect(te.collectionIds).toEqual(["c1"]);
+    expect(te.routeNames).toEqual(["sportRoute"]);
+    expect(te.canonicalSectionHandles).toEqual(["sport"]);
+    expect(te.feedParams).toEqual(["42"]);
+    expect(te.matchedFeedUrls).toEqual(["https://example.com/sport/rss"]);
+  });
+
+  it("preserves scopeMatch through serialization", () => {
+    const result = buildDiscoveryEvidencePayload(
+      "https://example.com/sport",
+      makeEvidence({ scopeMatch: "probable" as ScopeMatch }),
+    );
+
+    expect(result.scopeMatch).toBe("probable");
+  });
+
+  it("preserves scopeConfidence through serialization", () => {
+    const result = buildDiscoveryEvidencePayload(
+      "https://example.com/sport",
+      makeEvidence({ scopeConfidence: "high" }),
+    );
+
+    expect(result.scopeConfidence).toBe("high");
+  });
+
+  it("preserves topCandidates and rejectedCandidates arrays", () => {
+    const result = buildDiscoveryEvidencePayload(
+      "https://example.com/sport",
+      makeEvidence(),
+    );
+
+    expect(result.topCandidates).toHaveLength(1);
+    expect(result.topCandidates[0]!.scopeMatch).toBe("exact");
+    expect(result.rejectedCandidates).toHaveLength(1);
+    expect(result.rejectedCandidates[0]!.reason).toBe("did not validate");
+  });
+
+  it("applies fallbacks for missing optional fields on loose-typed input", () => {
+    const result = buildDiscoveryEvidencePayload("https://example.com/news", {
+      feedUrl: null,
+      detection: "none",
+    });
+
+    expect(result.scopeMatch).toBe("generic");
+    expect(result.scopeConfidence).toBe("low");
+    expect(result.taxonomyEvidence).toBeNull();
+    expect(result.score).toBe(0);
+    expect(result.topCandidates).toEqual([]);
+    expect(result.rejectedCandidates).toEqual([]);
   });
 });

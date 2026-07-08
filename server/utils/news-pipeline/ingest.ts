@@ -11,6 +11,8 @@ import type {
   IngestRejectedItem,
   IngestResult,
   IngestSkipSummary,
+  ScopeMatch,
+  TaxonomyEvidence,
 } from "./types";
 import { buildFeedUrlCandidates } from "./import-rss";
 import { discoverFeedForUrl } from "./feed-discovery";
@@ -137,19 +139,23 @@ const getRootHost = (url: string) => {
   }
 };
 
-const buildDiscoveryEvidencePayload = (
+export const buildDiscoveryEvidencePayload = (
   targetUrl: string,
   discovery: {
     feedUrl: string | null;
     discoveredVia?: string | null;
     detection: string;
     scopeConfidence?: string;
+    scopeMatch?: ScopeMatch;
+    taxonomyEvidence?: TaxonomyEvidence;
     score?: number;
     topCandidates?: Array<{
       feedUrl: string;
       detection: string;
       score: number;
       contentType?: string | null;
+      scopeMatch?: ScopeMatch;
+      taxonomyEvidence?: TaxonomyEvidence;
     }>;
     rejectedCandidates?: Array<{
       feedUrl: string;
@@ -157,6 +163,8 @@ const buildDiscoveryEvidencePayload = (
       score: number;
       contentType?: string | null;
       reason: string;
+      scopeMatch?: ScopeMatch;
+      taxonomyEvidence?: TaxonomyEvidence;
     }>;
     lastError?: string;
   },
@@ -168,6 +176,8 @@ const buildDiscoveryEvidencePayload = (
     discoveredVia: discovery.discoveredVia || null,
     detection: discovery.detection,
     scopeConfidence: discovery.scopeConfidence || "low",
+    scopeMatch: discovery.scopeMatch || "generic",
+    taxonomyEvidence: discovery.taxonomyEvidence ?? null,
     score: discovery.score ?? 0,
     topCandidates: discovery.topCandidates || [],
     rejectedCandidates: discovery.rejectedCandidates || [],
@@ -216,11 +226,15 @@ const buildHardCaseDiscoveryCandidate = (input: {
     detection: string;
     score?: number;
     scopeConfidence?: string;
+    scopeMatch?: ScopeMatch;
+    taxonomyEvidence?: TaxonomyEvidence;
     topCandidates?: Array<{
       feedUrl: string;
       detection: string;
       score: number;
       contentType?: string | null;
+      scopeMatch?: ScopeMatch;
+      taxonomyEvidence?: TaxonomyEvidence;
     }>;
     rejectedCandidates?: Array<{
       feedUrl: string;
@@ -228,6 +242,8 @@ const buildHardCaseDiscoveryCandidate = (input: {
       score: number;
       contentType?: string | null;
       reason: string;
+      scopeMatch?: ScopeMatch;
+      taxonomyEvidence?: TaxonomyEvidence;
     }>;
     lastError?: string;
   };
@@ -243,7 +259,18 @@ const buildHardCaseDiscoveryCandidate = (input: {
     targetUrl: input.targetUrl,
     existingFeedUrl: input.existingFeedUrl || null,
     queueReason: getHardCaseQueueReason(input.discovery),
-    discovery: input.discovery,
+    discovery: {
+      feedUrl: input.discovery.feedUrl,
+      discoveredVia: input.discovery.discoveredVia ?? null,
+      detection: input.discovery.detection,
+      score: input.discovery.score ?? 0,
+      scopeConfidence: input.discovery.scopeConfidence || "low",
+      scopeMatch: input.discovery.scopeMatch,
+      taxonomyEvidence: input.discovery.taxonomyEvidence,
+      topCandidates: input.discovery.topCandidates || [],
+      rejectedCandidates: input.discovery.rejectedCandidates || [],
+      lastError: input.discovery.lastError,
+    },
   };
 };
 
@@ -676,6 +703,7 @@ const resolveCategoryFeedUrl = async (
           detection: "none",
           score: 0,
           scopeConfidence: "low",
+          scopeMatch: "unrelated",
           topCandidates: [],
           rejectedCandidates: [],
           lastError: errorMessage,
@@ -763,6 +791,7 @@ const resolveSourceFeedUrl = async (
           detection: "none",
           score: 0,
           scopeConfidence: "low",
+          scopeMatch: "unrelated",
           topCandidates: [],
           rejectedCandidates: [],
           lastError: errorMessage,

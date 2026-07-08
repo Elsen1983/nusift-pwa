@@ -30,6 +30,24 @@ export interface IngestSkipSummary {
   htmlFallbackStale: number;
 }
 
+export type ScopeMatch = "exact" | "probable" | "generic" | "unrelated";
+
+/**
+ * Structured taxonomy/section evidence extracted from page HTML.
+ * Used to generate scoped feed candidates and boost scoring for
+ * candidates that align with the target category/section.
+ */
+export type TaxonomyEvidence = {
+  sectionIds: string[];
+  tagIds: string[];
+  categorySlugs: string[];
+  collectionIds: string[];
+  routeNames: string[];
+  canonicalSectionHandles: string[];
+  feedParams: string[];
+  matchedFeedUrls: string[];
+};
+
 export interface HardCaseDiscoveryCandidate {
   targetType: "source" | "category";
   sourceId: string;
@@ -42,26 +60,64 @@ export interface HardCaseDiscoveryCandidate {
     | "blocked_or_fetch_failed";
   discovery: {
     feedUrl: string | null;
-    discoveredVia?: string | null;
+    discoveredVia: string | null;
     detection: string;
-    score?: number;
-    scopeConfidence?: string;
-    topCandidates?: Array<{
+    score: number;
+    scopeConfidence: string;
+    scopeMatch?: ScopeMatch;
+    taxonomyEvidence?: TaxonomyEvidence;
+    topCandidates: Array<{
       feedUrl: string;
       detection: string;
       score: number;
       contentType?: string | null;
+      scopeMatch?: ScopeMatch;
+      taxonomyEvidence?: TaxonomyEvidence;
     }>;
-    rejectedCandidates?: Array<{
+    rejectedCandidates: Array<{
       feedUrl: string;
       detection: string;
       score: number;
       contentType?: string | null;
       reason: string;
+      scopeMatch?: ScopeMatch;
+      taxonomyEvidence?: TaxonomyEvidence;
     }>;
     lastError?: string;
   };
 }
+
+/** Candidate in a discovery result summary (canonical shared contract). */
+export type DiscoverySummaryCandidate = {
+  feedUrl: string;
+  detection: string;
+  score: number;
+  contentType?: string | null;
+  scopeMatch: ScopeMatch;
+};
+
+/** Rejected candidate from discovery verification. */
+export type RejectedDiscoveryCandidate = DiscoverySummaryCandidate & {
+  reason: string;
+};
+
+/**
+ * Canonical discovery result contract returned by feed discovery functions.
+ * Shared by feed-discovery.ts, hard-case-consumer.ts, and ingest.ts.
+ */
+export type FeedDiscoveryResult = {
+  feedUrl: string | null;
+  discoveredVia: string | null;
+  detection: string;
+  contentType?: string | null;
+  score: number;
+  scopeConfidence: "high" | "medium" | "low";
+  scopeMatch: ScopeMatch;
+  taxonomyEvidence: TaxonomyEvidence;
+  topCandidates: DiscoverySummaryCandidate[];
+  rejectedCandidates: RejectedDiscoveryCandidate[];
+  lastError?: string;
+};
 
 export interface IngestCandidate {
   sourceId: string;

@@ -56,12 +56,26 @@ vi.mock("../prisma", () => ({
   },
 }));
 
+const makeTaxonomyEvidence = (overrides: Record<string, unknown> = {}) => ({
+  sectionIds: [],
+  tagIds: [],
+  categorySlugs: [],
+  collectionIds: [],
+  routeNames: [],
+  canonicalSectionHandles: [],
+  feedParams: [],
+  matchedFeedUrls: [],
+  ...overrides,
+});
+
 const makeFetchResult = (overrides: Record<string, unknown> = {}) => ({
   feedUrl: null,
   discoveredVia: null,
   detection: "none" as const,
   score: 0,
   scopeConfidence: "low" as const,
+  scopeMatch: "unrelated" as const,
+  taxonomyEvidence: makeTaxonomyEvidence(),
   topCandidates: [],
   rejectedCandidates: [],
   lastError: "No feed candidates succeeded.",
@@ -519,6 +533,101 @@ describe("processHardCaseDiscoveryQueue chain behavior", () => {
     expect(result.rerunTriggered).toBe(true);
     // Fallback: use category-parent sourceId so hydratePipelineTargets works
     expect(runNewsPipelineMock).toHaveBeenCalledWith(["src-3"], ["cat-3"]);
+  });
+
+  it("preserves structured taxonomyEvidence in headlessResult payload", async () => {
+    prismaFindManyMock.mockResolvedValue([makeQueueItem()]);
+    const taxonomyEvidence = makeTaxonomyEvidence({
+      sectionIds: ["42"],
+      categorySlugs: ["sport"],
+      canonicalSectionHandles: ["sport"],
+    });
+    discoverFeedForUrlMock.mockResolvedValue(
+      makeFetchResult({
+        feedUrl: "https://example.com/sport/rss",
+        discoveredVia: "https://example.com/sport",
+        detection: "html-link",
+        score: 65,
+        scopeConfidence: "medium",
+        scopeMatch: "exact",
+        taxonomyEvidence,
+      }),
+    );
+    runNewsPipelineMock.mockResolvedValue(makePipelineResult());
+
+    const { processHardCaseDiscoveryQueue } = await import("./hard-case-consumer");
+    await processHardCaseDiscoveryQueue(10);
+
+    // Find the prisma.pipelineArtifact.update call that writes the headlessResult
+    const updateCall = prismaUpdateMock.mock.calls.find(
+      (call: any[]) => call[0]?.data?.payload?.headlessResult,
+    );
+    expect(updateCall).toBeDefined();
+    const headlessResult = updateCall![0].data.payload.headlessResult;
+
+    // taxonomyEvidence must be a structured object, not flattened
+    expect(headlessResult.taxonomyEvidence).toBeDefined();
+    expect(typeof headlessResult.taxonomyEvidence).toBe("object");
+    expect(Array.isArray(headlessResult.taxonomyEvidence)).toBe(false);
+    expect(headlessResult.taxonomyEvidence.sectionIds).toEqual(["42"]);
+    expect(headlessResult.taxonomyEvidence.categorySlugs).toEqual(["sport"]);
+    expect(headlessResult.taxonomyEvidence.canonicalSectionHandles).toEqual(["sport"]);
+    // scopeMatch must be preserved
+    expect(headlessResult.scopeMatch).toBe("exact");
+  });
+
+  it("preserves structured taxonomyEvidence in discoveryEvidence payload", async () => {
+    prismaFindManyMock.mockResolvedValue([
+      makeQueueItem({
+        id: "artifact-cat",
+        sourceId: "src-1",
+        categoryId: "cat-1",
+        payload: {
+          targetType: "category",
+          sourceId: "src-1",
+          categoryId: "cat-1",
+          targetUrl: "https://example.com/sport",
+          existingFeedUrl: null,
+          queueReason: "no_feed_discovered",
+        },
+      }),
+    ]);
+    const taxonomyEvidence = makeTaxonomyEvidence({
+      sectionIds: ["99"],
+      tagIds: ["7"],
+      feedParams: ["99"],
+    });
+    discoverFeedForUrlMock.mockResolvedValue(
+      makeFetchResult({
+        feedUrl: "https://example.com/sport/rss",
+        detection: "taxonomy-extraction",
+        score: 70,
+        scopeConfidence: "medium",
+        scopeMatch: "probable",
+        taxonomyEvidence,
+      }),
+    );
+    runNewsPipelineMock.mockResolvedValue(makePipelineResult());
+
+    const { processHardCaseDiscoveryQueue } = await import("./hard-case-consumer");
+    await processHardCaseDiscoveryQueue(10);
+
+    // Check sourceCategory.update was called with discoveryEvidence
+    const categoryUpdate = prismaSourceCategoryUpdateMock.mock.calls.find(
+      (call: any[]) => call[0]?.data?.discoveryEvidence,
+    );
+    expect(categoryUpdate).toBeDefined();
+    const evidence = categoryUpdate![0].data.discoveryEvidence;
+
+    // taxonomyEvidence must be a structured object preserved through serialization
+    expect(evidence.taxonomyEvidence).toBeDefined();
+    expect(typeof evidence.taxonomyEvidence).toBe("object");
+    expect(Array.isArray(evidence.taxonomyEvidence)).toBe(false);
+    expect(evidence.taxonomyEvidence.sectionIds).toEqual(["99"]);
+    expect(evidence.taxonomyEvidence.tagIds).toEqual(["7"]);
+    expect(evidence.taxonomyEvidence.feedParams).toEqual(["99"]);
+    // scopeMatch must be preserved
+    expect(evidence.scopeMatch).toBe("probable");
   });
 
   it("captures rerunError when pipeline rerun fails", async () => {
