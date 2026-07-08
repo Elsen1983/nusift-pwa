@@ -642,7 +642,7 @@ const summarizeRejectedCandidate = (
   reason,
 });
 
-const verifyFeedCandidate = async (
+export const verifyFeedCandidate = async (
   candidateUrl: string,
   input: {
     userAgent: string;
