@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildDiscoveryEvidencePayload, isWithinFreshnessWindow, matchCategoryIdForUrl, shouldQueueHardCaseDiscovery } from "./ingest";
+import {
+  buildDiscoveryEvidencePayload,
+  isFallbackFeedItemRelevantToCategory,
+  isScopedCategoryFeed,
+  isWithinFreshnessWindow,
+  matchCategoryIdForUrl,
+  shouldQueueHardCaseDiscovery,
+} from "./ingest";
 import { cleanFeedValue } from "./text";
 import type { ScopeMatch, TaxonomyEvidence } from "./types";
 
@@ -23,6 +30,85 @@ describe("matchCategoryIdForUrl", () => {
     );
 
     expect(result).toBeNull();
+  });
+});
+
+describe("isFallbackFeedItemRelevantToCategory", () => {
+  it("accepts root-feed items when feed metadata clearly matches the category target", () => {
+    const result = isFallbackFeedItemRelevantToCategory(
+      "https://bleacherreport.com/nba",
+      {
+        title: "Steph Curry Addresses LeBron James Rumors Amid Warriors Buzz in NBA Free Agency",
+        description: "Bleacher Report front-page article",
+        categories: ["NBA"],
+      },
+    );
+
+    expect(result).toBe(true);
+  });
+
+  it("rejects unrelated root-feed items when neither URL path nor metadata match the category target", () => {
+    const result = isFallbackFeedItemRelevantToCategory(
+      "https://bleacherreport.com/nba",
+      {
+        title: "Wimbledon semifinal schedule announced",
+        description: "Tennis coverage",
+        categories: ["Tennis"],
+      },
+    );
+
+    expect(result).toBe(false);
+  });
+
+  it("supports multi-segment category targets by matching the meaningful segment", () => {
+    const result = isFallbackFeedItemRelevantToCategory(
+      "https://www.independent.ie/county/cork/",
+      {
+        title: "Cork manager reacts after dramatic late win",
+        description: "County coverage",
+        categories: ["GAA", "Cork"],
+      },
+    );
+
+    expect(result).toBe(true);
+  });
+});
+
+describe("isScopedCategoryFeed", () => {
+  it("treats exact/probable discovery matches as scoped category feeds", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://www.blikk.hu/politika",
+        "https://www.blikk.hu/politika?feed=true&category=/politika",
+        { scopeMatch: "probable" },
+      ),
+    ).toBe(true);
+  });
+
+  it("treats generic root-like feeds as non-scoped category feeds", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://bleacherreport.com/nba",
+        "https://feeds.bleacherreport.com/articles",
+        { scopeMatch: "generic" },
+      ),
+    ).toBe(false);
+  });
+
+  it("falls back to URL heuristics when discovery evidence is missing", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://www.independent.ie/county/cork/",
+        "https://www.independent.ie/county/cork/rss/",
+      ),
+    ).toBe(true);
+
+    expect(
+      isScopedCategoryFeed(
+        "https://bleacherreport.com/nba",
+        "https://bleacherreport.com/?service=rss",
+      ),
+    ).toBe(false);
   });
 });
 

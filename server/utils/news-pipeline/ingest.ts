@@ -17,8 +17,17 @@ import type {
 import { buildFeedUrlCandidates } from "./import-rss";
 import { discoverFeedForUrl } from "./feed-discovery";
 
+type ParsedFeedItem = {
+  title: string;
+  link: string;
+  guid: string;
+  pubDate: string;
+  description: string;
+  categories: string[];
+};
+
 const parseRssItems = (xml: string) => {
-  const items: Array<Record<string, string>> = [];
+  const items: ParsedFeedItem[] = [];
   const itemRegex = /<item\b[\s\S]*?<\/item>/gi;
   const readTag = (block: string, tag: string) =>
     cleanFeedValue(
@@ -28,12 +37,16 @@ const parseRssItems = (xml: string) => {
 
   for (const match of xml.matchAll(itemRegex)) {
     const block = match[0] || "";
+    const categories = [...block.matchAll(/<category[^>]*>([\s\S]*?)<\/category>/gi)]
+      .map((categoryMatch) => cleanFeedValue(categoryMatch[1] || ""))
+      .filter(Boolean);
     items.push({
       title: readTag(block, "title"),
       link: readTag(block, "link"),
       guid: readTag(block, "guid"),
       pubDate: readTag(block, "pubDate"),
       description: readTag(block, "description"),
+      categories,
     });
   }
 
@@ -41,7 +54,7 @@ const parseRssItems = (xml: string) => {
 };
 
 const parseAtomItems = (xml: string) => {
-  const items: Array<Record<string, string>> = [];
+  const items: ParsedFeedItem[] = [];
   const entryRegex = /<entry\b[\s\S]*?<\/entry>/gi;
   const readTag = (block: string, tag: string) =>
     cleanFeedValue(
@@ -52,12 +65,16 @@ const parseAtomItems = (xml: string) => {
   for (const match of xml.matchAll(entryRegex)) {
     const block = match[0] || "";
     const linkMatch = block.match(/<link[^>]+href=["']([^"']+)["'][^>]*\/?>/i);
+    const categories = [...block.matchAll(/<category[^>]+(?:term|label)=["']([^"']+)["'][^>]*\/?>/gi)]
+      .map((categoryMatch) => cleanFeedValue(categoryMatch[1] || ""))
+      .filter(Boolean);
     items.push({
       title: readTag(block, "title"),
       link: cleanFeedValue(linkMatch?.[1] || ""),
       guid: readTag(block, "id"),
       pubDate: readTag(block, "updated") || readTag(block, "published"),
       description: readTag(block, "summary") || readTag(block, "content"),
+      categories,
     });
   }
 
@@ -87,6 +104,9 @@ const parseJsonFeedItems = (body: string) => {
       description: cleanFeedValue(
         String(item?.summary || item?.content_text || item?.content_html || ""),
       ),
+      categories: Array.isArray(item?.tags)
+        ? item.tags.map((tag: unknown) => cleanFeedValue(String(tag || ""))).filter(Boolean)
+        : [],
     }));
   } catch {
     return [];
@@ -109,7 +129,7 @@ const parseFeedItems = (body: string) => {
     return { format: "json" as const, items: jsonItems };
   }
 
-  return { format: "unknown" as const, items: [] as Array<Record<string, string>> };
+  return { format: "unknown" as const, items: [] as ParsedFeedItem[] };
 };
 
 const emptySkipSummary = (): IngestSkipSummary => ({
@@ -559,6 +579,163 @@ const isUrlWithinCategoryPath = (url: string, categoryPathUrl: string) => {
   return articlePath === categoryPath || articlePath.startsWith(`${categoryPath}/`);
 };
 
+const CATEGORY_PATH_STOPWORDS = new Set([
+  "category",
+  "categories",
+  "section",
+  "sections",
+  "topic",
+  "topics",
+  "interest",
+  "interests",
+  "tag",
+  "tags",
+  "all-about",
+  "news",
+]);
+
+const tokenizeForCategoryFallback = (value: string) =>
+  value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3 || /^\d+$/.test(token));
+
+const extractCategoryScopeTokens = (categoryPathUrl: string) => {
+  try {
+    const pathname = new URL(categoryPathUrl).pathname.toLowerCase();
+    const segments = pathname
+      .split("/")
+      .map((segment) => segment.trim())
+      .filter(Boolean)
+      .filter((segment) => !CATEGORY_PATH_STOPWORDS.has(segment));
+
+    const tokens = [...new Set(segments.flatMap(tokenizeForCategoryFallback))];
+    return {
+      segments,
+      tokens,
+      primaryToken: segments.length > 0 ? segments[segments.length - 1] : null,
+    };
+  } catch {
+    return { segments: [], tokens: [], primaryToken: null as string | null };
+  }
+};
+
+const isCommonRootFeedPath = (pathname: string) =>
+  pathname === "/" ||
+  pathname === "/rss" ||
+  pathname === "/feed" ||
+  pathname === "/atom" ||
+  /^\/(?:rss|feed|atom)\.[a-z0-9]+$/i.test(pathname);
+
+const textContainsToken = (text: string, token: string) => {
+  const normalized = ` ${text.toLowerCase()} `;
+  const pattern = new RegExp(`(^|[^a-z0-9])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "i");
+  return pattern.test(normalized);
+};
+
+export const isFallbackFeedItemRelevantToCategory = (
+  categoryPathUrl: string,
+  item: {
+    title?: string | null;
+    description?: string | null;
+    categories?: string[];
+  },
+) => {
+  const scope = extractCategoryScopeTokens(categoryPathUrl);
+  if (scope.tokens.length === 0) return false;
+
+  const title = stripHtml(item.title || "").toLowerCase();
+  const description = stripHtml(item.description || "").toLowerCase();
+  const categoryText = (item.categories || []).join(" ").toLowerCase();
+  const haystacks = [title, description, categoryText].filter(Boolean);
+  if (haystacks.length === 0) return false;
+
+  const matchedTokens = new Set<string>();
+  for (const token of scope.tokens) {
+    if (haystacks.some((haystack) => textContainsToken(haystack, token))) {
+      matchedTokens.add(token);
+    }
+  }
+
+  if (matchedTokens.size === 0) return false;
+
+  if (scope.primaryToken && matchedTokens.has(scope.primaryToken)) {
+    return true;
+  }
+
+  if (matchedTokens.size >= 2) {
+    return true;
+  }
+
+  const categoryHasDirectMatch = (item.categories || []).some((category) =>
+    scope.tokens.some((token) => textContainsToken(category.toLowerCase(), token)),
+  );
+  return categoryHasDirectMatch;
+};
+
+export const isScopedCategoryFeed = (
+  categoryPathUrl: string,
+  feedUrl: string | null,
+  discoveryEvidence?: { scopeMatch?: ScopeMatch | null } | null,
+) => {
+  if (!feedUrl) return false;
+
+  const explicitScopeMatch = discoveryEvidence?.scopeMatch;
+  if (explicitScopeMatch === "exact" || explicitScopeMatch === "probable") {
+    return true;
+  }
+  if (explicitScopeMatch === "generic" || explicitScopeMatch === "unrelated") {
+    return false;
+  }
+
+  try {
+    const categoryUrl = new URL(categoryPathUrl);
+    const parsedFeedUrl = new URL(feedUrl);
+    const categoryPath = normalizePathForCategoryMatch(categoryPathUrl);
+    const feedPath = normalizePathForCategoryMatch(feedUrl);
+
+    if (feedPath === categoryPath || feedPath.startsWith(`${categoryPath}/`)) {
+      return true;
+    }
+
+    const scopeTokens = extractCategoryScopeTokens(categoryPathUrl).tokens;
+    const queryAndPath = `${parsedFeedUrl.pathname} ${parsedFeedUrl.search}`.toLowerCase();
+    if (scopeTokens.some((token) => textContainsToken(queryAndPath, token))) {
+      return true;
+    }
+
+    if (parsedFeedUrl.host === categoryUrl.host && isCommonRootFeedPath(feedPath)) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+};
+
+const readCategoryDiscoveryEvidence = (
+  discoveryEvidence: unknown,
+): { scopeMatch?: ScopeMatch | null } | null => {
+  if (!discoveryEvidence || typeof discoveryEvidence !== "object" || Array.isArray(discoveryEvidence)) {
+    return null;
+  }
+
+  const maybeScopeMatch = (discoveryEvidence as { scopeMatch?: unknown }).scopeMatch;
+  if (
+    maybeScopeMatch === "exact" ||
+    maybeScopeMatch === "probable" ||
+    maybeScopeMatch === "generic" ||
+    maybeScopeMatch === "unrelated" ||
+    maybeScopeMatch == null
+  ) {
+    return { scopeMatch: maybeScopeMatch as ScopeMatch | null | undefined };
+  }
+
+  return null;
+};
+
 export const matchCategoryIdForUrl = (
   canonicalUrl: string,
   categories: SourceCategoryMatcher[],
@@ -626,11 +803,23 @@ const attachCategoryIds = async (candidates: IngestCandidate[]) => {
 
 const resolveCategoryFeedUrl = async (
   sourceId: string,
-  category: { id: string; pathUrl: string; rssFeedUrl: string | null } | null,
+  category: {
+    id: string;
+    pathUrl: string;
+    rssFeedUrl: string | null;
+    discoveryEvidence?: unknown;
+  } | null,
 ) => {
   if (!category || category.rssFeedUrl) {
     return {
       feedUrl: category?.rssFeedUrl || null,
+      isScopedFeed: category
+        ? isScopedCategoryFeed(
+            category.pathUrl,
+            category.rssFeedUrl,
+            readCategoryDiscoveryEvidence(category.discoveryEvidence),
+          )
+        : false,
       hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
     };
   }
@@ -671,6 +860,11 @@ const resolveCategoryFeedUrl = async (
 
     return {
       feedUrl: discoveredFeedUrl,
+      isScopedFeed: isScopedCategoryFeed(
+        category.pathUrl,
+        discoveredFeedUrl,
+        buildDiscoveryEvidencePayload(category.pathUrl, discovery),
+      ),
       hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
         targetType: "category",
         sourceId,
@@ -691,6 +885,7 @@ const resolveCategoryFeedUrl = async (
     });
     return {
       feedUrl: null,
+      isScopedFeed: false,
       hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
         targetType: "category",
         sourceId,
@@ -830,6 +1025,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             id: true,
             pathUrl: true,
             rssFeedUrl: true,
+            discoveryEvidence: true,
           },
         })
       : Promise.resolve(null),
@@ -858,7 +1054,9 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
   const sourceFeedResolution = await resolveSourceFeedUrl(source);
   const categoryFeedUrl = categoryFeedResolution.feedUrl;
   const sourceFeedUrl = sourceFeedResolution.feedUrl;
-  const isUsingDedicatedCategoryFeed = Boolean(categoryId && categoryFeedUrl);
+  const isUsingDedicatedCategoryFeed = Boolean(
+    categoryId && categoryFeedUrl && categoryFeedResolution.isScopedFeed,
+  );
   const hardCaseQueueCandidates = [
     categoryFeedResolution.hardCaseQueueCandidate,
     sourceFeedResolution.hardCaseQueueCandidate,
@@ -887,7 +1085,9 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         categoryId,
         status: "CATEGORY_FEED_USED",
         executionTimeMs: 0,
-        errorLog: `Using category feed ${categoryFeedUrl}.`,
+        errorLog: isUsingDedicatedCategoryFeed
+          ? `Using scoped category feed ${categoryFeedUrl}.`
+          : `Using generic category feed ${categoryFeedUrl}; category relevance filtering remains enabled.`,
       });
     } else if (categoryId) {
       await logAgentScan({
@@ -980,7 +1180,8 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       if (
         category?.pathUrl &&
         !isUsingDedicatedCategoryFeed &&
-        !isUrlWithinCategoryPath(canonicalUrl, category.pathUrl)
+        !isUrlWithinCategoryPath(canonicalUrl, category.pathUrl) &&
+        !isFallbackFeedItemRelevantToCategory(category.pathUrl, item)
       ) {
         skipSummary.outOfScope += 1;
         pushRejectedItem(rejectedItems, {
@@ -1027,7 +1228,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         bodyText: bodyText || null,
         contentHash,
         isPaywall: /paywall|subscribe|premium/i.test(xml),
-        rawTags: [],
+        rawTags: item.categories || [],
         rawSignals: [],
         reasoning: `${parsedCandidateOrigin.toUpperCase()} ingest from ${source.mediaName || source.frontPageUrl}`,
         normalizationFlags: [...new Set([
@@ -1264,9 +1465,12 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
             ].filter(Boolean) as any,
           },
           select: {
+            id: true,
             rssGuid: true,
             canonicalUrl: true,
             contentHash: true,
+            categoryId: true,
+            tags: true,
           },
         })
       : [];
@@ -1274,6 +1478,45 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
   const existingRssGuids = new Set(existingArticles.map((article) => article.rssGuid).filter(Boolean));
   const existingCanonicalUrls = new Set(existingArticles.map((article) => article.canonicalUrl).filter(Boolean));
   const existingContentHashes = new Set(existingArticles.map((article) => article.contentHash).filter(Boolean));
+  const existingByRssGuid = new Map(existingArticles.filter((article) => article.rssGuid).map((article) => [article.rssGuid!, article]));
+  const existingByCanonicalUrl = new Map(existingArticles.filter((article) => article.canonicalUrl).map((article) => [article.canonicalUrl!, article]));
+  const existingByContentHash = new Map(existingArticles.filter((article) => article.contentHash).map((article) => [article.contentHash!, article]));
+
+  const enrichmentUpdates = new Map<number, { categoryId?: string | null; tags?: string[] }>();
+
+  for (const candidate of dedupedCandidates) {
+    const existingArticle =
+      (candidate.rssGuid ? existingByRssGuid.get(candidate.rssGuid) : null) ||
+      existingByCanonicalUrl.get(candidate.canonicalUrl) ||
+      existingByContentHash.get(candidate.contentHash);
+
+    if (!existingArticle) continue;
+
+    const nextUpdate = enrichmentUpdates.get(existingArticle.id) || {};
+    if (!existingArticle.categoryId && candidate.categoryId) {
+      nextUpdate.categoryId = candidate.categoryId;
+    }
+    if ((!existingArticle.tags || existingArticle.tags.length === 0) && candidate.rawTags.length > 0) {
+      nextUpdate.tags = candidate.rawTags;
+    }
+    if (nextUpdate.categoryId || nextUpdate.tags) {
+      enrichmentUpdates.set(existingArticle.id, nextUpdate);
+    }
+  }
+
+  if (enrichmentUpdates.size > 0) {
+    await prisma.$transaction(
+      [...enrichmentUpdates.entries()].map(([articleId, update]) =>
+        prisma.article.update({
+          where: { id: articleId },
+          data: {
+            ...(update.categoryId ? { categoryId: update.categoryId } : {}),
+            ...(update.tags ? { tags: update.tags } : {}),
+          },
+        }),
+      ),
+    );
+  }
 
   const newCandidates = dedupedCandidates.filter((candidate) => {
     const isDuplicate =
