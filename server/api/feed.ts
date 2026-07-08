@@ -21,15 +21,26 @@ export default defineEventHandler(async (event) => {
       },
       categorySubscriptions: {
         where: { isActive: true },
-        select: { categoryId: true },
+        select: {
+          categoryId: true,
+          category: {
+            select: {
+              pathUrl: true,
+            },
+          },
+        },
       },
     },
   });
 
   const sourceIds = user?.sourceSubscriptions.map((subscription) => subscription.sourceId) || [];
   const categoryIds = user?.categorySubscriptions.map((subscription) => subscription.categoryId) || [];
+  const categoryPathUrls =
+    user?.categorySubscriptions
+      .map((subscription) => subscription.category?.pathUrl)
+      .filter((pathUrl): pathUrl is string => Boolean(pathUrl)) || [];
 
-  if (sourceIds.length === 0 && categoryIds.length === 0) {
+  if (sourceIds.length === 0 && categoryIds.length === 0 && categoryPathUrls.length === 0) {
     return [];
   }
 
@@ -38,6 +49,13 @@ export default defineEventHandler(async (event) => {
       OR: [
         sourceIds.length > 0 ? { sourceId: { in: sourceIds } } : undefined,
         categoryIds.length > 0 ? { categoryId: { in: categoryIds } } : undefined,
+        categoryPathUrls.length > 0
+          ? {
+              category: {
+                pathUrl: { in: categoryPathUrls },
+              },
+            }
+          : undefined,
       ].filter(Boolean) as any,
     },
     orderBy: [{ date: "desc" }, { id: "desc" }],

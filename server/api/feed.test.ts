@@ -46,7 +46,12 @@ describe("/api/feed", () => {
         { sourceId: "source-b" },
       ],
       categorySubscriptions: [
-        { categoryId: "category-x" },
+        {
+          categoryId: "category-x",
+          category: {
+            pathUrl: "https://example.com/section",
+          },
+        },
       ],
     });
     articleFindManyMock.mockResolvedValue([
@@ -84,7 +89,14 @@ describe("/api/feed", () => {
         },
         categorySubscriptions: {
           where: { isActive: true },
-          select: { categoryId: true },
+          select: {
+            categoryId: true,
+            category: {
+              select: {
+                pathUrl: true,
+              },
+            },
+          },
         },
       },
     });
@@ -94,6 +106,7 @@ describe("/api/feed", () => {
           OR: [
             { sourceId: { in: ["source-a", "source-b"] } },
             { categoryId: { in: ["category-x"] } },
+            { category: { pathUrl: { in: ["https://example.com/section"] } } },
           ],
         },
       }),
@@ -114,5 +127,34 @@ describe("/api/feed", () => {
         reasoning: "Matched active source.",
       },
     ]);
+  });
+
+  it("also matches articles by subscribed category pathUrl to tolerate legacy category-id drift", async () => {
+    userFindUniqueMock.mockResolvedValue({
+      sourceSubscriptions: [],
+      categorySubscriptions: [
+        {
+          categoryId: "category-a",
+          category: {
+            pathUrl: "https://bleacherreport.com/nba",
+          },
+        },
+      ],
+    });
+    articleFindManyMock.mockResolvedValue([]);
+
+    const mod = await import("./feed");
+    await mod.default({} as any);
+
+    expect(articleFindManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          OR: [
+            { categoryId: { in: ["category-a"] } },
+            { category: { pathUrl: { in: ["https://bleacherreport.com/nba"] } } },
+          ],
+        },
+      }),
+    );
   });
 });
