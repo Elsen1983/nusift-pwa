@@ -272,7 +272,7 @@
       </section>
 
       <div
-        v-if="showDevPanel"
+        v-if="showAdminPipelinePanel"
         class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4 space-y-4"
       >
         <div v-if="false" class="flex flex-wrap items-center gap-2">
@@ -383,12 +383,12 @@
           <div class="min-w-0">
             <div class="flex items-center gap-2">
               <h3 class="font-headline text-sm font-bold text-on-surface">
-                Dev pipeline trigger
+                Manual pipeline trigger
               </h3>
               <span
                 class="rounded-full border border-primary-container/30 bg-primary-container/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary-container"
               >
-                Dev only
+                {{ isDev ? "Dev" : "Admin" }}
               </span>
             </div>
             <p class="mt-1 text-xs text-on-surface-variant">
@@ -397,6 +397,7 @@
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <button
+              v-if="showFullDevTools"
               @click="runHardCaseQueue"
               :disabled="isHardCaseQueueRunning"
               class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-2 text-sm font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -413,7 +414,7 @@
           </div>
         </div>
 
-        <div class="border-t border-outline-variant/20 pt-4">
+        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
           <div class="flex items-center justify-between gap-3">
             <div>
               <h4 class="font-headline text-sm font-bold text-on-surface">
@@ -577,6 +578,8 @@ const isNormalizingScopedSources = ref(false);
 const isPruningScopedSources = ref(false);
 const isDev = import.meta.env.DEV;
 const canAccessDevPanel = ref(false);
+const canRunManualPipeline = ref(false);
+const canUseFullDevTools = ref(false);
 const isClearingLogs = ref(false);
 const agentLogs = ref<Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
 const agentSourceCount = ref(0);
@@ -608,7 +611,8 @@ const toastClass = computed(() =>
 );
 
 const toastIcon = computed(() => (toast.value.type === "success" ? "check_circle" : "error"));
-const showDevPanel = computed(() => isDev && canAccessDevPanel.value);
+const showAdminPipelinePanel = computed(() => canAccessDevPanel.value && canRunManualPipeline.value);
+const showFullDevTools = computed(() => isDev && showAdminPipelinePanel.value && canUseFullDevTools.value);
 let devPanelPollTimer: number | null = null;
 const DEV_PANEL_POLL_MS = 10000;
 
@@ -631,7 +635,7 @@ const rssReimportProgressText = computed(() => {
 });
 
 const startDevPanelPolling = () => {
-  if (!import.meta.client || devPanelPollTimer || !showDevPanel.value) return;
+  if (!import.meta.client || devPanelPollTimer || !showFullDevTools.value) return;
   devPanelPollTimer = window.setInterval(() => {
     void refreshDevPanel();
   }, DEV_PANEL_POLL_MS);
@@ -646,17 +650,16 @@ const stopDevPanelPolling = () => {
 onMounted(() => {
   void feedStore.fetchFeed();
   void loadAvailableSources();
-  if (isDev) {
-    void initializeDevPanel();
-  }
+  void initializeDevPanel();
 });
 
 watch(
   () => authStore.user?.id || null,
   (userId) => {
-    if (!isDev) return;
     if (!userId) {
       canAccessDevPanel.value = false;
+      canRunManualPipeline.value = false;
+      canUseFullDevTools.value = false;
       stopDevPanelPolling();
       return;
     }
@@ -668,14 +671,16 @@ const formatLogTime = (value: string) =>
   new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 const checkDevPanelAccess = async () => {
-  if (!isDev) {
-    canAccessDevPanel.value = false;
-    return false;
-  }
-
   try {
-    await $api<{ ok: boolean; canAccess: boolean }>("/api/dev/access");
+    const response = await $api<{
+      ok: boolean;
+      canAccess: boolean;
+      manualPipelineEnabled?: boolean;
+      devToolsEnabled?: boolean;
+    }>("/api/dev/access");
     canAccessDevPanel.value = true;
+    canRunManualPipeline.value = response.manualPipelineEnabled !== false;
+    canUseFullDevTools.value = response.devToolsEnabled === true;
     return true;
   } catch (error: any) {
     if (
@@ -685,6 +690,8 @@ const checkDevPanelAccess = async () => {
       error?.status === 403
     ) {
       canAccessDevPanel.value = false;
+      canRunManualPipeline.value = false;
+      canUseFullDevTools.value = false;
       stopDevPanelPolling();
       return false;
     }
@@ -695,11 +702,13 @@ const checkDevPanelAccess = async () => {
 const initializeDevPanel = async () => {
   const hasAccess = await checkDevPanelAccess();
   if (!hasAccess) return;
-  await refreshDevPanel();
+  if (showFullDevTools.value) {
+    await refreshDevPanel();
+  }
 };
 
 const loadAgentLogs = async () => {
-  if (!showDevPanel.value) return;
+  if (!showFullDevTools.value) return;
   try {
     const response = await $api<{ ok: boolean; logs: Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }> }>("/api/dev/agent-logs");
     agentLogs.value = response.logs || [];
@@ -710,7 +719,7 @@ const loadAgentLogs = async () => {
 };
 
 const loadEligibleSourceCount = async () => {
-  if (!showDevPanel.value) return;
+  if (!showFullDevTools.value) return;
   try {
     const response = await $api<{ ok: boolean; count: number }>("/api/dev/agent-source-count");
     agentSourceCount.value = response.count || 0;
@@ -721,7 +730,7 @@ const loadEligibleSourceCount = async () => {
 };
 
 const loadScopedSourceAuditSummary = async () => {
-  if (!showDevPanel.value) return;
+  if (!showFullDevTools.value) return;
   try {
     const response = await $api<{
       ok: boolean;
@@ -754,7 +763,7 @@ const loadScopedSourceAuditSummary = async () => {
 };
 
 const refreshDevPanel = async () => {
-  if (!showDevPanel.value) return;
+  if (!showFullDevTools.value) return;
   try {
     await Promise.all([loadAgentLogs(), loadEligibleSourceCount(), loadScopedSourceAuditSummary()]);
   } catch (error) {
@@ -1197,7 +1206,7 @@ const pruneScopedSources = async () => {
 };
 
 const clearAgentLogs = async () => {
-  if (!showDevPanel.value || isClearingLogs.value) return;
+  if (!showFullDevTools.value || isClearingLogs.value) return;
   isClearingLogs.value = true;
   try {
     const response = await $api<{ ok: boolean; deletedCount: number; articleCount?: number; artifactCount?: number; runCount?: number }>("/api/dev/agent-logs", {
@@ -1228,7 +1237,7 @@ const clearAgentLogs = async () => {
 };
 
 const runManualPipeline = async () => {
-  if (!showDevPanel.value) return;
+  if (!showAdminPipelinePanel.value) return;
   if (isPipelineRunning.value) return;
 
   isPipelineRunning.value = true;
@@ -1263,7 +1272,7 @@ const runManualPipeline = async () => {
 };
 
 const runHardCaseQueue = async () => {
-  if (!showDevPanel.value) return;
+  if (!showFullDevTools.value) return;
   if (isHardCaseQueueRunning.value) return;
 
   isHardCaseQueueRunning.value = true;
