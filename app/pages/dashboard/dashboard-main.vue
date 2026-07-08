@@ -405,6 +405,13 @@
               {{ isHardCaseQueueRunning ? "Running..." : "Run hard-case queue" }}
             </button>
             <button
+              @click="enrichExistingArticles"
+              :disabled="isEnrichingExistingArticles"
+              class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm font-bold text-emerald-100 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ isEnrichingExistingArticles ? "Enriching..." : "Enrich existing articles" }}
+            </button>
+            <button
               @click="runManualPipeline"
               :disabled="isPipelineRunning"
               class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -566,6 +573,7 @@ const isLoading = computed(() => feedStore.isLoading);
 const ARTICLES_PER_PAGE = 10;
 const currentPage = ref(1);
 const isPipelineRunning = ref(false);
+const isEnrichingExistingArticles = ref(false);
 const isHardCaseQueueRunning = ref(false);
 const isFixingRssStatus = ref(false);
 const isImportingRss = ref(false);
@@ -1267,6 +1275,51 @@ const runManualPipeline = async () => {
   } finally {
     isPipelineRunning.value = false;
     await refreshDevPanel();
+    stopDevPanelPolling();
+  }
+};
+
+const enrichExistingArticles = async () => {
+  if (!showAdminPipelinePanel.value || isEnrichingExistingArticles.value) return;
+
+  isEnrichingExistingArticles.value = true;
+  startDevPanelPolling();
+  try {
+    const response = await $api<{
+      ok: boolean;
+      scanned: number;
+      updated: number;
+      tagged: number;
+      matchedCategories: number;
+    }>("/api/dev/enrich-existing-articles", {
+      method: "POST",
+    });
+    toast.value = {
+      show: true,
+      message: `Enrichment finished: ${response.updated ?? 0} category link(s) and ${response.tagged ?? 0} tag set(s) updated from ${response.scanned ?? 0} scanned article(s).`,
+      type: "success",
+    };
+    await feedStore.fetchFeed({ force: true });
+    if (showFullDevTools.value) {
+      await refreshDevPanel();
+    }
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 4500);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Article enrichment failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isEnrichingExistingArticles.value = false;
+    if (showFullDevTools.value) {
+      await refreshDevPanel();
+    }
     stopDevPanelPolling();
   }
 };
