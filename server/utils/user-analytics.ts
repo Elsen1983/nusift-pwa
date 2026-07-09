@@ -3,6 +3,7 @@ import path from "path";
 import { prisma } from "./prisma";
 
 const TIMELINE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const timelineMemoryCache = new Map<string, { generatedAt: string; data: TimelineEntry[] }>();
 
 type TimelineEntry = {
   sourceName: string;
@@ -17,6 +18,10 @@ type ActiveAnalyticsTargets = {
 
 const getTimelineCachePath = (userId: string, year: number) =>
   path.join(process.cwd(), "data", `user-analytics-timeline-${userId}-${year}.json`);
+
+const getTimelineCacheKey = (userId: string, year: number) => `${userId}:${year}`;
+
+const canUseFileTimelineCache = () => !process.env.VERCEL;
 
 export async function getUserAnalyticsMetrics(userId: string) {
   const [readCount, rejectedCount, sharedCount, savedCount] = await Promise.all([
@@ -188,8 +193,22 @@ async function hasTimelineCacheExpired(
 
 export async function getUserAnalyticsTimeline(userId: string, currentYear: number) {
   const cachePath = getTimelineCachePath(userId, currentYear);
+  const cacheKey = getTimelineCacheKey(userId, currentYear);
 
-  if (fs.existsSync(cachePath)) {
+  const memoryCached = timelineMemoryCache.get(cacheKey);
+  if (memoryCached) {
+    try {
+      const generatedAt = new Date(memoryCached.generatedAt).getTime();
+      if (
+        !Number.isNaN(generatedAt) &&
+        !(await hasTimelineCacheExpired(userId, currentYear, generatedAt))
+      ) {
+        return { data: memoryCached.data, cached: true };
+      }
+    } catch {}
+  }
+
+  if (canUseFileTimelineCache() && fs.existsSync(cachePath)) {
     try {
       const cached = JSON.parse(fs.readFileSync(cachePath, "utf-8")) as {
         generatedAt: string;
@@ -206,18 +225,19 @@ export async function getUserAnalyticsTimeline(userId: string, currentYear: numb
   }
 
   const data = await buildTimelineData(userId, currentYear);
-  fs.writeFileSync(
-    cachePath,
-    JSON.stringify(
-      {
-        generatedAt: new Date().toISOString(),
-        data,
-      },
-      null,
-      2,
-    ),
-    "utf-8",
-  );
+  const payload = {
+    generatedAt: new Date().toISOString(),
+    data,
+  };
+
+  timelineMemoryCache.set(cacheKey, payload);
+
+  if (canUseFileTimelineCache()) {
+    try {
+      fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+      fs.writeFileSync(cachePath, JSON.stringify(payload, null, 2), "utf-8");
+    } catch {}
+  }
 
   return { data, cached: false };
 }

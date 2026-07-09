@@ -107,18 +107,12 @@ const buildFeedHints = (input: {
   const allCandidates = [...matchedFeeds, ...topFeeds]
     .filter((candidate) => normalizeComparableUrl(candidate.feedUrl) !== normalizeComparableUrl(input.rssFeedUrl));
 
-  const hasScopedCandidates = allCandidates.some(
-    (candidate) => candidate.scopeMatch === "exact" || candidate.scopeMatch === "probable",
-  );
-
-  const filteredCandidates = hasScopedCandidates
-    ? allCandidates.filter(
-        (candidate) => candidate.scopeMatch === "exact" || candidate.scopeMatch === "probable",
-      )
-    : allCandidates.filter((candidate) => candidate.scopeMatch !== "unrelated");
-
   const dedupedCandidates = new Map<string, { feedUrl: string; score: number; scopeMatch: string }>();
-  for (const candidate of filteredCandidates) {
+  for (const candidate of allCandidates) {
+    if (candidate.scopeMatch === "unrelated") {
+      continue;
+    }
+
     const key = normalizeComparableUrl(candidate.feedUrl);
     const existing = dedupedCandidates.get(key);
     if (!existing || candidate.score > existing.score) {
@@ -127,7 +121,18 @@ const buildFeedHints = (input: {
   }
 
   const feedCandidates = [...dedupedCandidates.values()]
-    .sort((left, right) => right.score - left.score)
+    .sort((left, right) => {
+      const leftPriority =
+        left.scopeMatch === "exact" ? 0 : left.scopeMatch === "probable" ? 1 : 2;
+      const rightPriority =
+        right.scopeMatch === "exact" ? 0 : right.scopeMatch === "probable" ? 1 : 2;
+
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+
+      return right.score - left.score;
+    })
     .map((candidate) => candidate.feedUrl)
     .slice(0, 5);
 
