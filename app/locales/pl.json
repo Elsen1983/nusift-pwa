@@ -1,1 +1,7 @@
-{}
+{
+    "dashboard": {
+        "header": {
+            "refresh_label": "Odśwież"
+        }
+    }
+}

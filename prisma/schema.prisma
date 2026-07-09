@@ -230,6 +230,10 @@ model NewsSource {
   lastRssCheckAt DateTime?
   nextRetryAt    DateTime?
   discoveryEvidence Json?
+  currentFeedProductive Boolean @default(false)
+  consecutiveNonProductiveRuns Int @default(0)
+  lastProductiveFeedUrl String?
+  lastProductiveAt DateTime?
 
   articles          Article[]
   categories        SourceCategory[]
@@ -258,6 +262,10 @@ model SourceCategory {
   lastRssCheckAt DateTime?
   nextRetryAt    DateTime?
   discoveryEvidence Json?
+  currentFeedProductive Boolean @default(false)
+  consecutiveNonProductiveRuns Int @default(0)
+  lastProductiveFeedUrl String?
+  lastProductiveAt DateTime?
 
   // ÚJ: Kapcsolat a feliratkozók felé (Explicit)
   subscribers      UserCategorySubscription[]

@@ -79,7 +79,7 @@ describe("persistCandidates", () => {
       },
     });
     expect(prismaCreateManyMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ inserted: 0, skipped: 1, failed: 0 });
+    expect(result).toEqual({ inserted: 0, skipped: 1, failed: 0, enriched: 1 });
   });
 
   it("does not overwrite an existing category assignment on duplicate articles", async () => {
@@ -105,6 +105,6 @@ describe("persistCandidates", () => {
     expect(prismaTransactionMock).not.toHaveBeenCalled();
     expect(prismaUpdateMock).not.toHaveBeenCalled();
     expect(prismaCreateManyMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ inserted: 0, skipped: 1, failed: 0 });
+    expect(result).toEqual({ inserted: 0, skipped: 1, failed: 0, enriched: 0 });
   });
 });

@@ -295,7 +295,8 @@
             "categories_label": "Categories",
             "all_categories": "All Categories",
             "sources_label": "Sources",
-            "all_sources": "All Sources"
+            "all_sources": "All Sources",
+            "refresh_label": "Refresh"
         },
         "empty": {
             "title": "No articles yet",
@@ -562,6 +563,17 @@
             "quota_full": "Suspend an active source to free up space.",
             "btn_activate": "Activate"
         },
+        "feed": {
+            "status_label": "Feed Status",
+            "verified_live": "This feed has already produced real articles.",
+            "not_verified_yet": "A feed is saved, but it has not yet proven productive.",
+            "no_feed_saved": "No proven feed is currently saved.",
+            "detected_sections": "Detected Sections",
+            "candidate_feeds": "Suggested Feed URLs",
+            "manual_label": "Manual Feed URL",
+            "manual_placeholder": "Paste a feed URL on the same domain...",
+            "save_feed": "Save Feed"
+        },
         "toasts": {
             "duplicate": "This source is already in your network.",
             "fetch_logic_error": "Failed to retrieve source data from the server.",
@@ -576,7 +588,9 @@
             "discovery_success": "Source verified successfully. Updating network...",
             "discovery_failed": "Discovery failed. Still no valid feeds found.",
             "discovery_error": "Network error during discovery phase.",
-            "add_restricted": "Publisher blocked connection. Source moved to Restricted Zone."
+            "add_restricted": "Publisher blocked connection. Source moved to Restricted Zone.",
+            "feed_saved": "Feed URL saved and queued for ingestion.",
+            "feed_save_failed": "Failed to save feed URL."
         },
         "badges": {
             "verified": "Valid Domain",

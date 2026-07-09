@@ -38,6 +38,89 @@
           {{ badge.label }}
         </span>
       </div>
+
+      <div
+        v-if="source.rssFeedUrl || source.showFeedRecoveryTools"
+        class="mt-3 rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-3 space-y-3"
+      >
+        <div class="space-y-1">
+          <div class="text-[10px] font-label font-bold uppercase tracking-wider text-on-surface-variant">
+            {{ $t("sourceManager.feed.status_label") }}
+          </div>
+          <div class="text-[12px] text-on-surface">
+            <span v-if="source.feedVerifiedByArticles">{{ $t("sourceManager.feed.verified_live") }}</span>
+            <span v-else-if="source.rssFeedUrl">{{ $t("sourceManager.feed.not_verified_yet") }}</span>
+            <span v-else>{{ $t("sourceManager.feed.no_feed_saved") }}</span>
+          </div>
+          <a
+            v-if="source.rssFeedUrl"
+            :href="source.rssFeedUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="block break-all text-[12px] text-primary-container underline decoration-primary-container/40 underline-offset-2 hover:decoration-primary-container/70"
+          >
+            {{ source.rssFeedUrl }}
+          </a>
+        </div>
+
+        <div v-if="source.detectedSections?.length" class="space-y-1">
+          <div class="text-[10px] font-label font-bold uppercase tracking-wider text-on-surface-variant">
+            {{ $t("sourceManager.feed.detected_sections") }}
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            <span
+              v-for="section in source.detectedSections"
+              :key="section"
+              class="rounded bg-surface-container-highest px-2 py-1 text-[10px] uppercase tracking-wide text-on-surface-variant"
+            >
+              {{ section }}
+            </span>
+          </div>
+        </div>
+
+        <div v-if="source.showFeedRecoveryTools && source.feedCandidates?.length" class="space-y-2">
+          <div class="text-[10px] font-label font-bold uppercase tracking-wider text-on-surface-variant">
+            {{ $t("sourceManager.feed.candidate_feeds") }}
+          </div>
+          <div class="flex flex-col gap-2">
+            <button
+              v-for="candidate in source.feedCandidates"
+              :key="candidate"
+              @click="$emit('saveFeed', { subscriptionId: source.id, feedUrl: candidate })"
+              :disabled="isProcessing"
+              class="rounded-lg border border-primary-container/30 bg-primary-container/10 px-3 py-2 text-left text-[11px] text-primary-container transition-colors hover:bg-primary-container/20 disabled:opacity-50"
+            >
+              {{ candidate }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="source.showFeedRecoveryTools" class="space-y-2">
+          <div class="text-[10px] font-label font-bold uppercase tracking-wider text-on-surface-variant">
+            {{ $t("sourceManager.feed.manual_label") }}
+          </div>
+          <div class="flex flex-col gap-2 sm:flex-row">
+            <input
+              v-model="manualFeedUrl"
+              type="url"
+              inputmode="url"
+              autocapitalize="off"
+              autocomplete="off"
+              autocorrect="off"
+              spellcheck="false"
+              class="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container-highest px-3 py-2 text-[12px] text-on-surface outline-none focus:border-primary-container/50"
+              :placeholder="$t('sourceManager.feed.manual_placeholder')"
+            />
+            <button
+              @click="emitManualFeed"
+              :disabled="isProcessing || !manualFeedUrl.trim()"
+              class="rounded-lg border border-primary-container/30 bg-primary-container/10 px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-primary-container transition-colors hover:bg-primary-container/20 disabled:opacity-50"
+            >
+              {{ $t("sourceManager.feed.save_feed") }}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="flex items-center gap-3 justify-end w-full">
@@ -66,16 +149,33 @@
 </template>
 
 <script setup lang="ts">
+import { ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
 
-defineProps<{
+const props = defineProps<{
   source: any;
   isProcessing: boolean;
 }>();
 
-defineEmits(["suspend", "delete"]);
+const emit = defineEmits(["suspend", "delete", "saveFeed"]);
+
+const manualFeedUrl = ref("");
+
+watch(
+  () => props.source?.rssFeedUrl,
+  (value) => {
+    manualFeedUrl.value = value || "";
+  },
+  { immediate: true },
+);
+
+const emitManualFeed = () => {
+  const feedUrl = manualFeedUrl.value.trim();
+  if (!feedUrl) return;
+  emit("saveFeed", { subscriptionId: props.source.id, feedUrl });
+};
 
 const getDomain = (url: string) => {
   try {

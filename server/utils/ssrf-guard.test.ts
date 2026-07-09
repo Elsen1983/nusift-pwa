@@ -1,5 +1,5 @@
 /**
- * ssrf-guard.test.ts – SSRF protection unit tests.
+ * ssrf-guard.test.ts â€“ SSRF protection unit tests.
  *
  * Tests the pure functions (isBlockedIp, validateHostname, sanitiseHostnameForApi)
  * that don't require network access. The async resolveAndValidate / safeFetch
@@ -257,17 +257,17 @@ describe('sanitiseHostnameForApi', () => {
   })
 
   it('validates GDELT-safe hostname', () => {
-    // This should pass — a valid news domain
+    // This should pass â€” a valid news domain
     const result = sanitiseHostnameForApi('reuters.com')
     expect(result).toBe('reuters.com')
   })
 })
 
 /* ================================================================== */
-/*  safeFetch – protocol & redirect validation (URL-level tests)       */
+/*  safeFetch â€“ protocol & redirect validation (URL-level tests)       */
 /* ================================================================== */
 
-describe('safeFetch – protocol enforcement', () => {
+describe('safeFetch â€“ protocol enforcement', () => {
   // These tests validate the URL parsing logic, not actual network calls.
   // They verify that blocked protocols are rejected before any fetch occurs.
 
@@ -290,7 +290,7 @@ describe('safeFetch – protocol enforcement', () => {
   })
 })
 
-describe('safeFetch – hostname edge cases', () => {
+describe('safeFetch â€“ hostname edge cases', () => {
   it('rejects localhost URL', async () => {
     await expect(safeFetch('http://localhost:3000')).rejects.toThrow(SSRFError)
   })
@@ -329,11 +329,11 @@ describe('safeFetch – hostname edge cases', () => {
 })
 
 /* ================================================================== */
-/*  safeFetch – legitimate redirect scenarios                          */
+/*  safeFetch â€“ legitimate redirect scenarios                          */
 /*  These verify that safeFetch does NOT over-block normal redirects.  */
 /* ================================================================== */
 
-describe('safeFetch – legitimate redirect policy', () => {
+describe('safeFetch â€“ legitimate redirect policy', () => {
   // These tests exercise the redirect validation logic itself (pure URL parsing),
   // not actual network calls. They verify the policy allows what it should.
 
@@ -347,7 +347,7 @@ describe('safeFetch – legitimate redirect policy', () => {
     expect(allowed).toBe(true)
   })
 
-  it('http → https upgrade redirect is allowed', () => {
+  it('http â†’ https upgrade redirect is allowed', () => {
     // Protocol upgrade is NOT a downgrade, so it should be allowed
     const originalProtocol: string = 'http:'
     const nextProtocol: string = 'https:'
@@ -363,14 +363,14 @@ describe('safeFetch – legitimate redirect policy', () => {
     expect(resolved.hostname).toBe('example.com')
   })
 
-  it('subdomain redirect is allowed (example.com → sub.example.com)', () => {
+  it('subdomain redirect is allowed (example.com â†’ sub.example.com)', () => {
     const originalClean = 'example.com'
     const nextClean = 'sub.example.com'
     const isSubdomain = nextClean.endsWith(`.${originalClean}`)
     expect(isSubdomain).toBe(true)
   })
 
-  it('subdomain redirect is allowed (www.example.com → example.com)', () => {
+  it('subdomain redirect is allowed (www.example.com â†’ example.com)', () => {
     const originalClean = 'example.com' // www. stripped
     const nextClean = 'example.com'
     const isSubdomain = nextClean.endsWith(`.${originalClean}`)
@@ -385,7 +385,7 @@ describe('safeFetch – legitimate redirect policy', () => {
     expect(isSubdomain).toBe(true)
   })
 
-  it('cross-domain redirect is blocked (example.com → evil.com)', () => {
+  it('cross-domain redirect is blocked (example.com â†’ evil.com)', () => {
     const originalClean: string = 'example.com'
     const nextClean: string = 'evil.com'
     const isSubdomain = nextClean.endsWith(`.${originalClean}`)
@@ -393,7 +393,7 @@ describe('safeFetch – legitimate redirect policy', () => {
     expect(allowed).toBe(false)
   })
 
-  it('similar-looking domain is blocked (example.com → notexample.com)', () => {
+  it('similar-looking domain is blocked (example.com â†’ notexample.com)', () => {
     const originalClean: string = 'example.com'
     const nextClean: string = 'notexample.com'
     const isSubdomain = nextClean.endsWith(`.${originalClean}`)
@@ -401,7 +401,7 @@ describe('safeFetch – legitimate redirect policy', () => {
     expect(allowed).toBe(false)
   })
 
-  it('https → http downgrade is blocked in redirect policy', () => {
+  it('https â†’ http downgrade is blocked in redirect policy', () => {
     const originalProtocol: string = 'https:'
     const nextProtocol: string = 'http:'
     const isDowngrade = originalProtocol === 'https:' && nextProtocol === 'http:'
@@ -418,7 +418,7 @@ describe('safeFetch – legitimate redirect policy', () => {
 /* ================================================================== */
 
 /* ================================================================== */
-/*  validatePushEndpoint – push subscription SSRF guard                */
+/*  validatePushEndpoint â€“ push subscription SSRF guard                */
 /* ================================================================== */
 
 describe('validatePushEndpoint', () => {
@@ -486,13 +486,13 @@ describe('validatePushEndpoint', () => {
 })
 
 /* ================================================================== */
-/*  SSRFError→createError wrapping – error type consistency            */
+/*  SSRFErrorâ†’createError wrapping â€“ error type consistency            */
 /*  These tests verify that NO raw SSRFError leaks from the push       */
 /*  validation functions. Every rejection must be a createError with    */
 /*  a statusCode (HTTP error), never a raw SSRFError instance.         */
 /* ================================================================== */
 
-describe('push validation – error type consistency (no SSRFError leak)', () => {
+describe('push validation â€“ error type consistency (no SSRFError leak)', () => {
   // --- validatePushEndpoint (async, full DNS check) ---
   it('validatePushEndpoint: http endpoint throws error with statusCode 400, not SSRFError', async () => {
     try {
@@ -597,7 +597,7 @@ describe('push validation – error type consistency (no SSRFError leak)', () =>
   })
 })
 
-describe('SSRFError – message safety', () => {
+describe('SSRFError â€“ message safety', () => {
   it('public message does not expose internal hostname', () => {
     const err = new SSRFError('Banned hostname: internal.corp')
     expect(err.message).not.toContain('internal.corp')

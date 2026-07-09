@@ -41,19 +41,17 @@
               <div
                 v-for="option in dateOptions"
                 :key="option.key"
-                @click="
-                  !(option.isPro && isUserFreeTier) && selectDate(option.key)
-                "
+                @click="!isDateOptionLocked(option) && selectDate(option.key)"
                 :class="[
                   'text-[13px] font-bold transition-colors py-1',
-                  option.isPro && isUserFreeTier
+                  isDateOptionLocked(option)
                     ? 'text-on-surface-variant/30 cursor-not-allowed italic'
                     : 'text-on-surface-variant/90 hover:text-primary-container cursor-pointer',
                 ]"
               >
                 {{ $t("dashboard.filters.dates." + option.key) }}
                 <span
-                  v-if="option.isPro && isUserFreeTier"
+                  v-if="isDateOptionLocked(option)"
                   class="material-symbols-outlined text-[12px] ml-1 align-text-bottom"
                 >
                   lock
@@ -192,7 +190,7 @@
               @click="applyFilters"
               :disabled="!hasPendingFilters || isRefreshing"
               :class="[
-                'flex justify-center items-center p-2 rounded-lg transition-all h-[36px] w-[36px] border',
+                'flex justify-center items-center gap-1.5 px-3 rounded-lg transition-all h-[36px] border',
                 hasPendingFilters
                   ? 'bg-surface-container-highest text-primary-container border-primary-container/30 shadow-[0_0_12px_rgb(var(--color-primary-container)/0.15)] hover:bg-surface-bright'
                   : 'bg-surface-container-highest text-on-surface-variant/50 border-transparent disabled:opacity-50 disabled:cursor-not-allowed',
@@ -205,6 +203,7 @@
                 ]"
                 >refresh</span
               >
+              <span class="font-label font-bold text-xs">{{ $t('dashboard.header.refresh_label') }}</span>
             </button>
           </div>
         </div>
@@ -520,6 +519,9 @@ const isUserFreeTier = computed(() => {
   return !authStore.user?.tier || authStore.user.tier === "FREE";
 });
 
+const isDateOptionLocked = (option: { isPro: boolean }) =>
+  option.isPro && isUserFreeTier.value;
+
 definePageMeta({
   layout: "app-layout",
 });
@@ -537,6 +539,7 @@ interface Article {
   title: string;
   source: string;
   sourceUrl?: string;
+  sourceTargetUrl?: string;
   canonicalUrl?: string;
   categoryPathUrl?: string | null;
   date: string;
@@ -815,6 +818,7 @@ const matchesAppliedSourceFilter = (article: Article) => {
   if (appliedSelectedSources.value.length === 0) return true;
 
   const articleSourceUrl = normalizeFilterUrl(article.sourceUrl);
+  const articleSourceTargetUrl = normalizeFilterUrl(article.sourceTargetUrl);
   const articleCategoryPathUrl = normalizeFilterUrl(article.categoryPathUrl);
 
   return appliedSelectedSources.value.some((selectedSourceId) => {
@@ -823,8 +827,8 @@ const matchesAppliedSourceFilter = (article: Article) => {
 
     const selectedUrl = normalizeFilterUrl(selectedSource.url);
     return selectedSource.type === "CATEGORY"
-      ? articleCategoryPathUrl === selectedUrl
-      : articleSourceUrl === selectedUrl;
+      ? articleCategoryPathUrl === selectedUrl || articleSourceTargetUrl === selectedUrl
+      : articleSourceUrl === selectedUrl && articleSourceTargetUrl === articleSourceUrl;
   });
 };
 

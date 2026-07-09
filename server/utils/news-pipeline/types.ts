@@ -14,6 +14,7 @@ export interface IngestRejectedItem {
     | "empty_link"
     | "out_of_scope"
     | "stale_or_missing_published_at"
+    | "already_seen_feed_item"
     | "html_fallback_non_article"
     | "html_fallback_stale";
   rawLink?: string | null;
@@ -26,6 +27,7 @@ export interface IngestSkipSummary {
   emptyLink: number;
   outOfScope: number;
   staleOrMissingPublishedAt: number;
+  alreadySeenFeedItem: number;
   htmlFallbackNonArticle: number;
   htmlFallbackStale: number;
 }
@@ -46,6 +48,12 @@ export type TaxonomyEvidence = {
   canonicalSectionHandles: string[];
   feedParams: string[];
   matchedFeedUrls: string[];
+  /** Present only when the feed was found via directory-traversal fallback. */
+  directoryTraversal?: {
+    traversedUrl: string;
+    matchedLabel: string;
+    candidateCount: number;
+  };
 };
 
 export interface HardCaseDiscoveryCandidate {

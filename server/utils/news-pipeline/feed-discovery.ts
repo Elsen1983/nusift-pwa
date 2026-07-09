@@ -11,7 +11,7 @@ type SupportedFeedType =
 type FeedCandidate = {
   feedUrl: string;
   discoveredVia: string;
-  detection: "direct-feed" | "html-link" | "html-raw-url" | "http-link" | "robots-sitemap" | "cms-fingerprint" | "taxonomy-extraction";
+  detection: "direct-feed" | "html-link" | "html-raw-url" | "http-link" | "robots-sitemap" | "cms-fingerprint" | "taxonomy-extraction" | "directory-traversal";
   contentType?: SupportedFeedType | null;
   score: number;
   scopeMatch: ScopeMatch;
@@ -551,6 +551,10 @@ export const buildScopedFeedCandidates = (pageUrl: string, existingFeedUrl?: str
     const normalizedPath = parsed.pathname.replace(/\/+$/, "");
     const base = `${parsed.origin}${normalizedPath}`;
     const root = parsed.origin;
+    const scopedPathWithTrailingSlash =
+      normalizedPath && normalizedPath !== "/"
+        ? `${normalizedPath}/`
+        : "/";
 
     candidates.add(`${base}/rss/`);
     candidates.add(`${base}/rss`);
@@ -566,12 +570,375 @@ export const buildScopedFeedCandidates = (pageUrl: string, existingFeedUrl?: str
     candidates.add(`${root}/atom.xml`);
     candidates.add(`${root}/index.xml`);
     candidates.add(`${root}/index.rss`);
+    candidates.add(`${root}/feeds/rss/?index=${scopedPathWithTrailingSlash}`);
+    candidates.add(`${root}/feeds/rss?index=${scopedPathWithTrailingSlash}`);
     candidates.add(pageUrl);
   } catch {
     candidates.add(pageUrl);
   }
 
   return [...candidates].filter(Boolean);
+};
+
+// ─── Feed Directory Traversal ───────────────────────────────────────────────
+
+const DIRECTORY_LINK_TEXT_PATTERNS = [
+  /\brss\b/i,
+  /\bfeeds?\b/i,
+  /\bxml\b/i,
+  /\bsyndicat/i,
+  /ball\s+feeds?/i,
+  /news\s+feeds?/i,
+  /rss\s+directory/i,
+  /feed\s+directory/i,
+  /rss\s+list/i,
+];
+
+const DIRECTORY_HREF_PATTERNS = [
+  /\/rss[-_]?directory/i,
+  /\/feed[-_]?directory/i,
+  /\/rss[-_]?(?:index|list|page)/i,
+  /\/feed[-_]?(?:index|list|page)/i,
+  /\/show[-_]?rss/i,
+  /\/all[-_]?feeds?/i,
+  /\/feeds?[-_]?index/i,
+];
+
+/**
+ * Scan the target page HTML for anchor links that look like they point
+ * to a feed-directory / feed-index page (a page that lists available feeds).
+ *
+ * Returns the single best-scoring directory URL, or null.
+ */
+const findDirectoryUrl = (html: string, pageUrl: string): string | null => {
+  const anchorPattern = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let bestUrl: string | null = null;
+  let bestScore = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = anchorPattern.exec(html)) !== null) {
+    const href = match[1] || "";
+    const text = (match[2] || "").replace(/<[^>]+>/g, "").trim();
+
+    // Skip anchors pointing to blocked / non-directory pages
+    if (/\/feedback|\/contact|\/about|\/privacy|\/terms/i.test(href)) continue;
+
+    // Skip anchors that look like article/blog links rather than directory pages
+    if (/\/story|\/article|\/post|\/blog\b|\/\d{4}\/\d{2}\/|\/p\//i.test(href)) continue;
+
+    // Skip generic navigation links unlikely to be directories
+    if (/^\/?(?:home|index|sitemap)\/?$/i.test(href)) continue;
+
+    let score = 0;
+    let textMatched = false;
+
+    // Score based on link text
+    for (const pattern of DIRECTORY_LINK_TEXT_PATTERNS) {
+      if (pattern.test(text)) { score += 3; textMatched = true; }
+    }
+
+    // Score based on href patterns (use max to avoid double-counting)
+    let hrefMatched = false;
+    let hrefScore = 0;
+    for (const pattern of DIRECTORY_HREF_PATTERNS) {
+      if (pattern.test(href)) { hrefScore = Math.max(hrefScore, 5); hrefMatched = true; }
+    }
+    score += hrefScore;
+
+    // Bonus when BOTH text and href independently suggest a directory.
+    // This reduces false positives from links like "RSS" that point to
+    // a blog tag page or an unrelated content page.
+    if (textMatched && hrefMatched) score += 4;
+
+    // Boost if the href contains /rss or /feed but is NOT a direct feed URL
+    const resolvedHref = resolveRelativeUrl(href, pageUrl);
+    if (/(?:rss|feeds?)(?:\b|-|_)/i.test(href) && resolvedHref && !looksLikeFeedUrl(resolvedHref)) {
+      score += 2;
+    }
+
+    // Penalize anchors whose resolved URL is already a direct feed URL
+    // (these are the feed themselves, not a directory page)
+    if (resolvedHref && looksLikeFeedUrl(resolvedHref)) {
+      score -= 8;
+    }
+
+    if (score > bestScore && score >= 3) {
+      bestScore = score;
+      const resolved = resolveRelativeUrl(href, pageUrl);
+      if (resolved) bestUrl = resolved;
+    }
+  }
+
+  return bestUrl;
+};
+
+/**
+ * Classify whether a fetched page is actually a feed directory/index.
+ *
+ * Uses a composite signal model: scores feed-like links, repeated feed labels,
+ * list/table structure, and concentration of feed anchors. A page qualifies
+ * when it accumulates enough combined evidence (composite score >= 25).
+ */
+const isFeedDirectoryPage = (html: string, pageUrl: string): boolean => {
+  const feedLinks = new Set<string>();
+  const feedAnchors: Array<{ href: string; text: string }> = [];
+  let totalAnchors = 0;
+  const anchorPattern = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = anchorPattern.exec(html)) !== null) {
+    totalAnchors++;
+    const href = match[1] || "";
+    const text = (match[2] || "").replace(/<[^>]+>/g, "").toLowerCase().trim();
+    const resolved = resolveRelativeUrl(href, pageUrl);
+
+    const hasFeedHref = resolved ? looksLikeFeedUrl(resolved) : /\brss\b|\bfeed\b|\batom\b|\.xml\b/i.test(href);
+    const hasFeedLabel = /\brss\b|\bfeed\b|\batom\b|\bxml\b/.test(text);
+
+    if (hasFeedHref || hasFeedLabel) {
+      feedLinks.add(resolved || href);
+      feedAnchors.push({ href, text });
+    }
+  }
+
+  // Composite signal scoring
+  let signalScore = 0;
+
+  // Signal 1: Feed-like links (most important)
+  if (feedLinks.size >= 5) signalScore += 30;
+  else if (feedLinks.size >= 3) signalScore += 15;
+  else if (feedLinks.size >= 1) signalScore += 5;
+
+  // Signal 2: Ratio of feed anchors to total anchors (concentration)
+  if (totalAnchors > 0) {
+    const feedRatio = feedAnchors.length / totalAnchors;
+    if (feedRatio >= 0.5 && feedAnchors.length >= 3) signalScore += 20;
+    else if (feedRatio >= 0.3 && feedAnchors.length >= 2) signalScore += 10;
+  }
+
+  // Signal 3: List/table structure around feed links
+  const listPattern = /<(?:ul|ol|table|dl)\b[^>]*>[\s\S]*?<\/(?:ul|ol|table|dl)>/gi;
+  const listBlocks = html.match(listPattern) || [];
+  const feedLabelsInLists = listBlocks.filter((block) =>
+    feedAnchors.some((a) => block.includes(a.href))
+  ).length;
+  if (feedLabelsInLists >= 2) signalScore += 15;
+  else if (feedLabelsInLists >= 1) signalScore += 5;
+
+  // Signal 4: Repeated feed keyword density in text content
+  const textContent = html.replace(/<[^>]+>/g, " ").toLowerCase();
+  const rssMentions = (textContent.match(/\brss\b/g) || []).length;
+  const feedMentions = (textContent.match(/\bfeed\b/g) || []).length;
+  if (rssMentions + feedMentions >= 10) signalScore += 10;
+  else if (rssMentions + feedMentions >= 5) signalScore += 5;
+
+  // Require a composite score of 25+ to qualify as a directory.
+  // This means: either many feed links, or moderate feed links with
+  // list structure and keyword density. Prevents pages that merely
+  // mention RSS from qualifying.
+  return signalScore >= 25;
+};
+
+/**
+ * Extract labeled feed entries from a feed directory page.
+ * Each entry has a display label and a feed URL.
+ */
+const parseDirectoryEntries = (
+  html: string,
+  pageUrl: string,
+): Array<{ label: string; feedUrl: string }> => {
+  const entries: Array<{ label: string; feedUrl: string }> = [];
+  const seen = new Set<string>();
+  const anchorPattern = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = anchorPattern.exec(html)) !== null) {
+    const href = match[1] || "";
+    const rawText = (match[2] || "").replace(/<[^>]+>/g, "").trim();
+    if (!rawText || rawText.length > 200) continue;
+
+    const resolved = resolveRelativeUrl(href, pageUrl);
+    if (!resolved || seen.has(resolved)) continue;
+
+    // Accept entries where the href is feed-like OR the text contains feed keywords
+    const isFeedHref = looksLikeFeedUrl(resolved);
+    const hasFeedText = /\brss\b|\bfeed\b|\batom\b|\.xml/i.test(rawText);
+
+    if (isFeedHref || hasFeedText) {
+      seen.add(resolved);
+      // Clean the label: remove "RSS", "Feed", "XML" suffix noise
+      const label = rawText
+        .replace(/\s*[-–—:]\s*(?:rss|feed|atom|xml)\s*$/i, "")
+        .replace(/^\s*(?:rss|feed|atom|xml)\s*[-–—:]\s*/i, "")
+        .trim();
+      entries.push({ label: label || rawText, feedUrl: resolved });
+    }
+  }
+
+  return entries;
+};
+
+/**
+ * Extract scope tokens from the target URL for label matching.
+ * E.g. "/category/arizona-news" => ["arizona-news", "arizona", "news"]
+ */
+const extractTargetTokens = (targetUrl: string): string[] => {
+  const tokens: string[] = [];
+  try {
+    const pathname = new URL(targetUrl).pathname;
+    const segments = pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+    if (segments.length === 0) return tokens;
+
+    // Full last segment as a token
+    const lastSegment = segments[segments.length - 1]!;
+    const normalizedSlug = lastSegment
+      .toLowerCase()
+      .replace(/[-_]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    tokens.push(normalizedSlug);
+    tokens.push(lastSegment.toLowerCase());
+
+    // Individual word tokens from the last segment
+    const words = normalizedSlug.split(" ").filter((w) => w.length >= 2);
+    tokens.push(...words);
+
+    // Also include second-to-last segment if available
+    if (segments.length >= 2) {
+      const parent = segments[segments.length - 2]!;
+      tokens.push(parent.toLowerCase());
+    }
+  } catch {}
+  return [...new Set(tokens)];
+};
+
+/**
+ * Normalize a label for comparison: lowercase, strip feed-format noise words,
+ * clean punctuation, collapse whitespace.
+ *
+ * Only removes words that are purely feed-format markers (rss, feed, feeds,
+ * atom, xml). Preserves meaningful content words like "news", "sport", etc.
+ * so that label matching retains real distinctions.
+ */
+const NOISE_WORDS = /\b(?:rss|feeds?|atom|xml)\b/gi;
+
+const normalizeLabel = (label: string): string =>
+  label
+    .toLowerCase()
+    .replace(/[-_]+/g, " ")
+    .replace(NOISE_WORDS, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/**
+ * Match the original target against directory entries.
+ * Returns the best-matched entry or null.
+ *
+ * Matching is label-based (not URL-based) because directory feed URLs
+ * may be opaque and not contain the target slug.
+ */
+/**
+ * Generic/broad label words that should not be trusted as strong match evidence
+ * on their own. A match based solely on these words risks false positives.
+ */
+const GENERIC_LABEL_TOKENS = new Set([
+  "news", "feeds", "feed", "rss", "atom", "xml", "all", "latest",
+  "top", "trending", "popular", "featured", "headlines", "breaking",]);
+
+const matchTargetToDirectoryEntries = (
+  entries: Array<{ label: string; feedUrl: string }>,
+  targetUrl: string,
+): { feedUrl: string; label: string } | null => {
+  const targetTokens = extractTargetTokens(targetUrl);
+  if (targetTokens.length === 0) return null;
+
+  let bestMatch: { feedUrl: string; label: string } | null = null;
+  let bestScore = 0;
+
+  for (const entry of entries) {
+    const entryLabel = normalizeLabel(entry.label);
+    if (!entryLabel) continue;
+
+    // Split entry label into tokens for granular matching
+    const entryTokens = entryLabel.split(" ").filter((t) => t.length >= 2);
+
+    let score = 0;
+
+    // Tier 1 — Exact label-to-slug match (strongest signal)
+    if (entryLabel === targetTokens[0]) {
+      score += 50;
+    }
+
+    // Tier 1b — Exact raw last segment match
+    if (entryLabel === targetTokens[1]) {
+      score += 45;
+    }
+
+    // Tier 2 — Label contains the full normalized slug
+    if (targetTokens[0] && targetTokens[0].length >= 3 && entryLabel.includes(targetTokens[0])) {
+      score += 30;
+    }
+
+    // Tier 3 — Full slug contains the label (short label match)
+    if (entryLabel.length >= 3 && targetTokens[0] && targetTokens[0].includes(entryLabel)) {
+      score += 20;
+    }
+
+    // Tier 4 — Meaningful token overlap
+    // Count how many target tokens appear in the entry label.
+    // Only count tokens that are NOT generic/broad words, to avoid
+    // false positives from overlapping on "news", "all", etc.
+    let meaningfulOverlap = 0;
+    let genericOverlap = 0;
+    for (const token of targetTokens) {
+      if (token.length < 2) continue;
+      // Use word-boundary-aware check to avoid substring false positives
+      const tokenInEntry = entryTokens.some((et) => et === token || et.includes(token) || token.includes(et));
+      if (tokenInEntry) {
+        if (GENERIC_LABEL_TOKENS.has(token)) {
+          genericOverlap++;
+        } else {
+          meaningfulOverlap++;
+        }
+      }
+    }
+    if (meaningfulOverlap > 0) {
+      score += meaningfulOverlap * 10;
+    }
+    // Generic tokens contribute less
+    if (genericOverlap > 0) {
+      score += genericOverlap * 3;
+    }
+
+    // Feed URL path bonus (for non-opaque URLs)
+    try {
+      const feedPath = new URL(entry.feedUrl).pathname.toLowerCase();
+      for (const token of targetTokens) {
+        if (token.length >= 3 && !GENERIC_LABEL_TOKENS.has(token) && feedPath.includes(token)) {
+          score += 5;
+        }
+      }
+    } catch {}
+
+    // Generic label penalty: if the entry label is entirely composed of
+    // generic words after normalization, require stronger evidence.
+    const nonGenericEntryTokens = entryTokens.filter((t) => !GENERIC_LABEL_TOKENS.has(t));
+    if (nonGenericEntryTokens.length === 0 && entryTokens.length > 0) {
+      // Label is purely generic (e.g., "News RSS", "All Feeds") — penalize
+      score = Math.floor(score * 0.5);
+    }
+
+    // Minimum score threshold: generic labels need more evidence
+    const minScore = nonGenericEntryTokens.length === 0 ? 20 : 8;
+
+    if (score > bestScore && score >= minScore) {
+      bestScore = score;
+      bestMatch = { feedUrl: entry.feedUrl, label: entry.label };
+    }
+  }
+
+  return bestMatch;
 };
 
 // ─── Scope Classification ────────────────────────────────────────────────────
@@ -918,6 +1285,10 @@ const classifyScopeMatch = (
     return "probable";
   }
 
+  if (hasIndexScopedQueryParam(candidateUrl, targetUrl)) {
+    return "probable";
+  }
+
   // Candidate has taxonomy query parameters matching extracted evidence
   if (taxonomyEvidence && hasTaxonomyQueryParams(candidateUrl, taxonomyEvidence)) {
     return "probable";
@@ -935,6 +1306,22 @@ const classifyScopeMatch = (
   }
 
   return "unrelated";
+};
+
+const hasIndexScopedQueryParam = (candidateUrl: string, targetUrl: string) => {
+  try {
+    const targetPath = normalizePath(targetUrl);
+    if (targetPath === "/") return false;
+
+    const candidate = new URL(candidateUrl);
+    const rawIndex = candidate.searchParams.get("index");
+    if (!rawIndex) return false;
+
+    const normalizedIndex = rawIndex.replace(/\/+$/, "").toLowerCase() || "/";
+    return normalizedIndex === targetPath || normalizedIndex.startsWith(`${targetPath}/`);
+  } catch {
+    return false;
+  }
 };
 
 /**
@@ -1063,6 +1450,7 @@ const computeCandidateScore = (
   if (candidate.detection === "robots-sitemap") score += 18;
   if (candidate.detection === "cms-fingerprint") score += 22;
   if (candidate.detection === "taxonomy-extraction") score += 28;
+  if (candidate.detection === "directory-traversal") score += 15;
 
   // Content type score
   if (candidate.contentType === "application/rss+xml") score += 10;
@@ -1127,6 +1515,7 @@ export const verifyFeedCandidate = async (
   },
 ) => {
   const response = await safeFetch(candidateUrl, {
+    allowCrossDomainRedirects: true,
     headers: {
       "User-Agent": input.userAgent,
       Accept: "application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, text/html,application/xhtml+xml",
@@ -1169,6 +1558,7 @@ export async function discoverFeedForUrl(input: {
   const rejectedCandidates: RejectedCandidate[] = [];
   const taxonomyEvidence = emptyTaxonomyEvidence();
   let mainPageFingerprints: string[] = [];
+  let mainPageHtml = "";
 
   const resolveBestVerifiedCandidate = async () => {
     acceptedCandidates.sort((a, b) => b.score - a.score);
@@ -1194,6 +1584,10 @@ export async function discoverFeedForUrl(input: {
       }
     }
 
+    // All candidates failed verification — clear the list so downstream
+    // fallback steps (taxonomy heuristics, directory traversal) can see
+    // that no usable candidates remain.
+    acceptedCandidates.length = 0;
     return null;
   };
 
@@ -1250,6 +1644,7 @@ export async function discoverFeedForUrl(input: {
   for (const candidateUrl of candidateUrls) {
     try {
       const response = await safeFetch(candidateUrl, {
+        allowCrossDomainRedirects: true,
         headers: {
           "User-Agent": input.userAgent,
           Accept: "application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, text/html,application/xhtml+xml",
@@ -1273,6 +1668,7 @@ export async function discoverFeedForUrl(input: {
       // (text/html, null, etc.) is safe to treat as a page worth extracting from.
       const isMainPage = resolvedUrl === input.pageUrl || candidateUrl === input.pageUrl;
       if (isMainPage && !isDefinitiveFeedContentType(detectedContentType)) {
+        mainPageHtml = body;
         const pageEvidence = extractTaxonomyEvidence(body, resolvedUrl);
         accumulateTaxonomyEvidence(taxonomyEvidence, pageEvidence);
       }
@@ -1426,6 +1822,61 @@ export async function discoverFeedForUrl(input: {
       const winner = await resolveBestVerifiedCandidate();
       if (winner) {
         return winner;
+      }
+    }
+  }
+
+  // ── Step 5: Feed directory traversal (last resort) ──────────────────────
+  // When all prior discovery paths produced no verified feed, check whether
+  // the target page links to a feed-directory page. If so, fetch that single
+  // directory page, classify it, match the target against directory entries,
+  // and verify the matched feed candidate through the normal path.
+  if (acceptedCandidates.length === 0 && mainPageHtml) {
+    const directoryUrl = findDirectoryUrl(mainPageHtml, input.pageUrl);
+    if (directoryUrl && !seenAcceptedFeeds.has(directoryUrl)) {
+      try {
+        const dirResponse = await safeFetch(directoryUrl, {
+          headers: {
+            "User-Agent": input.userAgent,
+            Accept: "text/html, application/xml, text/xml, */*",
+            ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
+          },
+        });
+
+        if (dirResponse.ok) {
+          const dirHtml = await dirResponse.text();
+
+          if (isFeedDirectoryPage(dirHtml, directoryUrl)) {
+            const entries = parseDirectoryEntries(dirHtml, directoryUrl);
+            const matched = matchTargetToDirectoryEntries(entries, input.pageUrl);
+
+            if (matched && !seenAcceptedFeeds.has(matched.feedUrl)) {
+              // Record directory traversal evidence
+              taxonomyEvidence.directoryTraversal = {
+                traversedUrl: directoryUrl,
+                matchedLabel: matched.label,
+                candidateCount: entries.length,
+              };
+
+              const candidateBase = {
+                feedUrl: matched.feedUrl,
+                discoveredVia: directoryUrl,
+                detection: "directory-traversal" as const,
+                contentType: null,
+              };
+              const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+              acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
+              seenAcceptedFeeds.add(matched.feedUrl);
+
+              const winner = await resolveBestVerifiedCandidate();
+              if (winner) {
+                return winner;
+              }
+            }
+          }
+        }
+      } catch (error: any) {
+        lastError = `Directory traversal failed: ${error?.message || String(error)} via ${directoryUrl}`;
       }
     }
   }

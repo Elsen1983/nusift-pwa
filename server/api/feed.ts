@@ -88,6 +88,7 @@ export default defineEventHandler(async (event) => {
     title: article.title,
     source: article.source.mediaName || toSourceLabel(article.source.frontPageUrl),
     sourceUrl: article.source.frontPageUrl,
+    sourceTargetUrl: article.category?.pathUrl || article.source.frontPageUrl,
     canonicalUrl: article.canonicalUrl || article.source.frontPageUrl,
     categoryPathUrl: article.category?.pathUrl || null,
     date: article.date.toISOString(),

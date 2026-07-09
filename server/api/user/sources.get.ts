@@ -2,6 +2,157 @@ import { createError } from "h3";
 import { prisma } from "../../utils/prisma";
 import { requireUserId } from "../../utils/require-user";
 
+const normalizeComparableUrl = (value?: string | null) =>
+  (value || "").trim().replace(/\/+$/, "").toLowerCase();
+
+const isSameRootDomain = (left?: string | null, right?: string | null) => {
+  if (!left || !right) return false;
+
+  try {
+    const leftHost = new URL(left).hostname.replace(/^www\./, "").toLowerCase();
+    const rightHost = new URL(right).hostname.replace(/^www\./, "").toLowerCase();
+    return (
+      leftHost === rightHost ||
+      leftHost.endsWith(`.${rightHost}`) ||
+      rightHost.endsWith(`.${leftHost}`)
+    );
+  } catch {
+    return false;
+  }
+};
+
+const toAbsoluteUrl = (baseUrl: string, candidate: string) => {
+  try {
+    return new URL(candidate, baseUrl).toString();
+  } catch {
+    return candidate;
+  }
+};
+
+const isLikelyRecoveryCandidate = (candidateUrl: string) => {
+  const normalized = candidateUrl.toLowerCase();
+  return !(
+    normalized.includes("/sitemap") ||
+    normalized.includes("/data-feed/sitemap") ||
+    normalized.includes("/news-sitemap") ||
+    normalized.includes("/sitemap_index") ||
+    normalized.includes("/sitemap.xml.gz")
+  );
+};
+
+const buildDomainFallbackFeedCandidates = (targetUrl: string) => {
+  try {
+    const parsed = new URL(targetUrl);
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    const normalizedPath = parsed.pathname.replace(/\/+$/, "");
+
+    if (host === "rte.ie" && (!normalizedPath || normalizedPath === "/")) {
+      return [
+        "https://www.rte.ie/feeds/rss/?index=/news/",
+        "https://www.rte.ie/feeds/rss/?index=/sport/",
+        "https://www.rte.ie/feeds/rss/?index=/news/business/",
+        "https://www.rte.ie/feeds/rss/?index=/news/politics/",
+        "https://www.rte.ie/feeds/rss/?index=/news/world/",
+      ];
+    }
+  } catch {}
+
+  return [] as string[];
+};
+
+const readDiscoveryEvidence = (value: unknown) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as {
+    topCandidates?: Array<{
+      feedUrl?: string | null;
+      score?: number | null;
+      detection?: string | null;
+      scopeMatch?: "exact" | "probable" | "generic" | "unrelated" | null;
+    }>;
+    taxonomyEvidence?: {
+      canonicalSectionHandles?: string[];
+      matchedFeedUrls?: string[];
+    } | null;
+  };
+};
+
+const buildFeedHints = (input: {
+  targetUrl: string;
+  rssFeedUrl?: string | null;
+  currentFeedProductive?: boolean | null;
+  consecutiveNonProductiveRuns?: number | null;
+  lastProductiveFeedUrl?: string | null;
+  discoveryEvidence?: unknown;
+}) => {
+  const evidence = readDiscoveryEvidence(input.discoveryEvidence);
+  const matchedFeeds = (evidence?.taxonomyEvidence?.matchedFeedUrls || [])
+    .map((candidate) => toAbsoluteUrl(input.targetUrl, candidate))
+    .filter((candidate) => isSameRootDomain(candidate, input.targetUrl))
+    .filter(isLikelyRecoveryCandidate)
+    .map((feedUrl) => ({
+      feedUrl,
+      score: 60,
+      scopeMatch: "probable" as const,
+    }));
+
+  const topFeeds = (evidence?.topCandidates || [])
+    .map((candidate) => ({
+      feedUrl: candidate.feedUrl || "",
+      score: candidate.score ?? 0,
+      scopeMatch: candidate.scopeMatch ?? "generic",
+    }))
+    .filter((candidate) => candidate.feedUrl && isSameRootDomain(candidate.feedUrl, input.targetUrl))
+    .filter((candidate) => isLikelyRecoveryCandidate(candidate.feedUrl));
+
+  const allCandidates = [...matchedFeeds, ...topFeeds]
+    .filter((candidate) => normalizeComparableUrl(candidate.feedUrl) !== normalizeComparableUrl(input.rssFeedUrl));
+
+  const hasScopedCandidates = allCandidates.some(
+    (candidate) => candidate.scopeMatch === "exact" || candidate.scopeMatch === "probable",
+  );
+
+  const filteredCandidates = hasScopedCandidates
+    ? allCandidates.filter(
+        (candidate) => candidate.scopeMatch === "exact" || candidate.scopeMatch === "probable",
+      )
+    : allCandidates.filter((candidate) => candidate.scopeMatch !== "unrelated");
+
+  const dedupedCandidates = new Map<string, { feedUrl: string; score: number; scopeMatch: string }>();
+  for (const candidate of filteredCandidates) {
+    const key = normalizeComparableUrl(candidate.feedUrl);
+    const existing = dedupedCandidates.get(key);
+    if (!existing || candidate.score > existing.score) {
+      dedupedCandidates.set(key, candidate);
+    }
+  }
+
+  const feedCandidates = [...dedupedCandidates.values()]
+    .sort((left, right) => right.score - left.score)
+    .map((candidate) => candidate.feedUrl)
+    .slice(0, 5);
+
+  const fallbackCandidates =
+    feedCandidates.length > 0
+      ? []
+      : buildDomainFallbackFeedCandidates(input.targetUrl).filter(
+          (candidate) => normalizeComparableUrl(candidate) !== normalizeComparableUrl(input.rssFeedUrl),
+        );
+
+  const detectedSections = [...new Set((evidence?.taxonomyEvidence?.canonicalSectionHandles || []).filter(Boolean))].slice(0, 6);
+  const normalizedCurrentFeedUrl = normalizeComparableUrl(input.rssFeedUrl);
+  const normalizedLastProductiveFeedUrl = normalizeComparableUrl(input.lastProductiveFeedUrl);
+  const feedVerifiedByArticles =
+    input.currentFeedProductive === true ||
+    (!!normalizedCurrentFeedUrl && normalizedLastProductiveFeedUrl === normalizedCurrentFeedUrl);
+
+  return {
+    feedCandidates: feedCandidates.length > 0 ? feedCandidates : fallbackCandidates,
+    detectedSections,
+    feedVerifiedByArticles,
+    showFeedRecoveryTools: !feedVerifiedByArticles,
+  };
+};
+
 export default defineEventHandler(async (event) => {
   const userId = requireUserId(event);
 
@@ -14,9 +165,16 @@ export default defineEventHandler(async (event) => {
           include: {
             newsSource: {
               select: {
+                id: true,
                 frontPageUrl: true,
                 mediaName: true,
                 rssStatus: true,
+                rssFeedUrl: true,
+                discoveryEvidence: true,
+                currentFeedProductive: true,
+                consecutiveNonProductiveRuns: true,
+                lastProductiveFeedUrl: true,
+                lastProductiveAt: true,
               },
             },
           },
@@ -26,11 +184,20 @@ export default defineEventHandler(async (event) => {
           include: {
             category: {
               select: {
+                id: true,
                 pathUrl: true,
                 name: true,
                 rssStatus: true,
+                rssFeedUrl: true,
+                discoveryEvidence: true,
+                currentFeedProductive: true,
+                consecutiveNonProductiveRuns: true,
+                lastProductiveFeedUrl: true,
+                lastProductiveAt: true,
                 newsSource: {
                   select: {
+                    id: true,
+                    frontPageUrl: true,
                     mediaName: true,
                     rssStatus: true,
                   },
@@ -50,15 +217,36 @@ export default defineEventHandler(async (event) => {
     const quotaLimit = user.tier === "PRO" ? 15 : 5;
 
     const formattedSources = [
-      ...user.sourceSubscriptions.map((sub) => ({
-        id: sub.id,
-        type: "ROOT",
-        url: sub.newsSource.frontPageUrl,
-        name: sub.customAlias || sub.newsSource.mediaName,
-        isActive: sub.isActive,
-        validationStatus: sub.newsSource.rssStatus,
-        createdAt: sub.createdAt,
-      })),
+      ...user.sourceSubscriptions.map((sub) => {
+        const hints = buildFeedHints({
+          targetUrl: sub.newsSource.frontPageUrl,
+          rssFeedUrl: sub.newsSource.rssFeedUrl,
+          currentFeedProductive: sub.newsSource.currentFeedProductive,
+          consecutiveNonProductiveRuns: sub.newsSource.consecutiveNonProductiveRuns,
+          lastProductiveFeedUrl: sub.newsSource.lastProductiveFeedUrl,
+          discoveryEvidence: sub.newsSource.discoveryEvidence,
+        });
+
+        return {
+          id: sub.id,
+          targetId: sub.newsSource.id,
+          type: "ROOT",
+          url: sub.newsSource.frontPageUrl,
+          name: sub.customAlias || sub.newsSource.mediaName,
+          isActive: sub.isActive,
+          validationStatus: sub.newsSource.rssStatus,
+          createdAt: sub.createdAt,
+          rssFeedUrl: sub.newsSource.rssFeedUrl,
+          currentFeedProductive: sub.newsSource.currentFeedProductive,
+          consecutiveNonProductiveRuns: sub.newsSource.consecutiveNonProductiveRuns,
+          lastProductiveFeedUrl: sub.newsSource.lastProductiveFeedUrl,
+          lastProductiveAt: sub.newsSource.lastProductiveAt,
+          detectedSections: hints.detectedSections,
+          feedCandidates: hints.feedCandidates,
+          feedVerifiedByArticles: hints.feedVerifiedByArticles,
+          showFeedRecoveryTools: hints.showFeedRecoveryTools,
+        };
+      }),
       ...user.categorySubscriptions.map((sub) => {
         let finalValidationStatus = sub.category.rssStatus;
         const parentStatus = sub.category.newsSource.rssStatus;
@@ -71,14 +259,34 @@ export default defineEventHandler(async (event) => {
           }
         }
 
+        const hints = buildFeedHints({
+          targetUrl: sub.category.pathUrl,
+          rssFeedUrl: sub.category.rssFeedUrl,
+          currentFeedProductive: sub.category.currentFeedProductive,
+          consecutiveNonProductiveRuns: sub.category.consecutiveNonProductiveRuns,
+          lastProductiveFeedUrl: sub.category.lastProductiveFeedUrl,
+          discoveryEvidence: sub.category.discoveryEvidence,
+        });
+
         return {
           id: sub.id,
+          targetId: sub.category.id,
+          parentSourceId: sub.category.newsSource.id,
           type: "CATEGORY",
           url: sub.category.pathUrl,
           name: sub.customAlias || `${sub.category.newsSource.mediaName} - ${sub.category.name}`,
           isActive: sub.isActive,
           validationStatus: finalValidationStatus,
           createdAt: sub.createdAt,
+          rssFeedUrl: sub.category.rssFeedUrl,
+          currentFeedProductive: sub.category.currentFeedProductive,
+          consecutiveNonProductiveRuns: sub.category.consecutiveNonProductiveRuns,
+          lastProductiveFeedUrl: sub.category.lastProductiveFeedUrl,
+          lastProductiveAt: sub.category.lastProductiveAt,
+          detectedSections: hints.detectedSections,
+          feedCandidates: hints.feedCandidates,
+          feedVerifiedByArticles: hints.feedVerifiedByArticles,
+          showFeedRecoveryTools: hints.showFeedRecoveryTools,
         };
       }),
     ];

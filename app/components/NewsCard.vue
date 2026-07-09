@@ -91,10 +91,33 @@
       class="flex items-end justify-between gap-4 border-t border-outline-variant/10"
     >
       <div class="w-full">
+        <a
+          v-if="article.sourceTargetUrl"
+          :href="article.sourceTargetUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="mb-1 inline-flex items-center gap-1 text-[12px] font-label uppercase tracking-wider text-outline underline decoration-outline/40 underline-offset-2 transition-colors hover:text-primary-container hover:decoration-primary-container/60"
+        >
+          <span>{{ article.source }}</span>
+          <span class="material-symbols-outlined text-[12px]">open_in_new</span>
+        </a>
         <span
+          v-else
           class="text-[12px] font-label text-outline uppercase tracking-wider mb-1 block"
           >{{ article.source }}</span
         >
+        <div
+          v-if="visibleTags.length > 0"
+          class="flex flex-wrap justify-start sm:justify-end gap-1.5 mb-1"
+        >
+          <button
+            v-for="tag in visibleTags"
+            :key="tag"
+            class="px-1 py-0 pt-0.5 bg-surface-container-highest rounded text-[10px] text-semantic-ai-variant hover:bg-surface-bright transition-colors uppercase"
+          >
+            {{ tag }}
+          </button>
+        </div>
         <div class="flex items-center justify-between w-full mb-0.5">
           <!-- AI Reasoning Header -->
           <h4
@@ -105,16 +128,6 @@
             >
             {{ $t("newsCard.ai_reasoning") }}
           </h4>
-          <div class="flex flex-wrap justify-end gap-1.5">
-            <!-- AI Tag Chips -->
-            <button
-              v-for="tag in article.tags"
-              :key="tag"
-              class="px-1 py-0 pt-0.5 bg-surface-container-highest rounded text-[10px] text-semantic-ai-variant hover:bg-surface-bright transition-colors uppercase"
-            >
-              {{ tag }}
-            </button>
-          </div>
         </div>
         <p
           class="text-[12px] font-body text-on-surface-variant leading-tight line-clamp-2"
@@ -232,5 +245,9 @@ const { locale } = useI18n();
 
 const formattedDate = computed(() =>
   formatDateByLocale(props.article?.date || "", locale.value),
+);
+
+const visibleTags = computed(() =>
+  Array.isArray(props.article?.tags) ? props.article.tags.slice(0, 4) : [],
 );
 </script>

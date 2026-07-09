@@ -153,8 +153,12 @@ export function buildFeedUrlCandidates(feedUrl: string | null, frontPageUrl?: st
   try {
     if (feedUrl) {
       const parsed = new URL(feedUrl);
-      if (parsed.pathname.replace(/\/+$/, "").toLowerCase() === "/rss.xml") {
+      const normalizedPath = parsed.pathname.replace(/\/+$/, "").toLowerCase();
+      if (normalizedPath === "/rss.xml") {
         add(`${parsed.protocol}//${parsed.hostname}/?service=rss`);
+      } else if (normalizedPath.endsWith("/rss.xml")) {
+        const basePath = parsed.pathname.replace(/rss\.xml$/i, "");
+        add(`${parsed.protocol}//${parsed.hostname}${basePath}?service=rss`);
       }
     }
   } catch {}
@@ -395,6 +399,7 @@ export async function discoverScopedFeedForSource(
     try {
       const response = await safeFetch(candidateUrl, {
         signal: AbortSignal.timeout(8000),
+        allowCrossDomainRedirects: true,
         headers: {
           "User-Agent": "NuSift/1.0 RSS-Scope-Audit",
           Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",

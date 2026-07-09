@@ -117,6 +117,7 @@ describe("/api/feed", () => {
         title: "Scoped article",
         source: "Example",
         sourceUrl: "https://example.com",
+        sourceTargetUrl: "https://example.com/section",
         canonicalUrl: "https://example.com/article-1",
         categoryPathUrl: "https://example.com/section",
         date: "2026-07-02T12:00:00.000Z",

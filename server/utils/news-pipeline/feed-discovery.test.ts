@@ -781,6 +781,64 @@ describe("buildTaxonomyHeuristicCandidates", () => {
 
 // ── Contract consistency ────────────────────────────────────────────────────
 
+describe("buildScopedFeedCandidates", () => {
+  it("includes query-parameter scoped feed candidates based on the current page path", async () => {
+    const { buildScopedFeedCandidates } = await import("./feed-discovery");
+
+    const candidates = buildScopedFeedCandidates("https://www.rte.ie/news/world");
+
+    expect(candidates).toContain("https://www.rte.ie/feeds/rss/?index=/news/world/");
+    expect(candidates).toContain("https://www.rte.ie/feeds/rss?index=/news/world/");
+  });
+});
+
+describe("query-parameter scoped feed discovery", () => {
+  it("discovers a valid feed served via feeds/rss?index=<path>", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+      "https://www.rte.ie/news/",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(`<html><body><main>RTE News</main></body></html>`, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+      "https://www.rte.ie/news/",
+    );
+
+    const makeFeedResponse = () =>
+      setResponseUrl(
+        makeResponse(
+          `<?xml version="1.0"?><rss><channel><item><title>Story</title><link>https://www.rte.ie/news/ireland/example-story/</link></item></channel></rss>`,
+          {
+            headers: { "content-type": "application/rss+xml" },
+          },
+        ),
+        "https://www.rte.ie/feeds/rss/?index=/news/",
+      );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://www.rte.ie/news/") return htmlResponse;
+      if (url.startsWith("https://www.rte.ie/feeds/rss")) return makeFeedResponse();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://www.rte.ie/news/",
+      userAgent: "NuSift-Test",
+      preferScopedDirectFeed: true,
+    });
+
+    expect(result.feedUrl).toBe("https://www.rte.ie/feeds/rss/?index=/news/");
+    expect(result.scopeMatch).toBe("probable");
+    expect(result.topCandidates.some((candidate: any) => candidate.feedUrl === "https://www.rte.ie/feeds/rss/?index=/news/")).toBe(true);
+  });
+});
+
 describe("discovery contract consistency", () => {
   it("taxonomyEvidence is a structured object, not a string array", async () => {
     const headResponse = setResponseUrl(
@@ -980,5 +1038,534 @@ describe("discovery contract consistency", () => {
       expect(candidate).toHaveProperty("scopeMatch");
       expect(["exact", "probable", "generic", "unrelated"]).toContain(candidate.scopeMatch);
     }
+  });
+});
+
+// ── Feed Directory Traversal ───────────────────────────────────────────────
+
+describe("feed directory traversal", () => {
+  it("resolves a scoped feed via a feed directory page linked from the target page", async () => {
+    // Target page at /category/arizona-news has no direct feed, but links to
+    // a feed directory page at /rss-feeds that lists category feeds.
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/category/arizona-news",
+    );
+
+    const targetHtml = `
+      <html><head></head><body>
+        <h1>Arizona News</h1>
+        <a href="/rss-feeds">All RSS Feeds</a>
+      </body></html>
+    `;
+    const targetResponse = setResponseUrl(
+      makeResponse(targetHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/category/arizona-news",
+    );
+
+    const directoryHtml = `
+      <html><head><title>RSS Feeds Directory</title></head><body>
+        <h1>Available RSS Feeds</h1>
+        <ul>
+          <li><a href="/feed/1001.xml">Arizona News - RSS Feed</a></li>
+          <li><a href="/feed/1002.xml">California News - RSS Feed</a></li>
+          <li><a href="/feed/1003.xml">Texas News - RSS Feed</a></li>
+          <li><a href="/feed/1004.xml">Florida News - RSS Feed</a></li>
+          <li><a href="/feed/1005.xml">New York News - RSS Feed</a></li>
+          <li><a href="/feed/1006.xml">Sports - RSS Feed</a></li>
+          <li><a href="/feed/1007.xml">Weather - RSS Feed</a></li>
+        </ul>
+      </body></html>
+    `;
+    const directoryResponse = setResponseUrl(
+      makeResponse(directoryHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/rss-feeds",
+    );
+
+    const makeFeedResponse = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>Arizona News</title><item><title>Story 1</title><link>https://example.com/arizona/story-1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/feed/1001.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/category/arizona-news") return targetResponse;
+      if (url === "https://example.com/rss-feeds") return directoryResponse;
+      if (url === "https://example.com/feed/1001.xml") return makeFeedResponse();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/category/arizona-news",
+      userAgent: "NuSift-Test",
+      preferScopedDirectFeed: true,
+    });
+
+    expect(result.feedUrl).toBe("https://example.com/feed/1001.xml");
+    expect(result.detection).toBe("directory-traversal");
+    expect(result.taxonomyEvidence.directoryTraversal).toBeDefined();
+    expect(result.taxonomyEvidence.directoryTraversal!.traversedUrl).toBe("https://example.com/rss-feeds");
+    expect(result.taxonomyEvidence.directoryTraversal!.matchedLabel).toContain("Arizona");
+    expect(result.taxonomyEvidence.directoryTraversal!.candidateCount).toBeGreaterThanOrEqual(5);
+  });
+
+  it("does not run directory traversal when a direct feed is already found", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/news",
+    );
+
+    const htmlWithFeed = `
+      <html><head>
+        <link rel="alternate" type="application/rss+xml" href="/rss.xml" />
+      </head><body>
+        <a href="/rss-directory">All RSS Feeds</a>
+      </body></html>
+    `;
+    const htmlResponse = setResponseUrl(
+      makeResponse(htmlWithFeed, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/news",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><item><title>S</title><link>https://example.com/story</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/rss.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/news") return htmlResponse;
+      if (url === "https://example.com/rss.xml") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/news",
+      userAgent: "NuSift-Test",
+    });
+
+    // Should find the direct feed, not traverse to directory
+    expect(result.feedUrl).toBe("https://example.com/rss.xml");
+    expect(result.detection).not.toBe("directory-traversal");
+    expect(result.taxonomyEvidence.directoryTraversal).toBeUndefined();
+
+    // Should NOT have fetched the directory page
+    const fetchCalls = safeFetchMock.mock.calls.map((c: any[]) => c[0] as string);
+    expect(fetchCalls).not.toContain("https://example.com/rss-directory");
+  });
+
+  it("accepts opaque feed URLs when the label-to-target match is strong", async () => {
+    // The directory has a feed at an opaque numeric URL, but the label matches
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://news.example.com/topics/breaking-news",
+    );
+
+    const targetHtml = `
+      <html><body>
+        <a href="/feeds-index">News Feeds</a>
+      </body></html>
+    `;
+    const targetResponse = setResponseUrl(
+      makeResponse(targetHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://news.example.com/topics/breaking-news",
+    );
+
+    const directoryHtml = `
+      <html><body>
+        <h1>RSS Directory</h1>
+        <ul>
+          <li><a href="https://cdn.example.com/s/feed-abc123.xml">Breaking News - RSS</a></li>
+          <li><a href="https://cdn.example.com/s/feed-def456.xml">World News - RSS</a></li>
+          <li><a href="https://cdn.example.com/s/feed-ghi789.xml">Technology - RSS</a></li>
+          <li><a href="https://cdn.example.com/s/feed-jkl012.xml">Entertainment - RSS</a></li>
+          <li><a href="https://cdn.example.com/s/feed-mno345.xml">Science - RSS</a></li>
+        </ul>
+      </body></html>
+    `;
+    const directoryResponse = setResponseUrl(
+      makeResponse(directoryHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://news.example.com/feeds-index",
+    );
+
+    const makeOpaqueFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>Breaking News</title><item><title>Story</title><link>https://news.example.com/topics/breaking-news/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://cdn.example.com/s/feed-abc123.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://news.example.com/topics/breaking-news") return targetResponse;
+      if (url === "https://news.example.com/feeds-index") return directoryResponse;
+      if (url === "https://cdn.example.com/s/feed-abc123.xml") return makeOpaqueFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://news.example.com/topics/breaking-news",
+      userAgent: "NuSift-Test",
+      preferScopedDirectFeed: true,
+    });
+
+    // Should match "Breaking News" label against target "breaking-news"
+    expect(result.feedUrl).toBe("https://cdn.example.com/s/feed-abc123.xml");
+    expect(result.detection).toBe("directory-traversal");
+    expect(result.taxonomyEvidence.directoryTraversal!.matchedLabel).toContain("Breaking");
+  });
+
+  it("rejects non-directory second-level pages cleanly", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/sport",
+    );
+
+    // Target page links to what looks like a directory URL, but it's just a normal page
+    const targetHtml = `
+      <html><body>
+        <a href="/rss-feeds">RSS Feeds</a>
+      </body></html>
+    `;
+    const targetResponse = setResponseUrl(
+      makeResponse(targetHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/sport",
+    );
+
+    // This page is NOT a feed directory - just a normal article page
+    const normalPageHtml = `
+      <html><body>
+        <h1>About RSS Feeds</h1>
+        <p>RSS feeds are a great way to stay updated...</p>
+        <a href="/about">About Us</a>
+      </body></html>
+    `;
+    const normalPageResponse = setResponseUrl(
+      makeResponse(normalPageHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/rss-feeds",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/sport") return targetResponse;
+      if (url === "https://example.com/rss-feeds") return normalPageResponse;
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/sport",
+      userAgent: "NuSift-Test",
+    });
+
+    // Should not find any feed since the directory page is not actually a directory
+    expect(result.feedUrl).toBeNull();
+    expect(result.taxonomyEvidence.directoryTraversal).toBeUndefined();
+  });
+
+  it("remains bounded - only fetches one directory page", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/local",
+    );
+
+    // Target page has multiple directory-like links
+    const targetHtml = `
+      <html><body>
+        <a href="/rss-directory">RSS Directory</a>
+        <a href="/feed-index">Feed Index</a>
+        <a href="/all-feeds">All Feeds</a>
+      </body></html>
+    `;
+    const targetResponse = setResponseUrl(
+      makeResponse(targetHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/local",
+    );
+
+    const directoryHtml = `
+      <html><body>
+        <h1>RSS Directory</h1>
+        <ul>
+          <li><a href="/feed/local.xml">Local - RSS</a></li>
+          <li><a href="/feed/sport.xml">Sport - RSS</a></li>
+          <li><a href="/feed/world.xml">World - RSS</a></li>
+          <li><a href="/feed/tech.xml">Tech - RSS</a></li>
+          <li><a href="/feed/biz.xml">Business - RSS</a></li>
+        </ul>
+      </body></html>
+    `;
+    const directoryResponse = setResponseUrl(
+      makeResponse(directoryHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/rss-directory",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><item><title>S</title><link>https://example.com/local/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/feed/local.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/local") return targetResponse;
+      if (url === "https://example.com/rss-directory") return directoryResponse;
+      if (url === "https://example.com/feed/local.xml") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    await discoverFeedForUrl({
+      pageUrl: "https://example.com/local",
+      userAgent: "NuSift-Test",
+    });
+
+    // Count how many directory-like URLs were fetched (excluding HEAD and main page)
+    const fetchCalls = safeFetchMock.mock.calls
+      .map((c: any[]) => ({ url: c[0] as string, opts: c[1] }))
+      .filter((c) => c.opts?.method !== "HEAD");
+
+    // Should only have fetched the main page + one directory page + the matched feed
+    // Not /feed-index or /all-feeds
+    const directoryFetches = fetchCalls.filter(
+      (c) => c.url === "https://example.com/feed-index" || c.url === "https://example.com/all-feeds",
+    );
+    expect(directoryFetches).toHaveLength(0);
+  });
+
+  it("does not run directory traversal when mainPageHtml is empty", async () => {
+    // If the main page returns a non-HTML content type (like a direct feed),
+    // mainPageHtml will be empty and traversal should not run
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "application/xml" } }),
+      "https://example.com/feed",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/feed",
+      userAgent: "NuSift-Test",
+    });
+
+    // No feed found, but also no directory traversal attempted
+    expect(result.taxonomyEvidence.directoryTraversal).toBeUndefined();
+  });
+});
+
+describe("feed directory traversal - edge cases", () => {
+  it("rejects a page that merely mentions RSS in text but has no feed structure", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/sport",
+    );
+
+    const targetHtml = `
+      <html><body>
+        <a href="/rss-feeds">RSS Feeds</a>
+      </body></html>
+    `;
+    const targetResponse = setResponseUrl(
+      makeResponse(targetHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/sport",
+    );
+
+    // Page mentions RSS several times in text but has no actual feed links
+    const mentionPageHtml = `
+      <html><body>
+        <h1>How to Subscribe to RSS</h1>
+        <p>RSS feeds are a great way to follow news. Many sites offer RSS feeds.</p>
+        <p>You can use an RSS reader to subscribe to RSS feeds from your favorite sites.</p>
+        <a href="/about">About Us</a>
+        <a href="/contact">Contact</a>
+      </body></html>
+    `;
+    const mentionResponse = setResponseUrl(
+      makeResponse(mentionPageHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/rss-feeds",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/sport") return targetResponse;
+      if (url === "https://example.com/rss-feeds") return mentionResponse;
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/sport",
+      userAgent: "NuSift-Test",
+    });
+
+    // Should NOT classify this as a directory page
+    expect(result.feedUrl).toBeNull();
+    expect(result.taxonomyEvidence.directoryTraversal).toBeUndefined();
+  });
+
+  it("accepts a directory with moderate feed links inside list structure", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/tech",
+    );
+
+    const targetHtml = `
+      <html><body>
+        <a href="/feed-list">Feed List</a>
+      </body></html>
+    `;
+    const targetResponse = setResponseUrl(
+      makeResponse(targetHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/tech",
+    );
+
+    // Only 3 feed links but inside a list — should pass with composite scoring
+    const directoryHtml = `
+      <html><body>
+        <h1>Our Feeds</h1>
+        <ul>
+          <li><a href="/feed/1.xml">Technology - RSS Feed</a></li>
+          <li><a href="/feed/2.xml">Science - RSS Feed</a></li>
+          <li><a href="/feed/3.xml">Gadgets - RSS Feed</a></li>
+        </ul>
+      </body></html>
+    `;
+    const directoryResponse = setResponseUrl(
+      makeResponse(directoryHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/feed-list",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>Tech</title><item><title>S</title><link>https://example.com/tech/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/feed/1.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/tech") return targetResponse;
+      if (url === "https://example.com/feed-list") return directoryResponse;
+      if (url === "https://example.com/feed/1.xml") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/tech",
+      userAgent: "NuSift-Test",
+      preferScopedDirectFeed: true,
+    });
+
+    expect(result.feedUrl).toBe("https://example.com/feed/1.xml");
+    expect(result.detection).toBe("directory-traversal");
+  });
+
+  it("generic labels like 'news' should not over-match unrelated targets", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/sport/cricket",
+    );
+
+    const targetHtml = `
+      <html><body>
+        <a href="/rss-directory">RSS Directory</a>
+      </body></html>
+    `;
+    const targetResponse = setResponseUrl(
+      makeResponse(targetHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/sport/cricket",
+    );
+
+    // Directory has "News" label that overlaps with generic tokens but doesn't match "cricket"
+    const directoryHtml = `
+      <html><body>
+        <h1>RSS Directory</h1>
+        <ul>
+          <li><a href="/feed/a.xml">News - RSS</a></li>
+          <li><a href="/feed/b.xml">Sports News - RSS</a></li>
+          <li><a href="/feed/c.xml">Local News - RSS</a></li>
+          <li><a href="/feed/d.xml">Breaking News - RSS</a></li>
+          <li><a href="/feed/e.xml">World News - RSS</a></li>
+        </ul>
+      </body></html>
+    `;
+    const directoryResponse = setResponseUrl(
+      makeResponse(directoryHtml, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/rss-directory",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/sport/cricket") return targetResponse;
+      if (url === "https://example.com/rss-directory") return directoryResponse;
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/sport/cricket",
+      userAgent: "NuSift-Test",
+      preferScopedDirectFeed: true,
+    });
+
+    // None of these generic labels should match "cricket"
+    expect(result.feedUrl).toBeNull();
+  });
+});
+
+describe("feed directory traversal helpers", () => {
+  it("findDirectoryUrl picks the best-scoring directory link", async () => {
+    const html = `
+      <html><body>
+        <a href="/about">About Us</a>
+        <a href="/rss-feeds">All RSS Feeds</a>
+        <a href="/random">Random page</a>
+      </body></html>
+    `;
+
+    // Test via discoverFeedForUrl to exercise the helper in context
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/test",
+    );
+    const targetResponse = setResponseUrl(
+      makeResponse(html, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/test",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/test") return targetResponse;
+      // Return non-directory page to test classification
+      return makeResponse("<html><body><p>Not a directory</p></body></html>", { headers: { "content-type": "text/html" } });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/test",
+      userAgent: "NuSift-Test",
+    });
+
+    // No feed found, but the directory URL should have been attempted
+    // (the mock returns a non-directory page, so it should abort)
+    expect(result.feedUrl).toBeNull();
+    expect(result.taxonomyEvidence.directoryTraversal).toBeUndefined();
   });
 });

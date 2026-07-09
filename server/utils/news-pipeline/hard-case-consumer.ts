@@ -8,6 +8,7 @@ import {
   type BrowserResolveResult,
 } from "./browser-feed-resolver";
 import { runNewsPipeline } from "./orchestrator";
+import { getFeedProductivityResetData } from "./feed-productivity";
 import type { FeedDiscoveryResult, PipelineResult, PipelineTarget } from "./types";
 
 // ─── Payload Types ──────────────────────────────────────────────────────────
@@ -540,6 +541,7 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
             rssStatus: discovery.feedUrl ? "ACTIVE" : "NO_RSS_FOUND",
             lastRssCheckAt: new Date(),
             discoveryEvidence,
+            ...getFeedProductivityResetData(payload.existingFeedUrl || null, discovery.feedUrl),
           },
         });
       } else {
@@ -550,6 +552,7 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
             rssStatus: discovery.feedUrl ? "ACTIVE" : "NO_RSS_FOUND",
             lastRssCheckAt: new Date(),
             discoveryEvidence,
+            ...getFeedProductivityResetData(payload.existingFeedUrl || null, discovery.feedUrl),
           },
         });
       }

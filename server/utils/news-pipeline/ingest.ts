@@ -5,6 +5,7 @@ import { SSRFError } from "../ssrf-guard";
 import { logAgentScan } from "./log";
 import { cleanFeedValue, hashText, normalizeFeedText, normalizeUrl, stripHtml } from "./text";
 import { normalizeFeedTextDetailed } from "./normalize-feed-text";
+import { getFeedProductivityResetData } from "./feed-productivity";
 import type {
   HardCaseDiscoveryCandidate,
   IngestCandidate,
@@ -24,6 +25,13 @@ type ParsedFeedItem = {
   pubDate: string;
   description: string;
   categories: string[];
+};
+
+type ParsedFeedEntry = {
+  item: ParsedFeedItem;
+  rawLink: string;
+  canonicalUrl: string;
+  rssGuid: string | null;
 };
 
 const parseRssItems = (xml: string) => {
@@ -136,6 +144,7 @@ const emptySkipSummary = (): IngestSkipSummary => ({
   emptyLink: 0,
   outOfScope: 0,
   staleOrMissingPublishedAt: 0,
+  alreadySeenFeedItem: 0,
   htmlFallbackNonArticle: 0,
   htmlFallbackStale: 0,
 });
@@ -150,6 +159,30 @@ const pushRejectedItem = (
 
 const getContentType = (response: Response) =>
   response.headers.get("content-type") || "unknown";
+
+type ExistingArticleMatch = {
+  id: number;
+  rssGuid: string | null;
+  canonicalUrl: string | null;
+  categoryId: string | null;
+  tags: string[];
+};
+
+const shouldPreserveDuplicateForEnrichment = (
+  existingArticle: ExistingArticleMatch,
+  categoryId: string | null | undefined,
+  rawTags: string[],
+) => {
+  if (categoryId && !existingArticle.categoryId) {
+    return true;
+  }
+
+  if ((!existingArticle.tags || existingArticle.tags.length === 0) && rawTags.length > 0) {
+    return true;
+  }
+
+  return false;
+};
 
 const getRootHost = (url: string) => {
   try {
@@ -398,7 +431,7 @@ const resolvePublishedAtForFeedItem = async (rawPubDate: string, canonicalUrl: s
   }
 };
 
-const MAX_ARTICLE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_ARTICLE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 export const isWithinFreshnessWindow = (publishedAt: Date | null, now = new Date()) => {
   if (!publishedAt) return false;
@@ -843,6 +876,7 @@ const resolveCategoryFeedUrl = async (
           category.pathUrl,
           discovery,
         ),
+        ...getFeedProductivityResetData(category.rssFeedUrl, discoveredFeedUrl),
       },
     });
 
@@ -941,6 +975,7 @@ const resolveSourceFeedUrl = async (
           source.frontPageUrl,
           discovery,
         ),
+        ...getFeedProductivityResetData(source.rssFeedUrl, discoveredFeedUrl),
       },
     });
 
@@ -1102,6 +1137,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
     for (const candidateFeedUrl of feedUrls) {
       try {
         const candidateResponse = await safeFetch(candidateFeedUrl, {
+          allowCrossDomainRedirects: true,
           headers: {
             "User-Agent": "NuSift/1.0 Ingest-Agent",
             Accept: "application/rss+xml, application/xml, text/xml, text/html",
@@ -1162,8 +1198,50 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
     const skipSummary = emptySkipSummary();
     const rejectedItems: IngestRejectedItem[] = [];
 
-    for (const item of parsedFeed.items) {
+    const feedEntries: ParsedFeedEntry[] = parsedFeed.items.map((item: ParsedFeedItem) => {
       const rawLink = item.link.trim();
+      return {
+        item,
+        rawLink,
+        canonicalUrl: rawLink ? canonicalFromLink(rawLink) : "",
+        rssGuid: item.guid.trim() || null,
+      };
+    });
+
+    const feedRssGuids = [...new Set(feedEntries.map((entry: ParsedFeedEntry) => entry.rssGuid).filter(Boolean))] as string[];
+    const feedCanonicalUrls = [...new Set(feedEntries.map((entry: ParsedFeedEntry) => entry.canonicalUrl).filter(Boolean))];
+    const existingFeedArticles =
+      feedRssGuids.length || feedCanonicalUrls.length
+        ? await prisma.article.findMany({
+            where: {
+              OR: [
+                feedRssGuids.length ? { rssGuid: { in: feedRssGuids } } : undefined,
+                feedCanonicalUrls.length ? { canonicalUrl: { in: feedCanonicalUrls } } : undefined,
+              ].filter(Boolean) as any,
+            },
+            select: {
+              id: true,
+              rssGuid: true,
+              canonicalUrl: true,
+              categoryId: true,
+              tags: true,
+            },
+          })
+        : [];
+
+    const existingFeedArticlesByGuid = new Map(
+      existingFeedArticles
+        .filter((article) => article.rssGuid)
+        .map((article) => [article.rssGuid!, article]),
+    );
+    const existingFeedArticlesByCanonicalUrl = new Map(
+      existingFeedArticles
+        .filter((article) => article.canonicalUrl)
+        .map((article) => [article.canonicalUrl!, article]),
+    );
+
+    for (const entry of feedEntries) {
+      const { item, rawLink } = entry;
       if (!rawLink) {
         skipSummary.emptyLink += 1;
         pushRejectedItem(rejectedItems, {
@@ -1176,7 +1254,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         continue;
       }
 
-      const canonicalUrl = canonicalFromLink(rawLink);
+      const canonicalUrl = entry.canonicalUrl;
       if (
         category?.pathUrl &&
         !isUsingDedicatedCategoryFeed &&
@@ -1193,6 +1271,26 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         });
         continue;
       }
+
+      const existingFeedArticle =
+        (entry.rssGuid ? existingFeedArticlesByGuid.get(entry.rssGuid) : null) ||
+        existingFeedArticlesByCanonicalUrl.get(canonicalUrl);
+
+      if (
+        existingFeedArticle &&
+        !shouldPreserveDuplicateForEnrichment(existingFeedArticle, categoryId, item.categories || [])
+      ) {
+        skipSummary.alreadySeenFeedItem += 1;
+        pushRejectedItem(rejectedItems, {
+          reason: "already_seen_feed_item",
+          rawLink,
+          canonicalUrl,
+          title: item.title || null,
+          publishedAt: null,
+        });
+        continue;
+      }
+
       const publishedAt = await resolvePublishedAtForFeedItem(item.pubDate, canonicalUrl);
       if (!isWithinFreshnessWindow(publishedAt, now)) {
         skipSummary.staleOrMissingPublishedAt += 1;
@@ -1333,12 +1431,22 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       }
     }
 
+    if (skipSummary.alreadySeenFeedItem > 0) {
+      await logAgentScan({
+        sourceId,
+        categoryId,
+        status: "FEED_ALREADY_SEEN_SUMMARY",
+        executionTimeMs: Date.now() - startedAt,
+        errorLog: `Skipped ${skipSummary.alreadySeenFeedItem} already-seen feed item(s) after batched GUID/URL matching.`,
+      });
+    }
+
     await logAgentScan({
       sourceId,
       categoryId,
       status: "SOURCE_FETCH_COMPLETED",
       executionTimeMs: Date.now() - startedAt,
-      errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skipSummary.emptyLink}, skippedOutOfScope=${skipSummary.outOfScope}, skippedStale=${skipSummary.staleOrMissingPublishedAt}, skippedHtmlNonArticle=${skipSummary.htmlFallbackNonArticle}, skippedHtmlStale=${skipSummary.htmlFallbackStale}.`,
+      errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skipSummary.emptyLink}, skippedOutOfScope=${skipSummary.outOfScope}, skippedAlreadySeen=${skipSummary.alreadySeenFeedItem}, skippedStale=${skipSummary.staleOrMissingPublishedAt}, skippedHtmlNonArticle=${skipSummary.htmlFallbackNonArticle}, skippedHtmlStale=${skipSummary.htmlFallbackStale}.`,
     });
 
     return {
@@ -1424,12 +1532,13 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
 
 export async function persistCandidates(candidates: IngestCandidate[]) {
   if (candidates.length === 0) {
-    return { inserted: 0, skipped: 0, failed: 0 };
+    return { inserted: 0, skipped: 0, failed: 0, enriched: 0 };
   }
 
   let inserted = 0;
   let skipped = 0;
   let failed = 0;
+  let enriched = 0;
 
   const dedupedCandidates: IngestCandidate[] = [];
   const seenKeys = new Set<string>();
@@ -1505,6 +1614,7 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
   }
 
   if (enrichmentUpdates.size > 0) {
+    enriched = enrichmentUpdates.size;
     await prisma.$transaction(
       [...enrichmentUpdates.entries()].map(([articleId, update]) =>
         prisma.article.update({
@@ -1533,7 +1643,7 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
   });
 
   if (newCandidates.length === 0) {
-    return { inserted, skipped, failed };
+    return { inserted, skipped, failed, enriched };
   }
 
   try {
@@ -1576,5 +1686,5 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
     );
   }
 
-  return { inserted, skipped, failed };
+  return { inserted, skipped, failed, enriched };
 }

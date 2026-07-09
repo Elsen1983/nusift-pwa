@@ -238,6 +238,7 @@
                 :is-processing="isProcessing"
                 @suspend="toggleSourceState($event, false)"
                 @delete="deleteSource($event)"
+                @save-feed="saveFeedOverride"
               />
             </div>
             <div
@@ -300,6 +301,7 @@
                 @activate="toggleSourceState($event, true)"
                 @delete="deleteSource($event)"
                 @rediscover="triggerReDiscovery($event)"
+                @save-feed="saveFeedOverride"
               />
 
               <button
@@ -734,6 +736,33 @@ const triggerReDiscovery = async (url: string) => {
     showToast(
       error.response?._data?.normalizedMessage ||
         t("sourceManager.toasts.discovery_error"),
+      "error",
+    );
+  } finally {
+    isProcessing.value = false;
+  }
+};
+
+const saveFeedOverride = async (payload: { subscriptionId: string; feedUrl: string }) => {
+  if (isProcessing.value) return;
+  isProcessing.value = true;
+
+  try {
+    const response = await $api<any>("/api/user/sources/feed", {
+      method: "PUT",
+      body: payload,
+    });
+
+    if (response?.ok) {
+      showToast(t("sourceManager.toasts.feed_saved"), "success");
+      await fetchSourceData();
+    }
+  } catch (error: any) {
+    console.error("Failed to save manual feed", error);
+    showToast(
+      error.response?._data?.normalizedMessage ||
+        error?.statusMessage ||
+        t("sourceManager.toasts.feed_save_failed"),
       "error",
     );
   } finally {

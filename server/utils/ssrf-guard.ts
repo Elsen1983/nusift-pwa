@@ -188,6 +188,7 @@ export interface SafeFetchOptions extends RequestInit {
    * @default false
    */
   allowIp?: boolean
+  allowCrossDomainRedirects?: boolean
 }
 
 /**
@@ -204,7 +205,7 @@ export async function safeFetch(
   fetchOptions: SafeFetchOptions = {},
   maxRedirects: number = MAX_REDIRECTS,
 ): Promise<Response> {
-  const { allowIp, ...nativeOptions } = fetchOptions
+  const { allowIp, allowCrossDomainRedirects, ...nativeOptions } = fetchOptions
 
   // --- Initial URL validation ---
   let originalUrl: URL
@@ -274,7 +275,7 @@ export async function safeFetch(
 
       // Enforce same-domain / subdomain redirect policy
       const isSubdomainRedirect = nextCleanHost.endsWith(`.${originalCleanHost}`)
-      if (originalCleanHost !== nextCleanHost && !isSubdomainRedirect) {
+      if (!allowCrossDomainRedirects && originalCleanHost !== nextCleanHost && !isSubdomainRedirect) {
         throw new SSRFError(
           `Cross-domain redirect blocked: ${originalCleanHost} → ${nextCleanHost}`
         )

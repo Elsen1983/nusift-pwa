@@ -115,12 +115,12 @@ describe("isScopedCategoryFeed", () => {
 describe("isWithinFreshnessWindow", () => {
   const now = new Date("2026-07-03T12:00:00.000Z");
 
-  it("accepts articles published within the last 7 days", () => {
-    expect(isWithinFreshnessWindow(new Date("2026-06-27T12:00:00.000Z"), now)).toBe(true);
+  it("accepts articles published within the last 14 days", () => {
+    expect(isWithinFreshnessWindow(new Date("2026-06-20T12:00:00.000Z"), now)).toBe(true);
   });
 
-  it("rejects articles older than 7 days or missing dates", () => {
-    expect(isWithinFreshnessWindow(new Date("2026-06-26T11:59:59.000Z"), now)).toBe(false);
+  it("rejects articles older than 14 days or missing dates", () => {
+    expect(isWithinFreshnessWindow(new Date("2026-06-19T11:59:59.000Z"), now)).toBe(false);
     expect(isWithinFreshnessWindow(null, now)).toBe(false);
   });
 });

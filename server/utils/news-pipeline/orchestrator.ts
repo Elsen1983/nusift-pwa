@@ -7,6 +7,7 @@ import {
 } from "./artifacts";
 import { logAgentScan } from "./log";
 import { ingestSource, persistCandidates } from "./ingest";
+import { markFeedRunOutcome } from "./feed-productivity";
 import type { PipelineResult, PipelineTarget } from "./types";
 
 export async function resolveUserSourceIds(userId: string) {
@@ -134,6 +135,14 @@ export async function runNewsPipeline(
       inserted += persisted.inserted;
       skipped += persisted.skipped;
       failed += persisted.failed + result.failed;
+      await markFeedRunOutcome({
+        sourceId: target.sourceId,
+        categoryId: target.categoryId || undefined,
+        feedUrl: result.feedUrl || null,
+        productive: persisted.inserted > 0 || persisted.enriched > 0,
+        shouldTrackFeedProductivity:
+          Boolean(result.feedUrl) && result.feedFormat !== "html_fallback",
+      });
     } catch {
       failed += 1;
     }
