@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const newsSourceUpdateMock = vi.fn();
 const sourceCategoryUpdateMock = vi.fn();
+const feedReviewUpdateManyMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -10,6 +11,9 @@ vi.mock("../prisma", () => ({
     },
     sourceCategory: {
       update: (...args: any[]) => sourceCategoryUpdateMock(...args),
+    },
+    feedReviewRequest: {
+      updateMany: (...args: any[]) => feedReviewUpdateManyMock(...args),
     },
   },
 }));

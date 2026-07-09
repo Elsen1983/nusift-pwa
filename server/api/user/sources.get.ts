@@ -175,6 +175,11 @@ export default defineEventHandler(async (event) => {
                 consecutiveNonProductiveRuns: true,
                 lastProductiveFeedUrl: true,
                 lastProductiveAt: true,
+                feedProvenance: true,
+                reviewRequests: {
+                  where: { status: "OPEN" },
+                  select: { id: true, requestedByUserId: true },
+                },
               },
             },
           },
@@ -194,6 +199,11 @@ export default defineEventHandler(async (event) => {
                 consecutiveNonProductiveRuns: true,
                 lastProductiveFeedUrl: true,
                 lastProductiveAt: true,
+                feedProvenance: true,
+                reviewRequests: {
+                  where: { status: "OPEN" },
+                  select: { id: true, requestedByUserId: true },
+                },
                 newsSource: {
                   select: {
                     id: true,
@@ -227,6 +237,9 @@ export default defineEventHandler(async (event) => {
           discoveryEvidence: sub.newsSource.discoveryEvidence,
         });
 
+        const openReviewRequests = sub.newsSource.reviewRequests || [];
+        const userHasOpenRequest = openReviewRequests.some((r) => r.requestedByUserId === userId);
+
         return {
           id: sub.id,
           targetId: sub.newsSource.id,
@@ -241,6 +254,9 @@ export default defineEventHandler(async (event) => {
           consecutiveNonProductiveRuns: sub.newsSource.consecutiveNonProductiveRuns,
           lastProductiveFeedUrl: sub.newsSource.lastProductiveFeedUrl,
           lastProductiveAt: sub.newsSource.lastProductiveAt,
+          feedProvenance: sub.newsSource.feedProvenance,
+          openReviewRequestCount: openReviewRequests.length,
+          userHasOpenReviewRequest: userHasOpenRequest,
           detectedSections: hints.detectedSections,
           feedCandidates: hints.feedCandidates,
           feedVerifiedByArticles: hints.feedVerifiedByArticles,
@@ -268,6 +284,9 @@ export default defineEventHandler(async (event) => {
           discoveryEvidence: sub.category.discoveryEvidence,
         });
 
+        const openCatReviewRequests = sub.category.reviewRequests || [];
+        const userHasOpenCatRequest = openCatReviewRequests.some((r) => r.requestedByUserId === userId);
+
         return {
           id: sub.id,
           targetId: sub.category.id,
@@ -283,6 +302,9 @@ export default defineEventHandler(async (event) => {
           consecutiveNonProductiveRuns: sub.category.consecutiveNonProductiveRuns,
           lastProductiveFeedUrl: sub.category.lastProductiveFeedUrl,
           lastProductiveAt: sub.category.lastProductiveAt,
+          feedProvenance: sub.category.feedProvenance,
+          openReviewRequestCount: openCatReviewRequests.length,
+          userHasOpenReviewRequest: userHasOpenCatRequest,
           detectedSections: hints.detectedSections,
           feedCandidates: hints.feedCandidates,
           feedVerifiedByArticles: hints.feedVerifiedByArticles,

@@ -22,10 +22,31 @@
           <span class="material-symbols-outlined text-[12px]" :class="badge.iconClasses">{{ badge.icon }}</span>
           {{ badge.label }}
         </span>
+        <span
+          v-if="source.feedProvenance === 'USER_SUBMITTED'"
+          class="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-label outline outline-1 bg-tertiary-fixed/15 text-tertiary-fixed outline-tertiary-fixed/40"
+        >
+          <span class="material-symbols-outlined text-[12px]">group</span>
+          {{ $t('sourceManager.feed.provenance_user') }}
+        </span>
+        <span
+          v-else-if="source.feedProvenance === 'ADMIN_CONFIRMED'"
+          class="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-label outline outline-1 bg-primary-container/15 text-primary-container outline-primary-container/40"
+        >
+          <span class="material-symbols-outlined text-[12px]">shield</span>
+          {{ $t('sourceManager.feed.provenance_admin') }}
+        </span>
+        <span
+          v-if="source.openReviewRequestCount > 0"
+          class="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-label outline outline-1 bg-warning/15 text-warning outline-warning/40"
+        >
+          <span class="material-symbols-outlined text-[12px]">rate_review</span>
+          {{ $t('sourceManager.feed.open_reviews', { count: source.openReviewRequestCount }) }}
+        </span>
       </div>
 
       <div
-        v-if="source.rssFeedUrl || source.showFeedRecoveryTools"
+        v-if="source.rssFeedUrl"
         class="mt-3 rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-3 space-y-3"
       >
         <div class="space-y-1">
@@ -34,82 +55,24 @@
           </div>
           <div class="text-[12px] text-on-surface">
             <span v-if="source.feedVerifiedByArticles">{{ $t("sourceManager.feed.verified_live") }}</span>
-            <span v-else-if="source.rssFeedUrl">{{ $t("sourceManager.feed.not_verified_yet") }}</span>
-            <span v-else>{{ $t("sourceManager.feed.no_feed_saved") }}</span>
-          </div>
-          <a
-            v-if="source.rssFeedUrl"
-            :href="source.rssFeedUrl"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="block break-all text-[12px] text-primary-container underline decoration-primary-container/40 underline-offset-2 hover:decoration-primary-container/70"
-          >
-            {{ source.rssFeedUrl }}
-          </a>
-        </div>
-
-        <div v-if="source.detectedSections?.length" class="space-y-1">
-          <div class="text-[10px] font-label font-bold uppercase tracking-wider text-on-surface-variant">
-            {{ $t("sourceManager.feed.detected_sections") }}
-          </div>
-          <div class="flex flex-wrap gap-1.5">
-            <span
-              v-for="section in source.detectedSections"
-              :key="section"
-              class="rounded bg-surface-container-highest px-2 py-1 text-[10px] uppercase tracking-wide text-on-surface-variant"
-            >
-              {{ section }}
-            </span>
-          </div>
-        </div>
-
-        <div v-if="source.showFeedRecoveryTools && source.feedCandidates?.length" class="space-y-2">
-          <div class="text-[10px] font-label font-bold uppercase tracking-wider text-on-surface-variant">
-            {{ $t("sourceManager.feed.candidate_feeds") }}
-          </div>
-          <div class="flex flex-col gap-2">
-            <button
-              v-for="candidate in source.feedCandidates"
-              :key="candidate"
-              @click="$emit('saveFeed', { subscriptionId: source.id, feedUrl: candidate })"
-              :disabled="isProcessing"
-              class="rounded-lg border border-primary-container/30 bg-primary-container/10 px-3 py-2 text-left text-[11px] text-primary-container transition-colors hover:bg-primary-container/20 disabled:opacity-50"
-            >
-              {{ candidate }}
-            </button>
-          </div>
-        </div>
-
-        <div v-if="source.showFeedRecoveryTools" class="space-y-2">
-          <div class="text-[10px] font-label font-bold uppercase tracking-wider text-on-surface-variant">
-            {{ $t("sourceManager.feed.manual_label") }}
-          </div>
-          <div class="flex flex-col gap-2 sm:flex-row">
-            <input
-              v-model="manualFeedUrl"
-              type="url"
-              inputmode="url"
-              autocapitalize="off"
-              autocomplete="off"
-              autocorrect="off"
-              spellcheck="false"
-              class="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container-highest px-3 py-2 text-[12px] text-on-surface outline-none focus:border-primary-container/50"
-              :placeholder="$t('sourceManager.feed.manual_placeholder')"
-            />
-            <button
-              @click="emitManualFeed"
-              :disabled="isProcessing || !manualFeedUrl.trim()"
-              class="rounded-lg border border-primary-container/30 bg-primary-container/10 px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-primary-container transition-colors hover:bg-primary-container/20 disabled:opacity-50"
-            >
-              {{ $t("sourceManager.feed.save_feed") }}
-            </button>
+            <span v-else>{{ $t("sourceManager.feed.not_verified_yet") }}</span>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="flex items-center gap-1 justify-end w-full">
+    <div class="flex items-center gap-1 justify-end w-full flex-wrap">
       
+      <button
+        @click="$emit('requestReview', source.id)"
+        :disabled="isProcessing || source.userHasOpenReviewRequest"
+        :title="source.userHasOpenReviewRequest ? $t('sourceManager.feed.review_already_requested') : $t('sourceManager.feed.request_review')"
+        class="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-warning/10 outline outline-1 outline-warning/30 text-warning text-[10px] font-bold uppercase tracking-widest hover:bg-warning/20 transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <span class="material-symbols-outlined text-[14px]">rate_review</span>
+        <span>{{ source.userHasOpenReviewRequest ? $t('sourceManager.feed.review_already_requested') : $t('sourceManager.feed.request_review') }}</span>
+      </button>
+
       <div class="relative group">
         <div 
           v-if="isQuotaFull" 
@@ -153,7 +116,7 @@ const props = defineProps<{
   isQuotaFull: boolean;
 }>();
 
-const emit = defineEmits(['activate', 'delete', 'rediscover', 'saveFeed']);
+const emit = defineEmits(['activate', 'delete', 'rediscover', 'saveFeed', 'requestReview']);
 
 const manualFeedUrl = ref("");
 

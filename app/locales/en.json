@@ -572,7 +572,13 @@
             "candidate_feeds": "Suggested Feed URLs",
             "manual_label": "Manual Feed URL",
             "manual_placeholder": "Paste a feed URL on the same domain...",
-            "save_feed": "Save Feed"
+            "save_feed": "Save Feed",
+            "provenance_system": "System Discovered",
+            "provenance_user": "Community Submitted",
+            "provenance_admin": "Admin Confirmed",
+            "request_review": "Request Review",
+            "review_already_requested": "Review Already Requested",
+            "open_reviews": "{count} open review(s)"
         },
         "toasts": {
             "duplicate": "This source is already in your network.",
@@ -590,7 +596,10 @@
             "discovery_error": "Network error during discovery phase.",
             "add_restricted": "Publisher blocked connection. Source moved to Restricted Zone.",
             "feed_saved": "Feed URL saved and queued for ingestion.",
-            "feed_save_failed": "Failed to save feed URL."
+            "feed_save_failed": "Failed to save feed URL.",
+            "review_submitted": "Review request submitted.",
+            "review_already_requested": "You already requested a review for this source.",
+            "review_failed": "Failed to submit review request."
         },
         "badges": {
             "verified": "Valid Domain",

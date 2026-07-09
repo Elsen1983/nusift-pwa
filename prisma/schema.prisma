@@ -60,6 +60,25 @@ enum NotificationStatus {
   FAILED
 }
 
+enum ReviewRequestStatus {
+  OPEN
+  RESOLVED_BY_ADMIN
+  DISMISSED
+  AUTO_RESOLVED_VALIDATED
+  AUTO_RESOLVED_REVERTED
+}
+
+enum ReviewRequestTarget {
+  SOURCE
+  CATEGORY
+}
+
+enum FeedProvenance {
+  SYSTEM_DISCOVERED
+  USER_SUBMITTED
+  ADMIN_CONFIRMED
+}
+
 enum NotificationScheduleSlot {
   MORNING
   NOON
@@ -144,6 +163,8 @@ model User {
   // ... existing relations
   sentRequests          UsersConnection[]          @relation("SentRequests")
   receivedRequests      UsersConnection[]          @relation("ReceivedRequests")
+  feedReviewRequests    FeedReviewRequest[]        @relation("ReviewRequestedBy")
+  resolvedReviewRequests FeedReviewRequest[]       @relation("ReviewResolvedBy")
 }
 
 // ANCHOR USER PROFILE
@@ -235,10 +256,15 @@ model NewsSource {
   lastProductiveFeedUrl String?
   lastProductiveAt DateTime?
 
+  feedProvenance        FeedProvenance @default(SYSTEM_DISCOVERED)
+  feedSubmittedByUserId String?
+  feedSubmittedAt       DateTime?
+
   articles          Article[]
   categories        SourceCategory[]
   subscribers       UserSourceSubscription[]
   pipelineArtifacts PipelineArtifact[]
+  reviewRequests    FeedReviewRequest[] @relation("SourceReviewRequests")
 
   @@index([continent, countryCode])
   @@index([rssStatus, nextRetryAt])
@@ -267,10 +293,15 @@ model SourceCategory {
   lastProductiveFeedUrl String?
   lastProductiveAt DateTime?
 
+  feedProvenance        FeedProvenance @default(SYSTEM_DISCOVERED)
+  feedSubmittedByUserId String?
+  feedSubmittedAt       DateTime?
+
   // ÚJ: Kapcsolat a feliratkozók felé (Explicit)
   subscribers      UserCategorySubscription[]
   articles         Article[]
   pipelineArtifacts PipelineArtifact[]
+  reviewRequests   FeedReviewRequest[] @relation("CategoryReviewRequests")
 
   @@unique([newsSourceId, pathUrl])
   @@index([isUserRequested])
@@ -514,4 +545,30 @@ model Notification {
 
   @@index([type, status])
   @@index([userId, status])
+}
+
+// ANCHOR FEED REVIEW REQUESTS
+model FeedReviewRequest {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  targetType ReviewRequestTarget
+  sourceId   String?
+  source     NewsSource?     @relation("SourceReviewRequests", fields: [sourceId], references: [id], onDelete: Cascade)
+  categoryId String?
+  category   SourceCategory? @relation("CategoryReviewRequests", fields: [categoryId], references: [id], onDelete: Cascade)
+
+  requestedByUserId String
+  requestedBy       User   @relation("ReviewRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Cascade)
+
+  reason String? @db.Text
+  status ReviewRequestStatus @default(OPEN)
+
+  resolvedAt       DateTime?
+  resolvedByUserId String?
+  resolvedBy       User?  @relation("ReviewResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([sourceId, status])
+  @@index([categoryId, status])
+  @@index([requestedByUserId, status])
 }

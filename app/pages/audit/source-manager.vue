@@ -239,6 +239,7 @@
                 @suspend="toggleSourceState($event, false)"
                 @delete="deleteSource($event)"
                 @save-feed="saveFeedOverride"
+                @request-review="requestFeedReview"
               />
             </div>
             <div
@@ -302,6 +303,7 @@
                 @delete="deleteSource($event)"
                 @rediscover="triggerReDiscovery($event)"
                 @save-feed="saveFeedOverride"
+                @request-review="requestFeedReview"
               />
 
               <button
@@ -736,6 +738,37 @@ const triggerReDiscovery = async (url: string) => {
     showToast(
       error.response?._data?.normalizedMessage ||
         t("sourceManager.toasts.discovery_error"),
+      "error",
+    );
+  } finally {
+    isProcessing.value = false;
+  }
+};
+
+const requestFeedReview = async (subscriptionId: string) => {
+  if (isProcessing.value) return;
+  isProcessing.value = true;
+
+  try {
+    const response = await $api<any>("/api/user/sources/review-request", {
+      method: "POST",
+      body: { subscriptionId },
+    });
+
+    if (response?.ok) {
+      if (response.alreadyRequested) {
+        showToast(t("sourceManager.toasts.review_already_requested"), "warning");
+      } else {
+        showToast(t("sourceManager.toasts.review_submitted"), "success");
+      }
+      await fetchSourceData();
+    }
+  } catch (error: any) {
+    console.error("Failed to submit review request", error);
+    showToast(
+      error.response?._data?.normalizedMessage ||
+        error?.statusMessage ||
+        t("sourceManager.toasts.review_failed"),
       "error",
     );
   } finally {

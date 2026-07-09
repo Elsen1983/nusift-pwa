@@ -37,6 +37,27 @@
           >
           {{ badge.label }}
         </span>
+        <span
+          v-if="source.feedProvenance === 'USER_SUBMITTED'"
+          class="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-label outline outline-1 bg-tertiary-fixed/15 text-tertiary-fixed outline-tertiary-fixed/40"
+        >
+          <span class="material-symbols-outlined text-[12px]">group</span>
+          {{ $t('sourceManager.feed.provenance_user') }}
+        </span>
+        <span
+          v-else-if="source.feedProvenance === 'ADMIN_CONFIRMED'"
+          class="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-label outline outline-1 bg-primary-container/15 text-primary-container outline-primary-container/40"
+        >
+          <span class="material-symbols-outlined text-[12px]">shield</span>
+          {{ $t('sourceManager.feed.provenance_admin') }}
+        </span>
+        <span
+          v-if="source.openReviewRequestCount > 0"
+          class="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-label outline outline-1 bg-warning/15 text-warning outline-warning/40"
+        >
+          <span class="material-symbols-outlined text-[12px]">rate_review</span>
+          {{ $t('sourceManager.feed.open_reviews', { count: source.openReviewRequestCount }) }}
+        </span>
       </div>
 
       <div
@@ -123,7 +144,16 @@
       </div>
     </div>
 
-    <div class="flex items-center gap-3 justify-end w-full">
+    <div class="flex items-center gap-2 justify-end w-full flex-wrap">
+      <button
+        @click="$emit('requestReview', source.id)"
+        :disabled="isProcessing || source.userHasOpenReviewRequest"
+        :title="source.userHasOpenReviewRequest ? $t('sourceManager.feed.review_already_requested') : $t('sourceManager.feed.request_review')"
+        class="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-warning/10 outline outline-1 outline-warning/30 text-warning text-[10px] font-bold uppercase tracking-widest hover:bg-warning/20 transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <span class="material-symbols-outlined text-[14px]">rate_review</span>
+        <span>{{ source.userHasOpenReviewRequest ? $t('sourceManager.feed.review_already_requested') : $t('sourceManager.feed.request_review') }}</span>
+      </button>
       <button
         @click="$emit('suspend', source.id)"
         :disabled="isProcessing"
@@ -159,7 +189,7 @@ const props = defineProps<{
   isProcessing: boolean;
 }>();
 
-const emit = defineEmits(["suspend", "delete", "saveFeed"]);
+const emit = defineEmits(["suspend", "delete", "saveFeed", "requestReview"]);
 
 const manualFeedUrl = ref("");
 

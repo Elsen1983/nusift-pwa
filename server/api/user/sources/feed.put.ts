@@ -114,6 +114,9 @@ export default defineEventHandler(async (event) => {
         rssStatus: "ACTIVE",
         lastRssCheckAt: now,
         discoveryEvidence,
+        feedProvenance: "USER_SUBMITTED",
+        feedSubmittedByUserId: userId,
+        feedSubmittedAt: now,
         ...getFeedProductivityResetData(rootSubscription.newsSource.rssFeedUrl, normalizedFeedUrl),
       },
     });
@@ -131,6 +134,9 @@ export default defineEventHandler(async (event) => {
       rssStatus: "ACTIVE",
       lastRssCheckAt: now,
       discoveryEvidence,
+      feedProvenance: "USER_SUBMITTED",
+      feedSubmittedByUserId: userId,
+      feedSubmittedAt: now,
       ...getFeedProductivityResetData(categorySubscription!.category.rssFeedUrl, normalizedFeedUrl),
     },
   });
