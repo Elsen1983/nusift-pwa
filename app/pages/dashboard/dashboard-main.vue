@@ -254,20 +254,54 @@
         />
       </div>
 
-      <section v-if="totalPages > 1" class="flex justify-center items-center gap-2 py-4">
-        <div class="flex items-center gap-3 text-xs font-medium">
+      <section v-if="totalPages > 1" class="w-full py-4 flex justify-center">
+        <div class="flex w-full md:w-3/4 items-center gap-1 md:gap-1.5 rounded-2xl border border-outline-variant/15 bg-surface-container/90 px-1.5 py-1.5 md:px-2.5 md:py-2 shadow-[0_4px_14px_rgba(0,0,0,0.16)] backdrop-blur-sm">
           <button
-            v-for="page in visiblePageNumbers"
-            :key="page"
-            class="transition-colors"
-            :class="
-              page === currentPage
-                ? 'text-primary-container font-bold'
-                : 'text-on-surface-variant hover:text-primary-container'
-            "
-            @click="setPage(page)"
+            type="button"
+            class="inline-flex h-8 w-8 md:h-9 md:w-9 items-center justify-center rounded-xl border border-outline-variant/10 bg-surface-container-high/70 text-on-surface-variant transition-all duration-200 hover:border-primary-container/25 hover:bg-primary-container/10 hover:text-primary-container disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="currentPage === 1"
+            @click="setPage(currentPage - 1)"
+            aria-label="Previous page"
           >
-            {{ page }}
+            <span class="material-symbols-outlined text-[16px] md:text-[18px]">chevron_left</span>
+          </button>
+
+          <div
+            class="flex flex-1 items-center gap-0.5 md:gap-1 text-[11px] md:text-xs font-medium px-0.5 md:px-1"
+            :class="totalPages <= 5 ? 'justify-center' : 'justify-between'"
+          >
+            <template v-for="(item, index) in visiblePageItems" :key="`${item}-${index}`">
+              <button
+                v-if="item !== 'ellipsis'"
+                type="button"
+                class="min-w-8 h-8 md:min-w-9 md:h-9 px-2 md:px-3 rounded-xl border border-transparent transition-all duration-200"
+                :class="
+                  item === currentPage
+                    ? 'bg-primary-container text-on-primary-container font-bold shadow-[0_0_10px_rgb(var(--color-primary-container)/0.16)]'
+                    : 'text-on-surface-variant hover:text-primary-container hover:bg-primary-container/10 hover:border-primary-container/15'
+                "
+                @click="setPage(item as number)"
+              >
+                {{ item }}
+              </button>
+              <span
+                v-else
+                class="px-0.5 md:px-1.5 text-on-surface-variant/60 select-none"
+                aria-hidden="true"
+              >
+                …
+              </span>
+            </template>
+          </div>
+
+          <button
+            type="button"
+            class="inline-flex h-8 w-8 md:h-9 md:w-9 items-center justify-center rounded-xl border border-outline-variant/10 bg-surface-container-high/70 text-on-surface-variant transition-all duration-200 hover:border-primary-container/25 hover:bg-primary-container/10 hover:text-primary-container disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="currentPage === totalPages"
+            @click="setPage(currentPage + 1)"
+            aria-label="Next page"
+          >
+            <span class="material-symbols-outlined text-[16px] md:text-[18px]">chevron_right</span>
           </button>
         </div>
       </section>
@@ -852,12 +886,19 @@ const paginatedArticles = computed(() => {
   return filteredArticles.value.slice(start, start + ARTICLES_PER_PAGE);
 });
 
-const visiblePageNumbers = computed(() => {
-  const pages: number[] = [];
-  for (let i = 1; i <= totalPages.value; i += 1) {
-    pages.push(i);
+const visiblePageItems = computed(() => {
+  const total = totalPages.value;
+  const current = currentPage.value;
+
+  if (total <= 5) {
+    return Array.from({ length: total }, (_, index) => index + 1);
   }
-  return pages;
+
+  if (current <= 2 || current >= total - 1) {
+    return [1, 2, "ellipsis", total - 1, total];
+  }
+
+  return [1, 2, "ellipsis", current, "ellipsis", total - 1, total];
 });
 
 const setPage = (page: number) => {
