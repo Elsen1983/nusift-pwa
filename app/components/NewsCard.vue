@@ -1,6 +1,6 @@
 <template>
   <article
-    class="bg-surface-container rounded-2xl p-2.5 relative group transition-all hover:bg-surface-container-high overflow-visible outline outline-1 outline-primary-container/30"
+    class="w-full min-w-0 box-border bg-surface-container rounded-2xl p-2.5 relative group transition-all hover:bg-surface-container-high overflow-visible outline outline-1 outline-primary-container/30"
   >
     <div
       v-if="activeOverlay === article.id"

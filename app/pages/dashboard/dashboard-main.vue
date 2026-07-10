@@ -1,15 +1,16 @@
 <template>
   <div>
     <!-- REFACTORED: Removed hardcoded #131313 gradients and black borders -->
-    <div
-      class="fixed top-[60px] inset-x-0 mx-auto w-full max-w-2xl bg-surface/95 backdrop-blur-md shadow-sm z-[90] border-b border-outline-variant/30"
-    >
-      <div class="px-4 py-3 flex gap-3 flex-col relative">
-        <div class="flex items-end gap-3 w-full">
-          <div
-            class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
-            v-click-outside="() => (isDateDropdownOpen = false)"
-          >
+    <div class="fixed top-[60px] inset-x-0 z-[90]">
+      <div
+        class="mx-auto w-full max-w-2xl bg-surface/95 backdrop-blur-md shadow-sm border-b border-outline-variant/30"
+      >
+        <div class="box-border flex w-full min-w-0 flex-col gap-3 px-4 py-3 relative">
+          <div class="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-end gap-3">
+            <div
+              class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
+              v-click-outside="() => (isDateDropdownOpen = false)"
+            >
             <span
               class="font-label text-[10px] uppercase tracking-wider font-bold text-on-surface-variant"
               >{{ $t("dashboard.header.date_label") }}</span
@@ -60,10 +61,10 @@
             </div>
           </div>
 
-          <div
-            class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
-            v-click-outside="() => (isCategoryDropdownOpen = false)"
-          >
+            <div
+              class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
+              v-click-outside="() => (isCategoryDropdownOpen = false)"
+            >
             <span
               class="font-label text-[10px] uppercase tracking-wider font-bold text-on-surface-variant"
               >{{ $t("dashboard.header.categories_label") }}</span
@@ -122,13 +123,13 @@
               </div>
             </div>
           </div>
-        </div>
+          </div>
 
-        <div class="flex items-end gap-3 w-full">
-          <div
-            class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
-            v-click-outside="() => (isSourceDropdownOpen = false)"
-          >
+          <div class="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_6rem] items-end gap-3 sm:grid-cols-[minmax(0,1fr)_7rem]">
+            <div
+              class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
+              v-click-outside="() => (isSourceDropdownOpen = false)"
+            >
             <span
               class="font-label text-[10px] uppercase tracking-wider font-bold text-on-surface-variant"
               >{{ $t("dashboard.header.sources_label") }}</span
@@ -184,13 +185,13 @@
             </div>
           </div>
 
-          <div class="flex-shrink-0 flex items-center justify-center">
+            <div class="flex w-24 shrink-0 items-center justify-center sm:w-28">
             <!-- REFACTORED: Removed hardcoded shadow and #00E5FF, injected CSS variables -->
             <button
               @click="applyFilters"
               :disabled="!hasPendingFilters || isRefreshing"
               :class="[
-                'flex justify-center items-center gap-1.5 px-3 rounded-lg transition-all h-[36px] border',
+                'flex w-full justify-center items-center gap-1.5 px-2 rounded-lg transition-all h-[36px] border min-w-0 sm:px-3',
                 hasPendingFilters
                   ? 'bg-surface-container-highest text-primary-container border-primary-container/30 shadow-[0_0_12px_rgb(var(--color-primary-container)/0.15)] hover:bg-surface-bright'
                   : 'bg-surface-container-highest text-on-surface-variant/50 border-transparent disabled:opacity-50 disabled:cursor-not-allowed',
@@ -203,15 +204,16 @@
                 ]"
                 >refresh</span
               >
-              <span class="font-label font-bold text-xs">{{ $t('dashboard.header.refresh_label') }}</span>
+              <span class="font-label font-bold text-[11px] sm:text-xs">{{ $t('dashboard.header.refresh_label') }}</span>
             </button>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
     <main
-      class="px-4 space-y-2 max-w-2xl mx-auto pt-[165px]"
+      class="mx-auto w-full max-w-2xl box-border space-y-2 px-4 pt-[165px]"
       @click="closeArticleInteractions"
     >
       <div

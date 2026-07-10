@@ -1,8 +1,8 @@
 <template>
   <div
-    class="bg-background text-on-background min-h-screen font-body selection:bg-primary-container/30 flex justify-center"
+    class="bg-background text-on-background min-h-screen overflow-x-hidden font-body selection:bg-primary-container/30 flex justify-center"
   >
-    <div class="w-full max-w-2xl relative min-h-screen">
+    <div class="w-full max-w-2xl min-w-0 relative min-h-screen">
       <div
         class="fixed top-0 inset-x-0 mx-auto w-full max-w-2xl bg-background z-[100] border-b border-white/5"
       >
@@ -183,7 +183,7 @@
         </header>
       </div>
 
-      <main class="pt-[60px] pb-28 w-full">
+      <main class="pt-[60px] pb-28 w-full min-w-0">
         <slot />
       </main>
 
