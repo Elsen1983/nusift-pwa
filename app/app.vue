@@ -68,17 +68,33 @@ if (import.meta.client) {
 
 const isChecking = ref(false);
 
+const syncSessionStatus = async () => {
+  try {
+    const response = await fetch("/api/auth/user-validate", {
+      method: "GET",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) return false;
+
+    const sessionMeta = (await response.json()) as { valid: boolean; isAdmin?: boolean };
+    if (authStore.user && sessionMeta?.isAdmin !== undefined) {
+      authStore.user.isAdmin = sessionMeta.isAdmin;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const handleVisibilityChange = async () => {
   if (document.visibilityState === "visible" && !isChecking.value) {
     isChecking.value = true;
     try {
-      let hasActiveSession = false;
-      try {
-        await $fetch("/api/auth/user-validate");
-        hasActiveSession = true;
-      } catch {
-        hasActiveSession = false;
-      }
+      const hasActiveSession = await syncSessionStatus();
 
       if (authStore.user !== null && !hasActiveSession) {
         if (typeof authStore.$reset === "function") authStore.$reset();
@@ -125,6 +141,10 @@ onMounted(() => {
         }
       } catch {}
     }
+  }
+
+  if (import.meta.client) {
+    void syncSessionStatus();
   }
 
   isHydrated.value = true;

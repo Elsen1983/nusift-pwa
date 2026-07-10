@@ -1,5 +1,6 @@
 import { prisma } from '../../utils/prisma';
 import { verifySessionToken } from "../../utils/auth";
+import { getAdminStatusByUserId } from "../../utils/admin";
 
 export default defineEventHandler(async (event) => {
   // 1. Extract the token directly from the cookie
@@ -27,7 +28,9 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 401, statusMessage: "Zombie session: User deleted." });
     }
 
-    return { success: true, valid: true };
+    const adminStatus = await getAdminStatusByUserId(userId);
+
+    return { success: true, valid: true, isAdmin: adminStatus.isAdmin };
 
   } catch (error) {
     throw createError({ statusCode: 401, statusMessage: "Invalid token or user not found." });

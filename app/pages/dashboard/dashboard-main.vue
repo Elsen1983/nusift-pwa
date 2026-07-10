@@ -660,6 +660,7 @@ const toastClass = computed(() =>
 const toastIcon = computed(() => (toast.value.type === "success" ? "check_circle" : "error"));
 const showAdminPipelinePanel = computed(() => canAccessDevPanel.value && canRunManualPipeline.value);
 const showFullDevTools = computed(() => isDev && showAdminPipelinePanel.value && canUseFullDevTools.value);
+const isAdminUser = computed(() => authStore.user?.isAdmin === true || authStore.user?.role === "ADMIN");
 let devPanelPollTimer: number | null = null;
 const DEV_PANEL_POLL_MS = 10000;
 
@@ -710,6 +711,27 @@ watch(
       stopDevPanelPolling();
       return;
     }
+    if (!isAdminUser.value) {
+      canAccessDevPanel.value = false;
+      canRunManualPipeline.value = false;
+      canUseFullDevTools.value = false;
+      stopDevPanelPolling();
+      return;
+    }
+    void initializeDevPanel();
+  },
+);
+
+watch(
+  () => authStore.user?.isAdmin === true,
+  (isAdmin) => {
+    if (!isAdmin) {
+      canAccessDevPanel.value = false;
+      canRunManualPipeline.value = false;
+      canUseFullDevTools.value = false;
+      stopDevPanelPolling();
+      return;
+    }
     void initializeDevPanel();
   },
 );
@@ -718,16 +740,43 @@ const formatLogTime = (value: string) =>
   new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 const checkDevPanelAccess = async () => {
+  if (!isAdminUser.value) {
+    canAccessDevPanel.value = false;
+    canRunManualPipeline.value = false;
+    canUseFullDevTools.value = false;
+    stopDevPanelPolling();
+    return false;
+  }
+
   try {
-    const response = await $api<{
+    const response = await fetch("/api/dev/access", {
+      method: "GET",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        canAccessDevPanel.value = false;
+        canRunManualPipeline.value = false;
+        canUseFullDevTools.value = false;
+        stopDevPanelPolling();
+        return false;
+      }
+      throw new Error(`Dev access check failed with HTTP ${response.status}`);
+    }
+
+    const payload = (await response.json()) as {
       ok: boolean;
       canAccess: boolean;
       manualPipelineEnabled?: boolean;
       devToolsEnabled?: boolean;
-    }>("/api/dev/access");
+    };
     canAccessDevPanel.value = true;
-    canRunManualPipeline.value = response.manualPipelineEnabled !== false;
-    canUseFullDevTools.value = response.devToolsEnabled === true;
+    canRunManualPipeline.value = payload.manualPipelineEnabled !== false;
+    canUseFullDevTools.value = payload.devToolsEnabled === true;
     return true;
   } catch (error: any) {
     if (
@@ -742,7 +791,7 @@ const checkDevPanelAccess = async () => {
       stopDevPanelPolling();
       return false;
     }
-    throw error;
+    return false;
   }
 };
 

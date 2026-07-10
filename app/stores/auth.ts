@@ -38,6 +38,8 @@ interface ProfileDetails {
 interface UserProfile {
   id: string;
   email: string;
+  role?: string;
+  isAdmin?: boolean;
   onboardingStep: number;
   createdAt?: string;
   primaryRegion: string | null;

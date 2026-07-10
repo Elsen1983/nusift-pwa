@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../../utils/prisma';
 import { signSessionToken, setSessionCookies, requireJwtSecret } from "../../utils/auth";
 import { assertRateLimit } from "../../utils/rate-limit";
+import { getAdminStatusByUserId } from "../../utils/admin";
 
 export default defineEventHandler(async (event) => {
   try {
@@ -69,6 +70,7 @@ export default defineEventHandler(async (event) => {
     const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60; 
 
     requireJwtSecret();
+    const adminStatus = await getAdminStatusByUserId(user.id);
     const token = signSessionToken(
       {
         userId: user.id,
@@ -86,6 +88,8 @@ export default defineEventHandler(async (event) => {
       user: {
         id: user.id,
         email: user.email,
+        role: user.role,
+        isAdmin: adminStatus.isAdmin,
         createdAt: user.createdAt,
         onboardingStep: user.onboardingStep,
         primaryRegion: user.primaryRegion,

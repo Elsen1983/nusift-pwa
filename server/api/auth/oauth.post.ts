@@ -4,6 +4,7 @@ import appleSigninAuth from 'apple-signin-auth';
 import { prisma } from '../../utils/prisma'; 
 import { signSessionToken, setSessionCookies, requireJwtSecret } from "../../utils/auth";
 import { assertRateLimit } from "../../utils/rate-limit";
+import { getAdminStatusByUserId } from "../../utils/admin";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const EMAIL_SENDER = process.env.EMAIL_SENDER || 'NuSift <onboarding@nusift.com>';
@@ -133,6 +134,7 @@ export default defineEventHandler(async (event) => {
     const cookieMaxAge = isFullyOnboarded ? 60 * 60 * 24 * 7 : 60 * 60;
 
     requireJwtSecret();
+    const adminStatus = await getAdminStatusByUserId(user.id);
     const sessionToken = signSessionToken(
       {
         userId: user.id,
@@ -150,6 +152,8 @@ export default defineEventHandler(async (event) => {
       user: {
         id: user.id,
         email: user.email,
+        role: user.role,
+        isAdmin: adminStatus.isAdmin,
         onboardingStep: user.onboardingStep,
         primaryRegion: user.primaryRegion,
         preferredLanguage: user.preferredLanguage,
