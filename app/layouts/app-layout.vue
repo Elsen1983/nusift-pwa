@@ -183,7 +183,7 @@
         </header>
       </div>
 
-      <main class="pt-[60px] pb-28 w-full min-w-0">
+      <main ref="mainContentRef" class="pt-[60px] pb-28 w-full min-w-0">
         <slot />
       </main>
 
@@ -215,6 +215,26 @@
         </div>
       </nav>
 
+      <Transition name="scroll-up-fade">
+        <div
+          v-if="showScrollUpButton"
+          class="fixed inset-x-0 mx-auto bottom-28 sm:bottom-28 w-full max-w-2xl z-[105] pointer-events-none"
+        >
+          <button
+            type="button"
+            @click="scrollToTop"
+            class="pointer-events-auto absolute right-4 sm:right-6 inline-flex items-center gap-1.5 rounded-xl border border-primary-container/20 bg-[#121212]/95 px-3 py-2 text-primary-container shadow-[0_12px_30px_rgba(0,0,0,0.45),0_0_18px_rgba(0,229,255,0.10)] ring-1 ring-cyan-400/10 backdrop-blur-xl transition-all duration-200 hover:border-primary-container/35 hover:bg-[#171717]/96 hover:shadow-[0_16px_36px_rgba(0,0,0,0.50),0_0_22px_rgba(0,229,255,0.14)] active:scale-95"
+            aria-label="Scroll up"
+            title="Scroll up"
+          >
+            <span class="material-symbols-outlined text-[24px]">keyboard_double_arrow_up</span>
+            <span class="hidden sm:inline text-[12px] font-bold uppercase tracking-[0.14em]">
+              Scroll up
+            </span>
+          </button>
+        </div>
+      </Transition>
+
       <LogoutModal
         :is-open="isLogoutModalOpen"
         @close="isLogoutModalOpen = false"
@@ -230,7 +250,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { useUnsavedStore } from "~/stores/unsaved";
 import { useAuthStore } from "~/stores/auth";
 import { useAgentStore } from "~/stores/agent";
@@ -251,6 +271,10 @@ const isUnsavedModalOpen = ref(false);
 const pendingNavPath = ref<string | null>(null);
 const unreadNotificationCount = useState<number>("unreadNotificationCount", () => 0);
 const isLightMode = computed(() => colorMode.value === "light");
+const showScrollUpButton = ref(false);
+const mainContentRef = ref<HTMLElement | null>(null);
+let resizeObserver: ResizeObserver | null = null;
+let scrollHandler: (() => void) | null = null;
 
 const navItems = computed(() => [
   {
@@ -340,7 +364,50 @@ onMounted(async () => {
     const { $refreshUnreadNotifications } = useNuxtApp();
     await $refreshUnreadNotifications?.();
   }
+
+  if (import.meta.client) {
+    const minScrollToShow = 280;
+
+    const evaluateScrollButton = () => {
+      const contentHeight = mainContentRef.value?.scrollHeight ?? document.documentElement.scrollHeight;
+      showScrollUpButton.value =
+        contentHeight > window.innerHeight + 24 &&
+        window.scrollY >= minScrollToShow;
+    };
+
+    const scheduleEvaluate = () => {
+      requestAnimationFrame(evaluateScrollButton);
+    };
+
+    await nextTick();
+    scheduleEvaluate();
+    scrollHandler = scheduleEvaluate;
+    window.addEventListener("scroll", scrollHandler, { passive: true });
+    window.addEventListener("resize", scrollHandler, { passive: true });
+    window.addEventListener("orientationchange", scrollHandler, { passive: true });
+    resizeObserver = new ResizeObserver(scheduleEvaluate);
+    if (mainContentRef.value) {
+      resizeObserver.observe(mainContentRef.value);
+    }
+  }
 });
+
+onBeforeUnmount(() => {
+  if (scrollHandler) {
+    window.removeEventListener("scroll", scrollHandler);
+    window.removeEventListener("resize", scrollHandler);
+    window.removeEventListener("orientationchange", scrollHandler);
+  }
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+  scrollHandler = null;
+});
+
+const scrollToTop = () => {
+  if (import.meta.client) {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+};
 
 const vClickOutside = {
   mounted(el: any, binding: any) {
@@ -358,6 +425,19 @@ const vClickOutside = {
 </script>
 
 <style scoped>
+.scroll-up-fade-enter-active,
+.scroll-up-fade-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+}
+
+.scroll-up-fade-enter-from,
+.scroll-up-fade-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
 .menu-trigger {
   position: relative;
   display: grid;
