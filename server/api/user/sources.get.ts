@@ -229,7 +229,7 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 404, statusMessage: "User not found" });
     }
 
-    const quotaLimit = user.tier === "PRO" ? 15 : 5;
+    const quotaLimit = user.tier === "PRO" ? 10 : 5;
 
     const formattedSources = [
       ...user.sourceSubscriptions.map((sub) => {

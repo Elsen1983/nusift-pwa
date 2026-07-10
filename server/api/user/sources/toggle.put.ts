@@ -40,7 +40,7 @@ export default defineEventHandler(async (event) => {
         }
       });
 
-      const maxLimit = user?.tier === 'PRO' ? 15 : 5;
+      const maxLimit = user?.tier === 'PRO' ? 10 : 5;
 
       // Calculate Root active count
       const activeRoots = (user?.sourceSubscriptions || []).filter(sub => 

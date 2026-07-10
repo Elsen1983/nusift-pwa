@@ -534,7 +534,7 @@
             "tier_pro": "Pro",
             "quota_label": "Active Sources",
             "upgrade_btn_title": "Upgrade to Pro",
-            "upgrade_btn_sub": "(Max 15 active sources)"
+            "upgrade_btn_sub": "(Max 10 active sources)"
         },
         "input": {
             "label": "Source URL",

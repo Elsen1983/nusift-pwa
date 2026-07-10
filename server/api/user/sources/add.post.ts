@@ -72,8 +72,8 @@ export default defineEventHandler(async (event) => {
       });
     }
 
-    // 3. ACTIVATION QUOTA (5 or 15 active - Hierarchical Filter Sync)
-    const maxActiveLimit = user.tier === "PRO" ? 15 : 5;
+    // 3. ACTIVATION QUOTA (5 or 10 active - Hierarchical Filter Sync)
+    const maxActiveLimit = user.tier === "PRO" ? 10 : 5;
 
     const activeRoots = user.sourceSubscriptions.filter(
       (sub) =>

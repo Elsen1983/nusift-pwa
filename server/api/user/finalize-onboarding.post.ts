@@ -116,7 +116,7 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 404, statusMessage: "User not found." });
     }
 
-    const maxActiveLimit = currentUser.tier === "PRO" ? 15 : 5;
+    const maxActiveLimit = currentUser.tier === "PRO" ? 10 : 5;
     let currentlyActiveCount = 0;
     const targetedSourceIds = new Set<string>();
     const targetedCategoryIds = new Set<string>();

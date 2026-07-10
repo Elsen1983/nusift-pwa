@@ -857,7 +857,7 @@ onMounted(async () => {
         (s: any) => typeof s !== "string",
       );
 
-      limit.value = authStore.user.tier === "PRO" ? 15 : 5;
+      limit.value = authStore.user.tier === "PRO" ? 10 : 5;
       activeCount.value = storedSources.filter(
         (s: any) =>
           s.isActive &&

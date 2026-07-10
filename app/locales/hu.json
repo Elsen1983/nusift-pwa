@@ -534,7 +534,7 @@
             "tier_pro": "Pro",
             "quota_label": "Aktiválható Források Száma",
             "upgrade_btn_title": "Frissítés Pro-ra",
-            "upgrade_btn_sub": "(15 aktív forrás)"
+            "upgrade_btn_sub": "(Max. 10 aktív forrás)"
         },
         "input": {
             "label": "Forrás URL",
