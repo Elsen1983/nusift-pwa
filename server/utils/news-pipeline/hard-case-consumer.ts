@@ -1,5 +1,5 @@
 import { prisma } from "../prisma";
-import { discoverFeedForUrl, verifyFeedCandidate } from "./feed-discovery";
+import { canonicalFeedKey, discoverFeedForUrl, verifyFeedCandidate } from "./feed-discovery";
 import { logAgentScan } from "./log";
 import {
   resolveFeedsWithBrowser,
@@ -343,6 +343,7 @@ export async function discoverFeedWithBrowserFallback(
         topCandidates: browserTopCandidates.slice(0, 5),
         rejectedCandidates: browserRejectedCandidates,
         lastError: undefined,
+        canonicalIdentity: bestVerified ? canonicalFeedKey(bestVerified.feedUrl) : null,
       },
       meta: {
         resolverPath,
@@ -361,21 +362,20 @@ export async function discoverFeedWithBrowserFallback(
     status: "BROWSER_RESOLUTION_VERIFICATION_FAILED",
     executionTimeMs: 0,
     errorLog: `Browser resolution found ${newBrowserCandidates.length} new candidate(s) but none verified. Rejected: ${browserRejectedCandidates.slice(-3).map((r) => `${r.feedUrl} (${r.reason})`).join("; ")}`,
-  });
-
-  return {
-    discovery: {
-      feedUrl: null,
-      discoveredVia: null,
-      detection: "none",
-      score: 0,
-      scopeConfidence: "low",
-      scopeMatch: fetchResult.scopeMatch,
-      taxonomyEvidence: fetchResult.taxonomyEvidence,
-      topCandidates: browserTopCandidates.slice(0, 5),
-      rejectedCandidates: browserRejectedCandidates,
-      lastError: `Browser resolution found ${newBrowserCandidates.length} candidate(s) but none verified. ${fetchResult.lastError || ""}`,
-    },
+  });    return {
+      discovery: {
+        feedUrl: null,
+        discoveredVia: null,
+        detection: "none",
+        score: 0,
+        scopeConfidence: "low",
+        scopeMatch: fetchResult.scopeMatch,
+        taxonomyEvidence: fetchResult.taxonomyEvidence,
+        topCandidates: browserTopCandidates.slice(0, 5),
+        rejectedCandidates: browserRejectedCandidates,
+        lastError: `Browser resolution found ${newBrowserCandidates.length} candidate(s) but none verified. ${fetchResult.lastError || ""}`,
+        canonicalIdentity: null,
+      },
     meta: {
       resolverPath: "none",
       browserAttempted: true,
@@ -402,6 +402,7 @@ const buildDiscoveryEvidencePayload = (
   scopeConfidence: discovery.scopeConfidence,
   scopeMatch: discovery.scopeMatch,
   taxonomyEvidence: discovery.taxonomyEvidence,
+  canonicalIdentity: discovery.canonicalIdentity ?? null,
   score: discovery.score,
   topCandidates: discovery.topCandidates,
   rejectedCandidates: discovery.rejectedCandidates,
@@ -588,6 +589,7 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
               scopeConfidence: discovery.scopeConfidence,
               scopeMatch: discovery.scopeMatch,
               taxonomyEvidence: discovery.taxonomyEvidence,
+              canonicalIdentity: discovery.canonicalIdentity ?? null,
               topCandidates: discovery.topCandidates,
               rejectedCandidates: discovery.rejectedCandidates,
               lastError: discovery.lastError ?? null,
@@ -634,6 +636,7 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
               scopeConfidence: "low",
               scopeMatch: "unrelated",
               taxonomyEvidence: null,
+              canonicalIdentity: null,
               topCandidates: [],
               rejectedCandidates: [],
               lastError: errorMessage,

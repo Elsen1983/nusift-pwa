@@ -74,6 +74,7 @@ const serializeHardCaseDiscoveryCandidate = (
     scopeConfidence: candidate.discovery.scopeConfidence,
     scopeMatch: candidate.discovery.scopeMatch || "generic",
     taxonomyEvidence: candidate.discovery.taxonomyEvidence || null,
+    canonicalIdentity: candidate.discovery.canonicalIdentity || null,
     topCandidates: candidate.discovery.topCandidates,
     rejectedCandidates: candidate.discovery.rejectedCandidates,
     lastError: candidate.discovery.lastError || null,

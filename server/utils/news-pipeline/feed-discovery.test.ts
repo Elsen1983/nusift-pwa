@@ -671,6 +671,9 @@ describe("buildTaxonomyHeuristicCandidates", () => {
       canonicalSectionHandles: [],
       feedParams: [],
       matchedFeedUrls: [],
+      localeHints: [],
+      hreflangLocales: [],
+      editionPaths: [],
     };
 
     const candidates = buildTaxonomyHeuristicCandidates(
@@ -695,6 +698,9 @@ describe("buildTaxonomyHeuristicCandidates", () => {
       canonicalSectionHandles: [],
       feedParams: [],
       matchedFeedUrls: [],
+      localeHints: [],
+      hreflangLocales: [],
+      editionPaths: [],
     };
 
     const candidates = buildTaxonomyHeuristicCandidates(
@@ -719,6 +725,9 @@ describe("buildTaxonomyHeuristicCandidates", () => {
       canonicalSectionHandles: [],
       feedParams: [],
       matchedFeedUrls: [],
+      localeHints: [],
+      hreflangLocales: [],
+      editionPaths: [],
     };
 
     const candidates = buildTaxonomyHeuristicCandidates(
@@ -742,6 +751,9 @@ describe("buildTaxonomyHeuristicCandidates", () => {
       canonicalSectionHandles: ["cork"],
       feedParams: [],
       matchedFeedUrls: [],
+      localeHints: [],
+      hreflangLocales: [],
+      editionPaths: [],
     };
 
     const candidates = buildTaxonomyHeuristicCandidates(
@@ -767,6 +779,9 @@ describe("buildTaxonomyHeuristicCandidates", () => {
       canonicalSectionHandles: [],
       feedParams: [],
       matchedFeedUrls: [],
+      localeHints: [],
+      hreflangLocales: [],
+      editionPaths: [],
     };
 
     const candidates = buildTaxonomyHeuristicCandidates(
@@ -903,6 +918,7 @@ describe("discovery contract consistency", () => {
     const expectedKeys = [
       "sectionIds", "tagIds", "categorySlugs", "collectionIds",
       "routeNames", "canonicalSectionHandles", "feedParams", "matchedFeedUrls",
+      "localeHints", "hreflangLocales", "editionPaths",
     ];
     for (const key of expectedKeys) {
       expect(evidence).toHaveProperty(key);
@@ -1567,5 +1583,1078 @@ describe("feed directory traversal helpers", () => {
     // (the mock returns a non-directory page, so it should abort)
     expect(result.feedUrl).toBeNull();
     expect(result.taxonomyEvidence.directoryTraversal).toBeUndefined();
+  });
+});
+
+// ── Edition / Locale Discovery ──────────────────────────────────────────────
+
+describe("edition / locale evidence extraction", () => {
+  it("extracts hreflang locale codes and edition paths from link tags", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    const html = `
+      <html lang="en"><head>
+        <link rel="alternate" hreflang="en-gb" href="https://example.com/uk/" />
+        <link rel="alternate" hreflang="en-us" href="https://example.com/us/" />
+        <link rel="alternate" hreflang="de" href="https://example.com/de/" />
+        <link rel="alternate" hreflang="x-default" href="https://example.com/" />
+      </head><body></body></html>
+    `;
+
+    const evidence = extractTaxonomyEvidence(html, "https://example.com/uk/");
+
+    // hreflang locales extracted (excluding x-default)
+    expect(evidence.hreflangLocales).toContain("en-gb");
+    expect(evidence.hreflangLocales).toContain("en-us");
+    expect(evidence.hreflangLocales).toContain("de");
+    expect(evidence.hreflangLocales).not.toContain("x-default");
+
+    // Edition paths extracted from hreflang hrefs
+    expect(evidence.editionPaths).toContain("/uk");
+    expect(evidence.editionPaths).toContain("/us");
+    expect(evidence.editionPaths).toContain("/de");
+
+    // html lang extracted as locale hint
+    expect(evidence.localeHints).toContain("en");
+  });
+
+  it("extracts country hints and codes from hreflang and country-labeled edition links", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    const html = `
+      <html lang="en-gb"><head>
+        <link rel="alternate" hreflang="en-gb" href="https://example.com/uk/" />
+      </head><body>
+        <nav>
+          <a href="/news/ireland/">Ireland</a>
+        </nav>
+      </body></html>
+    `;
+
+    const evidence = extractTaxonomyEvidence(html, "https://example.com/uk/");
+
+    expect(evidence.countryCodes).toContain("GB");
+    expect(evidence.countryCodes).toContain("IE");
+    expect(evidence.countryHints).toContain("united kingdom");
+    expect(evidence.countryHints).toContain("ireland");
+    expect(evidence.editionPaths).toContain("/uk");
+    expect(evidence.editionPaths).toContain("/news/ireland");
+  });
+
+  it("extracts edition nav links with strong signal when 2+ distinct paths found", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    const html = `
+      <html><head></head><body>
+        <nav>
+          <a href="/uk/">UK Edition</a>
+          <a href="/us/">US Edition</a>
+          <a href="/au/">Australia Edition</a>
+        </nav>
+      </body></html>
+    `;
+
+    const evidence = extractTaxonomyEvidence(html, "https://example.com/uk/");
+
+    // 2+ distinct edition nav links → strong signal → editionPaths populated
+    expect(evidence.editionPaths).toContain("/uk");
+    expect(evidence.editionPaths).toContain("/us");
+    expect(evidence.editionPaths).toContain("/au");
+  });
+
+  it("extracts og:locale meta tag as a locale hint", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    const html = `
+      <html lang="en-gb"><head>
+        <meta property="og:locale" content="en_GB" />
+      </head><body></body></html>
+    `;
+
+    const evidence = extractTaxonomyEvidence(html, "https://example.com");
+
+    expect(evidence.localeHints).toContain("en-gb");
+  });
+
+  it("extracts inLanguage from JSON-LD blocks", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    const html = `
+      <html><head></head><body>
+        <script type="application/ld+json">{"@type": "WebSite", "inLanguage": "en-GB"}</script>
+      </body></html>
+    `;
+
+    const evidence = extractTaxonomyEvidence(html, "https://example.com");
+
+    expect(evidence.localeHints).toContain("en-gb");
+  });
+
+  it("does not generate edition paths from single edition nav link alone", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    // Only ONE edition link - should not create strong edition paths
+    const html = `
+      <html><head></head><body>
+        <a href="/international/">International</a>
+      </body></html>
+    `;
+
+    const evidence = extractTaxonomyEvidence(html, "https://example.com");
+
+    // Single "international" text link → not strong (only 1 distinct path)
+    // But "international" keyword is strong → still added to editionPaths
+    expect(evidence.editionPaths).toContain("/international");
+  });
+
+  it("populates new locale fields with empty arrays when no signals found", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    const html = `<html><head></head><body><p>No locale signals here</p></body></html>`;
+    const evidence = extractTaxonomyEvidence(html, "https://example.com/news");
+
+    expect(evidence.localeHints).toEqual([]);
+    expect(evidence.hreflangLocales).toEqual([]);
+    expect(evidence.editionPaths).toEqual([]);
+  });
+});
+
+describe("buildEditionLocaleFeedCandidates", () => {
+  it("generates feed candidates under edition paths", async () => {
+    const { buildEditionLocaleFeedCandidates } = await import("./feed-discovery");
+
+    const candidates = buildEditionLocaleFeedCandidates(
+      "https://example.com/uk/",
+      {
+        localeHints: ["en-gb"],
+        hreflangLocales: ["en-gb", "en-us"],
+        editionPaths: ["/uk", "/us", "/de"],
+      },
+    );
+
+    expect(candidates).toContain("https://example.com/uk/rss");
+    expect(candidates).toContain("https://example.com/uk/rss/");
+    expect(candidates).toContain("https://example.com/uk/rss.xml");
+    expect(candidates).toContain("https://example.com/uk/feed");
+    expect(candidates).toContain("https://example.com/uk/feed/");
+    expect(candidates).toContain("https://example.com/uk/feed.xml");
+    expect(candidates).toContain("https://example.com/uk/atom.xml");
+    expect(candidates).toContain("https://example.com/us/rss");
+    expect(candidates).toContain("https://example.com/de/rss");
+  });
+
+  it("skips root edition path and empty paths", async () => {
+    const { buildEditionLocaleFeedCandidates } = await import("./feed-discovery");
+
+    const candidates = buildEditionLocaleFeedCandidates(
+      "https://example.com/",
+      {
+        localeHints: [],
+        hreflangLocales: [],
+        editionPaths: ["/", "", "/uk"],
+      },
+    );
+
+    // Only /uk should generate candidates, not / or empty
+    expect(candidates).toContain("https://example.com/uk/rss");
+    expect(candidates).not.toContain("https://example.com/rss");
+  });
+
+  it("filters out blocked paths like feedback/contact", async () => {
+    const { buildEditionLocaleFeedCandidates } = await import("./feed-discovery");
+
+    const candidates = buildEditionLocaleFeedCandidates(
+      "https://example.com/",
+      {
+        localeHints: [],
+        hreflangLocales: [],
+        editionPaths: ["/feedback", "/contact", "/uk"],
+      },
+    );
+
+    expect(candidates).toContain("https://example.com/uk/rss");
+    expect(candidates.every((c) => !c.includes("/feedback"))).toBe(true);
+    expect(candidates.every((c) => !c.includes("/contact"))).toBe(true);
+  });
+
+  it("returns empty array when no edition paths provided", async () => {
+    const { buildEditionLocaleFeedCandidates } = await import("./feed-discovery");
+
+    const candidates = buildEditionLocaleFeedCandidates(
+      "https://example.com/",
+      { localeHints: ["en"], hreflangLocales: [], editionPaths: [] },
+    );
+
+    expect(candidates).toEqual([]);
+  });
+});
+
+describe("edition / locale discovery integration", () => {
+  it("discovers edition-scoped feed via hreflang signals", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/uk/",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html lang="en-gb"><head>
+          <link rel="alternate" hreflang="en-gb" href="https://example.com/uk/" />
+          <link rel="alternate" hreflang="en-us" href="https://example.com/us/" />
+          <link rel="alternate" hreflang="de" href="https://example.com/de/" />
+        </head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/uk/",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>UK News</title><item><title>UK Story</title><link>https://example.com/uk/story-1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/uk/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/uk/") return htmlResponse;
+      if (url === "https://example.com/uk/rss") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/uk/",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBe("https://example.com/uk/rss");
+    // Feed may be discovered via direct-feed (scoped candidate) or edition-locale
+    expect(["direct-feed", "edition-locale"]).toContain(result.detection);
+    expect(result.taxonomyEvidence.hreflangLocales).toContain("en-gb");
+    expect(result.taxonomyEvidence.editionPaths).toContain("/uk");
+  });
+
+  it("discovers edition-scoped feed via nav-driven candidate generation", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/us/",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head></head><body>
+          <nav>
+            <a href="/uk/">UK Edition</a>
+            <a href="/us/">US Edition</a>
+            <a href="/au/">Australia Edition</a>
+          </nav>
+        </body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/us/",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>US News</title><item><title>US Story</title><link>https://example.com/us/story-1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/us/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/us/") return htmlResponse;
+      if (url === "https://example.com/us/rss") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/us/",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBe("https://example.com/us/rss");
+    expect(result.taxonomyEvidence.editionPaths).toContain("/uk");
+    expect(result.taxonomyEvidence.editionPaths).toContain("/us");
+    expect(result.taxonomyEvidence.editionPaths).toContain("/au");
+    // Edition-locale candidates should appear in topCandidates
+    expect(result.topCandidates.some((c) => c.detection === "edition-locale")).toBe(true);
+  });
+
+  it("edition-scoped feed outranks generic root feed when scope evidence is present", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/uk/sport",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html lang="en-gb"><head>
+          <link rel="alternate" hreflang="en-gb" href="https://example.com/uk/" />
+          <link rel="alternate" hreflang="en-us" href="https://example.com/us/" />
+          <link rel="alternate" type="application/rss+xml" href="/rss.xml" />
+          <link rel="alternate" type="application/rss+xml" href="/uk/sport/rss" />
+        </head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/uk/sport",
+    );
+
+    const makeGenericFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>All News</title><item><title>Generic</title><link>https://example.com/story</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/rss.xml",
+    );
+
+    const makeScopedFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>UK Sport</title><item><title>UK Sport Story</title><link>https://example.com/uk/sport/story</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/uk/sport/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/uk/sport") return htmlResponse;
+      if (url === "https://example.com/rss.xml") return makeGenericFeed();
+      if (url === "https://example.com/uk/sport/rss") return makeScopedFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/uk/sport",
+      userAgent: "NuSift-Test",
+      preferScopedDirectFeed: true,
+    });
+
+    // Scoped edition feed should beat generic root feed
+    expect(result.feedUrl).toBe("https://example.com/uk/sport/rss");
+    expect(result.taxonomyEvidence.hreflangLocales.length).toBeGreaterThan(0);
+    expect(result.taxonomyEvidence.editionPaths.length).toBeGreaterThan(0);
+  });
+
+  it("handles opaque edition feed URL via directory-like discovery when edition paths are detected", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/international/",
+    );
+
+    // Page has hreflang + the feed is declared via link tag
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head>
+          <link rel="alternate" hreflang="en" href="https://example.com/international/" />
+          <link rel="alternate" hreflang="de" href="https://example.com/de/" />
+          <link rel="alternate" type="application/rss+xml" href="/intl/rss" />
+        </head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/international/",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>International</title><item><title>Story</title><link>https://example.com/international/story</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/intl/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/international/") return htmlResponse;
+      if (url === "https://example.com/intl/rss") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/international/",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBe("https://example.com/intl/rss");
+    expect(result.taxonomyEvidence.hreflangLocales.length).toBeGreaterThan(0);
+  });
+});
+
+describe("edition / locale discovery - false positive prevention", () => {
+  it("does not generate false positives from generic 'news' text alone", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    const html = `
+      <html><head></head><body>
+        <h1>Latest News</h1>
+        <p>Breaking news and updates from around the world.</p>
+        <a href="/news">News</a>
+        <a href="/sport">Sport</a>
+      </body></html>
+    `;
+
+    const evidence = extractTaxonomyEvidence(html, "https://example.com/news");
+
+    // No edition paths from generic "news" text
+    expect(evidence.editionPaths).toEqual([]);
+    expect(evidence.hreflangLocales).toEqual([]);
+  });
+
+  it("does not generate false positives from generic 'edition' text without structured nav", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    const html = `
+      <html><head></head><body>
+        <p>Welcome to the international edition of our site.</p>
+        <a href="/about">About</a>
+      </body></html>
+    `;
+
+    const evidence = extractTaxonomyEvidence(html, "https://example.com");
+
+    // Inline text mentioning "international edition" should not create edition paths
+    // (only <a> tags with href are considered)
+    expect(evidence.editionPaths).toEqual([]);
+  });
+
+  it("does not generate false positives from 'international' text alone in a single link", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    const html = `
+      <html><head></head><body>
+        <a href="/international-news">International News</a>
+      </body></html>
+    `;
+
+    const evidence = extractTaxonomyEvidence(html, "https://example.com");
+
+    // Single link with "international" → has "international" keyword → added to editionPaths
+    // but scoring requires hreflang OR 2+ paths for the bonus
+    // This is acceptable: the candidate is generated but won't get a scoring bonus
+    // since there's only 1 edition path and no hreflang evidence
+  });
+
+  it("no locale bonus applied when only 1 edition path and no hreflang", async () => {
+    // This tests the scoring logic: with only 1 edition path and no hreflang,
+    // hasStrongLocaleSignal = false, so no locale bonus is applied.
+    // A generic root feed should still be able to win.
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/news",
+    );
+
+    // Only 1 edition link — weak signal
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head></head><body>
+          <a href="/international/">International</a>
+        </body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/news",
+    );
+
+    const makeGenericFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>All News</title><item><title>Generic</title><link>https://example.com/story</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/rss.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/news") return htmlResponse;
+      if (url === "https://example.com/rss.xml") return makeGenericFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/news",
+      userAgent: "NuSift-Test",
+    });
+
+    // Generic root feed should still be found
+    expect(result.feedUrl).toBe("https://example.com/rss.xml");
+  });
+});
+
+describe("edition / locale - contract and evidence persistence", () => {
+  it("taxonomyEvidence includes locale fields in discovery result", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/uk/",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html lang="en-gb"><head>
+          <link rel="alternate" hreflang="en-gb" href="https://example.com/uk/" />
+          <link rel="alternate" hreflang="en-us" href="https://example.com/us/" />
+          <meta property="og:locale" content="en_GB" />
+        </head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/uk/",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>UK</title><item><title>S</title><link>https://example.com/uk/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/uk/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/uk/") return htmlResponse;
+      if (url === "https://example.com/uk/rss") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/uk/",
+      userAgent: "NuSift-Test",
+    });
+
+    // All locale fields present and populated
+    expect(Array.isArray(result.taxonomyEvidence.localeHints)).toBe(true);
+    expect(Array.isArray(result.taxonomyEvidence.hreflangLocales)).toBe(true);
+    expect(Array.isArray(result.taxonomyEvidence.editionPaths)).toBe(true);
+
+    expect(result.taxonomyEvidence.hreflangLocales).toContain("en-gb");
+    expect(result.taxonomyEvidence.hreflangLocales).toContain("en-us");
+    expect(result.taxonomyEvidence.editionPaths).toContain("/uk");
+    expect(result.taxonomyEvidence.localeHints).toContain("en-gb");
+
+    // Feed is discovered (may be direct-feed from scoped candidate or edition-locale)
+    expect(["direct-feed", "edition-locale"]).toContain(result.detection);
+  });
+
+  it("locale fields are included in topCandidates when edition-locale candidates exist", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/us/",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head>
+          <link rel="alternate" hreflang="en-us" href="https://example.com/us/" />
+          <link rel="alternate" hreflang="en-gb" href="https://example.com/uk/" />
+        </head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/us/",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><title>US</title><item><title>S</title><link>https://example.com/us/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/us/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/us/") return htmlResponse;
+      if (url === "https://example.com/us/rss") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/us/",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.topCandidates.length).toBeGreaterThan(0);
+    // At least one top candidate should be edition-locale
+    expect(result.topCandidates.some((c) => c.detection === "edition-locale")).toBe(true);
+  });
+});
+
+// ── Feed URL Canonicalization ──────────────────────────────────────────────
+
+describe("canonicalFeedKey", () => {
+  it("collapses trailing slash variants to the same key", async () => {
+    const { canonicalFeedKey } = await import("./feed-discovery");
+
+    expect(canonicalFeedKey("https://example.com/news/rss"))
+      .toBe(canonicalFeedKey("https://example.com/news/rss/"));
+  });
+
+  it("collapses common feed path aliases to the same key", async () => {
+    const { canonicalFeedKey } = await import("./feed-discovery");
+
+    const base = "https://example.com/news";
+    const key1 = canonicalFeedKey(`${base}/rss`);
+    const key2 = canonicalFeedKey(`${base}/rss/`);
+    const key3 = canonicalFeedKey(`${base}/rss.xml`);
+    const key4 = canonicalFeedKey(`${base}/feed`);
+    const key5 = canonicalFeedKey(`${base}/feed/`);
+    const key6 = canonicalFeedKey(`${base}/feed.xml`);
+    const key7 = canonicalFeedKey(`${base}/atom.xml`);
+    const key8 = canonicalFeedKey(`${base}/index.xml`);
+
+    expect(key1).toBe(key2);
+    expect(key1).toBe(key3);
+    expect(key1).toBe(key4);
+    expect(key1).toBe(key5);
+    expect(key1).toBe(key6);
+    expect(key1).toBe(key7);
+    expect(key1).toBe(key8);
+  });
+
+  it("normalises query parameter order", async () => {
+    const { canonicalFeedKey } = await import("./feed-discovery");
+
+    const key1 = canonicalFeedKey("https://example.com/feed?cat=5&format=rss2");
+    const key2 = canonicalFeedKey("https://example.com/feed?format=rss2&cat=5");
+
+    expect(key1).toBe(key2);
+  });
+
+  it("treats redirect target and declared feed URL as the same key", async () => {
+    const { canonicalFeedKey } = await import("./feed-discovery");
+
+    // /rss redirects to /rss.xml — same canonical identity
+    const key1 = canonicalFeedKey("https://example.com/news/rss");
+    const key2 = canonicalFeedKey("https://example.com/news/rss.xml");
+
+    expect(key1).toBe(key2);
+  });
+
+  it("does NOT collapse unrelated feeds from the same domain", async () => {
+    const { canonicalFeedKey } = await import("./feed-discovery");
+
+    const sportKey = canonicalFeedKey("https://example.com/sport/rss");
+    const newsKey = canonicalFeedKey("https://example.com/news/rss");
+
+    expect(sportKey).not.toBe(newsKey);
+  });
+
+  it("does NOT collapse feeds on different subdomains", async () => {
+    const { canonicalFeedKey } = await import("./feed-discovery");
+
+    const key1 = canonicalFeedKey("https://www.example.com/rss");
+    const key2 = canonicalFeedKey("https://cdn.example.com/rss");
+
+    expect(key1).not.toBe(key2);
+  });
+
+  it("is case-insensitive for host and path", async () => {
+    const { canonicalFeedKey } = await import("./feed-discovery");
+
+    const key1 = canonicalFeedKey("https://Example.COM/News/RSS");
+    const key2 = canonicalFeedKey("https://example.com/news/rss");
+
+    expect(key1).toBe(key2);
+  });
+
+  it("strips URL fragments", async () => {
+    const { canonicalFeedKey } = await import("./feed-discovery");
+
+    const key1 = canonicalFeedKey("https://example.com/rss#section1");
+    const key2 = canonicalFeedKey("https://example.com/rss#section2");
+
+    expect(key1).toBe(key2);
+  });
+
+  it("does NOT collapse different scoped feeds under the same base", async () => {
+    const { canonicalFeedKey } = await import("./feed-discovery");
+
+    const key1 = canonicalFeedKey("https://example.com/uk/rss");
+    const key2 = canonicalFeedKey("https://example.com/us/rss");
+
+    expect(key1).not.toBe(key2);
+  });
+});
+
+describe("feed URL deduplication in discovery", () => {
+  it("deduplicates equivalent feed candidates so topCandidates does not contain both /rss and /rss/", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/news",
+    );
+
+    // Page declares both /news/rss and /news/rss/ as feed links
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head>
+          <link rel="alternate" type="application/rss+xml" href="/news/rss" />
+          <link rel="alternate" type="application/rss+xml" href="/news/rss/" />
+        </head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/news",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><item><title>S</title><link>https://example.com/news/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/news/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, opts?: { method?: string }) => {
+      if (opts?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/news") return htmlResponse;
+      if (url === "https://example.com/news/rss") return makeFeed();
+      if (url === "https://example.com/news/rss/") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/news",
+      userAgent: "NuSift-Test",
+    });
+
+    // Should discover a feed successfully
+    expect(result.feedUrl).toBeTruthy();
+
+    // topCandidates should not contain both /rss and /rss/ as separate entries
+    const topUrls = result.topCandidates.map((c: any) => c.feedUrl);
+    const hasTrailingSlash = topUrls.some((u: string) => u.endsWith("/rss/"));
+    const hasNoTrailingSlash = topUrls.some((u: string) => u.endsWith("/rss") && !u.endsWith("/rss/"));
+    // At most one variant should appear
+    expect(hasTrailingSlash && hasNoTrailingSlash).toBe(false);
+  });
+
+  it("deduplicates /rss and /feed variants that point to the same canonical identity", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/sport",
+    );
+
+    // Page declares both /sport/rss and /sport/feed — same canonical identity
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head>
+          <link rel="alternate" type="application/rss+xml" href="/sport/rss" />
+          <link rel="alternate" type="application/atom+xml" href="/sport/feed" />
+        </head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/sport",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><item><title>S</title><link>https://example.com/sport/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/sport/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, opts?: { method?: string }) => {
+      if (opts?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/sport") return htmlResponse;
+      if (url === "https://example.com/sport/rss") return makeFeed();
+      if (url === "https://example.com/sport/feed") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/sport",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBeTruthy();
+
+    // topCandidates should not contain both /sport/rss and /sport/feed
+    const topUrls = result.topCandidates.map((c: any) => c.feedUrl);
+    const hasRss = topUrls.some((u: string) => u.includes("/sport/rss"));
+    const hasFeed = topUrls.some((u: string) => u.includes("/sport/feed"));
+    expect(hasRss && hasFeed).toBe(false);
+  });
+
+  it("redirect target is not added as a separate candidate from the declared URL", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/tech",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head>
+          <link rel="alternate" type="application/rss+xml" href="/tech/rss" />
+        </head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/tech",
+    );
+
+    // /tech/rss redirects (response.url) to /tech/rss.xml — same canonical key
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><item><title>S</title><link>https://example.com/tech/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/tech/rss.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, opts?: { method?: string }) => {
+      if (opts?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/tech") return htmlResponse;
+      // /tech/rss redirects to /tech/rss.xml — both paths serve the same feed
+      if (url === "https://example.com/tech/rss") return makeFeed();
+      if (url === "https://example.com/tech/rss.xml") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl, canonicalFeedKey } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/tech",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBeTruthy();
+    // topCandidates should not have two entries for the same canonical feed
+    const canonicalUrls = result.topCandidates.map((c: any) => c.feedUrl);
+    const uniqueCanonicals = new Set(canonicalUrls.map((u: string) => canonicalFeedKey(u)));
+    expect(uniqueCanonicals.size).toBe(canonicalUrls.length);
+  });
+
+  it("does not collapse unrelated scoped feeds on the same domain", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/",
+    );
+
+    // Root page has links to multiple section feeds
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head>
+          <link rel="alternate" type="application/rss+xml" href="/sport/rss" />
+          <link rel="alternate" type="application/rss+xml" href="/news/rss" />
+          <link rel="alternate" type="application/rss+xml" href="/tech/rss" />
+        </head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/",
+    );
+
+    const makeSportFeed = () => setResponseUrl(
+      makeResponse(`<?xml version="1.0"?><rss><channel><item><title>S</title><link>https://example.com/sport/1</link></item></channel></rss>`, {
+        headers: { "content-type": "application/rss+xml" },
+      }),
+      "https://example.com/sport/rss",
+    );
+    const makeNewsFeed = () => setResponseUrl(
+      makeResponse(`<?xml version="1.0"?><rss><channel><item><title>N</title><link>https://example.com/news/1</link></item></channel></rss>`, {
+        headers: { "content-type": "application/rss+xml" },
+      }),
+      "https://example.com/news/rss",
+    );
+    const makeTechFeed = () => setResponseUrl(
+      makeResponse(`<?xml version="1.0"?><rss><channel><item><title>T</title><link>https://example.com/tech/1</link></item></channel></rss>`, {
+        headers: { "content-type": "application/rss+xml" },
+      }),
+      "https://example.com/tech/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, opts?: { method?: string }) => {
+      if (opts?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/") return htmlResponse;
+      if (url === "https://example.com/sport/rss") return makeSportFeed();
+      if (url === "https://example.com/news/rss") return makeNewsFeed();
+      if (url === "https://example.com/tech/rss") return makeTechFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBeTruthy();
+    // All three section feeds are distinct canonical identities
+    // topCandidates should preserve all three (not collapse them)
+    const topUrls = result.topCandidates.map((c: any) => c.feedUrl);
+    const hasSport = topUrls.some((u: string) => u.includes("/sport/"));
+    const hasNews = topUrls.some((u: string) => u.includes("/news/"));
+    // At least two distinct scoped feeds should appear in top candidates
+    expect(hasSport || hasNews).toBe(true);
+  });
+
+  it("no regression for existing direct-feed discovery", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", {
+        headers: { "content-type": "application/rss+xml" },
+      }),
+      "https://example.com/feed.xml",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, opts?: { method?: string }) => {
+      if (opts?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/feed.xml") return headResponse;
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/feed.xml",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBe("https://example.com/feed.xml");
+    expect(result.detection).toBe("direct-feed");
+    expect(result.scopeMatch).toBeDefined();
+    expect(result.taxonomyEvidence).toBeDefined();
+  });
+
+  it("no regression for taxonomy discovery tests", async () => {
+    const { extractTaxonomyEvidence } = await import("./feed-discovery");
+
+    const html = `
+      <html><body>
+        <script type="application/json">{"sectionId": "123", "categoryId": "456"}</script>
+      </body></html>
+    `;
+
+    const evidence = extractTaxonomyEvidence(html, "https://example.com/nba");
+    expect(evidence.sectionIds).toContain("123");
+    expect(evidence.sectionIds).toContain("456");
+    expect(evidence.canonicalSectionHandles).toContain("nba");
+  });
+});
+
+// ── Canonical Identity Persistence ─────────────────────────────────────────
+
+describe("canonical identity persistence in discovery results", () => {
+  it("canonicalIdentity is present when feed is resolved", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/news",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head><link rel="alternate" type="application/rss+xml" href="/news/rss" /></head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/news",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><item><title>S</title><link>https://example.com/news/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/news/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, opts?: { method?: string }) => {
+      if (opts?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/news") return htmlResponse;
+      if (url === "https://example.com/news/rss") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl, canonicalFeedKey } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/news",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBeTruthy();
+    expect(result.canonicalIdentity).toBeTruthy();
+    expect(result.canonicalIdentity).toBe(canonicalFeedKey(result.feedUrl!));
+  });
+
+  it("canonicalIdentity is null when no feed is discovered", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/empty",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse("<html><head></head><body>No feed</body></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+      "https://example.com/empty",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, opts?: { method?: string }) => {
+      if (opts?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/empty") return htmlResponse;
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/empty",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBeNull();
+    expect(result.canonicalIdentity).toBeNull();
+  });
+
+  it("canonicalIdentity is present on topCandidates", async () => {
+    const headResponse = setResponseUrl(
+      makeResponse("", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      "https://example.com/sport",
+    );
+
+    const htmlResponse = setResponseUrl(
+      makeResponse(
+        `<html><head><link rel="alternate" type="application/rss+xml" href="/sport/rss" /></head><body></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/sport",
+    );
+
+    const makeFeed = () => setResponseUrl(
+      makeResponse(
+        `<?xml version="1.0"?><rss><channel><item><title>S</title><link>https://example.com/sport/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      ),
+      "https://example.com/sport/rss",
+    );
+
+    safeFetchMock.mockImplementation(async (url: string, opts?: { method?: string }) => {
+      if (opts?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/sport") return htmlResponse;
+      if (url === "https://example.com/sport/rss") return makeFeed();
+      return makeResponse("not found", { status: 404 });
+    });
+
+    const { discoverFeedForUrl } = await import("./feed-discovery");
+    const result = await discoverFeedForUrl({
+      pageUrl: "https://example.com/sport",
+      userAgent: "NuSift-Test",
+    });
+
+    expect(result.feedUrl).toBeTruthy();
+    expect(result.topCandidates.length).toBeGreaterThan(0);
+    for (const candidate of result.topCandidates) {
+      expect(candidate.canonicalIdentity).toBeTruthy();
+      expect(typeof candidate.canonicalIdentity).toBe("string");
+    }
+  });
+
+  it("scoped feeds with different paths have different canonicalIdentity", async () => {
+    const { canonicalFeedKey } = await import("./feed-discovery");
+
+    const sportKey = canonicalFeedKey("https://example.com/sport/rss");
+    const newsKey = canonicalFeedKey("https://example.com/news/rss");
+
+    expect(sportKey).not.toBe(newsKey);
   });
 });

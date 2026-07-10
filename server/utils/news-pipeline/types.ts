@@ -54,6 +54,18 @@ export type TaxonomyEvidence = {
     matchedLabel: string;
     candidateCount: number;
   };
+  /** Locale/edition hints extracted from page metadata (og:locale, html lang, JSON-LD inLanguage). */
+  localeHints: string[];
+  /** hreflang locale codes extracted from <link rel="alternate" hreflang="..."> tags. */
+  hreflangLocales: string[];
+  /** Edition/locale-scoped URL paths extracted from hreflang links and edition navigation. */
+  editionPaths: string[];
+  /** Country names detected from edition/locale labels or hreflang-derived metadata. */
+  countryHints?: string[];
+  /** ISO 3166-1 alpha-2 country codes detected from edition/locale signals. */
+  countryCodes?: string[];
+  /** Canonical feed identity derived from canonicalFeedKey(). Persists the normalised feed URL key so downstream tooling can recognise when two different-looking feed URLs are the same feed. */
+  canonicalIdentity?: string | null;
 };
 
 export interface HardCaseDiscoveryCandidate {
@@ -74,6 +86,7 @@ export interface HardCaseDiscoveryCandidate {
     scopeConfidence: string;
     scopeMatch?: ScopeMatch;
     taxonomyEvidence?: TaxonomyEvidence;
+    canonicalIdentity?: string | null;
     topCandidates: Array<{
       feedUrl: string;
       detection: string;
@@ -81,6 +94,7 @@ export interface HardCaseDiscoveryCandidate {
       contentType?: string | null;
       scopeMatch?: ScopeMatch;
       taxonomyEvidence?: TaxonomyEvidence;
+      canonicalIdentity?: string | null;
     }>;
     rejectedCandidates: Array<{
       feedUrl: string;
@@ -90,6 +104,7 @@ export interface HardCaseDiscoveryCandidate {
       reason: string;
       scopeMatch?: ScopeMatch;
       taxonomyEvidence?: TaxonomyEvidence;
+      canonicalIdentity?: string | null;
     }>;
     lastError?: string;
   };
@@ -102,6 +117,8 @@ export type DiscoverySummaryCandidate = {
   score: number;
   contentType?: string | null;
   scopeMatch: ScopeMatch;
+  /** Canonical feed identity for this candidate, derived from canonicalFeedKey(). */
+  canonicalIdentity?: string | null;
 };
 
 /** Rejected candidate from discovery verification. */
@@ -125,6 +142,8 @@ export type FeedDiscoveryResult = {
   topCandidates: DiscoverySummaryCandidate[];
   rejectedCandidates: RejectedDiscoveryCandidate[];
   lastError?: string;
+  /** Canonical feed identity for the resolved feedUrl, derived from canonicalFeedKey(). Present when a feed was discovered. */
+  canonicalIdentity?: string | null;
 };
 
 export interface IngestCandidate {

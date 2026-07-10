@@ -220,6 +220,7 @@ export const buildDiscoveryEvidencePayload = (
       taxonomyEvidence?: TaxonomyEvidence;
     }>;
     lastError?: string;
+    canonicalIdentity?: string | null;
   },
 ) =>
   ({
@@ -231,6 +232,7 @@ export const buildDiscoveryEvidencePayload = (
     scopeConfidence: discovery.scopeConfidence || "low",
     scopeMatch: discovery.scopeMatch || "generic",
     taxonomyEvidence: discovery.taxonomyEvidence ?? null,
+    canonicalIdentity: discovery.canonicalIdentity ?? null,
     score: discovery.score ?? 0,
     topCandidates: discovery.topCandidates || [],
     rejectedCandidates: discovery.rejectedCandidates || [],
@@ -299,6 +301,7 @@ const buildHardCaseDiscoveryCandidate = (input: {
       taxonomyEvidence?: TaxonomyEvidence;
     }>;
     lastError?: string;
+    canonicalIdentity?: string | null;
   };
 }): HardCaseDiscoveryCandidate | null => {
   if (!shouldQueueHardCaseDiscovery(input.discovery)) {
@@ -312,18 +315,19 @@ const buildHardCaseDiscoveryCandidate = (input: {
     targetUrl: input.targetUrl,
     existingFeedUrl: input.existingFeedUrl || null,
     queueReason: getHardCaseQueueReason(input.discovery),
-    discovery: {
-      feedUrl: input.discovery.feedUrl,
-      discoveredVia: input.discovery.discoveredVia ?? null,
-      detection: input.discovery.detection,
-      score: input.discovery.score ?? 0,
-      scopeConfidence: input.discovery.scopeConfidence || "low",
-      scopeMatch: input.discovery.scopeMatch,
-      taxonomyEvidence: input.discovery.taxonomyEvidence,
-      topCandidates: input.discovery.topCandidates || [],
-      rejectedCandidates: input.discovery.rejectedCandidates || [],
-      lastError: input.discovery.lastError,
-    },
+  discovery: {
+    feedUrl: input.discovery.feedUrl,
+    discoveredVia: input.discovery.discoveredVia ?? null,
+    detection: input.discovery.detection,
+    score: input.discovery.score ?? 0,
+    scopeConfidence: input.discovery.scopeConfidence || "low",
+    scopeMatch: input.discovery.scopeMatch,
+    taxonomyEvidence: input.discovery.taxonomyEvidence,
+    canonicalIdentity: input.discovery.canonicalIdentity ?? null,
+    topCandidates: input.discovery.topCandidates || [],
+    rejectedCandidates: input.discovery.rejectedCandidates || [],
+    lastError: input.discovery.lastError,
+  },
   };
 };
 

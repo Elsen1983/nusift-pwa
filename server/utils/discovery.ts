@@ -86,10 +86,25 @@ const buildDiscoveryEvidencePayload = (
     discoveredVia: string | null;
     detection: string;
     scopeConfidence?: string;
+    scopeMatch?: string;
     score?: number;
-    topCandidates?: Array<{ feedUrl: string; detection: string; score: number; contentType?: string | null }>;
-    rejectedCandidates?: Array<{ feedUrl: string; detection: string; score: number; contentType?: string | null; reason: string }>;
+    taxonomyEvidence?: {
+      sectionIds: string[];
+      tagIds: string[];
+      categorySlugs: string[];
+      collectionIds: string[];
+      routeNames: string[];
+      canonicalSectionHandles: string[];
+      feedParams: string[];
+      matchedFeedUrls: string[];
+      localeHints: string[];
+      hreflangLocales: string[];
+      editionPaths: string[];
+    } | null;
+    topCandidates?: Array<{ feedUrl: string; detection: string; score: number; contentType?: string | null; scopeMatch?: string }>;
+    rejectedCandidates?: Array<{ feedUrl: string; detection: string; score: number; contentType?: string | null; reason: string; scopeMatch?: string }>;
     lastError?: string;
+    canonicalIdentity?: string | null;
   },
 ) =>
   ({
@@ -99,7 +114,10 @@ const buildDiscoveryEvidencePayload = (
     discoveredVia: discovery.discoveredVia,
     detection: discovery.detection,
     scopeConfidence: discovery.scopeConfidence || "low",
+    scopeMatch: discovery.scopeMatch || null,
     score: discovery.score ?? 0,
+    taxonomyEvidence: discovery.taxonomyEvidence || null,
+    canonicalIdentity: discovery.canonicalIdentity ?? null,
     topCandidates: discovery.topCandidates || [],
     rejectedCandidates: discovery.rejectedCandidates || [],
     lastError: discovery.lastError || null,

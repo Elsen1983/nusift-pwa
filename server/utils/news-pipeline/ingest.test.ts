@@ -225,6 +225,9 @@ describe("buildDiscoveryEvidencePayload", () => {
       canonicalSectionHandles: ["sport"],
       feedParams: [],
       matchedFeedUrls: [],
+      localeHints: [],
+      hreflangLocales: [],
+      editionPaths: [],
     } as TaxonomyEvidence,
     score: 65,
     topCandidates: [
@@ -260,6 +263,9 @@ describe("buildDiscoveryEvidencePayload", () => {
       canonicalSectionHandles: ["sport"],
       feedParams: ["42"],
       matchedFeedUrls: ["https://example.com/sport/rss"],
+      localeHints: [],
+      hreflangLocales: [],
+      editionPaths: [],
     };
 
     const result = buildDiscoveryEvidencePayload(

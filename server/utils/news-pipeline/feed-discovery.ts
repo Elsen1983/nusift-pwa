@@ -1,6 +1,8 @@
 import { safeFetch } from "../ssrf-guard";
 import { buildFeedUrlCandidates } from "./import-rss";
 import type { FeedDiscoveryResult, ScopeMatch, TaxonomyEvidence } from "./types";
+import * as isoCountryPackage from "i18n-iso-countries";
+import enCountryLocaleJson from "i18n-iso-countries/langs/en.json";
 
 type SupportedFeedType =
   | "application/rss+xml"
@@ -11,7 +13,7 @@ type SupportedFeedType =
 type FeedCandidate = {
   feedUrl: string;
   discoveredVia: string;
-  detection: "direct-feed" | "html-link" | "html-raw-url" | "http-link" | "robots-sitemap" | "cms-fingerprint" | "taxonomy-extraction" | "directory-traversal";
+  detection: "direct-feed" | "html-link" | "html-raw-url" | "http-link" | "robots-sitemap" | "cms-fingerprint" | "taxonomy-extraction" | "directory-traversal" | "edition-locale";
   contentType?: SupportedFeedType | null;
   score: number;
   scopeMatch: ScopeMatch;
@@ -23,6 +25,7 @@ type DiscoverySummaryCandidate = {
   score: number;
   contentType?: SupportedFeedType | null;
   scopeMatch: ScopeMatch;
+  canonicalIdentity?: string | null;
 };
 
 type RejectedCandidate = DiscoverySummaryCandidate & {
@@ -32,6 +35,26 @@ type RejectedCandidate = DiscoverySummaryCandidate & {
 type SitemapEntry = {
   loc: string;
   publishedAt: Date | null;
+};
+
+const isoCountries = ("default" in isoCountryPackage ? isoCountryPackage.default : isoCountryPackage) as any;
+const isoCountryLocale = ("default" in enCountryLocaleJson ? enCountryLocaleJson.default : enCountryLocaleJson) as any;
+
+isoCountries.registerLocale(isoCountryLocale);
+
+const COUNTRY_NAME_OVERRIDES: Record<string, string> = {
+  "u k": "GB",
+  uk: "GB",
+  "united kingdom": "GB",
+  britain: "GB",
+  "great britain": "GB",
+  "u s": "US",
+  usa: "US",
+  "u s a": "US",
+  "united states": "US",
+  "united states of america": "US",
+  ireland: "IE",
+  "republic of ireland": "IE",
 };
 
 const FEED_CONTENT_TYPE_PATTERNS = [
@@ -87,6 +110,147 @@ const resolveRelativeUrl = (rawUrl: string, pageUrl: string) => {
   } catch {
     return null;
   }
+};
+
+// ─── Feed URL Canonicalization ───────────────────────────────────────────────
+
+/**
+ * Common feed path suffixes that are considered equivalent when they
+ * resolve to the same domain and base path.
+ *
+ * e.g. /news/rss, /news/rss/, /news/rss.xml, /news/feed, /news/feed/
+ *      are all the same canonical feed identity.
+ */
+const COMMON_FEED_PATH_ALIASES = /\/(?:rss|rss\.xml|feed|feed\.xml|atom\.xml|index\.xml|index\.rss|feeds)(?:\/?$|\?)/i;
+
+/**
+ * Produce a canonical key for a feed URL so that superficial URL variants
+ * (trailing-slash, path alias, query-parameter order) are recognised as
+ * the same feed.
+ *
+ * Rules:
+ *  - Lower-case scheme, host, path.
+ *  - Strip trailing slash (except root "/").
+ *  - Remove default ports (:80 for http, :443 for https).
+ *  - Sort query parameters alphabetically (preserving key=value pairs).
+ *  - Strip fragment.
+ *  - Normalise common feed-path suffixes (/rss, /rss/, /rss.xml, /feed,
+ *    /feed/, /feed.xml, /index.xml, /atom.xml, /feeds) that share the
+ *    same base path to a single canonical form.
+ *
+ * Safety:
+ *  - Only normalises path endings — never collapses unrelated path segments.
+ *  - Only normalises within the same origin.
+ */
+export const canonicalFeedKey = (rawUrl: string): string => {
+  try {
+    const url = new URL(rawUrl);
+    url.protocol = url.protocol.toLowerCase();
+    url.hostname = url.hostname.toLowerCase();
+    url.hash = "";
+
+    // Remove default ports
+    if ((url.protocol === "http:" && url.port === "80") ||
+        (url.protocol === "https:" && url.port === "443")) {
+      url.port = "";
+    }
+
+    // Normalise path: lowercase, strip trailing slash (preserve root)
+    let pathname = url.pathname.toLowerCase();
+    if (pathname.length > 1 && pathname.endsWith("/")) {
+      pathname = pathname.slice(0, -1);
+    }
+
+    // Normalise common feed-path suffixes to a canonical form.
+    // /news/rss, /news/rss/, /news/rss.xml, /news/feed, /news/feed.xml etc.
+    // all collapse to the same base path + canonical suffix.
+    if (COMMON_FEED_PATH_ALIASES.test(pathname)) {
+      const lastSlash = pathname.lastIndexOf("/");
+      const base = lastSlash > 0 ? pathname.slice(0, lastSlash) : "";
+      pathname = `${base}/rss`;
+    }
+
+    url.pathname = pathname;
+
+    // Sort query parameters alphabetically
+    url.searchParams.sort();
+
+    return url.toString();
+  } catch {
+    return rawUrl.toLowerCase().replace(/\/+$/, "");
+  }
+};
+
+/**
+ * Deduplicate a list of feed candidates by canonical key.
+ * When multiple candidates resolve to the same canonical identity,
+ * keep the one with the highest score (preserving original feedUrl).
+ */
+const deduplicateFeedCandidates = (candidates: FeedCandidate[]): FeedCandidate[] => {
+  const bestByKey = new Map<string, FeedCandidate>();
+  for (const candidate of candidates) {
+    const key = canonicalFeedKey(candidate.feedUrl);
+    const existing = bestByKey.get(key);
+    if (!existing || candidate.score > existing.score) {
+      bestByKey.set(key, candidate);
+    }
+  }
+  return [...bestByKey.values()];
+};
+
+const normalizeCountryToken = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[._/]+/g, " ")
+    .replace(/[-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const resolveCountryCode = (value: string): string | null => {
+  const normalized = normalizeCountryToken(value);
+  if (!normalized) return null;
+
+  const override = COUNTRY_NAME_OVERRIDES[normalized];
+  if (override) return override;
+
+  const direct = isoCountries.getAlpha2Code(normalized, "en");
+  if (direct) return direct;
+
+  const compact = normalized.replace(/\s+/g, "");
+  if (compact && compact !== normalized) {
+    const compactOverride = COUNTRY_NAME_OVERRIDES[compact];
+    if (compactOverride) return compactOverride;
+    const compactDirect = isoCountries.getAlpha2Code(compact, "en");
+    if (compactDirect) return compactDirect;
+  }
+
+  return null;
+};
+
+const resolveCountryName = (value: string): string | null => {
+  const code = resolveCountryCode(value);
+  if (!code) return null;
+  const resolved = isoCountries.getName(code, "en");
+  return resolved ? normalizeCountryToken(resolved) : null;
+};
+
+const extractCountryFromLocale = (locale: string): { code: string; name: string } | null => {
+  const normalized = locale.toLowerCase().replace(/_/g, "-");
+  const parts = normalized.split("-").filter(Boolean);
+  if (parts.length < 2) return null;
+
+  const region = parts.at(-1);
+  if (!region) return null;
+  if (!/^[a-z]{2}$/i.test(region)) return null;
+
+  const code = region.toUpperCase();
+  const name = isoCountries.getName(code, "en");
+  if (!name) return null;
+
+  return {
+    code,
+    name: normalizeCountryToken(name),
+  };
 };
 
 const resolveHtmlDeclaredFeeds = (body: string, pageUrl: string) => {
@@ -448,7 +612,7 @@ export const buildCandidatesFromSitemapUrl = (sitemapUrl: string) => {
 
 const collectSitemapFeedCandidates = async (
   input: { pageUrl: string; userAgent: string; acceptLanguage?: string; preferScopedDirectFeed?: boolean },
-  seenAcceptedFeeds: Set<string>,
+  seenAcceptedCanonicalKeys: Set<string>,
 ) => {
   const acceptedCandidates: FeedCandidate[] = [];
   const sitemapTargets = new Set<string>();
@@ -514,7 +678,8 @@ const collectSitemapFeedCandidates = async (
 
       for (const loc of candidateLocs) {
         if (!looksLikeFeedUrl(loc)) continue;
-        if (seenAcceptedFeeds.has(loc)) continue;
+        const canonicalKey = canonicalFeedKey(loc);
+        if (seenAcceptedCanonicalKeys.has(canonicalKey)) continue;
         if (
           scopedPath !== "/" &&
           input.preferScopedDirectFeed &&
@@ -535,7 +700,7 @@ const collectSitemapFeedCandidates = async (
           score: baseScore + relevanceBonus,
           scopeMatch,
         });
-        seenAcceptedFeeds.add(loc);
+        seenAcceptedCanonicalKeys.add(canonicalKey);
       }
     } catch {}
   }
@@ -952,6 +1117,11 @@ const emptyTaxonomyEvidence = (): TaxonomyEvidence => ({
   canonicalSectionHandles: [],
   feedParams: [],
   matchedFeedUrls: [],
+  localeHints: [],
+  hreflangLocales: [],
+  editionPaths: [],
+  countryHints: [],
+  countryCodes: [],
 });
 
 /**
@@ -970,6 +1140,11 @@ const accumulateTaxonomyEvidence = (
   target.canonicalSectionHandles.push(...source.canonicalSectionHandles);
   target.feedParams.push(...source.feedParams);
   target.matchedFeedUrls.push(...source.matchedFeedUrls);
+  target.localeHints.push(...source.localeHints);
+  target.hreflangLocales.push(...source.hreflangLocales);
+  target.editionPaths.push(...source.editionPaths);
+  target.countryHints?.push(...(source.countryHints || []));
+  target.countryCodes?.push(...(source.countryCodes || []));
 
   // Deduplicate all arrays in-place
   target.sectionIds = [...new Set(target.sectionIds)];
@@ -980,6 +1155,11 @@ const accumulateTaxonomyEvidence = (
   target.canonicalSectionHandles = [...new Set(target.canonicalSectionHandles)];
   target.feedParams = [...new Set(target.feedParams)];
   target.matchedFeedUrls = [...new Set(target.matchedFeedUrls)];
+  target.localeHints = [...new Set(target.localeHints)];
+  target.hreflangLocales = [...new Set(target.hreflangLocales)];
+  target.editionPaths = [...new Set(target.editionPaths)];
+  target.countryHints = [...new Set(target.countryHints || [])];
+  target.countryCodes = [...new Set(target.countryCodes || [])];
 };
 
 /**
@@ -1113,6 +1293,9 @@ export const extractTaxonomyEvidence = (
     }
   }
 
+  // 5. Extract edition/locale signals (hreflang, nav links, meta locale)
+  extractLocaleSignals(html, pageUrl, evidence);
+
   return evidence;
 };
 
@@ -1147,6 +1330,10 @@ function extractTaxonomyFromJson(obj: unknown, evidence: TaxonomyEvidence): void
         evidence.canonicalSectionHandles.push(value);
       }
 
+      // Extract locale from JSON-LD inLanguage field
+      if (lowerKey === "inlanguage" && typeof value === "string" && value.length >= 2 && value.length <= 10) {
+        evidence.localeHints.push(value.toLowerCase().replace(/_/g, "-"));
+      }
     }
 
     if (value && typeof value === "object") {
@@ -1154,6 +1341,259 @@ function extractTaxonomyFromJson(obj: unknown, evidence: TaxonomyEvidence): void
     }
   }
 }
+
+// ─── Edition / Locale Discovery ──────────────────────────────────────────────
+
+/**
+ * Extract hreflang signals from <link rel="alternate" hreflang="..." href="..."> tags.
+ * Returns locale codes and their associated URL paths.
+ */
+const extractHreflangSignals = (
+  html: string,
+  pageUrl: string,
+): Array<{ locale: string; path: string }> => {
+  const signals: Array<{ locale: string; path: string }> = [];
+  const seen = new Set<string>();
+  const linkTags = html.match(/<link\b[^>]*>/gi) || [];
+
+  for (const tag of linkTags) {
+    const rel = tag.match(/\brel=["']([^"']+)["']/i)?.[1]?.toLowerCase() || "";
+    if (!rel.includes("alternate")) continue;
+
+    const hreflang = tag.match(/\bhreflang=["']([^"']+)["']/i)?.[1]?.toLowerCase();
+    if (!hreflang || hreflang === "x-default") continue;
+
+    const href = tag.match(/\bhref=["']([^"']+)["']/i)?.[1];
+    if (!href) continue;
+
+    const resolved = resolveRelativeUrl(href, pageUrl);
+    if (!resolved || seen.has(resolved)) continue;
+    seen.add(resolved);
+
+    try {
+      const path = new URL(resolved).pathname.replace(/\/+$/, "").toLowerCase() || "/";
+      if (path !== "/") {
+        signals.push({ locale: hreflang, path });
+      }
+    } catch {}
+  }
+
+  return signals;
+};
+
+/**
+ * Extract edition/locale navigation links from the page HTML.
+ * Detects clusters of links with edition/locale text patterns.
+ *
+ * Strong signals require at least 2 distinct edition paths (multi-edition site),
+ * or explicit "edition" keyword in the link text.
+ */
+const extractEditionNavSignals = (
+  html: string,
+  pageUrl: string,
+): Array<{ label: string; path: string; strong: boolean; countryCode?: string; countryName?: string }> => {
+  const signals: Array<{ label: string; path: string; strong: boolean; countryCode?: string; countryName?: string }> = [];
+  const seen = new Set<string>();
+
+  const EDITION_TEXT_RE = /\b(?:editions?|international|worldwide|global)\b/i;
+  const LOCALE_PATH_RE = /^\/[a-z]{2}(?:[-_][a-z]{2})?(?:\/?$)/i;
+  const SHORT_SEGMENT_RE = /^\/[a-z]{2,8}\/?$/i;
+
+  // Extract all anchor tags
+  const anchorPattern = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null;
+  const anchors: Array<{ href: string; text: string }> = [];
+
+  while ((match = anchorPattern.exec(html)) !== null) {
+    const href = match[1] || "";
+    const text = (match[2] || "").replace(/<[^>]+>/g, "").trim();
+    if (!href || !text || text.length > 100) continue;
+    anchors.push({ href, text });
+  }
+
+  // Filter for edition-locale links
+  const editionAnchors: Array<{ href: string; text: string }> = [];
+  for (const anchor of anchors) {
+    const resolved = resolveRelativeUrl(anchor.href, pageUrl);
+    if (!resolved) continue;
+
+    try {
+      const path = new URL(resolved).pathname;
+      const isShortPath = SHORT_SEGMENT_RE.test(path);
+      const countryCode = resolveCountryCode(anchor.text);
+      const countryName = countryCode ? normalizeCountryToken(isoCountries.getName(countryCode, "en") || anchor.text) : resolveCountryName(anchor.text);
+      const hasCountrySignal = Boolean(countryCode || countryName);
+
+      // Explicit edition keyword in text
+      if (EDITION_TEXT_RE.test(anchor.text)) {
+        editionAnchors.push(anchor);
+        continue;
+      }
+
+      // Country/region label (e.g. "Ireland", "United States", "UK")
+      // keep it even when the URL path is not a short locale slug.
+      if (hasCountrySignal) {
+        editionAnchors.push(anchor);
+        continue;
+      }
+
+      // Short path + text looks like a country/region name (heuristic: 2+ words or known patterns)
+      if (isShortPath && /^\/[a-z]{2}(?:[-_][a-z]{2})?\/?$/i.test(path)) {
+        // Locale-code path (e.g., /en/, /en-us/, /de/) with short text
+        if (anchor.text.length <= 30 && !/\b(?:home|news|sport|tech|about|contact)\b/i.test(anchor.text)) {
+          editionAnchors.push(anchor);
+        }
+      }
+    } catch {}
+  }
+
+  // Determine strength: 2+ distinct paths = strong cluster
+  const distinctPaths = new Set<string>();
+  for (const a of editionAnchors) {
+    const resolved = resolveRelativeUrl(a.href, pageUrl);
+    if (resolved) {
+      try {
+        distinctPaths.add(new URL(resolved).pathname.replace(/\/+$/, "").toLowerCase());
+      } catch {}
+    }
+  }
+  const isStrongCluster = distinctPaths.size >= 2;
+
+  for (const anchor of editionAnchors) {
+    const resolved = resolveRelativeUrl(anchor.href, pageUrl);
+    if (!resolved || seen.has(resolved)) continue;
+    seen.add(resolved);
+
+    try {
+      const path = new URL(resolved).pathname.replace(/\/+$/, "").toLowerCase() || "/";
+      if (path !== "/") {
+        const countryCode = resolveCountryCode(anchor.text);
+        const countryName = countryCode ? normalizeCountryToken(isoCountries.getName(countryCode, "en") || anchor.text) : resolveCountryName(anchor.text);
+        const hasCountrySignal = Boolean(countryCode || countryName);
+        signals.push({
+          label: anchor.text.toLowerCase().replace(/\s+/g, "-"),
+          path,
+          strong: isStrongCluster || EDITION_TEXT_RE.test(anchor.text) || hasCountrySignal,
+          ...(countryCode ? { countryCode } : {}),
+          ...(countryName ? { countryName } : {}),
+        });
+      }
+    } catch {}
+  }
+
+  return signals;
+};
+
+/**
+ * Extract og:locale and html lang signals from the page.
+ */
+const extractMetaLocaleSignals = (html: string): string[] => {
+  const hints: string[] = [];
+
+  // og:locale
+  const ogLocale = html.match(/<meta[^>]+property=["']og:locale["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  if (ogLocale) hints.push(ogLocale.toLowerCase().replace(/_/, "-"));
+
+  // html lang attribute
+  const htmlLang = html.match(/<html[^>]+\blang=["']([^"']+)["']/i)?.[1];
+  if (htmlLang) hints.push(htmlLang.toLowerCase().replace(/_/, "-"));
+
+  return hints;
+};
+
+/**
+ * Extract all edition/locale signals from the page and populate the evidence object.
+ * Called from extractTaxonomyEvidence to collect locale data in the same pass.
+ */
+const extractLocaleSignals = (html: string, pageUrl: string, evidence: TaxonomyEvidence): void => {
+  // 1. hreflang signals (strong: each link provides a locale + scoped path)
+  const hreflangSignals = extractHreflangSignals(html, pageUrl);
+  for (const signal of hreflangSignals) {
+    evidence.hreflangLocales.push(signal.locale);
+    evidence.editionPaths.push(signal.path);
+    const country = extractCountryFromLocale(signal.locale);
+    if (country) {
+      evidence.countryCodes?.push(country.code);
+      evidence.countryHints?.push(country.name);
+    }
+  }
+
+  // 2. Edition navigation signals
+  const navSignals = extractEditionNavSignals(html, pageUrl);
+  for (const signal of navSignals) {
+    if (signal.strong) {
+      evidence.editionPaths.push(signal.path);
+    }
+    evidence.localeHints.push(signal.label);
+    if (signal.countryCode) {
+      evidence.countryCodes?.push(signal.countryCode);
+    }
+    if (signal.countryName) {
+      evidence.countryHints?.push(signal.countryName);
+    }
+  }
+
+  // 3. Meta locale signals (og:locale, html lang)
+  const metaHints = extractMetaLocaleSignals(html);
+  evidence.localeHints.push(...metaHints);
+  for (const hint of metaHints) {
+    const country = extractCountryFromLocale(hint);
+    if (country) {
+      evidence.countryCodes?.push(country.code);
+      evidence.countryHints?.push(country.name);
+    }
+  }
+
+  // Deduplicate
+  evidence.hreflangLocales = [...new Set(evidence.hreflangLocales)];
+  evidence.editionPaths = [...new Set(evidence.editionPaths)];
+  evidence.localeHints = [...new Set(evidence.localeHints)];
+  evidence.countryHints = [...new Set(evidence.countryHints || [])];
+  evidence.countryCodes = [...new Set(evidence.countryCodes || [])];
+};
+
+/**
+ * Build feed candidates from edition/locale-aware paths.
+ * Generates feed URL patterns under discovered edition paths.
+ * Supports both root source targets and category targets.
+ */
+export const buildEditionLocaleFeedCandidates = (
+  pageUrl: string,
+  localeEvidence: { localeHints: string[]; hreflangLocales: string[]; editionPaths: string[] },
+): string[] => {
+  const candidates: string[] = [];
+
+  try {
+    const parsed = new URL(pageUrl);
+    const origin = parsed.origin;
+
+    for (const editionPath of localeEvidence.editionPaths) {
+      const normalized = editionPath.replace(/\/+$/, "");
+      if (!normalized || normalized === "/") continue;
+
+      const base = `${origin}${normalized}`;
+      candidates.push(`${base}/rss`);
+      candidates.push(`${base}/rss/`);
+      candidates.push(`${base}/rss.xml`);
+      candidates.push(`${base}/feed`);
+      candidates.push(`${base}/feed/`);
+      candidates.push(`${base}/feed.xml`);
+      candidates.push(`${base}/atom.xml`);
+      candidates.push(`${base}/index.xml`);
+    }
+  } catch {}
+
+  // Filter out blocked paths
+  const blockedPattern = /\/(?:feedback|contact|about|privacy|terms)(?:\/|$)/i;
+  return [...new Set(candidates)].filter((url) => {
+    if (!url) return false;
+    try {
+      return !blockedPattern.test(new URL(url).pathname);
+    } catch {
+      return false;
+    }
+  });
+};
 
 /**
  * Build feed candidates from site-specific heuristics and taxonomy evidence.
@@ -1409,6 +1849,51 @@ const computeScopeAwareScore = (
     } catch {}
   }
 
+  // Edition/locale path bonus: when strong locale signals exist (hreflang evidence
+  // OR multiple edition paths indicating a multi-edition site), boost candidates
+  // that share the same edition scope as the target.
+  // This allows edition-scoped feeds to outrank generic root feeds when
+  // the target is clearly edition-scoped.
+  if (taxonomyEvidence.editionPaths.length > 0) {
+    try {
+      const candidatePath = normalizePath(candidateUrl);
+      const targetPath = normalizePath(targetUrl);
+      let localeBonusApplied = false;
+
+      // Strong locale signal: hreflang evidence OR 2+ edition paths
+      const hasStrongLocaleSignal = taxonomyEvidence.hreflangLocales.length > 0 ||
+        taxonomyEvidence.editionPaths.length >= 2;
+
+      if (hasStrongLocaleSignal) {
+        for (const editionPath of taxonomyEvidence.editionPaths) {
+          const nep = editionPath.replace(/\/+$/, "").toLowerCase();
+          if (!nep || nep === "/") continue;
+
+          const targetUnderEdition = targetPath === nep || targetPath.startsWith(`${nep}/`);
+          const candidateUnderEdition = candidatePath === nep || candidatePath.startsWith(`${nep}/`);
+
+          if (targetUnderEdition && candidateUnderEdition) {
+            score += 20;
+            localeBonusApplied = true;
+            break;
+          }
+        }
+      }
+
+      // For category targets: if candidate is under any edition path, moderate bonus
+      // (only requires multiple edition paths, not hreflang)
+      if (!localeBonusApplied && taxonomyEvidence.editionPaths.length >= 2 && preferScopedDirectFeed && scopeMatch !== "unrelated") {
+        const isCandidateUnderAnyEdition = taxonomyEvidence.editionPaths.some((ep) => {
+          const nep = ep.replace(/\/+$/, "").toLowerCase();
+          return nep && nep !== "/" && candidatePath.startsWith(`${nep}/`);
+        });
+        if (isCandidateUnderAnyEdition) {
+          score += 10;
+        }
+      }
+    } catch {}
+  }
+
   return score;
 };
 
@@ -1451,6 +1936,7 @@ const computeCandidateScore = (
   if (candidate.detection === "cms-fingerprint") score += 22;
   if (candidate.detection === "taxonomy-extraction") score += 28;
   if (candidate.detection === "directory-traversal") score += 15;
+  if (candidate.detection === "edition-locale") score += 26;
 
   // Content type score
   if (candidate.contentType === "application/rss+xml") score += 10;
@@ -1493,6 +1979,7 @@ const summarizeTopCandidates = (candidates: FeedCandidate[], limit = 5): Discove
       score: candidate.score,
       contentType: candidate.contentType,
       scopeMatch: candidate.scopeMatch,
+      canonicalIdentity: canonicalFeedKey(candidate.feedUrl),
     }));
 
 const summarizeRejectedCandidate = (
@@ -1504,6 +1991,7 @@ const summarizeRejectedCandidate = (
   score: candidate.score,
   contentType: candidate.contentType,
   scopeMatch: candidate.scopeMatch,
+  canonicalIdentity: canonicalFeedKey(candidate.feedUrl),
   reason,
 });
 
@@ -1554,13 +2042,19 @@ export async function discoverFeedForUrl(input: {
   let lastError = "No feed candidates succeeded.";
   const candidateUrls = buildScopedFeedCandidates(input.pageUrl, input.existingFeedUrl || null);
   const acceptedCandidates: FeedCandidate[] = [];
-  const seenAcceptedFeeds = new Set<string>();
+  const seenAcceptedCanonicalKeys = new Set<string>();
   const rejectedCandidates: RejectedCandidate[] = [];
   const taxonomyEvidence = emptyTaxonomyEvidence();
   let mainPageFingerprints: string[] = [];
   let mainPageHtml = "";
 
   const resolveBestVerifiedCandidate = async () => {
+    // Deduplicate equivalent feed URLs before verification to avoid
+    // wasting HTTP requests on superficial URL variants (e.g. /rss vs /rss/).
+    const deduped = deduplicateFeedCandidates(acceptedCandidates);
+    acceptedCandidates.length = 0;
+    acceptedCandidates.push(...deduped);
+
     acceptedCandidates.sort((a, b) => b.score - a.score);
     for (const candidate of acceptedCandidates) {
       try {
@@ -1576,6 +2070,7 @@ export async function discoverFeedForUrl(input: {
           taxonomyEvidence,
           topCandidates: summarizeTopCandidates(acceptedCandidates),
           rejectedCandidates,
+          canonicalIdentity: canonicalFeedKey(verified.feedUrl),
         };
       } catch (error: any) {
         const reason = error?.message || String(error);
@@ -1604,7 +2099,8 @@ export async function discoverFeedForUrl(input: {
 
     if (headResponse.ok) {
       const contentType = normalizeSupportedContentType(headResponse.headers.get("content-type"));
-      if (isDefinitiveFeedContentType(contentType) && !seenAcceptedFeeds.has(headResponse.url)) {
+      const headCanonicalKey = canonicalFeedKey(headResponse.url);
+      if (isDefinitiveFeedContentType(contentType) && !seenAcceptedCanonicalKeys.has(headCanonicalKey)) {
         const candidateBase = {
           feedUrl: headResponse.url,
           discoveredVia: input.pageUrl,
@@ -1613,11 +2109,12 @@ export async function discoverFeedForUrl(input: {
         };
         const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
         acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
-        seenAcceptedFeeds.add(headResponse.url);
+        seenAcceptedCanonicalKeys.add(headCanonicalKey);
       }
 
       for (const headerFeed of parseLinkHeaderFeeds(headResponse.headers.get("link"), headResponse.url || input.pageUrl)) {
-        if (seenAcceptedFeeds.has(headerFeed.feedUrl)) continue;
+        const hfKey = canonicalFeedKey(headerFeed.feedUrl);
+        if (seenAcceptedCanonicalKeys.has(hfKey)) continue;
         const candidateBase = {
           feedUrl: headerFeed.feedUrl,
           discoveredVia: input.pageUrl,
@@ -1626,7 +2123,7 @@ export async function discoverFeedForUrl(input: {
         };
         const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
         acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
-        seenAcceptedFeeds.add(headerFeed.feedUrl);
+        seenAcceptedCanonicalKeys.add(hfKey);
       }
     }
   } catch (error: any) {
@@ -1683,7 +2180,8 @@ export async function discoverFeedForUrl(input: {
         looksLikeJsonFeed(body) ||
         isDefinitiveFeedContentType(detectedContentType)
       ) {
-        if (!seenAcceptedFeeds.has(response.url)) {
+        const respKey = canonicalFeedKey(response.url);
+        if (!seenAcceptedCanonicalKeys.has(respKey)) {
           const candidateBase = {
             feedUrl: response.url,
             discoveredVia: candidateUrl,
@@ -1692,12 +2190,13 @@ export async function discoverFeedForUrl(input: {
           };
           const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
           acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
-          seenAcceptedFeeds.add(response.url);
+          seenAcceptedCanonicalKeys.add(respKey);
         }
       }
 
       for (const declaredFeed of resolveHtmlDeclaredFeeds(body, resolvedUrl)) {
-        if (seenAcceptedFeeds.has(declaredFeed.feedUrl)) continue;
+        const dfKey = canonicalFeedKey(declaredFeed.feedUrl);
+        if (seenAcceptedCanonicalKeys.has(dfKey)) continue;
         const candidateBase = {
           feedUrl: declaredFeed.feedUrl,
           discoveredVia: candidateUrl,
@@ -1706,11 +2205,12 @@ export async function discoverFeedForUrl(input: {
         };
         const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
         acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
-        seenAcceptedFeeds.add(declaredFeed.feedUrl);
+        seenAcceptedCanonicalKeys.add(dfKey);
       }
 
       for (const headerFeed of parseLinkHeaderFeeds(response.headers.get("link"), resolvedUrl)) {
-        if (seenAcceptedFeeds.has(headerFeed.feedUrl)) continue;
+        const rKey = canonicalFeedKey(headerFeed.feedUrl);
+        if (seenAcceptedCanonicalKeys.has(rKey)) continue;
         const candidateBase = {
           feedUrl: headerFeed.feedUrl,
           discoveredVia: candidateUrl,
@@ -1719,11 +2219,12 @@ export async function discoverFeedForUrl(input: {
         };
         const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
         acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
-        seenAcceptedFeeds.add(headerFeed.feedUrl);
+        seenAcceptedCanonicalKeys.add(rKey);
       }
 
       for (const extractedFeedUrl of extractFeedLikeUrlsFromHtml(body, resolvedUrl)) {
-        if (seenAcceptedFeeds.has(extractedFeedUrl)) continue;
+        const efKey = canonicalFeedKey(extractedFeedUrl);
+        if (seenAcceptedCanonicalKeys.has(efKey)) continue;
         const candidateBase = {
           feedUrl: extractedFeedUrl,
           discoveredVia: candidateUrl,
@@ -1732,11 +2233,12 @@ export async function discoverFeedForUrl(input: {
         };
         const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
         acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
-        seenAcceptedFeeds.add(extractedFeedUrl);
+        seenAcceptedCanonicalKeys.add(efKey);
       }
 
       for (const fingerprintCandidate of buildCmsFingerprintCandidates(resolvedUrl, fingerprints)) {
-        if (seenAcceptedFeeds.has(fingerprintCandidate)) continue;
+        const fcKey = canonicalFeedKey(fingerprintCandidate);
+        if (seenAcceptedCanonicalKeys.has(fcKey)) continue;
         const candidateBase = {
           feedUrl: fingerprintCandidate,
           discoveredVia: `${candidateUrl}#${fingerprints.join(",")}`,
@@ -1745,7 +2247,7 @@ export async function discoverFeedForUrl(input: {
         };
         const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
         acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
-        seenAcceptedFeeds.add(fingerprintCandidate);
+        seenAcceptedCanonicalKeys.add(fcKey);
       }
 
       // ── Taxonomy heuristic candidates (scoped targets only) ─────────
@@ -1756,7 +2258,8 @@ export async function discoverFeedForUrl(input: {
           fingerprints,
         );
         for (const heuristicUrl of heuristicUrls) {
-          if (seenAcceptedFeeds.has(heuristicUrl)) continue;
+          const thKey = canonicalFeedKey(heuristicUrl);
+          if (seenAcceptedCanonicalKeys.has(thKey)) continue;
           const candidateBase = {
             feedUrl: heuristicUrl,
             discoveredVia: `${candidateUrl}#taxonomy-heuristic`,
@@ -1765,8 +2268,27 @@ export async function discoverFeedForUrl(input: {
           };
           const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
           acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
-          seenAcceptedFeeds.add(heuristicUrl);
+          seenAcceptedCanonicalKeys.add(thKey);
         }
+      }
+
+      // ── Edition/locale candidates (both root and scoped targets) ────
+      const editionLocaleUrls = buildEditionLocaleFeedCandidates(
+        resolvedUrl,
+        taxonomyEvidence,
+      );
+      for (const editionUrl of editionLocaleUrls) {
+        const elKey = canonicalFeedKey(editionUrl);
+        if (seenAcceptedCanonicalKeys.has(elKey)) continue;
+        const candidateBase = {
+          feedUrl: editionUrl,
+          discoveredVia: `${candidateUrl}#edition-locale`,
+          detection: "edition-locale" as const,
+          contentType: null,
+        };
+        const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+        acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
+        seenAcceptedCanonicalKeys.add(elKey);
       }
 
       if (acceptedCandidates.length > 0) {
@@ -1790,7 +2312,7 @@ export async function discoverFeedForUrl(input: {
   }
 
   // ── Step 3: Sitemap-based discovery ──────────────────────────────────
-  const sitemapCandidates = await collectSitemapFeedCandidates(input, seenAcceptedFeeds);
+  const sitemapCandidates = await collectSitemapFeedCandidates(input, seenAcceptedCanonicalKeys);
   if (sitemapCandidates.length > 0) {
     acceptedCandidates.push(...sitemapCandidates);
     const winner = await resolveBestVerifiedCandidate();
@@ -1799,7 +2321,7 @@ export async function discoverFeedForUrl(input: {
     }
   }
 
-  // ── Step 4: Final taxonomy heuristics (last resort for scoped targets) ──
+  // ── Step 4: Final taxonomy heuristics + edition/locale (last resort) ──
   if (input.preferScopedDirectFeed && acceptedCandidates.length === 0) {
     const lastResortUrls = buildTaxonomyHeuristicCandidates(
       input.pageUrl,
@@ -1807,7 +2329,8 @@ export async function discoverFeedForUrl(input: {
       mainPageFingerprints,
     );
     for (const url of lastResortUrls) {
-      if (seenAcceptedFeeds.has(url)) continue;
+      const lrKey = canonicalFeedKey(url);
+      if (seenAcceptedCanonicalKeys.has(lrKey)) continue;
       const candidateBase = {
         feedUrl: url,
         discoveredVia: `${input.pageUrl}#taxonomy-heuristic`,
@@ -1816,8 +2339,28 @@ export async function discoverFeedForUrl(input: {
       };
       const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
       acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
-      seenAcceptedFeeds.add(url);
+      seenAcceptedCanonicalKeys.add(lrKey);
     }
+
+    // Edition/locale fallback candidates (works for both root and scoped targets)
+    const fallbackEditionUrls = buildEditionLocaleFeedCandidates(
+      input.pageUrl,
+      taxonomyEvidence,
+    );
+    for (const url of fallbackEditionUrls) {
+      const feKey = canonicalFeedKey(url);
+      if (seenAcceptedCanonicalKeys.has(feKey)) continue;
+      const candidateBase = {
+        feedUrl: url,
+        discoveredVia: `${input.pageUrl}#edition-locale`,
+        detection: "edition-locale" as const,
+        contentType: null,
+      };
+      const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+      acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
+      seenAcceptedCanonicalKeys.add(feKey);
+    }
+
     if (acceptedCandidates.length > 0) {
       const winner = await resolveBestVerifiedCandidate();
       if (winner) {
@@ -1833,7 +2376,7 @@ export async function discoverFeedForUrl(input: {
   // and verify the matched feed candidate through the normal path.
   if (acceptedCandidates.length === 0 && mainPageHtml) {
     const directoryUrl = findDirectoryUrl(mainPageHtml, input.pageUrl);
-    if (directoryUrl && !seenAcceptedFeeds.has(directoryUrl)) {
+    if (directoryUrl && !seenAcceptedCanonicalKeys.has(canonicalFeedKey(directoryUrl))) {
       try {
         const dirResponse = await safeFetch(directoryUrl, {
           headers: {
@@ -1850,7 +2393,7 @@ export async function discoverFeedForUrl(input: {
             const entries = parseDirectoryEntries(dirHtml, directoryUrl);
             const matched = matchTargetToDirectoryEntries(entries, input.pageUrl);
 
-            if (matched && !seenAcceptedFeeds.has(matched.feedUrl)) {
+            if (matched && !seenAcceptedCanonicalKeys.has(canonicalFeedKey(matched.feedUrl))) {
               // Record directory traversal evidence
               taxonomyEvidence.directoryTraversal = {
                 traversedUrl: directoryUrl,
@@ -1866,7 +2409,7 @@ export async function discoverFeedForUrl(input: {
               };
               const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
               acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
-              seenAcceptedFeeds.add(matched.feedUrl);
+              seenAcceptedCanonicalKeys.add(canonicalFeedKey(matched.feedUrl));
 
               const winner = await resolveBestVerifiedCandidate();
               if (winner) {
@@ -1892,5 +2435,6 @@ export async function discoverFeedForUrl(input: {
     topCandidates: summarizeTopCandidates(acceptedCandidates),
     rejectedCandidates,
     lastError,
+    canonicalIdentity: null,
   };
 }

@@ -16,6 +16,7 @@ const prismaNewsSourceUpdateMock = vi.fn();
 vi.mock("./feed-discovery", () => ({
   discoverFeedForUrl: discoverFeedForUrlMock,
   verifyFeedCandidate: verifyFeedCandidateMock,
+  canonicalFeedKey: (url: string) => new URL(url).origin + new URL(url).pathname.replace(/\/+$/, "").toLowerCase(),
 }));
 
 vi.mock("./browser-feed-resolver", () => ({
