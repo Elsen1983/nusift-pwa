@@ -106,6 +106,10 @@ describe('isBlockedIp', () => {
     expect(isBlockedIp('1.1.1.1')).toBe(false)
   })
 
+  it('allows a public Cloudflare IPv6 edge address', () => {
+    expect(isBlockedIp('2606:4700:3035::ac43:89ec')).toBe(false)
+  })
+
   it('allows 93.184.216.34 (example.com)', () => {
     expect(isBlockedIp('93.184.216.34')).toBe(false)
   })

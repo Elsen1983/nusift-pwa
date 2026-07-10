@@ -66,22 +66,23 @@ function normaliseIp(ip: string): string {
   return lower
 }
 
+function isBlockedIpv6(clean: string): boolean {
+  if (clean === '::1' || clean === '0:0:0:0:0:0:0:1') return true // loopback
+  if (clean === '::' || clean === '0:0:0:0:0:0:0:0') return true  // unspecified
+  if (/^(fe80|fc00|fd00):/i.test(clean)) return true               // link-local / ULA
+  if (/^ff/i.test(clean)) return true                              // multicast
+  if (/^2001:db8:/i.test(clean)) return true                       // documentation
+  if (/^2001:0:/i.test(clean)) return true                         // Teredo / special-use
+  return false
+}
+
 /** Check whether an IP address falls inside a blocked (private/metadata) range. */
 export function isBlockedIp(ip: string): boolean {
   const clean = normaliseIp(ip)
 
   // --- IPv6 checks ---
-  if (clean === '::1' || clean === '0:0:0:0:0:0:0:1') return true // loopback
-  if (clean === '::' || clean === '0:0:0:0:0:0:0:0') return true  // unspecified
-  if (/^(fe80|fc00|fd00):/i.test(clean)) return true               // link-local / ULA
-  // Catch any remaining IPv4-in-IPv6 representations
   if (clean.includes(':') && IPV6_RE.test(clean)) {
-    // If it's an IPv6 address that isn't a public global unicast, block it.
-    // Only allow if it doesn't match known-private prefixes.
-    // fe80::/10, fc00::/7, ::1 already handled above. Block the rest of non-global space conservatively.
-    // Simple heuristic: if it starts with anything other than known-safe patterns, block.
-    // For a news-reader app, IPv6 literals are extremely rare — safest to block all IPv6 IPs.
-    return true
+    return isBlockedIpv6(clean)
   }
 
   // --- IPv4 checks ---
