@@ -11,6 +11,10 @@
 }
 
 @layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
   /* ALAPÉRTELMEZETT: SÖTÉT TÉMA (A Te eredeti dizájnod) */
   :root {
     --color-background: 19 19 19;
@@ -103,5 +107,8 @@
     --color-chart-4: 147 51 234;
     --color-chart-5: 5 150 105;
     --color-chart-6: 37 99 235;
+  }
+  body {
+    font-size: 16px;
   }
 }
