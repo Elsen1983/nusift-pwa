@@ -69,12 +69,16 @@ export default defineEventHandler(async (event) => {
     });
 
     if (response.ok) {
-        isDomainValid = true;
-        // Csak az elejét olvassuk be, nem az egész oldalt
-        const text = await response.text();
-        htmlContent = text.slice(0, 15000).toLowerCase(); 
+      isDomainValid = true;
+      // Csak az elejét olvassuk be, nem az egész oldalt
+      const text = await response.text();
+      htmlContent = text.slice(0, 15000).toLowerCase();
+    } else if (response.status === 404 || response.status === 410) {
+      return { success: false, message: "api_errors.domain_not_found" };
     } else {
-         return { success: false, message: `Az oldal nem elérhető (${response.status}).` };
+      // 5xx / 401 / 403 / 503 esetén a domain még lehet teljesen érvényes.
+      isDomainValid = true;
+      validationWarning = "api_errors.domain_reachable_but_error";
     }
   } catch (error: any) {
     // SSRF guard violations → reject immediately
@@ -89,7 +93,7 @@ export default defineEventHandler(async (event) => {
       isDomainValid = true;
       validationWarning = "Domain valid (DNS fallback).";
     } catch (dnsError) {
-      return { success: false, message: "Nem létező domain." };
+      return { success: false, message: "api_errors.domain_unreachable" };
     }
   }
 

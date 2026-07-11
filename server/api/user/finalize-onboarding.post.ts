@@ -121,6 +121,25 @@ export default defineEventHandler(async (event) => {
     const targetedSourceIds = new Set<string>();
     const targetedCategoryIds = new Set<string>();
 
+    const logPersistedSource = (payload: {
+      action: string;
+      kind: "ROOT" | "CATEGORY";
+      sourceId: string;
+      frontPageUrl: string;
+      rssFeedUrl?: string | null;
+      rssStatus?: string | null;
+      feedProvenance?: string | null;
+      userId: string;
+      active: boolean;
+      originalUrl: string;
+      resolvedUrl: string | null;
+    }) => {
+      console.log(
+        "[Finalize-Onboarding] Persisted source snapshot:",
+        JSON.stringify(payload, null, 0),
+      );
+    };
+
     for (const rawSourceItem of submittedSources) {
       try {
         // Decode payload: Works if it is "telex.hu" OR { url: "telex.hu", language: "hu" }
@@ -195,6 +214,19 @@ export default defineEventHandler(async (event) => {
             rootId = parentRoot.id;
             if (shouldBeActive) targetedSourceIds.add(rootId);
             if (shouldRevalidateExistingSource(parentRoot)) targetedSourceIds.add(rootId);
+            logPersistedSource({
+              action: "linked-existing",
+              kind: "ROOT",
+              sourceId: parentRoot.id,
+              frontPageUrl: parentRoot.frontPageUrl,
+              rssFeedUrl: parentRoot.rssFeedUrl,
+              rssStatus: parentRoot.rssStatus,
+              feedProvenance: "SYSTEM_DISCOVERED",
+              userId: currentUserId,
+              active: shouldBeActive,
+              originalUrl: rawUrl,
+              resolvedUrl: pureRootUrl,
+            });
           } else {
             // SAFE UPSERT WITH FINAL LANGUAGE
             const newRoot = await prisma.newsSource.upsert({
@@ -210,6 +242,19 @@ export default defineEventHandler(async (event) => {
             });
             rootId = newRoot.id;
             if (shouldBeActive) targetedSourceIds.add(rootId);
+            logPersistedSource({
+              action: "created-root",
+              kind: "ROOT",
+              sourceId: newRoot.id,
+              frontPageUrl: newRoot.frontPageUrl,
+              rssFeedUrl: newRoot.rssFeedUrl,
+              rssStatus: newRoot.rssStatus,
+              feedProvenance: newRoot.feedProvenance,
+              userId: currentUserId,
+              active: shouldBeActive,
+              originalUrl: rawUrl,
+              resolvedUrl: pureRootUrl,
+            });
           }
 
           await prisma.userSourceSubscription.upsert({
@@ -232,6 +277,19 @@ export default defineEventHandler(async (event) => {
               targetedSourceIds.add(exactCategory.newsSource.id);
               targetedCategoryIds.add(exactCategory.id);
             }
+            logPersistedSource({
+              action: "linked-existing",
+              kind: "CATEGORY",
+              sourceId: exactCategory.newsSourceId,
+              frontPageUrl: exactCategory.pathUrl,
+              rssFeedUrl: exactCategory.rssFeedUrl,
+              rssStatus: exactCategory.rssStatus,
+              feedProvenance: "SYSTEM_DISCOVERED",
+              userId: currentUserId,
+              active: shouldBeActive,
+              originalUrl: rawUrl,
+              resolvedUrl: pureRootUrl,
+            });
             await prisma.userCategorySubscription.upsert({
               where: {
                 userId_categoryId: {
@@ -254,6 +312,19 @@ export default defineEventHandler(async (event) => {
               if (shouldRevalidateExistingSource(parentRoot)) {
                 targetedSourceIds.add(rootIdForCategory);
               }
+              logPersistedSource({
+                action: "linked-root-for-category",
+                kind: "ROOT",
+                sourceId: parentRoot.id,
+                frontPageUrl: parentRoot.frontPageUrl,
+                rssFeedUrl: parentRoot.rssFeedUrl,
+                rssStatus: parentRoot.rssStatus,
+                feedProvenance: "SYSTEM_DISCOVERED",
+                userId: currentUserId,
+                active: shouldBeActive,
+                originalUrl: rawUrl,
+                resolvedUrl: pureRootUrl,
+              });
             } else {
               // SAFE UPSERT FOR PARENT ROOT
               const newRoot = await prisma.newsSource.upsert({
@@ -269,6 +340,19 @@ export default defineEventHandler(async (event) => {
               });
               rootIdForCategory = newRoot.id;
               if (shouldBeActive) targetedSourceIds.add(rootIdForCategory);
+              logPersistedSource({
+                action: "created-root",
+                kind: "ROOT",
+                sourceId: newRoot.id,
+                frontPageUrl: newRoot.frontPageUrl,
+                rssFeedUrl: newRoot.rssFeedUrl,
+                rssStatus: newRoot.rssStatus,
+                feedProvenance: newRoot.feedProvenance,
+                userId: currentUserId,
+                active: shouldBeActive,
+                originalUrl: rawUrl,
+                resolvedUrl: pureRootUrl,
+              });
             }
 
             const newCat = await prisma.sourceCategory.create({
@@ -296,6 +380,19 @@ export default defineEventHandler(async (event) => {
                 isActive: shouldBeActive,
               },
               update: { isActive: shouldBeActive },
+            });
+            logPersistedSource({
+              action: "created-category",
+              kind: "CATEGORY",
+              sourceId: rootIdForCategory,
+              frontPageUrl: newCat.pathUrl,
+              rssFeedUrl: newCat.rssFeedUrl,
+              rssStatus: newCat.rssStatus,
+              feedProvenance: newCat.feedProvenance,
+              userId: currentUserId,
+              active: shouldBeActive,
+              originalUrl: rawUrl,
+              resolvedUrl: pureRootUrl,
             });
             if (shouldBeActive) {
               targetedCategoryIds.add(newCat.id);

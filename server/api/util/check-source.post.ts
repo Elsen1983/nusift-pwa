@@ -219,24 +219,34 @@ export default defineEventHandler(async (event) => {
       finalUrl = targetUrl; // Visszaállítjuk az eredeti URL-t, hogy a felhasználó lássa, hogy a domain valid, még ha a WAF miatt nem is tudunk hozzáférni. Ez egy "soft fail" megközelítés a WAF-ekkel szemben.
     }
 
-    // 2. Graceful WAF Handling (The Existence Proof)
+    // 2. Graceful reachability handling
+    // A 4xx/5xx HTTP státusz önmagában még nem jelenti azt, hogy a domain érvénytelen:
+    // a site lehet érvényes, csak épp tiltja a botot vagy éppen hibás állapotban van.
     if (!response.ok || isWafTrap) {
+      if (response.status === 404 || response.status === 410) {
+        throw createError({
+          statusCode: 404,
+          statusMessage: "Validation Failed",
+          message: "api_errors.domain_not_found",
+        });
+      }
+
       if (
         response.status === 403 ||
         response.status === 401 ||
         response.status === 503 ||
+        response.status >= 500 ||
         isWafTrap
       ) {
         console.warn(
-          `[Check-Source] WAF protection detected (${response.status || "TRAP"}) for ${targetUrl}. Accepting as valid domain.`,
+          `[Check-Source] Reachable but non-OK response (${response.status || "TRAP"}) for ${targetUrl}. Accepting as valid domain.`,
         );
         finalUrl = targetUrl; // Fallback to user input
       } else {
-        throw createError({
-          statusCode: response.status === 404 ? 404 : 400,
-          statusMessage: "Validation Failed",
-          message: `URL nem érhető el (HTTP ${response.status})`,
-        });
+        console.warn(
+          `[Check-Source] Non-OK response (${response.status}) for ${targetUrl}. Accepting as reachable domain.`,
+        );
+        finalUrl = targetUrl;
       }
     }
 
@@ -336,6 +346,22 @@ export default defineEventHandler(async (event) => {
     }
 
     // --- VÉGSŐ VÁLASZ A FRONTENDNEK ---
+    console.log(
+      "[Check-Source] Validation summary:",
+      JSON.stringify(
+        {
+          inputUrl: rawUrl,
+          validatedUrl: finalUrl,
+          existingSourceId: existingSource?.id || null,
+          storedStatus: existingSource?.rssStatus || predictedStatus,
+          detectedLanguage,
+          sourceName: existingSource?.mediaName || cleanHostname,
+        },
+        null,
+        0,
+      ),
+    );
+
     return {
       success: true,
       url: finalUrl,
@@ -361,7 +387,7 @@ export default defineEventHandler(async (event) => {
       throw createError({
         statusCode: 408,
         statusMessage: "Request Timeout",
-        message: "api_errors.invalid_domain",
+        message: "api_errors.domain_unreachable",
       });
     }
 
@@ -374,7 +400,7 @@ export default defineEventHandler(async (event) => {
     throw createError({
       statusCode: 400,
         statusMessage: "Unreachable Domain",
-        message: "api_errors.invalid_domain",
+        message: "api_errors.domain_unreachable",
     });
   }
 });

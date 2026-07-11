@@ -210,6 +210,9 @@
         "errors": {
             "duplicate": "Ez a forrás már szerepel a figyelési listádon.",
             "invalid": "Érvénytelen forrás domain.",
+            "domain_not_found": "Ez a domain nem található, vagy 404 / 410 választ ad.",
+            "domain_unreachable": "Ez a domain jelenleg nem érhető el.",
+            "domain_reachable_but_error": "Ez a domain elérhető, de az oldal hibát adott.",
             "network": "Hiba történt a hálózati ellenőrzés során.",
             "save_failed": "Sikertelen folytatás. Kérlek, ellenőrizd a hálózatot és próbáld újra."
         }
@@ -585,6 +588,9 @@
             "fetch_logic_error": "Nem sikerült lekérni a forrásadatokat a szerverről.",
             "fetch_network_error": "Hiba az adatok betöltésekor. Kérlek, frissíts.",
             "invalid_domain": "Érvénytelen domain.",
+            "domain_not_found": "Ez a domain nem található, vagy 404 / 410 választ ad.",
+            "domain_unreachable": "Ez a domain jelenleg nem érhető el.",
+            "domain_reachable_but_error": "Ez a domain elérhető, de az oldal hibát adott.",
             "add_success": "Forrás sikeresen hozzáadva és aktiválva.",
             "add_suspended": "Forrás hozzáadva a Felfüggesztett Zónához (Kvótakorlát elérve).",
             "add_failed": "Nem sikerült hozzáadni a forrást",
@@ -710,7 +716,10 @@
         "missing_url": "Az URL megadása kötelező.",
         "article_detected": "Kérlek, egy hírportál főoldalát vagy rovatát add meg (pl. telex.hu/tech), ne egy konkrét cikk linkjét.",
         "soft_404": "Az oldal betöltött, de a tartalma alapján (404 / Nem található) már nem létezik.",
-        "invalid_domain": "Érvénytelen vagy elérhetetlen domain."
+        "invalid_domain": "Érvénytelen domain.",
+        "domain_not_found": "A domain nem található, vagy az oldal 404 / 410 választ ad.",
+        "domain_unreachable": "A domain jelenleg nem érhető el.",
+        "domain_reachable_but_error": "A domain elérhető, de az oldal hibát adott."
     },
     "notificationsPage": {
         "title": "Értesítések",

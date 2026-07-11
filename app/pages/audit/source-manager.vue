@@ -531,6 +531,15 @@ const progressPercentage = computed(() => {
 // Helper a backendről érkező üzenetek dinamikus fordításához
 const parseApiMessage = (msg: string | undefined, fallbackText: string) => {
   if (!msg) return fallbackText;
+  if (msg === "api_errors.domain_not_found") {
+    return t("sourceManager.toasts.domain_not_found");
+  }
+  if (msg === "api_errors.domain_unreachable") {
+    return t("sourceManager.toasts.domain_unreachable");
+  }
+  if (msg === "api_errors.domain_reachable_but_error") {
+    return t("sourceManager.toasts.domain_reachable_but_error");
+  }
   // Ha a string a mi API hibakulcsunkkal kezdődik, lefordítjuk, különben kiírjuk nyersen
   return msg.startsWith('api_errors.') ? t(msg) : msg;
 };
@@ -616,10 +625,11 @@ const addNewSource = async () => {
     const response = await $api<any>("/api/user/sources/add", {
       method: "POST",
       body: {
-        url: checkResponse.url,
+        url: targetUrl,
         name: checkResponse.name,
         validationStatus: checkResponse.status,
         language: checkResponse.detectedLanguage,
+        resolvedUrl: checkResponse.url,
       },
     });
 

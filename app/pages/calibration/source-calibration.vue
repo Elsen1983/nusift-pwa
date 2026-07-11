@@ -147,6 +147,7 @@ import { $api } from "~/utils/api";
 
 interface SourceItem {
   url: string;
+  resolvedUrl?: string | null;
   name: string;
   status: string;
   language?: string;
@@ -180,6 +181,15 @@ const showUrlError = computed(() => (urlInput.value.trim() !== "" && !isValidUrl
 
 const parseApiMessage = (msg: string | undefined, fallbackText: string) => {
   if (!msg) return fallbackText;
+  if (msg === "api_errors.domain_not_found") {
+    return t("sourceCalibration.errors.domain_not_found");
+  }
+  if (msg === "api_errors.domain_unreachable") {
+    return t("sourceCalibration.errors.domain_unreachable");
+  }
+  if (msg === "api_errors.domain_reachable_but_error") {
+    return t("sourceCalibration.errors.domain_reachable_but_error");
+  }
   return msg.startsWith('api_errors.') ? t(msg) : msg;
 };
 
@@ -218,7 +228,8 @@ const addSource = async () => {
     if (response.success) {
       console.log("Source validation response:", response);
       sources.value.unshift({
-        url: response.url,
+        url: targetUrl,
+        resolvedUrl: response.url,
         name: response.name,
         status: response.status,
         language: response.language
@@ -271,7 +282,8 @@ const saveAndContinue = async () => {
     // 3. RICH PAYLOAD: Map to objects containing both URL and Language
     const sourcesPayload = sources.value.map(s => ({
       url: s.url,
-      language: s.language || 'en'
+      language: s.language || 'en',
+      resolvedUrl: s.resolvedUrl || null,
     }));
     
     agentStore.topSources = sourcesPayload as any;

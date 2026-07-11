@@ -24,6 +24,24 @@ export default defineEventHandler(async (event) => {
   const finalLanguage = sourceLanguage || 'en';
 
   try {
+    const logPersistedSource = (payload: {
+      action: string;
+      kind: "ROOT" | "CATEGORY";
+      sourceId: string;
+      frontPageUrl: string;
+      rssFeedUrl?: string | null;
+      rssStatus?: string | null;
+      isSystemImported?: boolean | null;
+      feedProvenance?: string | null;
+      userId: string;
+      active: boolean;
+    }) => {
+      console.log(
+        "[Source-Manager] Persisted source snapshot:",
+        JSON.stringify(payload, null, 0),
+      );
+    };
+
     const targetedSourceIds = new Set<string>();
     const targetedCategoryIds = new Set<string>();
     const user = await prisma.user.findUnique({
@@ -197,6 +215,18 @@ export default defineEventHandler(async (event) => {
         targetedSourceIds.add(existingCategory.newsSource.id);
         targetedCategoryIds.add(existingCategory.id);
       }
+      logPersistedSource({
+        action: "linked-existing",
+        kind: "CATEGORY",
+        sourceId: existingCategory.newsSource?.id || existingCategory.id,
+        frontPageUrl: existingCategory.newsSource?.frontPageUrl || existingCategory.pathUrl,
+        rssFeedUrl: existingCategory.newsSource?.rssFeedUrl || null,
+        rssStatus: existingCategory.newsSource?.rssStatus || null,
+        isSystemImported: existingCategory.newsSource?.isSystemImported ?? null,
+        feedProvenance: existingCategory.newsSource ? "SYSTEM_DISCOVERED" : null,
+        userId,
+        active: shouldBeActive,
+      });
     } else if (existingRoot) {
       console.log(`[Source-Manager] Linked to existing ROOT source: ${existingRoot.id}`);
 
@@ -211,6 +241,18 @@ export default defineEventHandler(async (event) => {
       if (shouldRevalidateExistingSource(existingRoot)) {
         targetedSourceIds.add(existingRoot.id);
       }
+      logPersistedSource({
+        action: "linked-existing",
+        kind: "ROOT",
+        sourceId: existingRoot.id,
+        frontPageUrl: existingRoot.frontPageUrl,
+        rssFeedUrl: existingRoot.rssFeedUrl,
+        rssStatus: existingRoot.rssStatus,
+        isSystemImported: existingRoot.isSystemImported,
+        feedProvenance: "SYSTEM_DISCOVERED",
+        userId,
+        active: shouldBeActive,
+      });
     } else {
       // ESET 3: Teljesen ismeretlen link.
       const pureRootUrl = `${urlObj.protocol}//${urlObj.hostname}`;
@@ -228,6 +270,18 @@ export default defineEventHandler(async (event) => {
         update: {} 
       });
       console.log(`[Source-Manager] Created completely new ROOT: ${newRoot.frontPageUrl}`);
+      logPersistedSource({
+        action: "created-root",
+        kind: "ROOT",
+        sourceId: newRoot.id,
+        frontPageUrl: newRoot.frontPageUrl,
+        rssFeedUrl: newRoot.rssFeedUrl,
+        rssStatus: newRoot.rssStatus,
+        isSystemImported: newRoot.isSystemImported,
+        feedProvenance: newRoot.feedProvenance,
+        userId,
+        active: shouldBeActive,
+      });
       if (shouldBeActive) {
         targetedSourceIds.add(newRoot.id);
       }
@@ -238,6 +292,18 @@ export default defineEventHandler(async (event) => {
           create: { userId, sourceId: newRoot.id, isActive: shouldBeActive },
           update: { isActive: shouldBeActive },
         });
+        logPersistedSource({
+          action: "created-subscription",
+          kind: "ROOT",
+          sourceId: newRoot.id,
+          frontPageUrl: newRoot.frontPageUrl,
+          rssFeedUrl: newRoot.rssFeedUrl,
+          rssStatus: newRoot.rssStatus,
+          isSystemImported: newRoot.isSystemImported,
+          feedProvenance: newRoot.feedProvenance,
+          userId,
+          active: shouldBeActive,
+        });
       } else {
         const newCat = await prisma.sourceCategory.create({
           data: {
@@ -247,6 +313,18 @@ export default defineEventHandler(async (event) => {
             isUserRequested: true,
             rssStatus: "PENDING_DISCOVERY",
           },
+        });
+        logPersistedSource({
+          action: "created-category",
+          kind: "CATEGORY",
+          sourceId: newRoot.id,
+          frontPageUrl: newCat.pathUrl,
+          rssFeedUrl: newCat.rssFeedUrl,
+          rssStatus: newCat.rssStatus,
+          isSystemImported: newRoot.isSystemImported,
+          feedProvenance: newCat.feedProvenance,
+          userId,
+          active: shouldBeActive,
         });
 
         await prisma.userCategorySubscription.upsert({

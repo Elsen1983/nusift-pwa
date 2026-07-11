@@ -210,6 +210,9 @@
         "errors": {
             "duplicate": "This source is already in your monitoring list.",
             "invalid": "Invalid source domain.",
+            "domain_not_found": "This domain could not be found or returns 404 / 410.",
+            "domain_unreachable": "This domain is not reachable right now.",
+            "domain_reachable_but_error": "This domain is reachable, but the site returned an error.",
             "network": "An error occurred during network validation.",
             "save_failed": "Failed to continue. Please check your network and try again."
         }
@@ -585,6 +588,9 @@
             "fetch_logic_error": "Failed to retrieve source data from the server.",
             "fetch_network_error": "Failed to load data. Please refresh.",
             "invalid_domain": "Invalid domain.",
+            "domain_not_found": "This domain could not be found or returns 404 / 410.",
+            "domain_unreachable": "This domain is not reachable right now.",
+            "domain_reachable_but_error": "This domain is reachable, but the site returned an error.",
             "add_success": "Source successfully added and activated.",
             "add_suspended": "Source added to Suspended Zone (Quota limit reached).",
             "add_failed": "Failed to add source",
@@ -723,7 +729,10 @@
       "missing_url": "URL parameter is required.",
       "article_detected": "Please provide a publisher's main page or category (e.g., techcrunch.com/startups), not a specific article link.",
       "soft_404": "The page loaded successfully, but its content indicates it no longer exists (404 / Not Found).",
-      "invalid_domain": "Invalid or unreachable domain."
+      "invalid_domain": "Invalid domain.",
+      "domain_not_found": "The domain appears to be missing or the page returns 404 / 410.",
+      "domain_unreachable": "The domain could not be reached right now.",
+      "domain_reachable_but_error": "The domain is reachable, but the site returned an error."
     }
 }
 
