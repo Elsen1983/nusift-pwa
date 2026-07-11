@@ -604,6 +604,7 @@ const addNewSource = async () => {
     return;
   }
 
+  toast.value = { show: false, message: "", type: "success" };
   isProcessing.value = true;
 
   try {
@@ -621,6 +622,8 @@ const addNewSource = async () => {
       isProcessing.value = false;
       return;
     }
+
+    toast.value = { show: false, message: "", type: "success" };
 
     const response = await $api<any>("/api/user/sources/add", {
       method: "POST",

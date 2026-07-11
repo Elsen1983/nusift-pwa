@@ -22,6 +22,10 @@ export default defineEventHandler(async (event) => {
 
   // A forrás nyelve, ha nem jött a frontendről, akkor alapértelmezetten 'en'
   const finalLanguage = sourceLanguage || 'en';
+  const rawInputUrl = String(url).trim();
+  const normalizedInputUrl = /^https?:\/\//i.test(rawInputUrl)
+    ? rawInputUrl
+    : `https://${rawInputUrl}`;
 
   try {
     const logPersistedSource = (payload: {
@@ -120,7 +124,7 @@ export default defineEventHandler(async (event) => {
     const shouldBeActive = activeRoots + activeCats < maxActiveLimit;
 
     // 4. NewsSource & Category Normalization & Deduplication
-    const urlObj = new URL(url);
+    const urlObj = new URL(normalizedInputUrl);
     const cleanIncomingHostname = urlObj.hostname
       .replace(/^www\./, "")
       .toLowerCase();
