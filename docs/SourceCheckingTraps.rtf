@@ -1,0 +1,34 @@
+1. The Paywall & Bot-Challenge Trap (WAF Interception)
+The Scenario: Modern news sites use Web Application Firewalls (WAFs) like Cloudflare, DataDome, or Akamai. When your automated agent tries to fetch https://news-site.com/article, 
+the WAF detects the bot. Instead of returning a 403 Forbidden, the WAF issues an HTTP 302 redirect to a challenge page (e.g., https://news-site.com/challenge?ray=... 
+or https://news-site.com/paywall). The Flaw: If the agent follows the redirect and saves the final response.url, you end up saving the URL of the CAPTCHA or paywall page into 
+your database instead of the actual news source. Mitigation: Do not automatically overwrite the user's input with the final resolved URL. Only save the final URL if it passes a 
+strict structural validation against the original input.
+
+2. Geo-IP Localization Redirects (i18n)
+The Scenario: Your backend servers (or background agents) are hosted in a specific data center (e.g., AWS in Frankfurt or US-East). A user submits a link to a local Spanish news 
+site: https://noticias.es. When your server fetches the site, the target server reads the IP address of your AWS machine, assumes the visitor is international, and forces a 
+redirect to https://noticias.es/en or https://global.noticias.es. The Flaw: Your database is now storing the English/Global version of the site, which will serve the wrong 
+RSS feeds to the user who explicitly wanted the local Spanish version. Mitigation: When fetching sources, pass the Accept-Language header that matches the user's preferred 
+language, and be extremely cautious about saving URLs that append country or language codes /en/ dynamically.
+
+3. Client-Side Routing (SPA) & Auth Walls
+The Scenario: Many modern sites use Single Page Application (SPA) frameworks (like React or Vue). If your crawler uses a headless browser (like Puppeteer/Playwright) or evaluates 
+JavaScript, it might hit a URL like https://premium-news.com/feed. The JavaScript executes, realizes the agent has no active session cookie, and uses 
+window.location.replace('/login'). The Flaw: The agent captures /login as the final URL. Your database fills up with hundreds of identical login page URLs across different domains.
+Mitigation: If using a headless browser, disable JavaScript for the initial discovery phase, or intercept and block navigation requests that target auth-related 
+paths (/login, /register, /auth).
+
+4. Parameterized URLs & "Soft 404s"
+The Scenario: A user pastes a link they copied from Twitter: https://news.com/article?utm_source=twitter&utm_medium=social. The site itself might have deleted that article. 
+Instead of returning a standard HTTP 404 error, the server returns an HTTP 200 (OK) but redirects the user to the homepage or a search page (https://news.com/search?q=article).
+The Flaw: Because the server returned a 200 OK, your agent thinks the fetch was successful and saves the search results page or the URL bloated with tracking tags as a permanent 
+news source. Mitigation: * URL Stripping: Always strip known tracking parameters (utm_*, fbclid, gclid) before running network requests. Soft 404 Detection: Check the <title> tag 
+or <h1> of the returned HTML. If it contains "Not Found", "404", or "Search", discard the URL even if the HTTP status was 200.
+
+5. Rogue Canonical Tags
+The Scenario: To fix parameter bloat, developers often instruct their agents to read the <link rel="canonical" href="..."> tag from the HTML <head> and save that URL as the 
+absolute source of truth. The Flaw: Canonical tags are notoriously misconfigured by site administrators. A production site might accidentally have a canonical tag pointing to 
+their staging environment (https://staging.news.com/article) or an HTTP version (http://news.com). If your agent blindly trusts the canonical tag, it will mutate a perfectly good 
+URL into a broken or insecure one. Mitigation: Treat canonical tags as "suggestions," not absolute truth. If a canonical tag changes the subdomain (e.g., to staging.) or 
+downgrades the protocol (HTTPS to HTTP), ignore it.

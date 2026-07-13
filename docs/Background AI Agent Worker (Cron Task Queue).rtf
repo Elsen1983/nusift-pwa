@@ -1,0 +1,66 @@
+1. The Crawler & Discovery Engine (The Core Loop)
+
+This job handles the actual extraction of data from the internet, explicitly targeting sources that need processing.
+
+    Targeted Retries: Query the NewsSource table for any domains where rssStatus is PENDING_DISCOVERY, FAILED, or NO_RSS_FOUND, and where nextRetryAt is in the past.
+
+    WAF Evasion Strategy: Attempt to fetch the URL. If a 403/Firewall block is detected, seamlessly switch the fetch strategy from a standard HTTP request to a headless browser (e.g., Puppeteer) or a proxy network to bypass the publisher's block.
+
+    The "AI Deep Scan": If no standard RSS XML is found on the page, package the raw HTML DOM and pass it to your Sovereign AI prompt to systematically extract article titles, links, and dates directly from the frontend code.
+
+    Status Updates: Update the NewsSource.rssStatus to ACTIVE upon success, or update nextRetryAt to back off exponentially (e.g., try again in 1 hour, then 6 hours, then 24 hours) upon failure.
+
+2. State Reconciliation (The Quota Protector)
+
+This is the critical logic to ensure users on the FREE tier never accidentally exceed their 5-source limit when the AI successfully fixes a broken source in the background.
+
+    Trigger: This job runs only when a NewsSource transitions from a restricted state (FAILED, NO_RSS_FOUND) to ACTIVE.
+
+    Subscriber Audit: Query all UserSourceSubscription rows linked to this specific source where isActive is true.
+
+    Limit Evaluation: For each user found, calculate their current active sources against their UserTier limit (5 for FREE, 10 for PRO).
+
+    Automated Suspension: If a user is already at their maximum capacity, silently update their UserSourceSubscription.isActive to false. This pushes the newly fixed source into their Suspended Zone on the UI, protecting your database integrity and respecting their quota.
+
+3. Article Ingestion & Enrichment (The Content Pipeline)
+
+Once a source is healthy (ACTIVE), the worker needs to continuously fetch the actual news data.
+
+    Feed Parsing: Download the RSS XML or run the AI Deep Scan to grab the latest 10-20 articles from the source.
+
+    Deduplication: Check the Article table by URL or title to ensure you are not saving the same news story twice.
+
+    AI Enrichment: Pass the raw article data through a lightweight LLM prompt to generate the tags (e.g., "Politics", "Tech"), signals (e.g., "High Importance", "Opinion"), and calculate a baseline algorithmic score.
+
+    Database Injection: Save the new records to the Article table so they immediately appear on the users' dashboards.
+
+4. Telemetry & Financial Logging (The Margin Protector)
+
+Because running LLMs and headless browsers costs actual money, the worker must log its own operational costs.
+
+    Compute Tracking: Every time the "AI Deep Scan" is triggered, record the execution into the AgentScanLog table.
+
+    Cost Allocation: Log the exact tokensUsed, the executionTimeMs, and map it to the specific sourceId. This will allow you to run queries later to find out if a specific regional news site is costing you more in AI compute than it brings in via PRO subscriptions.
+
+    Error Tracing: If the AI Deep Scan fails (e.g., the website changed its entire design), write the stack trace to the errorLog column so you can debug the prompt later.
+
+5. Maintenance & Cleanup (The Janitor)
+
+To keep the PostgreSQL database fast and avoid unnecessary cloud storage costs, the worker should perform daily housekeeping.
+
+    Article Pruning: Delete or archive articles older than a certain threshold (e.g., 30 days) unless a user has explicitly saved them in the Bookmark table.
+
+    Orphaned Source Purge: Identify NewsSource rows that have exactly 0 subscribers and delete them. There is no reason to spend your compute budget scraping websites that no user is actively reading.
+
+
+
+-------
+Architectural Roadmap Validated
+
+Understood. Deferring the input sanitization to the background agent and the UI layer is a completely valid engineering decision. This approach keeps your API ingestion endpoints lightweight and fast, pushing the logical heavy lifting to the asynchronous discovery worker where it belongs.
+
+Here is exactly how your system is already perfectly positioned to handle this future update:
+
+    The AI Agent (Asynchronous Discovery): Later, when you expand your background discovery.ts agent, it will pick up these /auth/login URLs that are currently sitting in the PENDING_DISCOVERY state. When the agent attempts to parse the HTML, it will detect the authentication wall. Instead of crashing, the agent will simply update that specific category's validationStatus in the database to a restrictive state (e.g., FAILED or a custom AUTH_WALL status).
+
+    The UI Layer (User Feedback): Because you have already built a highly modular UI in source-manager.vue, the moment the database status changes, the reactive state will automatically pull that URL out of the "Active" zone and drop it into your pre-existing Restricted Sources zone. You will merely need to add one new switch case to your getBadges() utility function to render a red "Auth Required" or "No News Reachable" tag.

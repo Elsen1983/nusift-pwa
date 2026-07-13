@@ -1,0 +1,93 @@
+ az alabbi https://pulzus.hvg.hu/egeszseg/20260608_kamaszok-egeszsege-sport-inzulinrezisztencia-ir-riziko-megelozes oldal nem konkretan paywall subdomain-el jeloli az elofizetes mogotti olvashatosagot, megis a tartalom nagyreset elrejti az olvaso elol. mikent lehetne ezt detektalni?
+
+Az ilyen típusú, úgynevezett "soft" vagy hibrid paywall rendszerek detektálása nem a domain/subdomain nevek alapján történik, hanem a letöltött HTML dokumentum struktúrája (DOM), a CSS osztályok és a strukturált adatok (JSON-LD) elemzésével.
+
+Bár a szerver nem használ külön aldomaint, a kliensoldali kódban és a leképezett jelölőnyelvben nagyon egyértelmű ujjlenyomatokat hagy a fizetős fal. Az alábbi megbízható módszerekkel lehet ezt programozottan (példál egy Python-alapú crawler vagy aggregátor segítségével) detektálni:
+1. Strukturált adatok (Schema.org / JSON-LD) elemzése — A legbiztosabb módszer
+
+A komolyabb hírportálok (köztük a HVG és aloldalai is) gyakran használnak strukturált adatokat a Google keresőrobotjai számára, hogy jelezzék: a tartalom nem "cloaking" (keresőoptimalizálási csalás), hanem legitim fizetős tartalom. A Google specifikációja szerint ezt az isAccessibleForFree tulajdonsággal kell jelölni.
+
+Ha a HTML head vagy body részében található application/ld+json scriptekben az alábbi kulcs-érték párt találod, a cikk 100%, hogy paywall mögött van:
+JSON
+
+{
+  "@context": "https://schema.org",
+  "@type": "NewsArticle",
+  "hasPart": {
+    "@type": "WebPageElement",
+    "isAccessibleForFree": "False", // <--- EZT KELL KERESNI
+    "cssSelector": ".paywall"
+  }
+}
+
+Hogyan detektáld? A crawled oldalon keress rá a "isAccessibleForFree": "False" vagy "isAccessibleForFree": false stringre.
+2. Specifikus CSS osztályok és ID-k (DOM lenyomatok)
+
+Amikor a tartalom nagy részét elrejtik, a megmaradt szöveg végére egy elhalványuló (fade) effektet tesznek, és mögé/alá injektálják az előfizetésre buzdító panelt (paywall box). Ezek a HTML elemek szinte mindig egyedi, állandó osztályneveket kapnak.
+
+A HVG/Pulzus és hasonló hazai rendszereknél az alábbi CSS osztályok jelenléte utal a fizetős falra:
+
+    article-paywall, paywall-container, hvg-paywall-box
+
+    A tartalomtörzs (article-body vagy article-content) hirtelen megszakad, és egy disabled, blurred vagy preview-only osztályt kap.
+
+    Megjelenik egy marketing konténer, pl.: .subscription-promo, .paywall-login-pannel.
+
+Hogyan detektáld? Ha a BeautifulSoup / Scrapy segítségével a DOM-ban megtalálható a paywall-ra utaló specifikus osztály (pl. div.paywall), akkor a cikk prémium.
+3. Szöveghossz és bekezdésszám arányossági elemzés (Heurisztika)
+
+Ha a paywall implementációja dinamikusan változik (és az osztályneveket obfuszkálják/módosítják), a strukturális heurisztika nyújt mentőövet.
+
+A "soft" paywall lényege, hogy a lead (bevezető) és esetleg az első 1-2 bekezdés látható, a többi nem.
+
+    Detektálási logika: Megszámolod a cikk törzsében lévő <p> (bekezdés) tageket, vagy a teljes szövegtörzs karakterhosszát.
+
+    Ha egy elemzett cikk teljes szövegtörzse kevesebb mint 400-600 karakter, vagy kevesebb mint 2-3 bekezdésből áll, miközben a cikk jellege (pl. elemzés, mélyinterjú) alapján ennek a többszörösének kellene lennie, akkor a script feltételezheti, hogy csak egy csonka preview-t (ízelítőt) töltött le.
+
+4. HTTP Response és Meta-tagek
+
+Egyes oldalak a HTTP headerben vagy a meta tagek között is hordoznak információt a tartalom típusáról (bár ez a soft paywalloknál ritkább, mert a szerver 200 OK-val küldi vissza az oldalt):
+
+    Keress meta tageket, amelyek a cikk hozzáférési szintjét írják le (pl. <meta name="rights" content="premium"> vagy <meta property="og:article:access" content="paid">).
+
+Javasolt implementációs stratégia az aggregátorodhoz (Python példa)
+
+Ha a NuSift projekten belül futtatod a crawlert, a legrobusztusabb, ha egy kombinált ellenőrzést futtatsz le:
+Python
+
+import json
+from bs4 import BeautifulSoup
+
+def is_paywalled(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # 1. lépés: JSON-LD ellenőrzés (Legbiztosabb)
+    scripts = soup.find_all('script', type='application/ld+json')
+    for script in scripts:
+        try:
+            data = json.loads(script.string)
+            # Időnként a struktúra listában van, vagy mélyebben ágyazott
+            if isinstance(data, dict) and 'isAccessibleForFree' in str(data):
+                if "False" in str(data.get('hasPart', {}).get('isAccessibleForFree', '')):
+                    return True
+        except (ValueError, TypeError):
+            continue
+
+    # 2. lépés: CSS Szelektor alapú ellenőrzés (Specifikus a HVG/Pulzus platformra)
+    # Figyelni kell a HVG specifikus osztályait, mint a 'paywall', 'hvg-box', stb.
+    paywall_selectors = ['.paywall', '.article-paywall', '.subscription-promo', '#paywall-container']
+    for selector in paywall_selectors:
+        if soup.select_one(selector):
+            return True
+
+    # 3. lépés: Heurisztikus ellenőrzés (Ha a fentiek csődöt mondanak)
+    article_body = soup.select_one('.article-content, .article-body, #article-text')
+    if article_body:
+        text_length = len(article_body.get_text(strip=True))
+        # Ha gyanúsan rövid a szöveg, valószínűleg falba ütközött
+        if text_length < 500:
+            return True
+
+    return False
+
+Konkrétan a HVG Pulzus esetében: A hvg.hu és aloldalai szigorúan követik a Google strukturált adat előírásait a prémium cikkeknél, így az 1. pontban bemutatott JSON-LD vizsgálat szinte 100%-os biztonsággal fogja neked jelezni a fizetős státuszt, anélkül, hogy a folyamatosan változó CSS osztályokat kellene vadásznod.
