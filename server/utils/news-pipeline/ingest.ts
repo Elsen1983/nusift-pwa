@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { safeFetch } from "../ssrf-guard";
 import { SSRFError } from "../ssrf-guard";
@@ -7,6 +6,7 @@ import { cleanFeedValue, hashText, normalizeFeedText, normalizeUrl, stripHtml } 
 import { normalizeFeedTextDetailed } from "./normalize-feed-text";
 import { getFeedProductivityResetData } from "./feed-productivity";
 import type {
+  DiscoveryOutcome,
   HardCaseDiscoveryCandidate,
   IngestCandidate,
   IngestRejectedItem,
@@ -15,6 +15,8 @@ import type {
   ScopeMatch,
   TaxonomyEvidence,
 } from "./types";
+import { emptyTaxonomyEvidence, nonNullish, serializeDiscoveryPayload, validateDiscoveryEvidence } from "./types";
+
 import { buildFeedUrlCandidates } from "./import-rss";
 import { discoverFeedForUrl } from "./feed-discovery";
 
@@ -192,6 +194,13 @@ const getRootHost = (url: string) => {
   }
 };
 
+/**
+ * Build a discovery evidence payload for persistence.
+ *
+ * Produces the legacy flat field layout for backward compatibility AND
+ * includes a canonical `outcome` field of type `DiscoveryOutcome` for
+ * structured downstream consumption and auditing.
+ */
 export const buildDiscoveryEvidencePayload = (
   targetUrl: string,
   discovery: {
@@ -222,22 +231,41 @@ export const buildDiscoveryEvidencePayload = (
     lastError?: string;
     canonicalIdentity?: string | null;
   },
-) =>
-  ({
-    evaluatedAt: new Date().toISOString(),
-    targetUrl,
+) => {
+  // Build the canonical DiscoveryOutcome directly, avoiding type assertions.
+  // The loosely-typed discovery input may have nullable fields that
+  // FeedDiscoveryResult requires as non-null, so we construct the outcome
+  // fields explicitly rather than routing through createDiscoveryOutcome.
+  const now = new Date().toISOString();
+  const outcome: DiscoveryOutcome = {
     feedUrl: discovery.feedUrl,
     discoveredVia: discovery.discoveredVia || null,
     detection: discovery.detection,
-    scopeConfidence: discovery.scopeConfidence || "low",
-    scopeMatch: discovery.scopeMatch || "generic",
-    taxonomyEvidence: discovery.taxonomyEvidence ?? null,
-    canonicalIdentity: discovery.canonicalIdentity ?? null,
+    contentType: null,
     score: discovery.score ?? 0,
-    topCandidates: discovery.topCandidates || [],
-    rejectedCandidates: discovery.rejectedCandidates || [],
-    lastError: discovery.lastError || null,
-  }) satisfies Prisma.InputJsonValue;
+    scopeConfidence: (discovery.scopeConfidence || "low") as "high" | "medium" | "low",
+    scopeMatch: discovery.scopeMatch || "generic",
+    taxonomyEvidence: discovery.taxonomyEvidence ?? emptyTaxonomyEvidence(),
+    topCandidates: (discovery.topCandidates || []) as DiscoveryOutcome["topCandidates"],
+    rejectedCandidates: (discovery.rejectedCandidates || []) as DiscoveryOutcome["rejectedCandidates"],
+    lastError: discovery.lastError,
+    canonicalIdentity: discovery.canonicalIdentity ?? null,
+    evaluatedAt: now,
+    targetUrl,
+    verified: Boolean(discovery.feedUrl),
+    resolverPath: "fetch",
+    browserAttempted: false,
+    browserMethod: "none",
+    browserCandidateCount: 0,
+    browserCandidates: [],
+    browserError: null,
+  };
+
+  return serializeDiscoveryPayload(outcome,
+    // Preserve legacy flat-field backward-compat: null when input had no taxonomy evidence
+    !discovery.taxonomyEvidence ? { taxonomyEvidence: null } : undefined,
+  );
+};
 
 const getHardCaseQueueReason = (discovery: {
   topCandidates?: unknown[];
@@ -714,11 +742,12 @@ export const isFallbackFeedItemRelevantToCategory = (
 export const isScopedCategoryFeed = (
   categoryPathUrl: string,
   feedUrl: string | null,
-  discoveryEvidence?: { scopeMatch?: ScopeMatch | null } | null,
+  discoveryEvidence?: { scopeMatch?: ScopeMatch | null; outcome?: { scopeMatch?: ScopeMatch } | null } | null,
 ) => {
   if (!feedUrl) return false;
 
-  const explicitScopeMatch = discoveryEvidence?.scopeMatch;
+  // Prefer canonical outcome scopeMatch when present
+  const explicitScopeMatch = discoveryEvidence?.outcome?.scopeMatch ?? discoveryEvidence?.scopeMatch;
   if (explicitScopeMatch === "exact" || explicitScopeMatch === "probable") {
     return true;
   }
@@ -752,25 +781,30 @@ export const isScopedCategoryFeed = (
   return false;
 };
 
+/**
+ * Read discovery evidence from a persisted JSON column.
+ * Uses the shared `validateDiscoveryEvidence` validator from types.ts
+ * which validates field types and normalizes malformed values to safe defaults.
+ * Prefers canonical outcome when present, falls back to legacy flat fields.
+ *
+ * Field semantics:
+ * - `undefined` means the field was genuinely absent from the source payload.
+ * - A concrete value means the field was present (and validated/normalized).
+ * This distinction matters for `isScopedCategoryFeed` which falls through
+ * to URL heuristics when scopeMatch is absent (undefined), but returns
+ * `false` immediately when scopeMatch is "generic".
+ */
 const readCategoryDiscoveryEvidence = (
   discoveryEvidence: unknown,
-): { scopeMatch?: ScopeMatch | null } | null => {
-  if (!discoveryEvidence || typeof discoveryEvidence !== "object" || Array.isArray(discoveryEvidence)) {
-    return null;
-  }
+): { scopeMatch?: ScopeMatch | null; verified?: boolean; taxonomyEvidence?: TaxonomyEvidence | null } | null => {
+  const validated = validateDiscoveryEvidence(discoveryEvidence);
+  if (!validated) return null;
 
-  const maybeScopeMatch = (discoveryEvidence as { scopeMatch?: unknown }).scopeMatch;
-  if (
-    maybeScopeMatch === "exact" ||
-    maybeScopeMatch === "probable" ||
-    maybeScopeMatch === "generic" ||
-    maybeScopeMatch === "unrelated" ||
-    maybeScopeMatch == null
-  ) {
-    return { scopeMatch: maybeScopeMatch as ScopeMatch | null | undefined };
-  }
-
-  return null;
+  return {
+    scopeMatch: validated.scopeMatch,
+    verified: validated.verified,
+    taxonomyEvidence: validated.taxonomyEvidence,
+  };
 };
 
 export const matchCategoryIdForUrl = (
@@ -901,7 +935,7 @@ const resolveCategoryFeedUrl = async (
       isScopedFeed: isScopedCategoryFeed(
         category.pathUrl,
         discoveredFeedUrl,
-        buildDiscoveryEvidencePayload(category.pathUrl, discovery),
+        { scopeMatch: discovery.scopeMatch },
       ),
       hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
         targetType: "category",
@@ -1221,7 +1255,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
               OR: [
                 feedRssGuids.length ? { rssGuid: { in: feedRssGuids } } : undefined,
                 feedCanonicalUrls.length ? { canonicalUrl: { in: feedCanonicalUrls } } : undefined,
-              ].filter(Boolean) as any,
+              ].filter(nonNullish),
             },
             select: {
               id: true,
@@ -1575,7 +1609,7 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
               rssGuids.length ? { rssGuid: { in: rssGuids } } : undefined,
               canonicalUrls.length ? { canonicalUrl: { in: canonicalUrls } } : undefined,
               contentHashes.length ? { contentHash: { in: contentHashes } } : undefined,
-            ].filter(Boolean) as any,
+            ].filter(nonNullish),
           },
           select: {
             id: true,

@@ -310,8 +310,7 @@
                 "today": "Today",
                 "last_24h": "Last 24h",
                 "last_48h": "Last 48h",
-                "last_1w": "Last 1 Week (Pro)",
-                "last_2w": "Last 2 Week (Pro)"
+                "last_1w": "Last 1 Week"
             },
             "categories": {
                 "politics": "Politics",

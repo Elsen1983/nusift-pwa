@@ -10,6 +10,9 @@ import {
 import { cleanFeedValue } from "./text";
 import type { ScopeMatch, TaxonomyEvidence } from "./types";
 
+/** Cast Prisma.InputJsonValue back to a concrete shape for test assertions. */
+const asPayload = (v: unknown) => v as Record<string, unknown>;
+
 describe("matchCategoryIdForUrl", () => {
   it("matches the most specific category path for article URLs", () => {
     const result = matchCategoryIdForUrl(
@@ -268,10 +271,10 @@ describe("buildDiscoveryEvidencePayload", () => {
       editionPaths: [],
     };
 
-    const result = buildDiscoveryEvidencePayload(
+    const result = asPayload(buildDiscoveryEvidencePayload(
       "https://example.com/sport",
       makeEvidence({ taxonomyEvidence }),
-    );
+    ));
 
     expect(result.taxonomyEvidence).toBeDefined();
     expect(typeof result.taxonomyEvidence).toBe("object");
@@ -289,46 +292,76 @@ describe("buildDiscoveryEvidencePayload", () => {
   });
 
   it("preserves scopeMatch through serialization", () => {
-    const result = buildDiscoveryEvidencePayload(
+    const result = asPayload(buildDiscoveryEvidencePayload(
       "https://example.com/sport",
       makeEvidence({ scopeMatch: "probable" as ScopeMatch }),
-    );
+    ));
 
     expect(result.scopeMatch).toBe("probable");
   });
 
   it("preserves scopeConfidence through serialization", () => {
-    const result = buildDiscoveryEvidencePayload(
+    const result = asPayload(buildDiscoveryEvidencePayload(
       "https://example.com/sport",
       makeEvidence({ scopeConfidence: "high" }),
-    );
+    ));
 
     expect(result.scopeConfidence).toBe("high");
   });
 
   it("preserves topCandidates and rejectedCandidates arrays", () => {
-    const result = buildDiscoveryEvidencePayload(
+    const result = asPayload(buildDiscoveryEvidencePayload(
       "https://example.com/sport",
       makeEvidence(),
-    );
+    ));
 
     expect(result.topCandidates).toHaveLength(1);
-    expect(result.topCandidates[0]!.scopeMatch).toBe("exact");
+    expect((result.topCandidates as any[])[0]!.scopeMatch).toBe("exact");
     expect(result.rejectedCandidates).toHaveLength(1);
-    expect(result.rejectedCandidates[0]!.reason).toBe("did not validate");
+    expect((result.rejectedCandidates as any[])[0]!.reason).toBe("did not validate");
   });
 
   it("applies fallbacks for missing optional fields on loose-typed input", () => {
-    const result = buildDiscoveryEvidencePayload("https://example.com/news", {
+    const result = asPayload(buildDiscoveryEvidencePayload("https://example.com/news", {
       feedUrl: null,
       detection: "none",
-    });
+    }));
 
     expect(result.scopeMatch).toBe("generic");
     expect(result.scopeConfidence).toBe("low");
+    // Legacy flat field preserves null when input had no taxonomy evidence
     expect(result.taxonomyEvidence).toBeNull();
     expect(result.score).toBe(0);
     expect(result.topCandidates).toEqual([]);
     expect(result.rejectedCandidates).toEqual([]);
+  });
+
+  it("includes a structured outcome with verified=true when feed resolved", () => {
+    const result = asPayload(buildDiscoveryEvidencePayload(
+      "https://example.com/sport",
+      makeEvidence(),
+    ));
+
+    expect(result.outcome).toBeDefined();
+    const outcome = result.outcome as Record<string, unknown>;
+    expect(outcome.feedUrl).toBe("https://example.com/sport/rss");
+    expect(outcome.targetUrl).toBe("https://example.com/sport");
+    expect(outcome.verified).toBe(true);
+    expect(outcome.resolverPath).toBe("fetch");
+    expect(outcome.browserAttempted).toBe(false);
+    expect(outcome.evaluatedAt).toBeTruthy();
+  });
+
+  it("includes a structured outcome with verified=false when no feed resolved", () => {
+    const result = asPayload(buildDiscoveryEvidencePayload("https://example.com/news", {
+      feedUrl: null,
+      detection: "none",
+    }));
+
+    expect(result.outcome).toBeDefined();
+    const outcome = result.outcome as Record<string, unknown>;
+    expect(outcome.verified).toBe(false);
+    expect(outcome.feedUrl).toBeNull();
+    expect(outcome.resolverPath).toBe("fetch");
   });
 });

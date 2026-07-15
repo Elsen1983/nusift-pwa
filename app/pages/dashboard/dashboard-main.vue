@@ -40,22 +40,17 @@
               class="absolute top-full mt-1 left-0 w-full z-[60] shadow-xl bg-surface-container-highest border border-outline-variant/30 rounded-lg space-y-1 p-3 pt-2"
             >
               <div
-                v-for="option in dateOptions"
+                v-for="option in visibleDateOptions"
                 :key="option.key"
-                @click="!isDateOptionLocked(option) && selectDate(option.key)"
-                :class="[
-                  'text-[13px] font-bold transition-colors py-1',
-                  isDateOptionLocked(option)
-                    ? 'text-on-surface-variant/30 cursor-not-allowed italic'
-                    : 'text-on-surface-variant/90 hover:text-primary-container cursor-pointer',
-                ]"
+                @click="selectDate(option.key)"
+                class="text-[13px] font-bold text-on-surface-variant/90 transition-colors py-1 hover:text-primary-container cursor-pointer"
               >
                 {{ $t("dashboard.filters.dates." + option.key) }}
                 <span
-                  v-if="isDateOptionLocked(option)"
-                  class="material-symbols-outlined text-[12px] ml-1 align-text-bottom"
+                  v-if="option.isPro"
+                  class="material-symbols-outlined text-[12px] ml-1 align-text-bottom text-primary-container/70"
                 >
-                  lock
+                  workspace_premium
                 </span>
               </div>
             </div>
@@ -555,8 +550,25 @@ const isUserFreeTier = computed(() => {
   return !authStore.user?.tier || authStore.user.tier === "FREE";
 });
 
-const isDateOptionLocked = (option: { isPro: boolean }) =>
-  option.isPro && isUserFreeTier.value;
+const dateOptions = [
+  { key: "today", isPro: false },
+  { key: "last_24h", isPro: false },
+  { key: "last_48h", isPro: true },
+  { key: "last_1w", isPro: true },
+] as const;
+
+const visibleDateOptions = computed(() =>
+  dateOptions.filter((option) => !option.isPro || !isUserFreeTier.value),
+);
+
+const defaultDateKey = computed(() =>
+  visibleDateOptions.value.find((option) => option.key === "last_24h")?.key ||
+  visibleDateOptions.value[0]?.key ||
+  "last_24h",
+);
+
+const isAllowedDateKey = (key: string) =>
+  dateOptions.some((option) => option.key === key && (!option.isPro || !isUserFreeTier.value));
 
 definePageMeta({
   layout: "app-layout",
@@ -879,16 +891,14 @@ const matchesAppliedDateFilter = (article: Article) => {
   const diffMs = now.getTime() - articleDate.getTime();
 
   switch (appliedSelectedDateKey.value) {
-    case "last_24h":
-      return diffMs <= 24 * 60 * 60 * 1000;
     case "today":
       return articleDate >= startOfToday;
+    case "last_24h":
+      return diffMs <= 24 * 60 * 60 * 1000;
     case "last_48h":
       return diffMs <= 48 * 60 * 60 * 1000;
     case "last_1w":
       return diffMs <= 7 * 24 * 60 * 60 * 1000;
-    case "last_2w":
-      return diffMs <= 14 * 24 * 60 * 60 * 1000;
     default:
       return true;
   }
@@ -1464,14 +1474,6 @@ const runHardCaseQueue = async () => {
   }
 };
 
-const dateOptions = [
-  { key: "today", value: "Today", isPro: false },
-  { key: "last_24h", value: "Last 24h", isPro: false },
-  { key: "last_48h", value: "Last 48h (Free)", isPro: false },
-  { key: "last_1w", value: "Last 1 Week (Pro)", isPro: true },
-  { key: "last_2w", value: "Last 2 Week (Pro)", isPro: true },
-];
-
 const loadAvailableSources = async () => {
   try {
     const response = await $api<{
@@ -1579,7 +1581,7 @@ const toggleSourceDropdown = () => {
 };
 
 const selectDate = (key: string) => {
-  currentSelectedDateKey.value = key;
+  currentSelectedDateKey.value = isAllowedDateKey(key) ? key : defaultDateKey.value;
   isDateDropdownOpen.value = false;
 };
 
@@ -1622,6 +1624,19 @@ const applyFilters = () => {
     isRefreshing.value = false;
   }, 600);
 };
+
+watch(
+  [isUserFreeTier, visibleDateOptions],
+  () => {
+    if (!isAllowedDateKey(currentSelectedDateKey.value)) {
+      currentSelectedDateKey.value = defaultDateKey.value;
+    }
+    if (!isAllowedDateKey(appliedSelectedDateKey.value)) {
+      appliedSelectedDateKey.value = defaultDateKey.value;
+    }
+  },
+  { immediate: true },
+);
 
 const activeActionMenu = ref<number | null>(null);
 const activeOverlay = ref<number | null>(null);

@@ -1,6 +1,8 @@
 import { createError } from "h3";
 import { prisma } from "../../utils/prisma";
 import { requireUserId } from "../../utils/require-user";
+import { validateDiscoveryEvidence } from "../../utils/news-pipeline/types";
+import type { ScopeMatch } from "../../utils/news-pipeline/types";
 
 const normalizeComparableUrl = (value?: string | null) =>
   (value || "").trim().replace(/\/+$/, "").toLowerCase();
@@ -60,19 +62,36 @@ const buildDomainFallbackFeedCandidates = (targetUrl: string) => {
   return [] as string[];
 };
 
+/**
+ * Read discovery evidence from a persisted JSON column.
+ * Uses the shared `validateDiscoveryEvidence` validator from types.ts
+ * which validates field types and normalizes malformed values to safe defaults.
+ * Prefers canonical outcome when present, falls back to legacy flat fields.
+ *
+ * Field semantics:
+ * - `undefined` means the field was genuinely absent from the source payload.
+ * - A concrete value means the field was present (and validated/normalized).
+ * Callers that need to distinguish "absent" from "present" can check for undefined.
+ */
 const readDiscoveryEvidence = (value: unknown) => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as {
-    topCandidates?: Array<{
+  const validated = validateDiscoveryEvidence(value);
+  if (!validated) return null;
+
+  return {
+    topCandidates: validated.topCandidates as Array<{
       feedUrl?: string | null;
       score?: number | null;
       detection?: string | null;
-      scopeMatch?: "exact" | "probable" | "generic" | "unrelated" | null;
-    }>;
-    taxonomyEvidence?: {
+      scopeMatch?: ScopeMatch | null;
+    }> | undefined,
+    taxonomyEvidence: validated.taxonomyEvidence as {
       canonicalSectionHandles?: string[];
       matchedFeedUrls?: string[];
-    } | null;
+    } | null | undefined,
+    verified: validated.verified,
+    scopeMatch: validated.scopeMatch,
+    resolverPath: validated.resolverPath,
+    detection: validated.detection,
   };
 };
 

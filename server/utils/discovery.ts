@@ -5,6 +5,10 @@ import { safeFetch, SSRFError } from "./ssrf-guard";
 import { normalizeActiveRssStatus } from "./news-pipeline/rss-status";
 import { logAgentScan } from "./news-pipeline/log";
 import { discoverFeedForUrl } from "./news-pipeline/feed-discovery";
+import type { DiscoveryOutcome, FeedDiscoveryResult } from "./news-pipeline/types";
+import { createDiscoveryOutcome, buildErrorDiscoveryOutcome, serializeDiscoveryPayload, formatDiscoveryLog } from "./news-pipeline/types";
+
+
 
 const WAF_AND_PAYWALL_PATTERNS = [
   "/cdn-cgi/challenge-platform",
@@ -61,67 +65,18 @@ const generateAcceptLanguageHeader = (langCode?: string) => {
   }
 };
 
-const formatDiscoveryEvidence = (discovery: {
-  detection: string;
-  scopeConfidence?: string;
-  score?: number;
-  topCandidates?: Array<{ feedUrl: string; detection: string; score: number }>;
-  lastError?: string;
-}) => {
-  const candidates =
-    discovery.topCandidates?.length
-      ? discovery.topCandidates
-          .slice(0, 3)
-          .map((candidate) => `${candidate.detection}:${candidate.score}:${candidate.feedUrl}`)
-          .join(" | ")
-      : "none";
 
-  return `method=${discovery.detection}, confidence=${discovery.scopeConfidence || "n/a"}, score=${discovery.score ?? 0}, candidates=${candidates}${discovery.lastError ? `, lastError=${discovery.lastError}` : ""}`;
-};
 
 const buildDiscoveryEvidencePayload = (
   targetUrl: string,
-  discovery: {
-    feedUrl: string | null;
-    discoveredVia: string | null;
-    detection: string;
-    scopeConfidence?: string;
-    scopeMatch?: string;
-    score?: number;
-    taxonomyEvidence?: {
-      sectionIds: string[];
-      tagIds: string[];
-      categorySlugs: string[];
-      collectionIds: string[];
-      routeNames: string[];
-      canonicalSectionHandles: string[];
-      feedParams: string[];
-      matchedFeedUrls: string[];
-      localeHints: string[];
-      hreflangLocales: string[];
-      editionPaths: string[];
-    } | null;
-    topCandidates?: Array<{ feedUrl: string; detection: string; score: number; contentType?: string | null; scopeMatch?: string }>;
-    rejectedCandidates?: Array<{ feedUrl: string; detection: string; score: number; contentType?: string | null; reason: string; scopeMatch?: string }>;
-    lastError?: string;
-    canonicalIdentity?: string | null;
-  },
-) =>
-  ({
-    evaluatedAt: new Date().toISOString(),
-    targetUrl,
-    feedUrl: discovery.feedUrl,
-    discoveredVia: discovery.discoveredVia,
-    detection: discovery.detection,
-    scopeConfidence: discovery.scopeConfidence || "low",
-    scopeMatch: discovery.scopeMatch || null,
-    score: discovery.score ?? 0,
-    taxonomyEvidence: discovery.taxonomyEvidence || null,
-    canonicalIdentity: discovery.canonicalIdentity ?? null,
-    topCandidates: discovery.topCandidates || [],
-    rejectedCandidates: discovery.rejectedCandidates || [],
-    lastError: discovery.lastError || null,
-  }) satisfies Prisma.InputJsonValue;
+  discovery: FeedDiscoveryResult,
+) => {
+  const outcome = createDiscoveryOutcome(targetUrl, discovery);
+  return {
+    payload: serializeDiscoveryPayload(outcome),
+    outcome,
+  };
+};
 
 export async function executeTargetedDiscovery(
   sourceIds: string[],
@@ -203,16 +158,18 @@ export async function executeTargetedDiscovery(
         discovery.feedUrl,
       );
 
+      const { payload: discoveryEvidence, outcome } = buildDiscoveryEvidencePayload(
+        source.frontPageUrl,
+        discovery,
+      );
+
       await prisma.newsSource.update({
         where: { id: source.id },
         data: {
           rssStatus: nextStatus,
           rssFeedUrl: discovery.feedUrl,
           lastRssCheckAt: new Date(),
-          discoveryEvidence: buildDiscoveryEvidencePayload(
-            source.frontPageUrl,
-            discovery,
-          ),
+          discoveryEvidence,
         },
       });
 
@@ -224,20 +181,21 @@ export async function executeTargetedDiscovery(
         status: "ROOT_DISCOVERY_COMPLETED",
         executionTimeMs: 0,
         errorLog: discovery.feedUrl
-          ? `Resolved root feed ${discovery.feedUrl}. ${formatDiscoveryEvidence(discovery)}`
-          : `No root feed found for ${source.frontPageUrl}. ${formatDiscoveryEvidence(discovery)}`,
+          ? `Resolved root feed ${discovery.feedUrl}. ${formatDiscoveryLog(discovery, outcome)}`
+          : `No root feed found for ${source.frontPageUrl}. ${formatDiscoveryLog(discovery, outcome)}`,
       });
     } catch (error: any) {
       if (error instanceof SSRFError) {
         console.warn(
           `[Targeted-Discovery][SSRF] Blocked unsafe URL: ${error.detail}. Marking as DOMAIN_DEAD.`,
         );
+        const ssrfOutcome = buildErrorDiscoveryOutcome(source.frontPageUrl, "blocked-security", error.detail);
         await prisma.newsSource.update({
           where: { id: source.id },
           data: {
             rssStatus: "DOMAIN_DEAD",
             discoveryEvidence: {
-              evaluatedAt: new Date().toISOString(),
+              evaluatedAt: ssrfOutcome.evaluatedAt,
               targetUrl: source.frontPageUrl,
               feedUrl: null,
               discoveredVia: null,
@@ -247,6 +205,7 @@ export async function executeTargetedDiscovery(
               topCandidates: [],
               rejectedCandidates: [],
               lastError: error.detail,
+              outcome: ssrfOutcome,
             } satisfies Prisma.InputJsonValue,
           },
         });
@@ -264,12 +223,13 @@ export async function executeTargetedDiscovery(
         );
       }
 
+      const failedOutcome = buildErrorDiscoveryOutcome(source.frontPageUrl, "failed", error?.message || String(error));
       await prisma.newsSource.update({
         where: { id: source.id },
         data: {
           rssStatus: "FAILED",
           discoveryEvidence: {
-            evaluatedAt: new Date().toISOString(),
+            evaluatedAt: failedOutcome.evaluatedAt,
             targetUrl: source.frontPageUrl,
             feedUrl: null,
             discoveredVia: null,
@@ -279,6 +239,7 @@ export async function executeTargetedDiscovery(
             topCandidates: [],
             rejectedCandidates: [],
             lastError: error?.message || String(error),
+            outcome: failedOutcome,
           } satisfies Prisma.InputJsonValue,
         },
       });
@@ -336,16 +297,18 @@ export async function executeTargetedCategoryDiscovery(
         discovery.feedUrl,
       );
 
+      const { payload: catEvidence, outcome: catOutcome } = buildDiscoveryEvidencePayload(
+        category.pathUrl,
+        discovery,
+      );
+
       await prisma.sourceCategory.update({
         where: { id: category.id },
         data: {
           rssFeedUrl: discovery.feedUrl,
           rssStatus: nextStatus,
           lastRssCheckAt: new Date(),
-          discoveryEvidence: buildDiscoveryEvidencePayload(
-            category.pathUrl,
-            discovery,
-          ),
+          discoveryEvidence: catEvidence,
         },
       });
 
@@ -355,17 +318,18 @@ export async function executeTargetedCategoryDiscovery(
         status: "CATEGORY_DISCOVERY_COMPLETED",
         executionTimeMs: Date.now() - startedAt,
         errorLog: discovery.feedUrl
-          ? `Resolved category feed ${discovery.feedUrl}. ${formatDiscoveryEvidence(discovery)}`
-          : `No category feed found for ${category.pathUrl}. ${formatDiscoveryEvidence(discovery)}`.trim(),
+          ? `Resolved category feed ${discovery.feedUrl}. ${formatDiscoveryLog(discovery, catOutcome)}`
+          : `No category feed found for ${category.pathUrl}. ${formatDiscoveryLog(discovery, catOutcome)}`.trim(),
       });
     } catch (error: any) {
+      const catFailedOutcome = buildErrorDiscoveryOutcome(category.pathUrl, "failed", error?.message || String(error));
       await prisma.sourceCategory.update({
         where: { id: category.id },
         data: {
           rssStatus: "FAILED",
           lastRssCheckAt: new Date(),
           discoveryEvidence: {
-            evaluatedAt: new Date().toISOString(),
+            evaluatedAt: catFailedOutcome.evaluatedAt,
             targetUrl: category.pathUrl,
             feedUrl: null,
             discoveredVia: null,
@@ -375,6 +339,7 @@ export async function executeTargetedCategoryDiscovery(
             topCandidates: [],
             rejectedCandidates: [],
             lastError: error?.message || String(error),
+            outcome: catFailedOutcome,
           } satisfies Prisma.InputJsonValue,
         },
       });

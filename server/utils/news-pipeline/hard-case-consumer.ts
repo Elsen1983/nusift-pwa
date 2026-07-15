@@ -9,7 +9,8 @@ import {
 } from "./browser-feed-resolver";
 import { runNewsPipeline } from "./orchestrator";
 import { getFeedProductivityResetData } from "./feed-productivity";
-import type { FeedDiscoveryResult, PipelineResult, PipelineTarget } from "./types";
+import type { DiscoveryOutcome, FeedDiscoveryResult, PipelineResult, PipelineTarget, ResolutionMeta } from "./types";
+import { createDiscoveryOutcome, buildErrorDiscoveryOutcome, serializeDiscoveryPayload, serializeDiscoveryPayloadWithMeta } from "./types";
 
 // ─── Payload Types ──────────────────────────────────────────────────────────
 
@@ -23,43 +24,8 @@ type HardCaseArtifactPayload = {
   discovery?: Record<string, unknown> | null;
 };
 
-/**
- * Tracks which resolver path produced the final result and what the browser
- * resolver observed. Persisted in the PipelineArtifact payload so that
- * downstream tooling (dev dashboard, audit reports) can distinguish:
- *
- * - fetch-only success (browser was never needed)
- * - jsdom fallback success (static HTML DOM inspection found the feed)
- * - playwright fallback success (JS-rendered DOM found the feed)
- * - final failure after browser attempts
- *
- * Note on production limitations:
- * - jsdom parses static HTML only — it does NOT execute JavaScript.
- *   Sites that inject feed links via client-side JS (SPAs) will not be
- *   discovered by the jsdom path.
- * - Playwright is the only true JS-rendering path, but requires browser
- *   binaries not available in serverless environments (e.g. Vercel).
- * - Therefore `resolverPath: "jsdom"` means "static DOM inspection",
- *   NOT "browser-rendered DOM".
- */
-export type ResolutionMeta = {
-  /** Which resolver path produced the final feedUrl (or "none" if all failed). */
-  resolverPath: "fetch" | "jsdom" | "playwright" | "none";
-  /** Whether browser-based resolution was attempted at all. */
-  browserAttempted: boolean;
-  /** Which browser method was used (or "none" if browser was skipped/failed). */
-  browserMethod: "jsdom" | "playwright" | "none";
-  /** Number of unique candidates the browser resolver discovered. */
-  browserCandidateCount: number;
-  /**
-   * All browser candidates from the resolver (before deduplication and verification).
-   * This is the full pre-dedup list for audit/debug — the actual verified subset
-   * may be smaller after deduplicating against fetch-based candidates.
-   */
-  browserCandidates: Array<{ feedUrl: string; source: string }>;
-  /** Error from the browser resolver, if any. */
-  browserError: string | null;
-};
+// ResolutionMeta is now defined in ./types.ts and re-exported from there.
+export type { ResolutionMeta } from "./types";
 
 // FeedDiscoveryResult is imported from ./types
 
@@ -393,25 +359,10 @@ const buildDiscoveryEvidencePayload = (
   targetUrl: string,
   discovery: FeedDiscoveryResult,
   meta: ResolutionMeta,
-) => ({
-  evaluatedAt: new Date().toISOString(),
-  targetUrl,
-  feedUrl: discovery.feedUrl,
-  discoveredVia: discovery.discoveredVia,
-  detection: discovery.detection,
-  scopeConfidence: discovery.scopeConfidence,
-  scopeMatch: discovery.scopeMatch,
-  taxonomyEvidence: discovery.taxonomyEvidence,
-  canonicalIdentity: discovery.canonicalIdentity ?? null,
-  score: discovery.score,
-  topCandidates: discovery.topCandidates,
-  rejectedCandidates: discovery.rejectedCandidates,
-  lastError: discovery.lastError ?? null,
-  resolverPath: meta.resolverPath,
-  browserAttempted: meta.browserAttempted,
-  browserMethod: meta.browserMethod,
-  browserCandidateCount: meta.browserCandidateCount,
-});
+) => {
+  const outcome = createDiscoveryOutcome(targetUrl, discovery, meta);
+  return serializeDiscoveryPayloadWithMeta(outcome, meta);
+};
 
 // ─── Artifact Payload Parser ────────────────────────────────────────────────
 
@@ -534,7 +485,10 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
         meta,
       );
 
+      const outcome = createDiscoveryOutcome(payload.targetUrl, discovery, meta);
+
       if (payload.targetType === "category" && payload.categoryId) {
+
         await prisma.sourceCategory.update({
           where: { id: payload.categoryId },
           data: {
@@ -581,25 +535,7 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
           payload: {
             ...(payload as Record<string, unknown>),
             headlessAttemptedAt: new Date().toISOString(),
-            headlessResult: {
-              feedUrl: discovery.feedUrl,
-              discoveredVia: discovery.discoveredVia,
-              detection: discovery.detection,
-              score: discovery.score,
-              scopeConfidence: discovery.scopeConfidence,
-              scopeMatch: discovery.scopeMatch,
-              taxonomyEvidence: discovery.taxonomyEvidence,
-              canonicalIdentity: discovery.canonicalIdentity ?? null,
-              topCandidates: discovery.topCandidates,
-              rejectedCandidates: discovery.rejectedCandidates,
-              lastError: discovery.lastError ?? null,
-              resolverPath: meta.resolverPath,
-              browserAttempted: meta.browserAttempted,
-              browserMethod: meta.browserMethod,
-              browserCandidateCount: meta.browserCandidateCount,
-              browserCandidates: meta.browserCandidates,
-              browserError: meta.browserError,
-            },
+            headlessResult: serializeDiscoveryPayloadWithMeta(outcome, meta),
           },
           errorLog: discovery.feedUrl
             ? `Resolved ${payload.targetType} feed via ${meta.resolverPath}: ${discovery.feedUrl}`
@@ -622,6 +558,8 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
       failedFinal += 1;
       const errorMessage = error?.message || String(error);
 
+      const errorOutcome = buildErrorDiscoveryOutcome(payload.targetUrl, "none", errorMessage);
+
       await prisma.pipelineArtifact.update({
         where: { id: item.id },
         data: {
@@ -629,24 +567,7 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
           payload: {
             ...(payload as Record<string, unknown>),
             headlessAttemptedAt: new Date().toISOString(),
-            headlessResult: {
-              feedUrl: null,
-              detection: "none",
-              score: 0,
-              scopeConfidence: "low",
-              scopeMatch: "unrelated",
-              taxonomyEvidence: null,
-              canonicalIdentity: null,
-              topCandidates: [],
-              rejectedCandidates: [],
-              lastError: errorMessage,
-              resolverPath: "none",
-              browserAttempted: false,
-              browserMethod: "none",
-              browserCandidateCount: 0,
-              browserCandidates: [],
-              browserError: errorMessage,
-            },
+            headlessResult: serializeDiscoveryPayload(errorOutcome),
           },
           errorLog: errorMessage,
         },

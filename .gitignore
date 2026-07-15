@@ -28,5 +28,3 @@ logs
 .env*.local
 
 /app/generated/prisma
-
-docs

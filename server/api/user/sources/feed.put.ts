@@ -4,6 +4,8 @@ import { requireUserId } from "../../../utils/require-user";
 import { verifyImportedRssFeed } from "../../../utils/news-pipeline/import-rss";
 import { getFeedProductivityResetData } from "../../../utils/news-pipeline/feed-productivity";
 import { runNewsPipeline } from "../../../utils/news-pipeline/orchestrator";
+import { createDiscoveryOutcome, emptyTaxonomyEvidence } from "../../../utils/news-pipeline/types";
+import type { FeedDiscoveryResult } from "../../../utils/news-pipeline/types";
 
 const isSameRootDomain = (left: string, right: string) => {
   const leftHost = new URL(left).hostname.replace(/^www\./, "").toLowerCase();
@@ -83,6 +85,26 @@ export default defineEventHandler(async (event) => {
   }
 
   const now = new Date();
+  const scopeMatch = rootSubscription ? "generic" : "exact";
+  const manualDiscovery: FeedDiscoveryResult = {
+    feedUrl: normalizedFeedUrl,
+    discoveredVia: normalizedFeedUrl,
+    detection: "manual-override",
+    contentType: null,
+    score: 100,
+    scopeConfidence: "high",
+    scopeMatch,
+    taxonomyEvidence: emptyTaxonomyEvidence(),
+    topCandidates: [{
+      feedUrl: normalizedFeedUrl,
+      detection: "manual-override",
+      score: 100,
+      contentType: null,
+      scopeMatch,
+    }],
+    rejectedCandidates: [],
+  };
+  const outcome = createDiscoveryOutcome(targetUrl, manualDiscovery);
   const discoveryEvidence = {
     evaluatedAt: now.toISOString(),
     targetUrl,
@@ -90,20 +112,14 @@ export default defineEventHandler(async (event) => {
     discoveredVia: normalizedFeedUrl,
     detection: "manual-override",
     scopeConfidence: "high",
-    scopeMatch: rootSubscription ? "generic" : "exact",
+    scopeMatch,
     taxonomyEvidence: null,
     score: 100,
-    topCandidates: [
-      {
-        feedUrl: normalizedFeedUrl,
-        detection: "manual-override",
-        score: 100,
-        contentType: null,
-        scopeMatch: rootSubscription ? "generic" : "exact",
-      },
-    ],
+    topCandidates: manualDiscovery.topCandidates,
     rejectedCandidates: [],
     lastError: null,
+    // Canonical structured outcome
+    outcome,
   };
 
   if (rootSubscription) {
