@@ -24,9 +24,6 @@ type HardCaseArtifactPayload = {
   discovery?: Record<string, unknown> | null;
 };
 
-// ResolutionMeta is now defined in ./types.ts and re-exported from there.
-export type { ResolutionMeta } from "./types";
-
 // FeedDiscoveryResult is imported from ./types
 
 /** Combined return from the browser-augmented discovery flow. */

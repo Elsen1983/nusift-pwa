@@ -378,6 +378,31 @@ model Article {
 
   reasoning String? @db.Text
 
+  // ========================================================
+  // AGENT 2 — ARTICLE ENRICHMENT STATUS TRACKING (Phase 1)
+  // ========================================================
+  // Minimal, cheap status-tracking fields for the Agent 2 article
+  // enrichment layer. Detailed extraction evidence (field-by-field
+  // provenance, selectors, paywall signals, timings) lives in
+  // PipelineArtifact payloads (artifactType: "article_enrichment_*");
+  // only short summary fields are stored on the row to keep DB
+  // pressure low, following the Agent 1 evidence pattern.
+  //
+  // Canonical structured outcome contract:
+  //   server/utils/news-pipeline/enrichment.ts (ArticleEnrichmentOutcome)
+  //
+  // enrichmentStatus values (plain String for migration simplicity,
+  // matching the existing processingStage/processingStatus pattern):
+  //   INGESTED | ENRICHING | ENRICHED | ENRICHMENT_FAILED |
+  //   ENRICHMENT_SKIPPED | ENRICHMENT_QUEUED_HEADLESS
+  enrichmentStatus       String   @default("INGESTED")
+  enrichmentStartedAt    DateTime?
+  enrichmentFinishedAt   DateTime?
+  enrichmentAttemptCount Int      @default(0)
+  enrichmentMethod       String?  // e.g. "http-meta", "http-dom", "none"
+  enrichmentConfidence   Float?   // 0..1 extraction confidence
+  enrichmentOutcome      Json?    // canonical ArticleEnrichmentOutcome summary (serialized via enrichment.ts)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -387,6 +412,8 @@ model Article {
   userReadActivities UserReadActivity[]
 
   @@index([date])
+  // Supports Agent 2 batch selection: fresh + not-yet-enriched / retryable
+  @@index([enrichmentStatus, date])
 }
 
 // ANCHOR ARTICLE RATINGS
