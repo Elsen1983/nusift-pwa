@@ -4,7 +4,7 @@ import { assertRateLimit } from "../../utils/rate-limit";
 import { prisma } from "../../utils/prisma";
 import { matchCategoryIdForUrl } from "../../utils/news-pipeline/ingest";
 import { logAgentScan } from "../../utils/news-pipeline/log";
-import { resolveActivePipelineSourceIds } from "../../utils/news-pipeline/orchestrator";
+import { resolveActivePipelineSourceIds } from "../../utils/news-pipeline/targets";
 
 const normalizePathForCategoryMatch = (url: string) => {
   try {

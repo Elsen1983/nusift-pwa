@@ -1,10 +1,8 @@
 import { createError } from "h3";
 import { requireAdminId } from "../../utils/require-admin";
 import { assertRateLimit } from "../../utils/rate-limit";
-import {
-  resolveActivePipelineTargets,
-  runNewsPipeline,
-} from "../../utils/news-pipeline/orchestrator";
+import { runNewsPipeline } from "../../utils/news-pipeline/orchestrator";
+import { resolveActivePipelineTargets } from "../../utils/news-pipeline/targets";
 
 export default defineEventHandler(async (event) => {
   await requireAdminId(event);

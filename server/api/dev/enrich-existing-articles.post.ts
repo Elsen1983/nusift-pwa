@@ -7,7 +7,7 @@ import {
   matchCategoryIdForUrl,
 } from "../../utils/news-pipeline/ingest";
 import { logAgentScan } from "../../utils/news-pipeline/log";
-import { resolveActivePipelineTargets } from "../../utils/news-pipeline/orchestrator";
+import { resolveActivePipelineTargets } from "../../utils/news-pipeline/targets";
 
 const ENRICH_WINDOW_DAYS = 7;
 

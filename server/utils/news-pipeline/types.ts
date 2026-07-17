@@ -287,7 +287,7 @@ export const validateDiscoveryEvidence = (
 
 
 export interface IngestCandidateProvenance {
-  origin: "rss" | "atom" | "json" | "html_fallback";
+  origin: "rss" | "atom" | "json" | "html_fallback" | "web_discovery";
   feedUrl?: string | null;
   feedFormat?: "rss" | "atom" | "json" | "unknown" | null;
   discoveredFromCategoryFeed?: boolean;

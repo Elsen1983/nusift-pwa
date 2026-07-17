@@ -422,7 +422,7 @@
               </span>
             </div>
             <p class="mt-1 text-xs text-on-surface-variant">
-              Manually run the news pipeline and refresh the feed.
+              Manually run Agent 1 RSS ingest, then Agent 2 web discovery, and refresh the feed.
             </p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
@@ -442,11 +442,19 @@
               {{ isEnrichingExistingArticles ? "Enriching..." : "Enrich existing articles" }}
             </button>
             <button
+              v-if="showFullDevTools"
+              @click="runArticleDiscovery"
+              :disabled="isArticleDiscoveryRunning"
+              class="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm font-bold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ isArticleDiscoveryRunning ? "Discovering..." : "Run article discovery" }}
+            </button>
+            <button
               @click="runManualPipeline"
               :disabled="isPipelineRunning"
               class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {{ isPipelineRunning ? "Running..." : "Run pipeline" }}
+              {{ isPipelineRunning ? "Running..." : "Run A1 -> A2 pipeline" }}
             </button>
           </div>
         </div>
@@ -497,7 +505,7 @@
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0">
                   <div class="flex flex-wrap items-center gap-2">
-                    <span class="text-xs font-bold text-on-surface">{{ log.status }}</span>
+                    <span class="text-xs font-bold text-on-surface">{{ log.displayStatus || log.status }}</span>
                     <span v-if="log.sourceId" class="text-[10px] text-on-surface-variant">source: {{ log.sourceId }}</span>
                   </div>
                   <p class="mt-1 text-xs text-on-surface-variant line-clamp-2">
@@ -625,6 +633,7 @@ const ARTICLES_PER_PAGE = 10;
 const currentPage = ref(1);
 const isPipelineRunning = ref(false);
 const isEnrichingExistingArticles = ref(false);
+const isArticleDiscoveryRunning = ref(false);
 const isHardCaseQueueRunning = ref(false);
 const isFixingRssStatus = ref(false);
 const isImportingRss = ref(false);
@@ -640,7 +649,7 @@ const canAccessDevPanel = ref(false);
 const canRunManualPipeline = ref(false);
 const canUseFullDevTools = ref(false);
 const isClearingLogs = ref(false);
-const agentLogs = ref<Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
+const agentLogs = ref<Array<{ id: string; status: string; displayStatus?: string; agentPrefix?: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
 const agentSourceCount = ref(0);
 const createEmptyScopedSourceAuditSummary = () => ({
   generatedAt: "",
@@ -818,7 +827,7 @@ const initializeDevPanel = async () => {
 const loadAgentLogs = async () => {
   if (!showFullDevTools.value) return;
   try {
-    const response = await $api<{ ok: boolean; logs: Array<{ id: string; status: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }> }>("/api/dev/agent-logs");
+    const response = await $api<{ ok: boolean; logs: Array<{ id: string; status: string; displayStatus?: string; agentPrefix?: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }> }>("/api/dev/agent-logs");
     agentLogs.value = response.logs || [];
   } catch (error: any) {
     if (error?.response?.status === 429 || error?.status === 429) return;
@@ -1381,6 +1390,55 @@ const runManualPipeline = async () => {
   } finally {
     isPipelineRunning.value = false;
     await refreshDevPanel();
+    stopDevPanelPolling();
+  }
+};
+
+const runArticleDiscovery = async () => {
+  if (!showFullDevTools.value || isArticleDiscoveryRunning.value) return;
+
+  isArticleDiscoveryRunning.value = true;
+  startDevPanelPolling();
+  try {
+    const response = await $api<{
+      ok: boolean;
+      pipelineRunId?: string;
+      targets?: number;
+      sourcesScanned?: number;
+      candidatesFound?: number;
+      inserted?: number;
+      skipped?: number;
+      failed?: number;
+      artifactCount?: number;
+    }>("/api/dev/run-article-discovery", {
+      method: "POST",
+    });
+    toast.value = {
+      show: true,
+      message: `Article discovery finished: ${response.inserted ?? 0} inserted, ${response.skipped ?? 0} skipped, ${response.failed ?? 0} failed from ${response.sourcesScanned ?? response.targets ?? 0} target(s).`,
+      type: "success",
+    };
+    await feedStore.fetchFeed({ force: true });
+    if (showFullDevTools.value) {
+      await refreshDevPanel();
+    }
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 4500);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Article discovery failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isArticleDiscoveryRunning.value = false;
+    if (showFullDevTools.value) {
+      await refreshDevPanel();
+    }
     stopDevPanelPolling();
   }
 };

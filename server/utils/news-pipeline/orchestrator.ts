@@ -8,92 +8,23 @@ import {
 import { logAgentScan } from "./log";
 import { ingestSource, persistCandidates } from "./ingest";
 import { markFeedRunOutcome } from "./feed-productivity";
-import type { PipelineResult, PipelineTarget } from "./types";
-
-export async function resolveUserSourceIds(userId: string) {
-  const [sourceSubs, categorySubs] = await Promise.all([
-    prisma.userSourceSubscription.findMany({
-      where: { userId, isActive: true },
-      select: { sourceId: true },
-    }),
-    prisma.userCategorySubscription.findMany({
-      where: { userId, isActive: true },
-      select: { category: { select: { newsSourceId: true } } },
-    }),
-  ]);
-
-  const ids = new Set<string>();
-  sourceSubs.forEach((sub) => ids.add(sub.sourceId));
-  categorySubs.forEach((sub) => {
-    if (sub.category?.newsSourceId) ids.add(sub.category.newsSourceId);
-  });
-
-  return [...ids];
-}
-
-export async function resolveActivePipelineSourceIds() {
-  const [sourceSubs, categorySubs] = await Promise.all([
-    prisma.userSourceSubscription.findMany({
-      where: { isActive: true },
-      select: { sourceId: true },
-    }),
-    prisma.userCategorySubscription.findMany({
-      where: { isActive: true },
-      select: { category: { select: { newsSourceId: true } } },
-    }),
-  ]);
-
-  const ids = new Set<string>();
-  sourceSubs.forEach((sub) => ids.add(sub.sourceId));
-  categorySubs.forEach((sub) => {
-    if (sub.category?.newsSourceId) ids.add(sub.category.newsSourceId);
-  });
-
-  return [...ids];
-}
-
-export async function resolveActivePipelineTargets() {
-  const [sourceSubs, categorySubs] = await Promise.all([
-    prisma.userSourceSubscription.findMany({
-      where: { isActive: true },
-      select: { sourceId: true },
-    }),
-    prisma.userCategorySubscription.findMany({
-      where: { isActive: true },
-      select: { categoryId: true, category: { select: { newsSourceId: true } } },
-    }),
-  ]);
-
-  const targets: PipelineTarget[] = [];
-  const seen = new Set<string>();
-
-  for (const sub of sourceSubs) {
-    const key = `${sub.sourceId}|`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    targets.push({ sourceId: sub.sourceId });
-  }
-
-  for (const sub of categorySubs) {
-    if (!sub.category?.newsSourceId) continue;
-    const key = `${sub.category.newsSourceId}|${sub.categoryId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    targets.push({ sourceId: sub.category.newsSourceId, categoryId: sub.categoryId });
-  }
-
-  return targets;
-}
+import { runArticleDiscoveryBatch } from "./article-discovery";
+import {
+  resolveActivePipelineTargets,
+  hydratePipelineTargets,
+} from "./targets";
+import type { PipelineResult } from "./types";
 
 export async function runNewsPipeline(
   sourceIds?: string[],
   categoryIds?: string[],
 ): Promise<PipelineResult> {
   const startedAt = Date.now();
-  const resolvedTargets =
-    sourceIds && sourceIds.length > 0
-      ? await hydratePipelineTargets(sourceIds, categoryIds || [])
-      : await resolveActivePipelineTargets();
+  const hasTargetFilters =
+    (sourceIds && sourceIds.length > 0) || (categoryIds && categoryIds.length > 0);
+  const resolvedTargets = hasTargetFilters
+    ? await hydratePipelineTargets(sourceIds || [], categoryIds || [])
+    : await resolveActivePipelineTargets();
 
   let candidatesFound = 0;
   let inserted = 0;
@@ -168,35 +99,23 @@ export async function runNewsPipeline(
     errorLog: `Pipeline finished. runId=${pipelineRun.id}, targets=${resolvedTargets.length}, candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}, artifacts=${artifactCount}.`,
   });
 
+  // ── Agent 2: web discovery for eligible no-RSS / not-productive targets ──
+  // Runs after Agent 1 completes. Failures are isolated so they never
+  // break the Agent 1 pipeline result.
+  // Target-aware: a targeted Agent 1 rerun only triggers Agent 2 for the
+  // same scope, preventing a broad global scan.
+  try {
+    await runArticleDiscoveryBatch(
+      hasTargetFilters ? { sourceIds: sourceIds || [], categoryIds: categoryIds || [] } : undefined,
+    );
+  } catch (error: any) {
+    await logAgentScan({
+      status: "ARTICLE_DISCOVERY_FAILED",
+      executionTimeMs: 0,
+      errorLog: `Agent 2 orchestration skipped: ${error?.message || String(error)}`,
+    }).catch(() => {});
+  }
+
   return result;
 }
 
-async function hydratePipelineTargets(sourceIds: string[], categoryIds: string[]) {
-  const targets: PipelineTarget[] = [];
-  const seen = new Set<string>();
-  const categories = categoryIds.length
-    ? await prisma.sourceCategory.findMany({
-        where: { id: { in: categoryIds } },
-        select: { id: true, newsSourceId: true },
-      })
-    : [];
-  const categoryById = new Map(categories.map((category) => [category.id, category.newsSourceId]));
-
-  for (const sourceId of sourceIds) {
-    const key = `${sourceId}|`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    targets.push({ sourceId });
-  }
-
-  for (const categoryId of categoryIds) {
-    const mappedSourceId = categoryById.get(categoryId);
-    if (!mappedSourceId) continue;
-    const key = `${mappedSourceId}|${categoryId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    targets.push({ sourceId: mappedSourceId, categoryId });
-  }
-
-  return targets;
-}

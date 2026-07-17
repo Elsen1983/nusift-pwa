@@ -4,7 +4,7 @@ import { assertRateLimit } from "../../utils/rate-limit";
 import { runEnrichmentBatch } from "../../utils/news-pipeline/enrichment-runtime";
 
 /**
- * Dev trigger for the Agent 2 article enrichment batch (Phase 1).
+ * Dev trigger for the Agent 3 article enrichment batch (Phase 1).
  *
  * Runs the controlled stub extractor end-to-end: select eligible articles →
  * build canonical outcomes → persist row summary + artifacts. No real HTTP

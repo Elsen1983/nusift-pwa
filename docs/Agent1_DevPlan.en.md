@@ -100,7 +100,7 @@ It must preserve:
 
 That is why raw / normalized / provenance logic is the foundation of Agent 1.
 
-This is also the input for later Agent 2 and Agent 3 work.
+This is also the input for later Agent 3 and Agent 4 work.
 
 ## 6. Candidate outcome types
 
@@ -184,7 +184,7 @@ Important limitation:
 
 - this still does not mean Agent 1 performs full article body extraction
 - the browser fallback is for feed discovery
-- full article enrichment remains the job of Agent 2
+- full article enrichment remains the job of Agent 3
 
 ## 12. Resolver metadata and discovery evidence
 
@@ -202,7 +202,7 @@ Important metadata examples:
 This is useful because:
 
 - it shows whether fetch or browser fallback solved the target
-- Agent 2 and Agent 3 can later use it as upstream context
+- Agent 3 and Agent 4 can later use it as upstream context
 - dev and audit views can show which targets are difficult
 
 ## 13. Targeted rerun model

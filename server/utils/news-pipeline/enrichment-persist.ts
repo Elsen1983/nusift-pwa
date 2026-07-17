@@ -9,10 +9,10 @@ import {
 } from "./enrichment";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Agent 2 — Article enrichment persistence wiring (Phase 1)
+// Agent 3 — Article enrichment persistence wiring (Phase 1)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Single source of truth for persisting Agent 2 `ArticleEnrichmentOutcome`
+// Single source of truth for persisting Agent 3 `ArticleEnrichmentOutcome`
 // results to the database. Mirrors the Agent 1 `artifacts.ts` pattern:
 //  - a canonical artifact payload built via `serializeEnrichmentPayload`
 //  - a minimal row summary built via `serializeOutcomeSummary`
@@ -27,7 +27,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Canonical Agent 2 artifact types, matching the Agent 2 dev plan §9.
+ * Canonical Agent 3 artifact types, matching the Agent 3 dev plan §9.
  * Used as `PipelineArtifact.artifactType`.
  */
 export const ENRICHMENT_ARTIFACT_TYPES = [
@@ -39,7 +39,7 @@ export const ENRICHMENT_ARTIFACT_TYPES = [
 export type EnrichmentArtifactType = (typeof ENRICHMENT_ARTIFACT_TYPES)[number];
 
 /**
- * Map a canonical outcome kind to the Agent 2 artifact type + artifact status.
+ * Map a canonical outcome kind to the Agent 3 artifact type + artifact status.
  * Single source of truth so persistence stays consistent with the contract.
  *
  * - SUCCESS/SKIPPED → `article_enrichment_result` (CAPTURED / SKIPPED)
@@ -305,7 +305,7 @@ export const persistEnrichmentBatch = async (
 };
 
 /**
- * Build the `PipelineRun.summary` JSON for an Agent 2 enrichment batch.
+ * Build the `PipelineRun.summary` JSON for an Agent 3 enrichment batch.
  * Mirrors the Agent 1 `finalizePipelineRun` summary shape but with
  * enrichment-specific counts.
  */

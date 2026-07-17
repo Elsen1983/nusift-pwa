@@ -1,10 +1,10 @@
 import type { Prisma } from "@prisma/client";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Agent 2 — Article enrichment runtime outcome contract (Phase 1)
+// Agent 3 — Article enrichment runtime outcome contract (Phase 1)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// This module is the single source of truth for the Agent 2 article-enrichment
+// This module is the single source of truth for the Agent 3 article-enrichment
 // outcome shape, in the same role that `./types.ts` plays for Agent 1 feed
 // discovery (DiscoveryOutcome / createDiscoveryOutcome /
 // serializeDiscoveryPayload / validateDiscoveryEvidence).
@@ -15,7 +15,7 @@ import type { Prisma } from "@prisma/client";
 // implemented here.
 //
 // Design constraints honoured:
-//  - Agent 1 discovery behavior is untouched; Agent 2 only *reads* upstream
+//  - Agent 1 discovery behavior is untouched; Agent 3 only *reads* upstream
 //    provenance (source/category/feed origin) and carries it forward.
 //  - Structured runtime model over ad-hoc strings: every outcome has a typed
 //    `kind`, a structured `reason`, field-by-field provenance, and timing.
@@ -28,7 +28,7 @@ import type { Prisma } from "@prisma/client";
 /**
  * Canonical outcome kinds for a single article-enrichment attempt.
  *
- * Maps 1:1 to the runtime states required by the Agent 2 dev plan:
+ * Maps 1:1 to the runtime states required by the Agent 3 dev plan:
  *  - SUCCESS            → enrichment produced usable field improvements
  *  - SKIPPED            → no enrichment needed (e.g. already enriched / stale)
  *  - RETRYABLE_FAILURE  → transient error (timeout, 5xx, network) worth retrying
@@ -91,7 +91,7 @@ export type FieldProvenanceSource =
 /**
  * Field-level provenance for a single enriched article field.
  *
- * Mirrors the Agent 2 dev plan §7.2 field-overwrite rule:
+ * Mirrors the Agent 3 dev plan §7.2 field-overwrite rule:
  * keep raw / normalized / chosenValue / chosenFrom / overrideReason.
  */
 export interface FieldProvenance<T = string | null> {
@@ -121,9 +121,9 @@ export interface ArticleFieldProvenance {
 }
 
 /**
- * Upstream Agent 1 provenance carried forward by Agent 2.
+ * Upstream Agent 1 provenance carried forward by Agent 3.
  *
- * Agent 2 must NOT re-derive or overwrite this; it preserves traceability of
+ * Agent 3 must NOT re-derive or overwrite this; it preserves traceability of
  * where the article came from (feed discovery / hard-case rerun / etc.).
  */
 export interface ArticleUpstreamProvenance {
@@ -131,7 +131,7 @@ export interface ArticleUpstreamProvenance {
   /** Category id when the article was ingested from a category-scoped feed. */
   categoryId?: string | null;
   /** Feed origin recorded by Agent 1 ingest. */
-  feedOrigin: "rss" | "atom" | "json" | "html_fallback";
+  feedOrigin: "rss" | "atom" | "json" | "html_fallback" | "web_discovery";
   /** Feed URL the article was ingested from, if known. */
   feedUrl?: string | null;
   /** Whether the article arrived via a scoped category feed. */
@@ -193,7 +193,7 @@ export interface ExtractionQuality {
 /**
  * Canonical structured outcome model for a single article-enrichment attempt.
  *
- * This is the Agent 2 equivalent of Agent 1's `DiscoveryOutcome`. It is the
+ * This is the Agent 3 equivalent of Agent 1's `DiscoveryOutcome`. It is the
  * single source of truth for "what happened" during an enrichment attempt.
  * Downstream workers, audit tooling, and artifact persistence should read this
  * model instead of reconstructing outcomes from scattered fields.

@@ -19,7 +19,7 @@ import { createPipelineRun } from "./artifacts";
 import { logAgentScan } from "./log";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Agent 2 — Article enrichment runtime batch path (Phase 1)
+// Agent 3 — Article enrichment runtime batch path (Phase 1)
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Wires the canonical `ArticleEnrichmentOutcome` contract into a runnable
@@ -36,20 +36,20 @@ import { logAgentScan } from "./log";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Maximum article age considered eligible for enrichment (Agent 2 dev plan
+ * Maximum article age considered eligible for enrichment (Agent 3 dev plan
  * §6.2: at most 7 days old).
  */
 export const ENRICHMENT_FRESHNESS_DAYS = 7;
 
 /**
- * Per-batch safety caps (Agent 2 dev plan §11: max concurrency / per-run limit).
+ * Per-batch safety caps (Agent 3 dev plan §11: max concurrency / per-run limit).
  * Phase 1 runs sequentially, so MAX_ARTICLES_PER_RUN bounds the batch size.
  */
 export const MAX_ARTICLES_PER_RUN = 50;
 
 /**
  * Fields selected for enrichment eligibility + provenance construction.
- * Minimal select to keep DB reads cheap (Agent 2 dev plan §10).
+ * Minimal select to keep DB reads cheap (Agent 3 dev plan §10).
  */
 type EnrichmentEligibleArticle = {
   id: number;
@@ -67,7 +67,7 @@ type EnrichmentEligibleArticle = {
 };
 
 /**
- * Select articles eligible for Agent 2 enrichment (dev plan §6.2):
+ * Select articles eligible for Agent 3 enrichment (dev plan §6.2):
  *  - successfully stored by Agent 1
  *  - at most ENRICHMENT_FRESHNESS_DAYS old
  *  - not yet successfully enriched, OR failed earlier for a retryable reason
@@ -112,7 +112,7 @@ export const selectEnrichmentEligibleArticles = async (
 /**
  * Build the upstream Agent 1 provenance object from an Article row.
  *
- * Agent 2 must NOT re-derive or overwrite upstream provenance — it preserves
+ * Agent 3 must NOT re-derive or overwrite upstream provenance — it preserves
  * traceability of where the article came from. The Article row does not store
  * the exact feed origin/feedUrl that Agent 1 recorded (that lives in the
  * ingest artifact payload), so we reconstruct a conservative provenance:
@@ -198,6 +198,7 @@ export const recoverUpstreamProvenanceBatch = async (
       "atom",
       "json",
       "html_fallback",
+      "web_discovery",
     ]);
 
     for (const article of articles) {
@@ -283,7 +284,7 @@ export const recoverUpstreamProvenanceBatch = async (
  *
  * Phase 2 will replace this function with the real HTTP-based extraction
  * (canonical check, meta/DOM selectors, paywall detection, quality scoring,
- * field comparison + override) per the Agent 2 dev plan §7.
+ * field comparison + override) per the Agent 3 dev plan §7.
  *
  * @param provenanceOverride Optional precise provenance recovered from Agent 1
  *   artifacts. When omitted, the conservative `buildArticleProvenance` fallback
@@ -372,7 +373,7 @@ export const stubExtractArticle = (
 };
 
 /**
- * Result of a full Agent 2 enrichment batch run.
+ * Result of a full Agent 3 enrichment batch run.
  */
 export interface EnrichmentRunResult {
   pipelineRunId: string;
@@ -381,7 +382,7 @@ export interface EnrichmentRunResult {
 }
 
 /**
- * Run a full Agent 2 enrichment batch:
+ * Run a full Agent 3 enrichment batch:
  *  1. create a `PipelineRun` to track the batch
  *  2. select eligible articles
  *  3. build canonical outcomes via the stub extractor
@@ -402,7 +403,7 @@ export const runEnrichmentBatch = async (
   await logAgentScan({
     status: "ARTICLE_CONTENT_ENRICHMENT_STARTED",
     executionTimeMs: 0,
-    errorLog: "Agent 2 article enrichment batch started (Phase 1 stub extractor).",
+    errorLog: "Agent 3 article enrichment batch started (Phase 1 stub extractor).",
   });
 
   const articles = await selectEnrichmentEligibleArticles(now);
@@ -476,7 +477,7 @@ export const runEnrichmentBatch = async (
   await logAgentScan({
     status: "ARTICLE_CONTENT_ENRICHMENT_FINISHED",
     executionTimeMs: Date.now() - startedAt,
-    errorLog: `Agent 2 article enrichment batch finished. articles=${articles.length}, attemptMarkers=${attemptMarkerIds.length}, persisted=${persistResult.persisted}, failed=${persistResult.failed}, byKind=${JSON.stringify(persistResult.byKind)}.`,
+    errorLog: `Agent 3 article enrichment batch finished. articles=${articles.length}, attemptMarkers=${attemptMarkerIds.length}, persisted=${persistResult.persisted}, failed=${persistResult.failed}, byKind=${JSON.stringify(persistResult.byKind)}.`,
   });
 
   return {

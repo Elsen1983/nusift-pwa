@@ -1,128 +1,260 @@
-# Agent 4 - Lifecycle, retention, and advanced recommendation layer
+# Agent 4 - Per-user relevance scoring and feed ordering
 
 ## Dev Plan
 
-## 1. Why Agent 4 should be separate
+## 1. Role in the pipeline
 
-The original Agent 3 scope became too large. Combining scoring MVP work with long-term content lifecycle handling would create too many responsibilities in a single layer.
+Agent 4 is responsible for evaluating already collected and optionally enriched articles using **per-user relevance scoring**.
 
-That is why Agent 4 should be treated as a separate layer for:
+This layer:
 
-- archive
-- prune
-- retention
-- hiding older articles
-- later social and advanced recommendation logic
+- does not ingest
+- does not search RSS feeds
+- does not perform enrichment
+- does not handle long-term retention or lifecycle cleanup
 
-## 2. Agent 4 input
+Agent 4 has a clear MVP goal:
 
-- `Article`
-- `ArticleScore`
+1. calculate per-user scores
+2. personalize feed ordering
+3. fall back to the legacy feed when no score exists yet
+
+## 2. Why it should be separate from Agent 5
+
+The earlier Agent 4 scope was too broad because it combined:
+
+- relevance scoring
+- archive / prune lifecycle
+- retention policy
+- social layer
+- collaborative filtering
+- advanced recommendation
+
+That creates implementation and operational risk.
+
+So the correct split is:
+
+- **Agent 4**: scoring and feed ordering
+- **Agent 5**: lifecycle, retention, archive / prune, and later social / advanced recommendation
+
+## 3. Input and output
+
+### 3.1 Input
+
+Agent 4 input:
+
+- user profile
+- user source/category subscriptions
+- `Article` records after Agent 1 / 3
+- Agent 3 enrichment results if available
 - `UserReadActivity`
 - `Bookmark`
-- `ArticleRating` if it becomes active later
-- retention policy configuration
+- later `ArticleRating`
 
-## 3. Agent 4 responsibilities
+### 3.2 Output
 
-### 3.1 Lifecycle decisions
+Agent 4 output:
 
-- when an article should be archived
-- when it should be hidden per user
-- when it should be pruned from the feed
+- per-user score record
+- feed ordering
+- short score reason
+- optional score breakdown for debugging
 
-### 3.2 Retention and cleanup
+## 4. Fit with the current system
 
-- rules for handling old, unused articles
-- per-user visibility lifecycle
-- preparation of a global content cleanup policy
+Verified current state:
 
-### 3.3 Advanced recommendation logic
+- `User.topInterests` already exists
+- `User.primaryRegion` already exists
+- `UserReadActivity` already exists
+- `Bookmark` already exists
+- `ArticleRating` model exists, but it is not yet an active working pillar
+- `/api/feed` is still legacy and subscription + date based
 
-Later phase examples:
+So:
 
-- collaborative filtering
-- social proof
-- friends recommendation layer
-- diversity balancing
-- multi-day resurfacing strategy
+- Agent 4 does not need to be designed from zero
+- but personalization is not finished yet
 
-## 4. What Agent 4 does not do
+### 4.1 Explicit upstream Agent 1 state
 
-- feed discovery
-- article enrichment
-- primary score calculation
+Agent 4 builds on an Agent 1 that already:
 
-## 5. Why this split is better
+- stores raw / normalized / provenance-like data in artifacts
+- saves source/category discovery evidence
+- creates a hard-case queue for unresolved feed cases
+- can use browser fallback for hard-case feed discovery
+- can trigger a targeted pipeline rerun after successful hard-case resolution
 
-If Agent 3 only handles scoring, then:
+This matters for Agent 4 because the scoreable article universe can expand over time on the same source/category target, not only during the first ingest pass.
 
-- optimization is simpler
-- operations are cheaper
-- debugging is easier
+## 5. Data model proposal
 
-As a separate layer, Agent 4:
+Agent 4 needs a new per-user score model.
 
-- can run less frequently
-- can work with larger time windows
-- can stay policy-oriented
+### Recommended model: `ArticleScore`
 
-## 6. Lifecycle principles
+Fields:
 
-Per-user and global lifecycle should remain separate.
+- `id`
+- `userId`
+- `articleId`
+- `relevanceScore`
+- `qualityScore`
+- `freshnessScore`
+- `interestScore`
+- `sourceAffinityScore`
+- `fatiguePenalty`
+- `scoreReason`
+- `scoreFactors` optional JSON
+- `scoredAt`
+- `lastInteractionAt`
+- `lifecycleStage`
 
-This means:
+Required indexes:
 
-- just because an article is pruned for one user does not mean it should be removed for another user
-- global deletion of the `Article` record should follow much stricter rules
-
-## 7. Recommended states
-
-Example per-user lifecycle stages:
-
-- `ACTIVE`
-- `RECOMMENDED`
-- `ARCHIVED`
-- `PRUNED`
+- `(userId, relevanceScore)`
+- `(userId, lifecycleStage, scoredAt)`
+- unique `(userId, articleId)`
 
 Note:
 
-- logically this status should belong next to `ArticleScore` or its successor, not inside the global `Article` record
+- Agent 4 should not use the global `Article.score` field as the primary per-user ranking source.
+- the per-user score should live in a separate table.
 
-## 8. Retention policy directions
+## 6. Agent 4 responsibility boundary
 
-Examples:
+### Agent 4 does
 
-- move articles older than 7 days that were neither read nor saved into the background
-- archive after a longer period
-- prune when relevance is very low and there is no user signal at all
+- builds scoring profiles
+- creates user-source/category/article candidate sets
+- calculates multi-factor scores
+- creates feed ordering
+- provides graceful fallback when no score exists
 
-These rules should not be forced into the Agent 3 MVP.
+### Agent 4 does not do
 
-## 9. Later advanced directions
+- article retention deletion
+- archive / prune cron
+- hard delete
+- social proof system
+- collaborative filtering in the first version
 
-- extra weight for "friends read this"
-- reading patterns of similar users
-- resurfacing less recent but highly affine articles
-- source diversity policy
+## 7. Scoring factors
 
-## 10. Runtime model
+For the MVP, the following factors are enough:
 
-Agent 4 should not run in the request path.
+1. **freshness**
+2. **interest match**
+3. **source affinity**
+4. **content quality**
+5. **fatigue penalty**
 
-Correct patterns:
+### 7.1 Freshness
 
-- cron
-- batch worker
-- queue-triggered lifecycle pass
+- newer articles should get priority
+- focus especially on the last 24-48 hours
 
-## 11. Final recommendation
+### 7.2 Interest match
 
-Separating Agent 4 is justified.
+- based on `User.topInterests` and article title / tags / signals
+- Agent 3 enriched content can be additional input
 
-This keeps the system clean:
+### 7.3 Source affinity
 
-1. Agent 1: discovery + ingest
-2. Agent 2: enrichment
-3. Agent 3: scoring + feed ordering
-4. Agent 4: lifecycle + retention + advanced recommendation
+- inferred from bookmark / click / read activity
+- a simple weighting model is enough at the beginning
+
+### 7.4 Content quality
+
+- Agent 3 enrichment confidence or quality
+- if enrichment is not available, use a lower confidence but still allow scoring
+
+### 7.5 Fatigue
+
+- if too many articles from the same source arrive within a short time, apply a penalty
+
+## 8. Triggers
+
+### 8.1 Post-pipeline trigger
+
+Agent 4 can run after Agent 1 / 3, but it does not need to rescore everything.
+
+Correct approach:
+
+- only the affected users
+- only the fresh or changed articles
+- only the affected source/category universe
+
+### 8.2 Onboarding trigger
+
+After onboarding or an interest update, an initial scoring pass is useful.
+
+### 8.3 Full rescore is not the default
+
+This is critical for DB cost.
+
+Agent 4's default strategy should be:
+
+- **incremental scoring**
+
+not:
+
+- full feed rescore on every trigger
+
+### 8.4 Hard-case rerun compatible triggering
+
+Because Agent 1 can trigger a targeted pipeline rerun after successful hard-case resolution, Agent 4 must be compatible with that pattern.
+
+Therefore:
+
+- the scoring trigger should not be limited to a "daily ingest" mindset
+- it must accept that new articles may arrive in later rerun cycles
+- the same source/category target may produce a larger article universe later
+- score refresh can be based on:
+  - new article appearance
+  - relevant source/category involvement
+  - Agent 3 enrichment changes
+
+Agent 4 should never assume that an article universe that was not present in the first ingest cycle will never appear later.
+
+## 9. Feed integration
+
+The end goal of Agent 4 is to personalize `/api/feed`.
+
+Recommended behavior:
+
+1. if the user has no `ArticleScore` records yet, use the current legacy feed
+2. if scores exist, the feed should primarily be built from them
+3. articles without scores can appear at the end as a fallback
+
+This is a good backward-compatibility decision.
+
+## 10. DB usage strategy
+
+This plan is only viable if it is very careful about query cost.
+
+Required principles:
+
+- incremental scoring
+- limited per-user candidate set
+- score cache or score table usage
+- minimal select fields
+- aggregated queries instead of many small ones
+- do not rebuild the profile unnecessarily on every request
+
+Recommended:
+
+- profile cache / snapshot with 6-24 hour TTL
+- feed request should not recalculate score, only read stored score
+
+### 10.1 Use of upstream evidence
+
+Agent 4 should not rely only on final `Article` field values if upstream signals are more useful for ranking.
+
+Useful future score factors or debug factors can include:
+
+- feed / source provenance
+- category / source target relationship
+- discovery confidence-like upstream metadata
+- Agent 3 enrichment confidence
