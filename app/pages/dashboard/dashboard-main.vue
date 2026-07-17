@@ -450,12 +450,112 @@
               {{ isArticleDiscoveryRunning ? "Discovering..." : "Run article discovery" }}
             </button>
             <button
+              v-if="showFullDevTools"
+              @click="runHeadlessQueue"
+              :disabled="isHeadlessQueueRunning"
+              class="rounded-lg border border-violet-500/20 bg-violet-500/10 px-4 py-2 text-sm font-bold text-violet-100 transition-colors hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ isHeadlessQueueRunning ? "Inspecting..." : "Inspect headless queue" }}
+            </button>
+            <button
               @click="runManualPipeline"
               :disabled="isPipelineRunning"
               class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {{ isPipelineRunning ? "Running..." : "Run A1 -> A2 pipeline" }}
             </button>
+          </div>
+        </div>
+
+        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h4 class="font-headline text-sm font-bold text-on-surface">
+                Agent 2 discovery quality
+              </h4>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Static discovery quality assessments and headless escalation queue.
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                @click="loadDiscoveryQuality"
+                class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          <div v-if="discoveryQualityItems.length === 0" class="mt-3 text-xs text-on-surface-variant">
+            No Agent 2 quality artifacts yet.
+          </div>
+
+          <div v-else class="mt-3 space-y-2 max-h-64 overflow-y-auto pr-1">
+            <div
+              v-for="item in discoveryQualityItems"
+              :key="item.id"
+              class="rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-2"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span
+                      class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                      :class="{
+                        'bg-emerald-500/15 text-emerald-300 border border-emerald-500/20': item.quality === 'productive',
+                        'bg-amber-500/15 text-amber-300 border border-amber-500/20': item.quality === 'weak',
+                        'bg-rose-500/15 text-rose-300 border border-rose-500/20': item.quality === 'failed',
+                        'bg-red-500/15 text-red-300 border border-red-500/30': item.quality === 'blocked',
+                        'bg-gray-500/15 text-gray-400 border border-gray-500/20': !item.quality,
+                      }"
+                    >
+                      {{ item.quality || 'unknown' }}
+                    </span>
+                    <span v-if="item.confidence" class="text-[10px] text-on-surface-variant">confidence: {{ item.confidence }}</span>
+                    <span v-if="item.shouldEscalateToHeadless" class="text-[10px] font-bold text-amber-300">Headless recommended</span>
+                    <span v-if="item.artifactType === 'article_discovery_headless_required'" class="text-[10px] font-bold text-rose-300">PENDING_HEADLESS</span>
+                  </div>
+                  <p class="mt-1 text-[11px] text-on-surface-variant truncate">
+                    {{ item.targetUrl || item.sourceId || 'unknown target' }}
+                  </p>
+                  <p v-if="item.explanation" class="mt-0.5 text-[10px] text-on-surface-variant/70 line-clamp-2">
+                    {{ item.explanation }}
+                  </p>
+                  <div class="mt-1 flex flex-wrap gap-1.5">
+                    <span
+                      v-for="reason in (item.escalationReasons || []).slice(0, 3)"
+                      :key="reason"
+                      class="rounded bg-surface-container-highest px-1.5 py-0.5 text-[9px] font-medium text-on-surface-variant"
+                    >
+                      {{ reason }}
+                    </span>
+                  </div>
+                  <div v-if="item.outcomeSummary" class="mt-1.5 flex flex-wrap gap-2 text-[10px] text-on-surface-variant">
+                    <span>accepted: <strong class="text-emerald-300">{{ item.outcomeSummary.accepted }}</strong></span>
+                    <span>rejected: <strong class="text-rose-300">{{ item.outcomeSummary.rejected }}</strong></span>
+                    <span>total: <strong>{{ item.outcomeSummary.totalEvaluated }}</strong></span>
+                    <span v-if="item.discoverySources?.listingPages">listing: {{ item.discoverySources.listingPages }}</span>
+                    <span v-if="item.discoverySources?.sitemapUrls">sitemap: {{ item.discoverySources.sitemapUrls }}</span>
+                    <span v-if="item.discoverySources?.jsonldUrls">jsonld: {{ item.discoverySources.jsonldUrls }}</span>
+                  </div>
+                  <div v-if="item.outcomeSummary?.topRejectionReasons?.length" class="mt-1 flex flex-wrap gap-1">
+                    <span class="text-[9px] text-on-surface-variant/60">top rejections:</span>
+                    <span
+                      v-for="r in item.outcomeSummary.topRejectionReasons.slice(0, 3)"
+                      :key="r.reason"
+                      class="text-[9px] text-on-surface-variant"
+                    >
+                      {{ r.reason }}({{ r.count }})
+                    </span>
+                  </div>
+                </div>
+                <div class="text-right text-[10px] text-on-surface-variant shrink-0">
+                  <div>{{ formatLogTime(item.createdAt) }}</div>
+                  <div v-if="item.sourceId" class="truncate max-w-[80px]">{{ item.sourceId }}</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -634,6 +734,7 @@ const currentPage = ref(1);
 const isPipelineRunning = ref(false);
 const isEnrichingExistingArticles = ref(false);
 const isArticleDiscoveryRunning = ref(false);
+const isHeadlessQueueRunning = ref(false);
 const isHardCaseQueueRunning = ref(false);
 const isFixingRssStatus = ref(false);
 const isImportingRss = ref(false);
@@ -649,6 +750,23 @@ const canAccessDevPanel = ref(false);
 const canRunManualPipeline = ref(false);
 const canUseFullDevTools = ref(false);
 const isClearingLogs = ref(false);
+const discoveryQualityItems = ref<Array<{
+  id: string;
+  createdAt: string;
+  sourceId: string | null;
+  categoryId: string | null;
+  artifactType: string;
+  status: string;
+  candidateCount: number | null;
+  targetUrl: string | null;
+  quality: string | null;
+  confidence: string | null;
+  shouldEscalateToHeadless: boolean;
+  escalationReasons: string[];
+  explanation: string | null;
+  outcomeSummary: { totalEvaluated: number; accepted: number; rejected: number; byStatus: Record<string, number>; topRejectionReasons: Array<{ reason: string; count: number }> };
+  discoverySources: { listingPages: number; sitemapUrls: number; jsonldUrls: number };
+}>>([]);
 const agentLogs = ref<Array<{ id: string; status: string; displayStatus?: string; agentPrefix?: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
 const agentSourceCount = ref(0);
 const createEmptyScopedSourceAuditSummary = () => ({
@@ -879,10 +997,40 @@ const loadScopedSourceAuditSummary = async () => {
   }
 };
 
+const loadDiscoveryQuality = async () => {
+  if (!showFullDevTools.value) return;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      items: Array<{
+        id: string;
+        createdAt: string;
+        sourceId: string | null;
+        categoryId: string | null;
+        artifactType: string;
+        status: string;
+        candidateCount: number | null;
+        targetUrl: string | null;
+        quality: string | null;
+        confidence: string | null;
+        shouldEscalateToHeadless: boolean;
+        escalationReasons: string[];
+        explanation: string | null;
+        outcomeSummary: { totalEvaluated: number; accepted: number; rejected: number; byStatus: Record<string, number>; topRejectionReasons: Array<{ reason: string; count: number }> };
+        discoverySources: { listingPages: number; sitemapUrls: number; jsonldUrls: number };
+      }>;
+    }>("/api/dev/article-discovery-quality");
+    discoveryQualityItems.value = response.items || [];
+  } catch (error: any) {
+    if (error?.response?.status === 429 || error?.status === 429) return;
+    throw error;
+  }
+};
+
 const refreshDevPanel = async () => {
   if (!showFullDevTools.value) return;
   try {
-    await Promise.all([loadAgentLogs(), loadEligibleSourceCount(), loadScopedSourceAuditSummary()]);
+    await Promise.all([loadAgentLogs(), loadEligibleSourceCount(), loadScopedSourceAuditSummary(), loadDiscoveryQuality()]);
   } catch (error) {
     console.error("Failed to refresh dev panel:", error);
   }
@@ -1439,6 +1587,55 @@ const runArticleDiscovery = async () => {
     if (showFullDevTools.value) {
       await refreshDevPanel();
     }
+    stopDevPanelPolling();
+  }
+};
+
+const runHeadlessQueue = async () => {
+  if (!showFullDevTools.value || isHeadlessQueueRunning.value) return;
+
+  isHeadlessQueueRunning.value = true;
+  startDevPanelPolling();
+  try {
+    const response = await $api<{
+      ok: boolean;
+      result: {
+        dryRun: boolean;
+        inspected?: number;
+        wouldProcess?: number;
+        processed?: number;
+        skippedInvalid: number;
+        artifacts?: Array<{ id: string; targetUrl: string | null; quality: string | null; valid: boolean; invalidReason?: string }>;
+        updatedArtifactIds?: string[];
+      };
+    }>("/api/dev/run-article-discovery-headless-queue", {
+      method: "POST",
+      body: { dryRun: true, limit: 10 },
+    });
+    const r = response.result;
+    toast.value = {
+      show: true,
+      message: r.dryRun
+        ? `Headless queue inspected: ${r.inspected ?? 0} artifact(s), ${r.wouldProcess ?? 0} would process, ${r.skippedInvalid ?? 0} invalid.`
+        : `Headless queue processed: ${r.processed ?? 0} updated, ${r.skippedInvalid ?? 0} invalid.`,
+      type: "success",
+    };
+    await refreshDevPanel();
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } catch (error: any) {
+    toast.value = {
+      show: true,
+      message: error?.statusMessage || error?.message || "Headless queue inspection failed.",
+      type: "error",
+    };
+    window.setTimeout(() => {
+      toast.value.show = false;
+    }, 5000);
+  } finally {
+    isHeadlessQueueRunning.value = false;
+    await refreshDevPanel();
     stopDevPanelPolling();
   }
 };

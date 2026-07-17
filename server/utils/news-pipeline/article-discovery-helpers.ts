@@ -8,10 +8,14 @@
  */
 
 import { safeFetch } from "../ssrf-guard";
+import { normalizeFeedTextDetailed } from "./normalize-feed-text";
+import { hashText, normalizeUrl, stripHtml } from "./text";
 
 const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
+
+export const DISCOVERY_FRESHNESS_MS = 14 * 24 * 60 * 60 * 1000;
 
 const MAX_SITEMAP_URLS = 40;
 const MAX_SITEMAP_INDEX_ENTRIES = 5;
@@ -355,6 +359,535 @@ export function extractJsonLdArticles(html: string, pageUrl: string): JsonLdArti
   }
 
   return articles;
+}
+
+// ─── Candidate Outcome Types ──────────────────────────────────────────────
+
+export type ArticleDiscoverySourceKind = "listing" | "sitemap" | "jsonld" | "browser";
+
+export type ArticleDiscoveryOutcomeStatus =
+  | "accepted"
+  | "rejected_low_score"
+  | "rejected_utility_path"
+  | "rejected_cross_domain"
+  | "rejected_stale"
+  | "rejected_missing_title"
+  | "rejected_duplicate"
+  | "rejected_out_of_scope"
+  | "fetch_failed"
+  | "detail_validation_failed";
+
+export type ArticleDiscoveryCandidateOutcome = {
+  url: string;
+  canonicalUrl?: string | null;
+  sourceKind: ArticleDiscoverySourceKind;
+  status: ArticleDiscoveryOutcomeStatus;
+  score?: number;
+  scoreReasons?: string[];
+  title?: string | null;
+  publishedAt?: string | null;
+  reason?: string;
+};
+
+export type ArticleDiscoveryOutcomeSummary = {
+  totalEvaluated: number;
+  accepted: number;
+  rejected: number;
+  byStatus: Record<string, number>;
+  bySourceKind: Record<string, number>;
+  topRejectionReasons: Array<{ reason: string; count: number }>;
+};
+
+const MAX_STORED_REJECTED_OUTCOMES = 100;
+
+/**
+ * Tracks outcomes for every URL evaluated during Agent 2 discovery.
+ * Keeps accepted outcomes unbounded; caps rejected outcomes to limit payload size.
+ */
+export class ArticleDiscoveryOutcomeTracker {
+  private accepted: ArticleDiscoveryCandidateOutcome[] = [];
+  private rejected: ArticleDiscoveryCandidateOutcome[] = [];
+  private byStatus: Record<string, number> = {};
+  private bySourceKind: Record<string, number> = {};
+
+  record(outcome: ArticleDiscoveryCandidateOutcome): void {
+    if (outcome.status === "accepted") {
+      this.accepted.push(outcome);
+    } else if (this.rejected.length < MAX_STORED_REJECTED_OUTCOMES) {
+      this.rejected.push(outcome);
+    }
+    this.byStatus[outcome.status] = (this.byStatus[outcome.status] || 0) + 1;
+    this.bySourceKind[outcome.sourceKind] = (this.bySourceKind[outcome.sourceKind] || 0) + 1;
+  }
+
+  getSummary(): ArticleDiscoveryOutcomeSummary {
+    const rejectionCounts: Record<string, number> = {};
+    for (const outcome of this.rejected) {
+      const reason = outcome.reason || outcome.status;
+      rejectionCounts[reason] = (rejectionCounts[reason] || 0) + 1;
+    }
+    // Count statuses that were capped
+    for (const [status, count] of Object.entries(this.byStatus)) {
+      if (status !== "accepted") {
+        const storedCount = this.rejected.filter((o) => o.status === status).length;
+        if (count > storedCount) {
+          const overflowReason = status.replace("rejected_", "");
+          rejectionCounts[overflowReason] = (rejectionCounts[overflowReason] || 0) + (count - storedCount);
+        }
+      }
+    }
+
+    const topRejectionReasons = Object.entries(rejectionCounts)
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    return {
+      totalEvaluated: Object.values(this.byStatus).reduce((a, b) => a + b, 0),
+      accepted: this.accepted.length,
+      rejected: Object.entries(this.byStatus)
+        .filter(([s]) => s !== "accepted")
+        .reduce((a, [, v]) => a + v, 0),
+      byStatus: { ...this.byStatus },
+      bySourceKind: { ...this.bySourceKind },
+      topRejectionReasons,
+    };
+  }
+
+  getAccepted(): ArticleDiscoveryCandidateOutcome[] {
+    return [...this.accepted];
+  }
+
+  getRejected(): ArticleDiscoveryCandidateOutcome[] {
+    return [...this.rejected];
+  }
+}
+
+// ─── Quality Classification & Escalation ──────────────────────────────────
+
+export type ArticleDiscoveryQuality = "productive" | "weak" | "failed" | "blocked";
+
+export type ArticleDiscoveryEscalationReason =
+  | "no_candidates"
+  | "low_acceptance_rate"
+  | "mostly_fetch_failed"
+  | "mostly_low_score"
+  | "mostly_out_of_scope"
+  | "dynamic_or_empty_html"
+  | "blocked_or_forbidden"
+  | "insufficient_static_signals";
+
+export type ArticleDiscoveryQualityAssessment = {
+  quality: ArticleDiscoveryQuality;
+  shouldEscalateToHeadless: boolean;
+  escalationReasons: ArticleDiscoveryEscalationReason[];
+  confidence: "high" | "medium" | "low";
+  explanation: string;
+};
+
+/**
+ * Input for quality assessment. Derived from the outcome tracker summary,
+ * discovery sources, and page-level signals collected during the run.
+ */
+export type ArticleDiscoveryQualityInput = {
+  acceptedCount: number;
+  totalEvaluated: number;
+  pagesVisited: number;
+  failed: number;
+  byStatus: Record<string, number>;
+};
+
+/**
+ * Thresholds for quality classification. Conservative and deterministic.
+ */
+const QUALITY_ACCEPTANCE_RATE_STRONG = 0.10;   // ≥10% acceptance → not weak
+const QUALITY_ACCEPTANCE_RATE_WEAK = 0.06;      // <6% acceptance → weak with escalation
+const QUALITY_MIN_EVALUATED_FOR_RATE = 5;       // need ≥5 evaluated to judge rate
+const QUALITY_FETCH_FAILURE_DOMINANCE = 0.60;    // ≥60% fetch failures → blocked
+const QUALITY_LOW_SCORE_DOMINANCE = 0.80;        // ≥80% low-score rejections → weak signals
+
+/**
+ * Pure helper: assess the quality of static article discovery for a single target.
+ *
+ * Uses outcome summary counts and source signals to classify the result as
+ * productive / weak / failed / blocked. Returns an escalation marker when
+ * the target should be re-tried with a browser/headless fallback later.
+ *
+ * Rules (deterministic, conservative):
+ * - productive: accepted > 0 and acceptance rate is reasonable
+ * - weak:       accepted > 0 but acceptance rate is very low
+ * - failed:     accepted = 0 and URLs were evaluated
+ * - blocked:    accepted = 0 and fetch failures dominate
+ */
+export function assessArticleDiscoveryQuality(
+  input: ArticleDiscoveryQualityInput,
+): ArticleDiscoveryQualityAssessment {
+  const { acceptedCount, totalEvaluated, pagesVisited, byStatus } = input;
+
+  const fetchFailed = byStatus["fetch_failed"] || 0;
+  const lowScore = byStatus["rejected_low_score"] || 0;
+  const outOfScope = byStatus["rejected_out_of_scope"] || 0;
+  const stale = byStatus["rejected_stale"] || 0;
+  const missingTitle = byStatus["rejected_missing_title"] || 0;
+
+  const reasons: ArticleDiscoveryEscalationReason[] = [];
+  let quality: ArticleDiscoveryQuality;
+  let shouldEscalateToHeadless: boolean;
+  let confidence: "high" | "medium" | "low";
+
+  // ── No URLs evaluated at all ──
+  if (totalEvaluated === 0 && pagesVisited === 0) {
+    return {
+      quality: "failed",
+      shouldEscalateToHeadless: true,
+      escalationReasons: ["dynamic_or_empty_html"],
+      confidence: "medium",
+      explanation: "No listing pages were successfully fetched. The target may be JS-rendered or blocking requests.",
+    };
+  }
+
+  // ── No URLs evaluated but pages were visited (listing pages had no links) ──
+  if (totalEvaluated === 0 && pagesVisited > 0) {
+    return {
+      quality: "failed",
+      shouldEscalateToHeadless: true,
+      escalationReasons: ["dynamic_or_empty_html"],
+      confidence: "high",
+      explanation: `${pagesVisited} listing page(s) were fetched but yielded no article-like URLs. The page content may be dynamically rendered.`,
+    };
+  }
+
+  // ── No accepted candidates ──
+  if (acceptedCount === 0 && totalEvaluated > 0) {
+    const fetchRate = fetchFailed / totalEvaluated;
+
+    // Blocked: fetch failures dominate — the site blocks automated requests
+    if (fetchRate >= QUALITY_FETCH_FAILURE_DOMINANCE) {
+      return {
+        quality: "blocked",
+        shouldEscalateToHeadless: true,
+        escalationReasons: ["blocked_or_forbidden", "mostly_fetch_failed"],
+        confidence: "high",
+        explanation: `${fetchFailed}/${totalEvaluated} article fetches failed. The site may block automated requests or require authentication.`,
+      };
+    }
+
+    // Failed: URLs evaluated, none accepted, fetch failures do not dominate
+    const lowScoreRate = totalEvaluated > 0 ? lowScore / totalEvaluated : 0;
+    const scopeRate = totalEvaluated > 0 ? outOfScope / totalEvaluated : 0;
+
+    if (lowScoreRate >= QUALITY_LOW_SCORE_DOMINANCE) {
+      reasons.push("mostly_low_score", "insufficient_static_signals");
+    } else if (scopeRate >= 0.5) {
+      reasons.push("mostly_out_of_scope");
+    } else if (fetchFailed > 0) {
+      reasons.push("mostly_fetch_failed");
+    }
+    reasons.push("no_candidates");
+
+    return {
+      quality: "failed",
+      shouldEscalateToHeadless: true,
+      escalationReasons: reasons.length > 0 ? reasons : ["no_candidates"],
+      confidence: fetchFailed > 0 ? "medium" : "high",
+      explanation: `${totalEvaluated} URL(s) were evaluated but none produced valid article candidates. ` +
+        (fetchFailed > 0 ? `${fetchFailed} fetch(es) failed. ` : "") +
+        (lowScore > 0 ? `${lowScore} had low content scores. ` : "") +
+        (stale > 0 ? `${stale} were stale. ` : "") +
+        (missingTitle > 0 ? `${missingTitle} lacked titles. ` : "") +
+        `Static discovery is insufficient for this target.`,
+    };
+  }
+
+  // ── Accepted > 0 but fetch failures dominate: weak + escalation ──
+  if (acceptedCount > 0 && totalEvaluated > 0) {
+    const fetchRate = fetchFailed / totalEvaluated;
+    if (fetchRate >= QUALITY_FETCH_FAILURE_DOMINANCE) {
+      return {
+        quality: "weak",
+        shouldEscalateToHeadless: true,
+        escalationReasons: ["mostly_fetch_failed", "insufficient_static_signals"],
+        confidence: "medium",
+        explanation: `Static discovery found ${acceptedCount} article(s) but ${fetchFailed}/${totalEvaluated} fetches failed. Coverage may be incomplete because the site blocks some automated requests.`,
+      };
+    }
+  }
+
+  // ── Accepted > 0: judge acceptance rate ──
+  const acceptanceRate = totalEvaluated >= QUALITY_MIN_EVALUATED_FOR_RATE
+    ? acceptedCount / totalEvaluated
+    : 1; // not enough data to judge → assume OK
+
+  if (acceptanceRate >= QUALITY_ACCEPTANCE_RATE_STRONG) {
+    quality = "productive";
+    shouldEscalateToHeadless = false;
+    confidence = acceptedCount >= 3 ? "high" : "medium";
+  } else if (acceptanceRate >= QUALITY_ACCEPTANCE_RATE_WEAK) {
+    quality = "weak";
+    shouldEscalateToHeadless = false;
+    confidence = "medium";
+    reasons.push("low_acceptance_rate");
+  } else {
+    quality = "weak";
+    shouldEscalateToHeadless = true;
+    confidence = "medium";
+    reasons.push("low_acceptance_rate");
+    if (fetchFailed > totalEvaluated * 0.3) reasons.push("mostly_fetch_failed");
+    if (lowScore > totalEvaluated * 0.5) reasons.push("mostly_low_score");
+  }
+
+  const explanation = quality === "productive"
+    ? `Discovered ${acceptedCount} article(s) from ${totalEvaluated} evaluated URL(s) (${(acceptanceRate * 100).toFixed(0)}% acceptance rate). Static discovery is effective.`
+    : `Discovered ${acceptedCount} article(s) from ${totalEvaluated} evaluated URL(s) (${(acceptanceRate * 100).toFixed(0)}% acceptance rate). Static coverage may be incomplete.`;
+
+  return {
+    quality,
+    shouldEscalateToHeadless,
+    escalationReasons: quality === "productive" ? [] : (reasons.length > 0 ? reasons : ["low_acceptance_rate"]),
+    confidence,
+    explanation,
+  };
+}
+
+// ─── Extraction Helpers ──────────────────────────────────────────────────────
+
+type ListingMetadata = {
+  title: string;
+  description: string;
+  publishedAt: Date | null;
+  keywords: string[];
+};
+
+export const isWithinFreshnessWindow = (publishedAt: Date | null, now = new Date()) => {
+  if (!publishedAt) return false;
+  const diff = now.getTime() - publishedAt.getTime();
+  return diff >= 0 && diff <= DISCOVERY_FRESHNESS_MS;
+};
+
+export const normalizePublishedAt = (value: Date | null) =>
+  value && !Number.isNaN(value.getTime()) ? value : null;
+
+export const isBlockedDiscoveryPath = (href: string) => {
+  try {
+    const pathname = new URL(href).pathname.replace(/\/+$/, "") || "/";
+    return BLOCKED_UTILITY_PATTERNS.some(({ pattern }) => pattern.test(pathname));
+  } catch {
+    return true;
+  }
+};
+
+export const extractPageMetadata = (html: string): ListingMetadata => {
+  const title =
+    html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']twitter:title["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ||
+    "";
+  const description =
+    html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']twitter:description["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    "";
+  const publishedAtRaw =
+    html.match(/<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']article:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+property=["']og:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']pubdate["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']publishdate["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<time[^>]+datetime=["']([^"']+)["']/i)?.[1] ||
+    "";
+  const keywords =
+    html.match(/<meta[^>]+name=["']keywords["'][^>]+content=["']([^"']+)["']/i)?.[1]
+      ?.split(",")
+      .map((value) => normalizeFeedTextDetailed(value).value)
+      .filter(Boolean) || [];
+
+  return {
+    title: stripHtml(title),
+    description: stripHtml(description),
+    publishedAt: publishedAtRaw ? new Date(publishedAtRaw) : null,
+    keywords,
+  };
+};
+
+// ─── Shared Article Link Evaluation ────────────────────────────────────────
+
+type EvaluatedCandidate = {
+  sourceId: string;
+  categoryId?: string;
+  sourceUrl: string;
+  canonicalUrl: string;
+  rssGuid: null;
+  rawTitle: string;
+  title: string;
+  publishedAt: Date | null;
+  rawBodyText: string;
+  bodyText: string | null;
+  contentHash: string;
+  isPaywall: boolean;
+  rawTags: string[];
+  rawSignals: string[];
+  reasoning: string;
+  normalizationFlags: string[];
+  provenance: {
+    origin: "web_discovery";
+    feedUrl: null;
+    feedFormat: string;
+    discoveredFromCategoryFeed: boolean;
+    sourcePageUrl: string;
+    fetchedAt: string;
+  };
+};
+
+export type EvaluateArticleLinkResult =
+  | { accepted: true; candidate: EvaluatedCandidate; outcome: ArticleDiscoveryCandidateOutcome }
+  | { accepted: false; candidate: null; outcome: ArticleDiscoveryCandidateOutcome };
+
+/**
+ * Shared helper: fetch an article page, evaluate it against the target, and
+ * return a candidate + outcome. Used by both static Agent 2 discovery and
+ * the browser fallback queue consumer.
+ *
+ * This function does NOT update skip summary or rejected items — the caller
+ * is responsible for those bookkeeping concerns.
+ */
+export async function evaluateArticleLinkCandidate(input: {
+  articleUrl: string;
+  sourcePageUrl: string;
+  targetUrl: string;
+  sourceId: string;
+  categoryId?: string | null;
+  freshnessMs?: number;
+}): Promise<EvaluateArticleLinkResult> {
+  const { articleUrl, sourcePageUrl, targetUrl, sourceId } = input;
+  const categoryId = input.categoryId || undefined;
+
+  const resolveSourceKind = (spu: string): ArticleDiscoverySourceKind => {
+    if (spu.startsWith("sitemap:")) return "sitemap";
+    if (spu.startsWith("jsonld:")) return "jsonld";
+    if (spu.startsWith("browser:")) return "browser";
+    return "listing";
+  };
+
+  const makeReject = (
+    url: string,
+    spu: string,
+    status: ArticleDiscoveryCandidateOutcome["status"],
+    overrides?: Partial<ArticleDiscoveryCandidateOutcome>,
+  ): ArticleDiscoveryCandidateOutcome => ({
+    url,
+    sourceKind: resolveSourceKind(spu),
+    status,
+    ...overrides,
+  });
+
+  const response = await safeFetch(articleUrl, {
+    headers: {
+      "User-Agent": "NuSift/1.0 Agent2-Discovery",
+      Accept: "text/html,application/xhtml+xml",
+    },
+  }).catch(() => null);
+
+  if (!response || !response.ok) {
+    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "fetch_failed", { reason: `HTTP ${response?.status || "no_response"}` }) };
+  }
+
+  const html = await response.text();
+  const meta = extractPageMetadata(html);
+  const normalizedPublishedAt = normalizePublishedAt(meta.publishedAt);
+  const canonicalUrl = normalizeUrl(articleUrl);
+
+  if (!canonicalUrl || isBlockedDiscoveryPath(canonicalUrl)) {
+    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_utility_path", { canonicalUrl, title: meta.title }) };
+  }
+
+  const canonicalHostname = new URL(canonicalUrl).hostname.replace(/^www\./, "");
+  const targetHostname = new URL(targetUrl).hostname.replace(/^www\./, "");
+  if (canonicalHostname !== targetHostname) {
+    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_cross_domain", { canonicalUrl, title: meta.title, reason: "cross-domain redirect" }) };
+  }
+
+  if (categoryId) {
+    const categoryPath = targetUrl.replace(/\/+$/, "").replace(/^https?:\/\/[^/]+/, "") || "/";
+    const articlePath = canonicalUrl.replace(/\/+$/, "").replace(/^https?:\/\/[^/]+/, "") || "/";
+    if (categoryPath !== "/" && !(articlePath === categoryPath || articlePath.startsWith(`${categoryPath}/`))) {
+      return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_out_of_scope", { canonicalUrl, title: meta.title, reason: "outside category path" }) };
+    }
+  }
+
+  const score = scoreCandidateUrl(canonicalUrl, targetUrl, {
+    title: meta.title,
+    dateText: normalizedPublishedAt?.toISOString() || null,
+    categoryPathUrl: categoryId ? targetUrl : null,
+  });
+  if (score.rejected) {
+    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_low_score", { canonicalUrl, title: meta.title, score: score.score, scoreReasons: score.reasons, reason: score.rejectionReason }) };
+  }
+
+  const previewTitle = meta.title || canonicalUrl;
+  if (!previewTitle || previewTitle.length < 12) {
+    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_missing_title", { canonicalUrl, title: previewTitle, reason: "title too short or missing" }) };
+  }
+
+  if (!isWithinFreshnessWindow(normalizedPublishedAt, new Date())) {
+    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_stale", { canonicalUrl, title: previewTitle, publishedAt: normalizedPublishedAt?.toISOString(), reason: "outside freshness window" }) };
+  }
+
+  const rawTitle = meta.title || canonicalUrl;
+  const rawBodyText = meta.description || stripHtml(html).slice(0, 600);
+  const normalizedTitle = normalizeFeedTextDetailed(rawTitle);
+  const normalizedBody = normalizeFeedTextDetailed(rawBodyText);
+  const title = normalizedTitle.value || canonicalUrl;
+  const bodyText = normalizedBody.value;
+  const contentHash = await hashText([title, canonicalUrl, bodyText].filter(Boolean).join("|"));
+  const isPaywall = /paywall|subscribe|premium/i.test(html);
+  const rawTags = [...new Set(meta.keywords.filter(Boolean))];
+
+  const candidate: EvaluatedCandidate = {
+    sourceId,
+    categoryId,
+    sourceUrl: targetUrl,
+    canonicalUrl,
+    rssGuid: null,
+    rawTitle,
+    title,
+    publishedAt: normalizedPublishedAt,
+    rawBodyText,
+    bodyText: bodyText || null,
+    contentHash,
+    isPaywall,
+    rawTags,
+    rawSignals: [
+      "agent2-web-discovery",
+      sourcePageUrl,
+      `score:${score.score}`,
+      ...(meta.keywords.length > 0 ? [`keywords:${meta.keywords.slice(0, 5).join(",")}`] : []),
+    ],
+    reasoning: `Agent 2 web discovery from ${sourcePageUrl} (score=${score.score}, reasons=${score.reasons.join(",")})`,
+    normalizationFlags: [...new Set([
+      ...(normalizedTitle.changed ? normalizedTitle.flags : []),
+      ...(normalizedBody.changed ? normalizedBody.flags : []),
+    ])],
+    provenance: {
+      origin: "web_discovery",
+      feedUrl: null,
+      feedFormat: "unknown",
+      discoveredFromCategoryFeed: Boolean(categoryId),
+      sourcePageUrl,
+      fetchedAt: new Date().toISOString(),
+    },
+  };
+
+  return {
+    accepted: true,
+    candidate,
+    outcome: makeReject(articleUrl, sourcePageUrl, "accepted", {
+      canonicalUrl,
+      title,
+      publishedAt: normalizedPublishedAt?.toISOString(),
+      score: score.score,
+      scoreReasons: score.reasons,
+    }),
+  };
 }
 
 // ─── Candidate URL Scoring ─────────────────────────────────────────────────

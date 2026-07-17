@@ -3,21 +3,31 @@ import { prisma } from "../prisma";
 import { safeFetch } from "../ssrf-guard";
 import { logAgentScan } from "./log";
 import { createPipelineRun, finalizePipelineRun } from "./artifacts";
-import { normalizeFeedTextDetailed } from "./normalize-feed-text";
-import { hashText, normalizeUrl, stripHtml } from "./text";
+import { normalizeUrl } from "./text";
 import { persistCandidates } from "./ingest";
 import { resolveActivePipelineTargets } from "./targets";
 import {
   BLOCKED_UTILITY_PATTERNS,
+  DISCOVERY_FRESHNESS_MS,
   discoverSitemapUrls,
   filterSitemapArticleUrls,
   extractJsonLdArticles,
   scoreCandidateUrl,
+  assessArticleDiscoveryQuality,
+  ArticleDiscoveryOutcomeTracker,
+  evaluateArticleLinkCandidate,
+  normalizePublishedAt,
+  extractPageMetadata,
+  isBlockedDiscoveryPath,
+  type ArticleDiscoveryCandidateOutcome,
+  type ArticleDiscoveryOutcomeSummary,
+  type ArticleDiscoveryQualityAssessment,
+  type ArticleDiscoverySourceKind,
   type JsonLdArticle,
 } from "./article-discovery-helpers";
 import type { IngestCandidate, IngestRejectedItem, IngestSkipSummary, PipelineResult } from "./types";
 
-const DISCOVERY_FRESHNESS_MS = 14 * 24 * 60 * 60 * 1000;
+// DISCOVERY_FRESHNESS_MS re-exported from article-discovery-helpers for backward compat
 const MAX_LISTING_PAGES = 3;
 const MAX_LINKS_PER_PAGE = 20;
 const MAX_TOTAL_CANDIDATES = 60;
@@ -50,13 +60,10 @@ export type ArticleDiscoveryResult = {
   failed: number;
   skipSummary: IngestSkipSummary;
   rejectedItems: IngestRejectedItem[];
-};
-
-type ListingMetadata = {
-  title: string;
-  description: string;
-  publishedAt: Date | null;
-  keywords: string[];
+  outcomeSummary: ArticleDiscoveryOutcomeSummary;
+  acceptedOutcomes: ArticleDiscoveryCandidateOutcome[];
+  rejectedOutcomes: ArticleDiscoveryCandidateOutcome[];
+  qualityAssessment: ArticleDiscoveryQualityAssessment;
 };
 
 type ListingArticleLink = {
@@ -89,20 +96,8 @@ const normalizePath = (url: string) => {
   }
 };
 
-const isWithinFreshnessWindow = (publishedAt: Date | null, now = new Date()) => {
-  if (!publishedAt) return false;
-  const diff = now.getTime() - publishedAt.getTime();
-  return diff >= 0 && diff <= DISCOVERY_FRESHNESS_MS;
-};
-
-const isBlockedDiscoveryPath = (href: string) => {
-  try {
-    const pathname = new URL(href).pathname.replace(/\/+$/, "") || "/";
-    return BLOCKED_UTILITY_PATTERNS.some(({ pattern }) => pattern.test(pathname));
-  } catch {
-    return true;
-  }
-};
+// isWithinFreshnessWindow, isBlockedDiscoveryPath, extractPageMetadata,
+// normalizePublishedAt — now imported from article-discovery-helpers
 
 const isLikelyArticleLink = (href: string, sourceUrl: string) => {
   try {
@@ -125,42 +120,6 @@ const isLikelyArticleLink = (href: string, sourceUrl: string) => {
     return false;
   }
 };
-
-const extractPageMetadata = (html: string): ListingMetadata => {
-  const title =
-    html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    html.match(/<meta[^>]+name=["']twitter:title["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ||
-    "";
-  const description =
-    html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    html.match(/<meta[^>]+name=["']twitter:description["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    "";
-  const publishedAtRaw =
-    html.match(/<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    html.match(/<meta[^>]+name=["']article:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    html.match(/<meta[^>]+property=["']og:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    html.match(/<meta[^>]+name=["']pubdate["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    html.match(/<meta[^>]+name=["']publishdate["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    html.match(/<time[^>]+datetime=["']([^"']+)["']/i)?.[1] ||
-    "";
-  const keywords =
-    html.match(/<meta[^>]+name=["']keywords["'][^>]+content=["']([^"']+)["']/i)?.[1]
-      ?.split(",")
-      .map((value) => normalizeFeedTextDetailed(value).value)
-      .filter(Boolean) || [];
-
-  return {
-    title: stripHtml(title),
-    description: stripHtml(description),
-    publishedAt: publishedAtRaw ? new Date(publishedAtRaw) : null,
-    keywords,
-  };
-};
-
-const normalizePublishedAt = (value: Date | null) =>
-  value && !Number.isNaN(value.getTime()) ? value : null;
 
 const extractListingArticleLinks = (
   document: Document,
@@ -297,144 +256,83 @@ const crawlListingPages = async (
   return { visitedPages, articleLinks: [...articleLinks.values()], firstPageHtml };
 };
 
+type CandidateEvaluationResult = {
+  candidate: IngestCandidate;
+  outcome: ArticleDiscoveryCandidateOutcome;
+} | {
+  candidate: null;
+  outcome: ArticleDiscoveryCandidateOutcome;
+};
+
+const resolveSourceKind = (sourcePageUrl: string): ArticleDiscoverySourceKind => {
+  if (sourcePageUrl.startsWith("sitemap:")) return "sitemap";
+  if (sourcePageUrl.startsWith("jsonld:")) return "jsonld";
+  if (sourcePageUrl.startsWith("browser:")) return "browser";
+  return "listing";
+};
+
+const makeOutcome = (
+  url: string,
+  sourcePageUrl: string,
+  status: ArticleDiscoveryCandidateOutcome["status"],
+  overrides?: Partial<ArticleDiscoveryCandidateOutcome>,
+): ArticleDiscoveryCandidateOutcome => ({
+  url,
+  sourceKind: resolveSourceKind(sourcePageUrl),
+  status,
+  ...overrides,
+});
+
 const discoverArticleCandidatesForPage = async (
   articleLink: ListingArticleLink,
   target: ArticleDiscoveryTarget,
   skipSummary: IngestSkipSummary,
   rejectedItems: IngestRejectedItem[],
-) => {
+): Promise<CandidateEvaluationResult> => {
   const { url: articleUrl, sourcePageUrl } = articleLink;
-  const response = await safeFetch(articleUrl, {
-    headers: {
-      "User-Agent": USER_AGENT,
-      Accept: "text/html,application/xhtml+xml",
-    },
-  }).catch(() => null);
 
-  if (!response || !response.ok) return null;
+  const result = await evaluateArticleLinkCandidate({
+    articleUrl,
+    sourcePageUrl,
+    targetUrl: target.targetUrl,
+    sourceId: target.sourceId,
+    categoryId: target.categoryId,
+  });
 
-  const html = await response.text();
-  const meta = extractPageMetadata(html);
-  const normalizedPublishedAt = normalizePublishedAt(meta.publishedAt);
-  const canonicalUrl = normalizeUrl(articleUrl);
-
-  if (!canonicalUrl || isBlockedDiscoveryPath(canonicalUrl)) {
-    skipSummary.htmlFallbackNonArticle += 1;
-    pushRejectedItem(rejectedItems, {
-      reason: "html_fallback_non_article",
-      rawLink: articleUrl,
-      canonicalUrl: canonicalUrl || null,
-      title: meta.title || null,
-      publishedAt: normalizedPublishedAt ? normalizedPublishedAt.toISOString() : null,
-    });
-    return null;
-  }
-
-  if (target.categoryId) {
-    const categoryPath = normalizePath(target.targetUrl);
-    const articlePath = normalizePath(canonicalUrl);
-    if (categoryPath !== "/" && !(articlePath === categoryPath || articlePath.startsWith(`${categoryPath}/`))) {
+  if (!result.accepted) {
+    const status = result.outcome.status;
+    if (status === "rejected_out_of_scope") {
       skipSummary.outOfScope += 1;
       pushRejectedItem(rejectedItems, {
         reason: "out_of_scope",
         rawLink: articleUrl,
-        canonicalUrl,
-        title: meta.title || null,
-        publishedAt: normalizedPublishedAt ? normalizedPublishedAt.toISOString() : null,
+        canonicalUrl: result.outcome.canonicalUrl || null,
+        title: result.outcome.title || null,
+        publishedAt: result.outcome.publishedAt || null,
       });
-      return null;
+    } else if (status === "rejected_stale") {
+      skipSummary.htmlFallbackStale += 1;
+      pushRejectedItem(rejectedItems, {
+        reason: "html_fallback_stale",
+        rawLink: articleUrl,
+        canonicalUrl: result.outcome.canonicalUrl || null,
+        title: result.outcome.title || null,
+        publishedAt: result.outcome.publishedAt || null,
+      });
+    } else if (status !== "rejected_duplicate") {
+      skipSummary.htmlFallbackNonArticle += 1;
+      pushRejectedItem(rejectedItems, {
+        reason: "html_fallback_non_article",
+        rawLink: articleUrl,
+        canonicalUrl: result.outcome.canonicalUrl || null,
+        title: result.outcome.title || null,
+        publishedAt: result.outcome.publishedAt || null,
+      });
     }
+    return { candidate: null, outcome: result.outcome };
   }
 
-  // Score-based filtering: reject low-quality candidates early
-  const score = scoreCandidateUrl(canonicalUrl, target.targetUrl, {
-    title: meta.title,
-    dateText: normalizedPublishedAt?.toISOString() || null,
-    categoryPathUrl: target.categoryId ? target.targetUrl : null,
-  });
-  if (score.rejected) {
-    skipSummary.htmlFallbackNonArticle += 1;
-    pushRejectedItem(rejectedItems, {
-      reason: "html_fallback_non_article",
-      rawLink: articleUrl,
-      canonicalUrl,
-      title: meta.title || null,
-      publishedAt: normalizedPublishedAt ? normalizedPublishedAt.toISOString() : null,
-    });
-    return null;
-  }
-
-  const previewTitle = meta.title || canonicalUrl;
-  if (!previewTitle || previewTitle.length < 12) {
-    skipSummary.htmlFallbackNonArticle += 1;
-    pushRejectedItem(rejectedItems, {
-      reason: "html_fallback_non_article",
-      rawLink: articleUrl,
-      canonicalUrl,
-      title: previewTitle || null,
-      publishedAt: normalizedPublishedAt ? normalizedPublishedAt.toISOString() : null,
-    });
-    return null;
-  }
-
-  if (!isWithinFreshnessWindow(normalizedPublishedAt)) {
-    skipSummary.htmlFallbackStale += 1;
-    pushRejectedItem(rejectedItems, {
-      reason: "html_fallback_stale",
-      rawLink: articleUrl,
-      canonicalUrl,
-      title: previewTitle,
-      publishedAt: normalizedPublishedAt ? normalizedPublishedAt.toISOString() : null,
-    });
-    return null;
-  }
-
-  const rawTitle = meta.title || canonicalUrl;
-  const rawBodyText = meta.description || stripHtml(html).slice(0, 600);
-  const normalizedTitle = normalizeFeedTextDetailed(rawTitle);
-  const normalizedBody = normalizeFeedTextDetailed(rawBodyText);
-  const title = normalizedTitle.value || canonicalUrl;
-  const bodyText = normalizedBody.value;
-  const contentHash = await hashText([title, canonicalUrl, bodyText].filter(Boolean).join("|"));
-  const isPaywall = /paywall|subscribe|premium/i.test(html);
-  const rawTags = [...new Set(meta.keywords.filter(Boolean))];
-
-  const candidate: IngestCandidate = {
-    sourceId: target.sourceId,
-    categoryId: target.categoryId || undefined,
-    sourceUrl: target.targetUrl,
-    canonicalUrl,
-    rssGuid: null,
-    rawTitle,
-    title,
-    publishedAt: normalizedPublishedAt,
-    rawBodyText,
-    bodyText: bodyText || null,
-    contentHash,
-    isPaywall,
-    rawTags,
-    rawSignals: [
-      "agent2-web-discovery",
-      sourcePageUrl,
-      `score:${score.score}`,
-      ...(meta.keywords.length > 0 ? [`keywords:${meta.keywords.slice(0, 5).join(",")}`] : []),
-    ],
-    reasoning: `Agent 2 web discovery from ${sourcePageUrl} (score=${score.score}, reasons=${score.reasons.join(",")})`,
-    normalizationFlags: [...new Set([
-      ...(normalizedTitle.changed ? normalizedTitle.flags : []),
-      ...(normalizedBody.changed ? normalizedBody.flags : []),
-    ])],
-    provenance: {
-      origin: "web_discovery",
-      feedUrl: null,
-      feedFormat: "unknown",
-      discoveredFromCategoryFeed: Boolean(target.categoryId),
-      sourcePageUrl,
-      fetchedAt: new Date().toISOString(),
-    },
-  };
-
-  return candidate;
+  return { candidate: result.candidate as IngestCandidate, outcome: result.outcome };
 };
 
 export const isAgent2EligibleTarget = (input: {
@@ -594,6 +492,13 @@ export async function persistArticleDiscoveryArtifact(input: {
     skipSummary: serializeSkipSummary(input.result.skipSummary),
     rejectedItems: input.result.rejectedItems.map(serializeRejectedItem),
     candidates: input.result.candidates.map(serializeDiscoveryCandidate),
+    // Outcome audit data
+    outcomeSummary: input.result.outcomeSummary,
+    acceptedCandidates: input.result.acceptedOutcomes,
+    rejectedCandidates: input.result.rejectedOutcomes,
+    topRejectionReasons: input.result.outcomeSummary.topRejectionReasons,
+    // Quality assessment
+    qualityAssessment: input.result.qualityAssessment,
   };
 
   return prisma.pipelineArtifact.create({
@@ -621,6 +526,7 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
   const seenCanonicalUrls = new Set<string>();
   const startedAt = Date.now();
   const discoverySources = { listingPages: 0, sitemapUrls: 0, jsonldUrls: 0 };
+  const tracker = new ArticleDiscoveryOutcomeTracker();
 
   await logAgentScan({
     sourceId: target.sourceId,
@@ -631,11 +537,6 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
   });
 
   // ── Phase 1: Parallel source collection ────────────────────────────────
-  // Run listing page crawl, sitemap discovery, and target page JSON-LD
-  // extraction in parallel for maximum coverage.
-  // Run listing page crawl and sitemap discovery in parallel.
-  // JSON-LD extraction reuses the first page HTML from crawlListingPages
-  // to avoid a redundant network request.
   const [listing, sitemapEntries] = await Promise.all([
     crawlListingPages(
       target.targetUrl,
@@ -654,16 +555,12 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
   discoverySources.listingPages = listing.visitedPages.length;
 
   // ── Phase 2: Merge all article link sources ────────────────────────────
-  // Combine listing page links, sitemap URLs, and JSON-LD URLs into a
-  // unified candidate list, deduplicating by URL.
   const allArticleLinks = new Map<string, ListingArticleLink>();
 
-  // Listing page links (highest confidence)
   for (const link of listing.articleLinks) {
     allArticleLinks.set(link.url, link);
   }
 
-  // Sitemap article URLs
   const filteredSitemap = filterSitemapArticleUrls(sitemapEntries, target.targetUrl, target.categoryId ? target.targetUrl : null);
   for (const entry of filteredSitemap) {
     if (!allArticleLinks.has(entry.url)) {
@@ -672,7 +569,6 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
     }
   }
 
-  // JSON-LD article URLs from target page
   for (const article of targetPageJsonLd) {
     if (!allArticleLinks.has(article.url)) {
       allArticleLinks.set(article.url, { url: article.url, sourcePageUrl: `jsonld:${target.targetUrl}` });
@@ -680,24 +576,38 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
     }
   }
 
-  // ── Phase 3: Extract candidates from merged links ──────────────────────
+  // ── Phase 3: Extract candidates from merged links with outcome tracking ─
   for (const articleLink of allArticleLinks.values()) {
     if (candidates.length >= MAX_TOTAL_CANDIDATES) break;
-
     try {
-      const candidate = await discoverArticleCandidatesForPage(
+      const result = await discoverArticleCandidatesForPage(
         articleLink,
         target,
         skipSummary,
         rejectedItems,
       );
-      if (!candidate) continue;
-      if (seenCanonicalUrls.has(candidate.canonicalUrl)) {
-        skipSummary.alreadySeenFeedItem += 1;
+
+      // Record rejection/failure outcomes immediately.
+      if (!result.candidate) {
+        tracker.record(result.outcome);
         continue;
       }
-      seenCanonicalUrls.add(candidate.canonicalUrl);
-      candidates.push(candidate);
+
+      // Duplicate check BEFORE recording accepted — prevents the same URL
+      // from appearing as both accepted and rejected in the outcome summary.
+      if (seenCanonicalUrls.has(result.candidate.canonicalUrl)) {
+        skipSummary.alreadySeenFeedItem += 1;
+        tracker.record(makeOutcome(result.candidate.canonicalUrl, articleLink.sourcePageUrl, "rejected_duplicate", {
+          canonicalUrl: result.candidate.canonicalUrl,
+          title: result.candidate.title,
+          reason: "duplicate canonical URL" }));
+        continue;
+      }
+
+      // Not a duplicate — record accepted and persist.
+      seenCanonicalUrls.add(result.candidate.canonicalUrl);
+      candidates.push(result.candidate);
+      tracker.record(result.outcome);
     } catch (error: any) {
       skipSummary.htmlFallbackNonArticle += 1;
       pushRejectedItem(rejectedItems, {
@@ -707,15 +617,32 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
         title: null,
         publishedAt: null,
       });
+      tracker.record(makeOutcome(articleLink.url, articleLink.sourcePageUrl, "detail_validation_failed", { reason: error?.message || "unknown error" }));
     }
   }
+
+  const summary = tracker.getSummary();
+  const topReason = summary.topRejectionReasons[0]?.reason || "none";
+
+  // ── Quality assessment ─────────────────────────────────────────────────
+  const qualityAssessment = assessArticleDiscoveryQuality({
+    acceptedCount: candidates.length,
+    totalEvaluated: summary.totalEvaluated,
+    pagesVisited: pagesVisited.length,
+    failed: candidates.length > 0 ? 0 : 1,
+    byStatus: summary.byStatus,
+  });
 
   await logAgentScan({
     sourceId: target.sourceId,
     categoryId: target.categoryId || undefined,
     status: candidates.length > 0 ? "ARTICLE_DISCOVERY_COMPLETED" : "ARTICLE_DISCOVERY_FAILED",
     executionTimeMs: Date.now() - startedAt,
-    errorLog: `Discovered ${candidates.length} candidate(s) from ${pagesVisited.length} page(s), ${filteredSitemap.length} sitemap URLs, ${targetPageJsonLd.length} JSON-LD entries. skippedAlreadySeen=${skipSummary.alreadySeenFeedItem}, skippedStale=${skipSummary.staleOrMissingPublishedAt}, skippedNonArticle=${skipSummary.htmlFallbackNonArticle}.`,
+    errorLog: `Discovered ${candidates.length} accepted, ${summary.rejected} rejected from ${summary.totalEvaluated} evaluated. ` +
+      `Sources: listing=${discoverySources.listingPages}, sitemap=${discoverySources.sitemapUrls}, jsonld=${discoverySources.jsonldUrls}. ` +
+      `Top rejection: ${topReason}. ` +
+      `Quality: ${qualityAssessment.quality} (confidence=${qualityAssessment.confidence}, escalate=${qualityAssessment.shouldEscalateToHeadless}). ` +
+      `Skipped: alreadySeen=${skipSummary.alreadySeenFeedItem}, stale=${skipSummary.staleOrMissingPublishedAt}, nonArticle=${skipSummary.htmlFallbackNonArticle}.`,
   });
 
   return {
@@ -730,6 +657,10 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
     failed: candidates.length > 0 ? 0 : 1,
     skipSummary,
     rejectedItems,
+    outcomeSummary: summary,
+    acceptedOutcomes: tracker.getAccepted(),
+    rejectedOutcomes: tracker.getRejected(),
+    qualityAssessment,
   };
 }
 
@@ -759,6 +690,35 @@ export async function runArticleDiscoveryBatch(input?: {
       candidatesFound += result.candidates.length;
       await persistArticleDiscoveryArtifact({ pipelineRunId: pipelineRun.id, result });
       artifactCount += 1;
+
+      // Persist escalation marker artifact when static discovery is insufficient.
+      if (result.qualityAssessment.shouldEscalateToHeadless) {
+        await prisma.pipelineArtifact.create({
+          data: {
+            pipelineRunId: pipelineRun.id,
+            sourceId: target.sourceId,
+            categoryId: target.categoryId || null,
+            artifactType: "article_discovery_headless_required",
+            status: "PENDING_HEADLESS",
+            candidateCount: 0,
+            payload: {
+              schemaVersion: 1,
+              artifactKind: "headless_escalation_marker",
+              sourceId: target.sourceId,
+              categoryId: target.categoryId || null,
+              targetUrl: target.targetUrl,
+              quality: result.qualityAssessment.quality,
+              escalationReasons: result.qualityAssessment.escalationReasons,
+              explanation: result.qualityAssessment.explanation,
+              outcomeSummary: result.outcomeSummary,
+              discoverySources: result.discoverySources,
+              createdAt: new Date().toISOString(),
+            },
+          },
+        });
+        artifactCount += 1;
+      }
+
       const persisted = await persistCandidates(result.candidates);
       inserted += persisted.inserted;
       skipped += persisted.skipped;

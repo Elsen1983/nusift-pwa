@@ -299,6 +299,266 @@ describe("article-discovery-helpers", () => {
     });
   });
 
+  // ── Outcome Tracker ──────────────────────────────────────────────────
+
+  describe("ArticleDiscoveryOutcomeTracker", () => {
+    it("records accepted outcomes", async () => {
+      const { ArticleDiscoveryOutcomeTracker } = await import("./article-discovery-helpers");
+      const tracker = new ArticleDiscoveryOutcomeTracker();
+
+      tracker.record({ url: "https://example.com/a", sourceKind: "listing", status: "accepted", score: 80 });
+      tracker.record({ url: "https://example.com/b", sourceKind: "sitemap", status: "accepted", score: 70 });
+
+      const summary = tracker.getSummary();
+      expect(summary.accepted).toBe(2);
+      expect(summary.rejected).toBe(0);
+      expect(summary.totalEvaluated).toBe(2);
+      expect(tracker.getAccepted()).toHaveLength(2);
+    });
+
+    it("records rejected outcomes with cap", async () => {
+      const { ArticleDiscoveryOutcomeTracker } = await import("./article-discovery-helpers");
+      const tracker = new ArticleDiscoveryOutcomeTracker();
+
+      // Record more than 100 rejected outcomes
+      for (let i = 0; i < 150; i++) {
+        tracker.record({ url: `https://example.com/${i}`, sourceKind: "sitemap", status: "rejected_low_score", score: 10 });
+      }
+
+      const summary = tracker.getSummary();
+      expect(summary.rejected).toBe(150);
+      // But stored rejected outcomes are capped at 100
+      expect(tracker.getRejected()).toHaveLength(100);
+      // Summary still tracks full counts
+      expect(summary.byStatus["rejected_low_score"]).toBe(150);
+    });
+
+    it("tracks outcomes by source kind", async () => {
+      const { ArticleDiscoveryOutcomeTracker } = await import("./article-discovery-helpers");
+      const tracker = new ArticleDiscoveryOutcomeTracker();
+
+      tracker.record({ url: "a", sourceKind: "listing", status: "accepted" });
+      tracker.record({ url: "b", sourceKind: "sitemap", status: "rejected_low_score" });
+      tracker.record({ url: "c", sourceKind: "jsonld", status: "accepted" });
+
+      const summary = tracker.getSummary();
+      expect(summary.bySourceKind["listing"]).toBe(1);
+      expect(summary.bySourceKind["sitemap"]).toBe(1);
+      expect(summary.bySourceKind["jsonld"]).toBe(1);
+    });
+
+    it("computes top rejection reasons", async () => {
+      const { ArticleDiscoveryOutcomeTracker } = await import("./article-discovery-helpers");
+      const tracker = new ArticleDiscoveryOutcomeTracker();
+
+      for (let i = 0; i < 10; i++) tracker.record({ url: `a${i}`, sourceKind: "sitemap", status: "rejected_low_score", reason: "low_score" });
+      for (let i = 0; i < 5; i++) tracker.record({ url: `b${i}`, sourceKind: "listing", status: "rejected_stale", reason: "stale" });
+      tracker.record({ url: "c", sourceKind: "jsonld", status: "accepted" });
+
+      const summary = tracker.getSummary();
+      expect(summary.topRejectionReasons[0]?.reason).toBe("low_score");
+      expect(summary.topRejectionReasons[0]?.count).toBe(10);
+      expect(summary.topRejectionReasons[1]?.reason).toBe("stale");
+      expect(summary.topRejectionReasons[1]?.count).toBe(5);
+    });
+  });
+
+  // ── Quality Classification ─────────────────────────────────────────────
+
+  describe("assessArticleDiscoveryQuality", () => {
+    it("classifies productive when candidates are found with reasonable acceptance rate", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 5,
+        totalEvaluated: 20,
+        pagesVisited: 2,
+        failed: 0,
+        byStatus: { accepted: 5, rejected_low_score: 10, rejected_stale: 3, rejected_missing_title: 2 },
+      });
+
+      expect(result.quality).toBe("productive");
+      expect(result.shouldEscalateToHeadless).toBe(false);
+      expect(result.confidence).toBe("high");
+      expect(result.explanation).toContain("5 article(s)");
+      expect(result.explanation).toContain("25%");
+    });
+
+    it("classifies productive with high confidence when many candidates found", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 3,
+        totalEvaluated: 10,
+        pagesVisited: 1,
+        failed: 0,
+        byStatus: { accepted: 3, rejected_low_score: 5, rejected_stale: 2 },
+      });
+
+      expect(result.quality).toBe("productive");
+      expect(result.confidence).toBe("high");
+    });
+
+    it("classifies failed when zero candidates are accepted but URLs were evaluated", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 0,
+        totalEvaluated: 10,
+        pagesVisited: 2,
+        failed: 1,
+        byStatus: { rejected_low_score: 6, rejected_stale: 3, rejected_missing_title: 1 },
+      });
+
+      expect(result.quality).toBe("failed");
+      expect(result.shouldEscalateToHeadless).toBe(true);
+      expect(result.escalationReasons).toContain("no_candidates");
+      expect(result.explanation).toContain("10 URL(s) were evaluated");
+    });
+
+    it("classifies blocked when fetch failures dominate", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 0,
+        totalEvaluated: 10,
+        pagesVisited: 1,
+        failed: 1,
+        byStatus: { fetch_failed: 8, rejected_low_score: 2 },
+      });
+
+      expect(result.quality).toBe("blocked");
+      expect(result.shouldEscalateToHeadless).toBe(true);
+      expect(result.escalationReasons).toContain("blocked_or_forbidden");
+      expect(result.escalationReasons).toContain("mostly_fetch_failed");
+      expect(result.confidence).toBe("high");
+    });
+
+    it("classifies weak when accepted > 0 but fetch failures dominate", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      // 1 accepted, 20 fetch_failed out of 21 → fetchRate=95% >= 60%
+      // accepted > 0 → weak (not blocked)
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 1,
+        totalEvaluated: 21,
+        pagesVisited: 1,
+        failed: 0,
+        byStatus: { accepted: 1, fetch_failed: 20 },
+      });
+
+      expect(result.quality).toBe("weak");
+      expect(result.shouldEscalateToHeadless).toBe(true);
+      expect(result.escalationReasons).toContain("mostly_fetch_failed");
+      expect(result.escalationReasons).toContain("insufficient_static_signals");
+      expect(result.confidence).toBe("medium");
+      expect(result.explanation).toContain("found 1 article(s)");
+      expect(result.explanation).toContain("20/21 fetches failed");
+    });
+
+    it("classifies weak when acceptance rate is very low", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      // 1 accepted out of 30 = 3.3% — below 5% threshold
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 1,
+        totalEvaluated: 30,
+        pagesVisited: 3,
+        failed: 0,
+        byStatus: { accepted: 1, rejected_low_score: 20, rejected_stale: 5, rejected_missing_title: 4 },
+      });
+
+      expect(result.quality).toBe("weak");
+      expect(result.shouldEscalateToHeadless).toBe(true);
+      expect(result.escalationReasons).toContain("low_acceptance_rate");
+    });
+
+    it("classifies weak without escalation when acceptance rate is moderate", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      // 2 accepted out of 25 = 8% — between 5% and 10%
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 2,
+        totalEvaluated: 25,
+        pagesVisited: 2,
+        failed: 0,
+        byStatus: { accepted: 2, rejected_low_score: 15, rejected_stale: 5, rejected_missing_title: 3 },
+      });
+
+      expect(result.quality).toBe("weak");
+      expect(result.shouldEscalateToHeadless).toBe(false);
+    });
+
+    it("classifies failed with dynamic_or_empty_html when no URLs evaluated and no pages visited", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 0,
+        totalEvaluated: 0,
+        pagesVisited: 0,
+        failed: 1,
+        byStatus: {},
+      });
+
+      expect(result.quality).toBe("failed");
+      expect(result.shouldEscalateToHeadless).toBe(true);
+      expect(result.escalationReasons).toContain("dynamic_or_empty_html");
+      expect(result.confidence).toBe("medium");
+    });
+
+    it("classifies failed with dynamic_or_empty_html when pages visited but no URLs evaluated", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 0,
+        totalEvaluated: 0,
+        pagesVisited: 2,
+        failed: 1,
+        byStatus: {},
+      });
+
+      expect(result.quality).toBe("failed");
+      expect(result.shouldEscalateToHeadless).toBe(true);
+      expect(result.escalationReasons).toContain("dynamic_or_empty_html");
+      expect(result.confidence).toBe("high");
+      expect(result.explanation).toContain("2 listing page(s)");
+    });
+
+    it("classifies failed with mostly_low_score when low-score rejections dominate", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 0,
+        totalEvaluated: 10,
+        pagesVisited: 1,
+        failed: 1,
+        byStatus: { rejected_low_score: 9, rejected_stale: 1 },
+      });
+
+      expect(result.quality).toBe("failed");
+      expect(result.shouldEscalateToHeadless).toBe(true);
+      expect(result.escalationReasons).toContain("mostly_low_score");
+      expect(result.escalationReasons).toContain("insufficient_static_signals");
+    });
+
+    it("gives productive medium confidence for single accepted candidate", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      // 1 accepted out of 5 = 20% (strong rate) but only 1 candidate → medium
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 1,
+        totalEvaluated: 5,
+        pagesVisited: 1,
+        failed: 0,
+        byStatus: { accepted: 1, rejected_low_score: 2, rejected_stale: 2 },
+      });
+
+      expect(result.quality).toBe("productive");
+      expect(result.shouldEscalateToHeadless).toBe(false);
+      expect(result.confidence).toBe("medium");
+    });
+  });
+
   // ── Candidate Scoring ─────────────────────────────────────────────────
 
   describe("scoreCandidateUrl", () => {
