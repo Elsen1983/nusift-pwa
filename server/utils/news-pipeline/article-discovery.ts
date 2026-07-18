@@ -1,4 +1,3 @@
-import { JSDOM } from "jsdom";
 import { prisma } from "../prisma";
 import { safeFetch } from "../ssrf-guard";
 import { logAgentScan } from "./log";
@@ -32,6 +31,13 @@ const MAX_LISTING_PAGES = 3;
 const MAX_LINKS_PER_PAGE = 20;
 const MAX_TOTAL_CANDIDATES = 60;
 const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
+
+type ArticleDiscoveryDom = {
+  window: {
+    document: Document;
+    close: () => void;
+  };
+};
 
 export type ArticleDiscoveryTarget = {
   targetType: "source" | "category";
@@ -232,7 +238,13 @@ const crawlListingPages = async (
     if (!response.ok) continue;
 
     const html = await response.text();
-    const dom = new JSDOM(html, { url: pageUrl, contentType: "text/html" });
+    let dom: ArticleDiscoveryDom;
+    try {
+      const { JSDOM } = await import("jsdom");
+      dom = new JSDOM(html, { url: pageUrl, contentType: "text/html" });
+    } catch {
+      continue;
+    }
     visitedPages.push(pageUrl);
     // Capture first page HTML for downstream JSON-LD extraction (avoids double fetch)
     if (!firstPageHtml) firstPageHtml = html;
