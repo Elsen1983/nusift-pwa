@@ -62,6 +62,7 @@ export type ArticleDiscoveryResult = {
     sitemapUrls: number;
     jsonldUrls: number;
   };
+  listingDiagnostics: ListingFetchDiagnostic[];
   pagesVisited: string[];
   candidates: IngestCandidate[];
   failed: number;
@@ -76,6 +77,28 @@ export type ArticleDiscoveryResult = {
 type ListingArticleLink = {
   url: string;
   sourcePageUrl: string;
+};
+
+export type ListingFetchDiagnostic = {
+  url: string;
+  finalUrl: string | null;
+  status: number | null;
+  contentType: string | null;
+  htmlLength: number | null;
+  title: string | null;
+  rawLinkCount: number;
+  articleLikeLinkCount: number;
+  paginationLinkCount: number;
+  reason:
+    | "fetch_failed"
+    | "non_html_content"
+    | "empty_html"
+    | "blocked_or_challenge_like_html"
+    | "no_links_found"
+    | "no_article_like_links"
+    | "ok"
+    | "parser_error";
+  hints: string[];
 };
 
 const emptySkipSummary = (): IngestSkipSummary => ({
@@ -206,11 +229,64 @@ const extractPaginationLinks = (document: Document, pageUrl: string) => {
   return [...links];
 };
 
+const detectListingFetchReason = (input: {
+  ok: boolean;
+  contentType: string | null;
+  htmlLength: number;
+  rawLinkCount: number;
+  articleLikeLinkCount: number;
+  title: string | null;
+  html: string;
+}): ListingFetchDiagnostic["reason"] => {
+  if (!input.ok) return "fetch_failed";
+  if (input.contentType && !/html|xhtml/i.test(input.contentType)) return "non_html_content";
+  if (input.htmlLength === 0) return "empty_html";
+  const blockText = `${input.title || ""} ${input.html.slice(0, 4000)}`.toLowerCase();
+  if (/(captcha|cloudflare|access denied|enable javascript|bot detection|unusual traffic|verify you are human)/i.test(blockText)) {
+    return "blocked_or_challenge_like_html";
+  }
+  if (input.rawLinkCount === 0) return "no_links_found";
+  if (input.articleLikeLinkCount === 0) return "no_article_like_links";
+  return "ok";
+};
+
+const buildListingHints = (input: {
+  title: string | null;
+  reason: ListingFetchDiagnostic["reason"];
+  html: string;
+}) => {
+  const hints: string[] = [];
+  if (input.title) hints.push(`title=${input.title.slice(0, 80)}`);
+  const text = input.html.slice(0, 4000).toLowerCase();
+  for (const keyword of ["captcha", "cloudflare", "access denied", "enable javascript", "verify you are human"]) {
+    if (text.includes(keyword)) hints.push(`keyword=${keyword}`);
+    if (hints.length >= 3) break;
+  }
+  if (input.reason !== "ok" && hints.length === 0) hints.push(`reason=${input.reason}`);
+  return hints.slice(0, 3);
+};
+
+const formatListingDiagnosticsForLog = (diagnostics: ListingFetchDiagnostic[]) => {
+  if (diagnostics.length === 0) return "";
+  const samples = diagnostics.slice(0, 2).map((diag) => {
+    let hostPath = diag.url;
+    try {
+      const u = new URL(diag.url);
+      hostPath = `${u.hostname.replace(/^www\./, "")}${u.pathname}`;
+    } catch {
+      hostPath = diag.url.slice(0, 80);
+    }
+    return `${diag.reason}|status=${diag.status ?? "n/a"}|html=${diag.htmlLength ?? "n/a"}|links=${diag.rawLinkCount}/${diag.articleLikeLinkCount}|${hostPath}`;
+  });
+  return ` listingDiagnostics=[${samples.join(", ")}]`;
+};
+
 const crawlListingPages = async (
   targetUrl: string,
   categoryPathUrl?: string | null,
 ) => {
   const visitedPages: string[] = [];
+  const diagnostics: ListingFetchDiagnostic[] = [];
   const articleLinks = new Map<string, ListingArticleLink>();
   const seenPages = new Set<string>();
   const queue = [targetUrl];
@@ -222,14 +298,50 @@ const crawlListingPages = async (
     if (seenPages.has(normalizedPageUrl)) continue;
     seenPages.add(normalizedPageUrl);
 
-    const response = await safeFetch(pageUrl, {
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml",
-      },
-    });
+    let response: Response | null = null;
+    try {
+      response = await safeFetch(pageUrl, {
+        headers: {
+          "User-Agent": USER_AGENT,
+          Accept: "text/html,application/xhtml+xml",
+        },
+      });
+    } catch (error: any) {
+      diagnostics.push({
+        url: pageUrl,
+        finalUrl: null,
+        status: null,
+        contentType: null,
+        htmlLength: null,
+        title: null,
+        rawLinkCount: 0,
+        articleLikeLinkCount: 0,
+        paginationLinkCount: 0,
+        reason: "fetch_failed",
+        hints: [`error=${String(error?.message || error).slice(0, 80)}`],
+      });
+      continue;
+    }
 
-    if (!response.ok) continue;
+    const contentType = typeof response.headers?.get === "function"
+      ? response.headers.get("content-type")
+      : null;
+    if (!response.ok) {
+      diagnostics.push({
+        url: pageUrl,
+        finalUrl: response.url || null,
+        status: response.status,
+        contentType,
+        htmlLength: null,
+        title: null,
+        rawLinkCount: 0,
+        articleLikeLinkCount: 0,
+        paginationLinkCount: 0,
+        reason: "fetch_failed",
+        hints: [`status=${response.status}`],
+      });
+      continue;
+    }
 
     const html = await response.text();
     let dom: ArticleDiscoveryDom;
@@ -237,19 +349,59 @@ const crawlListingPages = async (
       const { JSDOM } = await import("jsdom");
       dom = new JSDOM(html, { url: pageUrl, contentType: "text/html" });
     } catch {
+      diagnostics.push({
+        url: pageUrl,
+        finalUrl: response.url || null,
+        status: response.status,
+        contentType,
+        htmlLength: html.length,
+        title: null,
+        rawLinkCount: 0,
+        articleLikeLinkCount: 0,
+        paginationLinkCount: 0,
+        reason: "parser_error",
+        hints: ["jsdom parser failed"],
+      });
       continue;
     }
     visitedPages.push(pageUrl);
     // Capture first page HTML for downstream JSON-LD extraction (avoids double fetch)
     if (!firstPageHtml) firstPageHtml = html;
 
-    for (const link of extractListingArticleLinks(dom.window.document, pageUrl, categoryPathUrl)) {
+    const rawLinkCount = dom.window.document.querySelectorAll("a[href]").length;
+    const articleLikeLinks = extractListingArticleLinks(dom.window.document, pageUrl, categoryPathUrl);
+    const paginationLinks = extractPaginationLinks(dom.window.document, pageUrl);
+    const title = (dom.window.document.querySelector("title")?.textContent || "").trim() || null;
+    const reason = detectListingFetchReason({
+      ok: response.ok,
+      contentType,
+      htmlLength: html.length,
+      rawLinkCount,
+      articleLikeLinkCount: articleLikeLinks.length,
+      title,
+      html,
+    });
+    diagnostics.push({
+      url: pageUrl,
+      finalUrl: response.url || null,
+      status: response.status,
+      contentType,
+      htmlLength: html.length,
+      title,
+      rawLinkCount,
+      articleLikeLinkCount: articleLikeLinks.length,
+      paginationLinkCount: paginationLinks.length,
+      reason,
+      hints: buildListingHints({ title, reason, html }),
+    });
+
+    for (const link of articleLikeLinks) {
       if (!articleLinks.has(link)) {
         articleLinks.set(link, { url: link, sourcePageUrl: pageUrl });
       }
     }
 
-    for (const nextLink of extractPaginationLinks(dom.window.document, pageUrl)) {
+    for (const nextLink of paginationLinks) {
       const normalized = normalizeUrl(nextLink);
       if (!seenPages.has(normalized)) {
         queue.push(nextLink);
@@ -259,7 +411,7 @@ const crawlListingPages = async (
     dom.window.close();
   }
 
-  return { visitedPages, articleLinks: [...articleLinks.values()], firstPageHtml };
+  return { visitedPages, articleLinks: [...articleLinks.values()], firstPageHtml, diagnostics };
 };
 
 type CandidateEvaluationResult = {
@@ -493,6 +645,7 @@ export async function persistArticleDiscoveryArtifact(input: {
     targetUrl: input.result.targetUrl,
     discoveryMethod: input.result.discoveryMethod,
     discoverySources: input.result.discoverySources,
+    listingDiagnostics: input.result.listingDiagnostics,
     pagesVisited: input.result.pagesVisited,
     candidateCount: input.result.candidates.length,
     failed: input.result.failed,
@@ -645,6 +798,7 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
   // top rejection reason (which may be "invalid publishedAt", "missing
   // publishedAt", etc.).
   const staleSampleSuffix = buildStaleSampleLog(tracker.getRejected());
+  const listingDiagnosticSuffix = formatListingDiagnosticsForLog(listing.diagnostics);
 
   await logAgentScan({
     sourceId: target.sourceId,
@@ -656,7 +810,8 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
       `Top rejection: ${topReason}. ` +
       `Quality: ${qualityAssessment.quality} (confidence=${qualityAssessment.confidence}, escalate=${qualityAssessment.shouldEscalateToHeadless}). ` +
       `Skipped: alreadySeen=${skipSummary.alreadySeenFeedItem}, stale=${skipSummary.staleOrMissingPublishedAt}, nonArticle=${skipSummary.htmlFallbackNonArticle}.` +
-      staleSampleSuffix,
+      staleSampleSuffix +
+      listingDiagnosticSuffix,
   });
 
   return {
@@ -666,6 +821,7 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
     targetUrl: target.targetUrl,
     discoveryMethod: "jsdom",
     discoverySources,
+    listingDiagnostics: listing.diagnostics,
     pagesVisited,
     candidates,
     failed: candidates.length > 0 ? 0 : 1,
