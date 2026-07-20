@@ -280,6 +280,8 @@
             "agent_fine_tuning_desc": "Tune the agent and category preferences",
             "source_manager": "Source Manager",
             "source_manager_desc": "Manage connected sources",
+            "admin_console": "Admin Console",
+            "admin_console_desc": "Pipeline controls and agent diagnostics",
             "app_settings": "App Settings",
             "app_settings_desc": "Appearance, language & preferences",
             "logout": "Logout",

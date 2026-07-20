@@ -486,13 +486,3 @@ export const runEnrichmentBatch = async (
     persist: persistResult,
   };
 };
-
-// Re-export the outcome factory + builders so runtime callers have a single
-// import surface for building non-stub outcomes (e.g. Phase 2 extractor).
-export {
-  createEnrichmentOutcome,
-  buildSuccessOutcome,
-  buildSkippedOutcome,
-  buildFailureOutcome,
-  buildHeadlessRequiredOutcome,
-};

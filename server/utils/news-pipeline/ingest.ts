@@ -465,7 +465,7 @@ const resolvePublishedAtForFeedItem = async (rawPubDate: string, canonicalUrl: s
 
 const MAX_ARTICLE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
-export const isWithinFreshnessWindow = (publishedAt: Date | null, now = new Date()) => {
+export const isRssIngestWithinFreshnessWindow = (publishedAt: Date | null, now = new Date()) => {
   if (!publishedAt) return false;
   const diff = now.getTime() - publishedAt.getTime();
   return diff >= 0 && diff <= MAX_ARTICLE_AGE_MS;
@@ -560,7 +560,7 @@ const extractHtmlCandidates = async (
       });
       continue;
     }
-    if (!isWithinFreshnessWindow(meta.publishedAt, now)) {
+    if (!isRssIngestWithinFreshnessWindow(meta.publishedAt, now)) {
       skipSummary.htmlFallbackStale += 1;
       pushRejectedItem(rejectedItems, {
         reason: "html_fallback_stale",
@@ -872,6 +872,18 @@ const attachCategoryIds = async (candidates: IngestCandidate[]) => {
   }));
 };
 
+export const GENERIC_EVIDENCE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+export const hasFreshGenericEvidence = (
+  discoveryEvidence: unknown,
+  lastRssCheckAt?: Date | null,
+): boolean => {
+  const evidence = readCategoryDiscoveryEvidence(discoveryEvidence);
+  if (!evidence || evidence.scopeMatch !== "generic") return false;
+  if (!lastRssCheckAt) return true;
+  return Date.now() - lastRssCheckAt.getTime() < GENERIC_EVIDENCE_TTL_MS;
+};
+
 const resolveCategoryFeedUrl = async (
   sourceId: string,
   category: {
@@ -879,18 +891,33 @@ const resolveCategoryFeedUrl = async (
     pathUrl: string;
     rssFeedUrl: string | null;
     discoveryEvidence?: unknown;
+    lastRssCheckAt?: Date | null;
   } | null,
 ) => {
-  if (!category || category.rssFeedUrl) {
+  // When the category already has a feed URL, check if it's genuinely scoped.
+  // If evidence says "generic", re-run discovery to allow re-evaluation (self-healing
+  // for legacy data where generic feeds were incorrectly saved to rssFeedUrl).
+  if (!category || (category.rssFeedUrl && isScopedCategoryFeed(
+    category.pathUrl,
+    category.rssFeedUrl,
+    readCategoryDiscoveryEvidence(category.discoveryEvidence),
+  ))) {
     return {
       feedUrl: category?.rssFeedUrl || null,
-      isScopedFeed: category
-        ? isScopedCategoryFeed(
-            category.pathUrl,
-            category.rssFeedUrl,
-            readCategoryDiscoveryEvidence(category.discoveryEvidence),
-          )
-        : false,
+      isScopedFeed: category ? true : false,
+      genericFeedDiscovered: false,
+      hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
+    };
+  }
+
+  // If discovery evidence already indicates a generic root feed was found
+  // and the TTL hasn't expired, skip re-discovery. The parent source's feed
+  // will be used dynamically by ingestSource.
+  if (!category.rssFeedUrl && hasFreshGenericEvidence(category.discoveryEvidence, category.lastRssCheckAt)) {
+    return {
+      feedUrl: null,
+      isScopedFeed: false,
+      genericFeedDiscovered: true,
       hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
     };
   }
@@ -903,18 +930,38 @@ const resolveCategoryFeedUrl = async (
       preferScopedDirectFeed: true,
     });
     const discoveredFeedUrl = discovery.feedUrl;
+    const isScoped = discoveredFeedUrl
+      ? isScopedCategoryFeed(
+          category.pathUrl,
+          discoveredFeedUrl,
+          { scopeMatch: discovery.scopeMatch },
+        )
+      : false;
+    const isGeneric = discoveredFeedUrl && !isScoped;
 
+    // For generic feeds: save discovery evidence but do NOT save rssFeedUrl.
+    // This prevents downstream code from mistaking it as a scoped category feed,
+    // while avoiding redundant discovery on subsequent runs.
     await prisma.sourceCategory.update({
       where: { id: category.id },
       data: {
-        rssFeedUrl: discoveredFeedUrl,
-        rssStatus: discoveredFeedUrl ? "ACTIVE" : "NO_RSS_FOUND",
+        ...(isGeneric
+          ? {
+              // Do not save generic feed to rssFeedUrl.
+              // Keep rssStatus as NO_RSS_FOUND so Agent 2 eligibility works.
+              rssStatus: "NO_RSS_FOUND",
+              rssFeedUrl: null,
+            }
+          : {
+              rssFeedUrl: discoveredFeedUrl,
+              rssStatus: discoveredFeedUrl ? "ACTIVE" : "NO_RSS_FOUND",
+            }),
         lastRssCheckAt: new Date(),
         discoveryEvidence: buildDiscoveryEvidencePayload(
           category.pathUrl,
           discovery,
         ),
-        ...getFeedProductivityResetData(category.rssFeedUrl, discoveredFeedUrl),
+        ...getFeedProductivityResetData(category.rssFeedUrl, isGeneric ? null : discoveredFeedUrl),
       },
     });
 
@@ -926,17 +973,16 @@ const resolveCategoryFeedUrl = async (
         : "CATEGORY_DISCOVERY_FAILED",
       executionTimeMs: 0,
       errorLog: discoveredFeedUrl
-        ? `Resolved category feed ${discoveredFeedUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}`
+        ? isGeneric
+          ? `Discovered generic root feed ${discoveredFeedUrl} for category ${category.pathUrl}. scopeMatch=generic; will use parent source feed with category relevance filtering. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}`
+          : `Resolved scoped category feed ${discoveredFeedUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}`
         : `No category feed found for ${category.pathUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}${discovery.lastError ? `, lastError=${discovery.lastError}` : ""}`,
     });
 
     return {
-      feedUrl: discoveredFeedUrl,
-      isScopedFeed: isScopedCategoryFeed(
-        category.pathUrl,
-        discoveredFeedUrl,
-        { scopeMatch: discovery.scopeMatch },
-      ),
+      feedUrl: isGeneric ? null : discoveredFeedUrl,
+      isScopedFeed: isScoped,
+      genericFeedDiscovered: isGeneric,
       hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
         targetType: "category",
         sourceId,
@@ -958,6 +1004,7 @@ const resolveCategoryFeedUrl = async (
     return {
       feedUrl: null,
       isScopedFeed: false,
+      genericFeedDiscovered: false,
       hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
         targetType: "category",
         sourceId,
@@ -1099,6 +1146,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             pathUrl: true,
             rssFeedUrl: true,
             discoveryEvidence: true,
+            lastRssCheckAt: true,
           },
         })
       : Promise.resolve(null),
@@ -1129,6 +1177,9 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
   const sourceFeedUrl = sourceFeedResolution.feedUrl;
   const isUsingDedicatedCategoryFeed = Boolean(
     categoryId && categoryFeedUrl && categoryFeedResolution.isScopedFeed,
+  );
+  const genericFeedDiscovered = Boolean(
+    categoryId && categoryFeedResolution.genericFeedDiscovered,
   );
   const hardCaseQueueCandidates = [
     categoryFeedResolution.hardCaseQueueCandidate,
@@ -1161,6 +1212,14 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         errorLog: isUsingDedicatedCategoryFeed
           ? `Using scoped category feed ${categoryFeedUrl}.`
           : `Using generic category feed ${categoryFeedUrl}; category relevance filtering remains enabled.`,
+      });
+    } else if (categoryId && genericFeedDiscovered) {
+      await logAgentScan({
+        sourceId,
+        categoryId,
+        status: "CATEGORY_FEED_FALLBACK_TO_ROOT",
+        executionTimeMs: 0,
+        errorLog: `Using generic category feed (discovered via root); category relevance filtering remains enabled. Falling back to root feed ${sourceFeedUrl || source.frontPageUrl}.`,
       });
     } else if (categoryId) {
       await logAgentScan({
@@ -1330,7 +1389,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       }
 
       const publishedAt = await resolvePublishedAtForFeedItem(item.pubDate, canonicalUrl);
-      if (!isWithinFreshnessWindow(publishedAt, now)) {
+      if (!isRssIngestWithinFreshnessWindow(publishedAt, now)) {
         skipSummary.staleOrMissingPublishedAt += 1;
         pushRejectedItem(rejectedItems, {
           reason: "stale_or_missing_published_at",

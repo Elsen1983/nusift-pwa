@@ -276,4 +276,168 @@ describe("normalizeDiscoveryQualityArtifact", () => {
 
     expect(result.targetUrl).toBeNull();
   });
+
+  // ── staleSamples extraction ──────────────────────────────────────────
+
+  it("extracts staleSamples from rejectedCandidates with staleReason", () => {
+    const result = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      payload: {
+        rejectedCandidates: [
+          { status: "rejected_stale", url: "https://example.com/old-1", staleReason: "published_at_before_cutoff", normalizedPublishedAt: "2020-01-01T00:00:00Z", publishedAtSource: "article:published_time", ageDays: 2392 },
+          { status: "rejected_stale", url: "https://example.com/old-2", staleReason: "missing_published_at", normalizedPublishedAt: null, publishedAtSource: "unknown", ageDays: null },
+          { status: "accepted", url: "https://example.com/fresh" },
+        ],
+      },
+    });
+
+    expect(result.staleSamples).toHaveLength(2);
+    expect(result.staleSamples[0]?.url).toBe("https://example.com/old-1");
+    expect(result.staleSamples[0]?.staleReason).toBe("published_at_before_cutoff");
+    expect(result.staleSamples[0]?.ageDays).toBe(2392);
+    expect(result.staleSamples[1]?.staleReason).toBe("missing_published_at");
+  });
+
+  it("caps staleSamples at 3", () => {
+    const rejectedCandidates = Array.from({ length: 5 }, (_, i) => ({
+      status: "rejected_stale",
+      url: `https://example.com/old-${i}`,
+      staleReason: "published_at_before_cutoff",
+      normalizedPublishedAt: "2020-01-01T00:00:00Z",
+      publishedAtSource: "article:published_time",
+      ageDays: 2000,
+    }));
+
+    const result = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      payload: { rejectedCandidates },
+    });
+
+    expect(result.staleSamples).toHaveLength(3);
+  });
+
+  it("returns empty staleSamples when no rejectedCandidates", () => {
+    const result = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      payload: {},
+    });
+
+    expect(result.staleSamples).toEqual([]);
+  });
+
+  it("returns empty staleSamples when rejectedCandidates is not an array", () => {
+    const result = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      payload: { rejectedCandidates: "not an array" },
+    });
+
+    expect(result.staleSamples).toEqual([]);
+  });
+
+  it("skips rejected_stale entries without staleReason", () => {
+    const result = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      payload: {
+        rejectedCandidates: [
+          { status: "rejected_stale", url: "https://example.com/old" },
+          { status: "rejected_stale", url: "https://example.com/old-2", staleReason: "published_at_before_cutoff" },
+        ],
+      },
+    });
+
+    expect(result.staleSamples).toHaveLength(1);
+    expect(result.staleSamples[0]?.url).toBe("https://example.com/old-2");
+  });
+
+  // ── Artifact roundtrip: invalid_published_at ─────────────────────────
+
+  it("roundtrip: invalid_published_at stale audit survives from artifact payload to normalized staleSamples", () => {
+    // Simulates what persistArticleDiscoveryArtifact would produce for a
+    // rejected_stale outcome with staleReason: "invalid_published_at".
+    // The rawPublishedAt is preserved, normalizedPublishedAt is null.
+    const mockArtifactPayload = {
+      targetUrl: "https://www.nba.com/news/trade-story",
+      outcomeSummary: {
+        totalEvaluated: 20,
+        accepted: 0,
+        rejected: 20,
+        byStatus: { rejected_stale: 20 },
+        topRejectionReasons: [{ reason: "invalid publishedAt", count: 20 }],
+      },
+      qualityAssessment: {
+        quality: "failed",
+        shouldEscalateToHeadless: true,
+        escalationReasons: ["no_candidates"],
+        confidence: "high",
+        explanation: "20 URL(s) were evaluated but none produced valid article candidates. 20 were stale.",
+      },
+      rejectedCandidates: [
+        {
+          url: "https://www.nba.com/news/story-1",
+          canonicalUrl: "https://www.nba.com/news/story-1",
+          sourceKind: "listing" as const,
+          status: "rejected_stale" as const,
+          title: "NBA Trade Story One",
+          publishedAt: null,
+          reason: "invalid publishedAt",
+          rawPublishedAt: "not-a-valid-date-string",
+          normalizedPublishedAt: null,
+          publishedAtSource: "datePublished" as const,
+          freshnessCutoffIso: "2026-07-06T12:00:00.000Z",
+          ageDays: null,
+          staleReason: "invalid_published_at" as const,
+        },
+        {
+          url: "https://www.nba.com/news/story-2",
+          canonicalUrl: "https://www.nba.com/news/story-2",
+          sourceKind: "listing" as const,
+          status: "rejected_stale" as const,
+          title: "NBA Trade Story Two",
+          publishedAt: null,
+          reason: "invalid publishedAt",
+          rawPublishedAt: "2020-01-15T00:00:00Z",
+          normalizedPublishedAt: "2020-01-15T00:00:00.000Z",
+          publishedAtSource: "article:modified_time" as const,
+          freshnessCutoffIso: "2026-07-06T12:00:00.000Z",
+          ageDays: 2378,
+          staleReason: "published_at_before_cutoff" as const,
+        },
+      ],
+    };
+
+    const result = normalizeDiscoveryQualityArtifact({
+      id: "nba-artifact-1",
+      createdAt: new Date("2026-07-20T12:00:00Z"),
+      sourceId: "71d49c2b-9fcd-4f26-b163-c3318e576b2b",
+      categoryId: null,
+      artifactType: "article_discovery_candidates",
+      status: "FAILED",
+      candidateCount: 0,
+      payload: mockArtifactPayload,
+    });
+
+    // Verify staleSamples extracted correctly
+    expect(result.staleSamples).toHaveLength(2);
+
+    // First sample: invalid_published_at
+    const invalidSample = result.staleSamples[0];
+    expect(invalidSample?.url).toBe("https://www.nba.com/news/story-1");
+    expect(invalidSample?.staleReason).toBe("invalid_published_at");
+    expect(invalidSample?.normalizedPublishedAt).toBeNull();
+    expect(invalidSample?.publishedAtSource).toBe("datePublished");
+    expect(invalidSample?.ageDays).toBeNull();
+
+    // Second sample: published_at_before_cutoff
+    const staleSample = result.staleSamples[1];
+    expect(staleSample?.url).toBe("https://www.nba.com/news/story-2");
+    expect(staleSample?.staleReason).toBe("published_at_before_cutoff");
+    expect(staleSample?.normalizedPublishedAt).toBe("2020-01-15T00:00:00.000Z");
+    expect(staleSample?.publishedAtSource).toBe("article:modified_time");
+    expect(staleSample?.ageDays).toBe(2378);
+
+    // Verify quality and escalation preserved
+    expect(result.quality).toBe("failed");
+    expect(result.shouldEscalateToHeadless).toBe(true);
+    expect(result.targetUrl).toBe("https://www.nba.com/news/trade-story");
+  });
 });

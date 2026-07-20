@@ -559,6 +559,561 @@ describe("article-discovery-helpers", () => {
     });
   });
 
+  // ── Date Extraction Provenance ─────────────────────────────────────────
+
+  describe("extractDateFromHtml", () => {
+    it("extracts article:published_time as highest priority source", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head>
+        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:modified_time" content="2026-07-17T10:00:00Z" />
+      </head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-16T09:00:00Z");
+      expect(result.source).toBe("article:published_time");
+    });
+
+    it("falls back to article:modified_time when no publish date exists", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head>
+        <meta property="article:modified_time" content="2026-07-17T10:00:00Z" />
+      </head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-17T10:00:00Z");
+      expect(result.source).toBe("article:modified_time");
+    });
+
+    it("falls back to og:updated_time when no publish date exists", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head>
+        <meta property="og:updated_time" content="2026-07-15T08:00:00Z" />
+      </head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-15T08:00:00Z");
+      expect(result.source).toBe("og:updated_time");
+    });
+
+    it("extracts datePublished from JSON-LD when no meta publish tags exist", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head>
+        <script type="application/ld+json">
+          { "datePublished": "2026-07-14T12:00:00Z", "@type": "NewsArticle" }
+        </script>
+      </head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-14T12:00:00Z");
+      expect(result.source).toBe("datePublished");
+    });
+
+    it("prefers og:published_time over article:modified_time", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head>
+        <meta property="og:published_time" content="2026-07-20T09:00:00Z" />
+        <meta property="article:modified_time" content="2020-01-15T00:00:00Z" />
+      </head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-20T09:00:00Z");
+      expect(result.source).toBe("og:published_time");
+    });
+
+    it("prefers JSON-LD datePublished over article:modified_time", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head>
+        <meta property="article:modified_time" content="2020-01-15T00:00:00Z" />
+        <script type="application/ld+json">
+          { "datePublished": "2026-07-18T09:00:00Z", "@type": "NewsArticle" }
+        </script>
+      </head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-18T09:00:00Z");
+      expect(result.source).toBe("datePublished");
+    });
+
+    it("prefers meta itemprop=datePublished over article:modified_time", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head>
+        <meta property="article:modified_time" content="2020-01-15T00:00:00Z" />
+        <meta itemprop="datePublished" content="2026-07-19T09:00:00Z" />
+      </head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-19T09:00:00Z");
+      expect(result.source).toBe("meta[itemprop=datePublished]");
+    });
+
+    it("falls back to time[datetime]", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><body><time datetime="2026-07-13">July 13</time></body></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-13");
+      expect(result.source).toBe("time[datetime]");
+    });
+
+    it("falls back to meta[name=date]", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head><meta name="date" content="2026-07-12" /></head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-12");
+      expect(result.source).toBe("meta[name=date]");
+    });
+
+    it("falls back to meta[itemprop=datePublished]", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head><meta itemprop="datePublished" content="2026-07-11" /></head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-11");
+      expect(result.source).toBe("meta[itemprop=datePublished]");
+    });
+
+    it("falls back to URL date pattern when no HTML date found", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head><title>No date here</title></head></html>`;
+
+      const result = extractDateFromHtml(html, "https://example.com/news/2026/07/10/some-story");
+      expect(result.rawDate).toBe("2026-07-10");
+      expect(result.source).toBe("url_date");
+    });
+
+    it("returns unknown source when no date found anywhere", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head><title>No date</title></head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBeNull();
+      expect(result.source).toBe("unknown");
+    });
+  });
+
+  describe("NBA-style date extraction regression", () => {
+    it("prefers JSON-LD datePublished over article:modified_time for NBA-style pages", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      // NBA-style HTML: has modified_time (old, page layout change) but datePublished
+      // in JSON-LD is the actual article publish date (recent).
+      // No article:published_time meta tag present.
+      const html = `
+        <html><head>
+          <meta property="og:title" content="NBA News Article" />
+          <meta property="article:modified_time" content="2020-03-15T00:00:00Z" />
+          <meta property="og:updated_time" content="2020-03-15T00:00:00Z" />
+          <script type="application/ld+json">
+            {
+              "@type": "NewsArticle",
+              "headline": "NBA Trade News",
+              "datePublished": "2026-07-18T14:00:00Z",
+              "dateModified": "2026-07-18T16:00:00Z"
+            }
+          </script>
+        </head><body></body></html>`;
+
+      const result = extractDateFromHtml(html, "https://www.nba.com/news/trade-story");
+      // JSON-LD datePublished (recent) should win over modified_time (old)
+      expect(result.rawDate).toBe("2026-07-18T14:00:00Z");
+      expect(result.source).toBe("datePublished");
+    });
+
+    it("treats the extracted date as fresh when JSON-LD datePublished is recent", async () => {
+      const { extractDateFromHtml, isWithinFreshnessWindow, normalizePublishedAt } = await import("./article-discovery-helpers");
+
+      // Simulate: NBA page has old modified_time but recent JSON-LD datePublished
+      const html = `
+        <html><head>
+          <meta property="article:modified_time" content="2020-01-01T00:00:00Z" />
+          <script type="application/ld+json">
+            { "@type": "NewsArticle", "datePublished": "${new Date().toISOString()}" }
+          </script>
+        </head></html>`;
+
+      const extraction = extractDateFromHtml(html);
+      expect(extraction.source).toBe("datePublished");
+
+      const normalizedDate = normalizePublishedAt(new Date(extraction.rawDate!));
+      expect(isWithinFreshnessWindow(normalizedDate)).toBe(true);
+    });
+
+    it("falls back to article:modified_time only when no publish date exists at all", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      // No publish-side sources at all — only modified_time
+      const html = `
+        <html><head>
+          <meta property="article:modified_time" content="2020-01-01T00:00:00Z" />
+        </head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.source).toBe("article:modified_time");
+      expect(result.rawDate).toBe("2020-01-01T00:00:00Z");
+    });
+
+    it("does not use og:updated_time when og:published_time exists", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head>
+        <meta property="og:published_time" content="2026-07-20T09:00:00Z" />
+        <meta property="og:updated_time" content="2020-01-01T00:00:00Z" />
+      </head></html>`;
+
+      const result = extractDateFromHtml(html);
+      expect(result.rawDate).toBe("2026-07-20T09:00:00Z");
+      expect(result.source).toBe("og:published_time");
+    });
+
+    it("stale audit correctly reports datePublished source for NBA-style pages", async () => {
+      const { extractDateFromHtml, buildStaleAuditMeta, normalizePublishedAt } = await import("./article-discovery-helpers");
+
+      // NBA page: old modified_time, recent datePublished in JSON-LD
+      const html = `
+        <html><head>
+          <meta property="article:modified_time" content="2020-01-01T00:00:00Z" />
+          <script type="application/ld+json">
+            { "@type": "NewsArticle", "datePublished": "2026-07-18T14:00:00Z" }
+          </script>
+        </head></html>`;
+
+      const extraction = extractDateFromHtml(html);
+      const normalized = normalizePublishedAt(new Date(extraction.rawDate!));
+      const freshnessMs = 14 * 24 * 60 * 60 * 1000;
+      const now = new Date("2026-07-20T12:00:00Z");
+
+      const audit = buildStaleAuditMeta(extraction, normalized, freshnessMs, now);
+      // The datePublished is 2 days old — within 14-day window, so NOT stale
+      expect(audit.staleReason).not.toBe("published_at_before_cutoff");
+      expect(audit.publishedAtSource).toBe("datePublished");
+      expect(audit.normalizedPublishedAt).toBe("2026-07-18T14:00:00.000Z");
+    });
+
+    it("parseable ISO date without timezone suffix is treated as valid (not invalid_published_at)", async () => {
+      const { extractDateFromHtml, buildStaleAuditMeta, normalizeRawDateString } = await import("./article-discovery-helpers");
+
+      // JSON-LD datePublished without Z suffix — common in some CMS platforms
+      const html = `
+        <html><head>
+          <script type="application/ld+json">
+            { "@type": "NewsArticle", "datePublished": "2020-06-01T10:00:00" }
+          </script>
+        </head></html>`;
+
+      const extraction = extractDateFromHtml(html);
+      expect(extraction.rawDate).toBe("2020-06-01T10:00:00");
+      expect(extraction.source).toBe("datePublished");
+
+      // normalizeRawDateString should handle ISO without timezone by appending Z
+      const parsed = normalizeRawDateString(extraction.rawDate!);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.toISOString()).toBe("2020-06-01T10:00:00.000Z");
+
+      // With a valid parsed date, buildStaleAuditMeta should NOT report invalid
+      const freshnessMs = 14 * 24 * 60 * 60 * 1000;
+      const now = new Date("2026-07-20T12:00:00Z");
+      const audit = buildStaleAuditMeta(extraction, parsed, freshnessMs, now);
+      expect(audit.staleReason).not.toBe("invalid_published_at");
+      // The date is old (6+ years) — well outside the 14-day window
+      expect(audit.staleReason).toBe("published_at_before_cutoff");
+      expect(audit.publishedAtSource).toBe("datePublished");
+      expect(audit.normalizedPublishedAt).toBe("2020-06-01T10:00:00.000Z");
+    });
+
+    it("fallback date parsing closes the gap when extractPageMetadata misses JSON-LD date", async () => {
+      const { extractPageMetadata, extractDateFromHtml, normalizePublishedAt, normalizeRawDateString, isWithinFreshnessWindow } = await import("./article-discovery-helpers");
+
+      // Page with only JSON-LD datePublished — extractPageMetadata doesn't check JSON-LD
+      const html = `
+        <html><head>
+          <title>Breaking NBA Trade News Story Here</title>
+          <script type="application/ld+json">
+            {
+              "@type": "NewsArticle",
+              "headline": "Breaking NBA Trade News Story Here",
+              "datePublished": "2026-07-18T14:00:00Z"
+            }
+          </script>
+        </head><body></body></html>`;
+
+      // extractPageMetadata doesn't find a date (no meta tags)
+      const meta = extractPageMetadata(html);
+      const normalizedFromMeta = normalizePublishedAt(meta.publishedAt);
+      expect(normalizedFromMeta).toBeNull();
+
+      // extractDateFromHtml DOES find it from JSON-LD
+      const dateExtraction = extractDateFromHtml(html);
+      expect(dateExtraction.rawDate).toBe("2026-07-18T14:00:00Z");
+      expect(dateExtraction.source).toBe("datePublished");
+
+      // Fallback: try parsing the raw date from extractDateFromHtml
+      const fallbackDate = normalizeRawDateString(dateExtraction.rawDate!);
+      expect(fallbackDate).not.toBeNull();
+      expect(isWithinFreshnessWindow(fallbackDate)).toBe(true);
+    });
+  });
+
+  describe("extractDateFromUrl", () => {
+    it("extracts YYYY/MM/DD pattern", async () => {
+      const { extractDateFromUrl } = await import("./article-discovery-helpers");
+      expect(extractDateFromUrl("https://example.com/news/2026/07/16/story")).toBe("2026-07-16");
+    });
+
+    it("extracts compact YYYYMMDD in slug", async () => {
+      const { extractDateFromUrl } = await import("./article-discovery-helpers");
+      expect(extractDateFromUrl("https://example.com/20260716/story")).toBe("2026-07-16");
+    });
+
+    it("extracts YYYY/MM pattern", async () => {
+      const { extractDateFromUrl } = await import("./article-discovery-helpers");
+      expect(extractDateFromUrl("https://example.com/news/2026/07/")).toBe("2026-07-01");
+    });
+
+    it("returns null for URLs without date patterns", async () => {
+      const { extractDateFromUrl } = await import("./article-discovery-helpers");
+      expect(extractDateFromUrl("https://example.com/news/breaking-story")).toBeNull();
+    });
+
+    it("returns null for invalid URLs", async () => {
+      const { extractDateFromUrl } = await import("./article-discovery-helpers");
+      expect(extractDateFromUrl("not-a-url")).toBeNull();
+    });
+  });
+
+  describe("normalizeRawDateString", () => {
+    it("parses standard ISO-8601 with timezone", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      const result = normalizeRawDateString("2026-07-18T14:00:00Z");
+      expect(result).not.toBeNull();
+      expect(result!.toISOString()).toBe("2026-07-18T14:00:00.000Z");
+    });
+
+    it("parses ISO datetime without timezone suffix by treating as UTC", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      const result = normalizeRawDateString("2026-07-18T14:00:00");
+      expect(result).not.toBeNull();
+      expect(result!.toISOString()).toBe("2026-07-18T14:00:00.000Z");
+    });
+
+    it("parses ISO datetime with milliseconds but no timezone", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      const result = normalizeRawDateString("2026-07-18T14:00:00.000");
+      expect(result).not.toBeNull();
+      expect(result!.toISOString()).toBe("2026-07-18T14:00:00.000Z");
+    });
+
+    it("trims whitespace", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      const result = normalizeRawDateString("  2026-07-18T14:00:00Z  ");
+      expect(result).not.toBeNull();
+      expect(result!.toISOString()).toBe("2026-07-18T14:00:00.000Z");
+    });
+
+    it("parses date-only ISO string", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      const result = normalizeRawDateString("2026-07-18");
+      expect(result).not.toBeNull();
+    });
+
+    it("parses ISO with positive timezone offset", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      const result = normalizeRawDateString("2026-07-18T14:00:00+05:30");
+      expect(result).not.toBeNull();
+    });
+
+    it("parses ISO with negative timezone offset", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      const result = normalizeRawDateString("2026-07-18T14:00:00-04:00");
+      expect(result).not.toBeNull();
+    });
+
+    it("returns null for empty string", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      expect(normalizeRawDateString("")).toBeNull();
+    });
+
+    it("returns null for whitespace-only", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      expect(normalizeRawDateString("   ")).toBeNull();
+    });
+
+    it("returns null for completely unparseable strings", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      expect(normalizeRawDateString("not a date at all")).toBeNull();
+    });
+
+    it("returns null for empty object-like strings", async () => {
+      const { normalizeRawDateString } = await import("./article-discovery-helpers");
+      expect(normalizeRawDateString("{}" )).toBeNull();
+    });
+  });
+
+  describe("buildStaleAuditMeta", () => {
+    it("returns missing_published_at when no raw date", async () => {
+      const { buildStaleAuditMeta } = await import("./article-discovery-helpers");
+      const freshnessMs = 14 * 24 * 60 * 60 * 1000;
+      const now = new Date("2026-07-20T12:00:00Z");
+
+      const result = buildStaleAuditMeta(
+        { rawDate: null, source: "unknown" },
+        null,
+        freshnessMs,
+        now,
+      );
+
+      expect(result.staleReason).toBe("missing_published_at");
+      expect(result.rawPublishedAt).toBeNull();
+      expect(result.normalizedPublishedAt).toBeNull();
+      expect(result.publishedAtSource).toBe("unknown");
+      expect(result.ageDays).toBeNull();
+      expect(result.freshnessCutoffIso).toBeTruthy();
+    });
+
+    it("returns invalid_published_at when raw date exists but normalization failed", async () => {
+      const { buildStaleAuditMeta } = await import("./article-discovery-helpers");
+      const freshnessMs = 14 * 24 * 60 * 60 * 1000;
+      const now = new Date("2026-07-20T12:00:00Z");
+
+      const result = buildStaleAuditMeta(
+        { rawDate: "not-a-date", source: "meta[name=date]" },
+        null,
+        freshnessMs,
+        now,
+      );
+
+      expect(result.staleReason).toBe("invalid_published_at");
+      expect(result.rawPublishedAt).toBe("not-a-date");
+      expect(result.normalizedPublishedAt).toBeNull();
+      expect(result.publishedAtSource).toBe("meta[name=date]");
+      expect(result.ageDays).toBeNull();
+    });
+
+    it("returns invalid_published_at when raw date exists but cannot be parsed", async () => {
+      const { buildStaleAuditMeta } = await import("./article-discovery-helpers");
+      const freshnessMs = 14 * 24 * 60 * 60 * 1000;
+      const now = new Date("2026-07-20T12:00:00Z");
+
+      const result = buildStaleAuditMeta(
+        { rawDate: "not-a-parseable-date", source: "meta[name=date]" },
+        null, // normalizedDate is null because new Date("not-a-parseable-date") is Invalid Date
+        freshnessMs,
+        now,
+      );
+
+      expect(result.staleReason).toBe("invalid_published_at");
+      expect(result.rawPublishedAt).toBe("not-a-parseable-date");
+      expect(result.normalizedPublishedAt).toBeNull();
+      expect(result.publishedAtSource).toBe("meta[name=date]");
+      expect(result.ageDays).toBeNull();
+    });
+
+    it("returns published_at_before_cutoff for old dates", async () => {
+      const { buildStaleAuditMeta } = await import("./article-discovery-helpers");
+      const freshnessMs = 14 * 24 * 60 * 60 * 1000;
+      const now = new Date("2026-07-20T12:00:00Z");
+      const oldDate = new Date("2020-01-01T00:00:00Z");
+
+      const result = buildStaleAuditMeta(
+        { rawDate: "2020-01-01T00:00:00Z", source: "article:published_time" },
+        oldDate,
+        freshnessMs,
+        now,
+      );
+
+      expect(result.staleReason).toBe("published_at_before_cutoff");
+      expect(result.rawPublishedAt).toBe("2020-01-01T00:00:00Z");
+      expect(result.normalizedPublishedAt).toBe(oldDate.toISOString());
+      expect(result.publishedAtSource).toBe("article:published_time");
+      expect(result.ageDays).toBeGreaterThan(2000);
+    });
+
+    it("returns future_published_at for dates in the future", async () => {
+      const { buildStaleAuditMeta } = await import("./article-discovery-helpers");
+      const freshnessMs = 14 * 24 * 60 * 60 * 1000;
+      const now = new Date("2026-07-20T12:00:00Z");
+      const futureDate = new Date("2099-12-31T00:00:00Z");
+
+      const result = buildStaleAuditMeta(
+        { rawDate: "2099-12-31T00:00:00Z", source: "og:updated_time" },
+        futureDate,
+        freshnessMs,
+        now,
+      );
+
+      expect(result.staleReason).toBe("future_published_at");
+      expect(result.ageDays).toBeLessThan(0);
+    });
+
+    it("computes freshnessCutoffIso correctly from freshnessMs", async () => {
+      const { buildStaleAuditMeta } = await import("./article-discovery-helpers");
+      const freshnessMs = 14 * 24 * 60 * 60 * 1000;
+      const now = new Date("2026-07-20T12:00:00Z");
+      const expectedCutoff = new Date(now.getTime() - freshnessMs);
+
+      const result = buildStaleAuditMeta(
+        { rawDate: null, source: "unknown" },
+        null,
+        freshnessMs,
+        now,
+      );
+
+      expect(result.freshnessCutoffIso).toBe(expectedCutoff.toISOString());
+    });
+  });
+
+  describe("buildStaleSampleLog", () => {
+    it("returns empty string when no stale rejections", async () => {
+      const { buildStaleSampleLog } = await import("./article-discovery-helpers");
+
+      const result = buildStaleSampleLog([
+        { url: "https://example.com/1", sourceKind: "listing", status: "accepted" },
+        { url: "https://example.com/2", sourceKind: "listing", status: "rejected_low_score" },
+      ]);
+
+      expect(result).toBe("");
+    });
+
+    it("returns up to 3 stale samples with dates and truncated URLs", async () => {
+      const { buildStaleSampleLog } = await import("./article-discovery-helpers");
+
+      const result = buildStaleSampleLog([
+        { url: "https://example.com/news/2020/01/01/story-a", sourceKind: "listing", status: "rejected_stale", normalizedPublishedAt: "2020-01-01T00:00:00Z" },
+        { url: "https://example.com/news/2020/02/15/story-b", sourceKind: "sitemap", status: "rejected_stale", normalizedPublishedAt: "2020-02-15T00:00:00Z" },
+        { url: "https://example.com/news/2020/03/20/story-c", sourceKind: "listing", status: "rejected_stale", normalizedPublishedAt: "2020-03-20T00:00:00Z" },
+        { url: "https://example.com/news/2020/04/10/story-d-extra", sourceKind: "listing", status: "rejected_stale", normalizedPublishedAt: "2020-04-10T00:00:00Z" },
+      ]);
+
+      expect(result).toContain("2020-01-01");
+      expect(result).toContain("2020-02-15");
+      expect(result).toContain("2020-03-20");
+      expect(result).not.toContain("2020-04-10"); // 4th entry should be capped
+    });
+
+    it("shows missing-date when normalizedPublishedAt is absent", async () => {
+      const { buildStaleSampleLog } = await import("./article-discovery-helpers");
+
+      const result = buildStaleSampleLog([
+        { url: "https://example.com/news/story-no-date", sourceKind: "listing", status: "rejected_stale" },
+      ]);
+
+      expect(result).toContain("missing-date");
+    });
+  });
+
   // ── Candidate Scoring ─────────────────────────────────────────────────
 
   describe("scoreCandidateUrl", () => {

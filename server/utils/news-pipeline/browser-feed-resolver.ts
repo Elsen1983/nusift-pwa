@@ -446,6 +446,11 @@ async function probeCommonFeedPaths(
 
 // ─── Playwright Resolver (dev/local only) ───────────────────────────────────
 
+const importOptionalDependency = new Function(
+  "specifier",
+  "return import(specifier)",
+) as (specifier: string) => Promise<any>;
+
 /**
  * Attempt to resolve feeds using Playwright for full JS rendering.
  * Returns null if Playwright is not available or execution fails.
@@ -463,7 +468,7 @@ export async function resolveWithPlaywright(input: {
   }
 
   try {
-    const playwright = await import("playwright" as string);
+    const playwright = await importOptionalDependency("playwright");
     const browser = await playwright.chromium.launch({ headless: true });
     try {
       const context = await browser.newContext({

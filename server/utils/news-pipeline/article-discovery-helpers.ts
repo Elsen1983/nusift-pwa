@@ -387,6 +387,13 @@ export type ArticleDiscoveryCandidateOutcome = {
   title?: string | null;
   publishedAt?: string | null;
   reason?: string;
+  // Stale audit fields (only present on rejected_stale outcomes)
+  rawPublishedAt?: string | null;
+  normalizedPublishedAt?: string | null;
+  publishedAtSource?: PublishedAtSource;
+  freshnessCutoffIso?: string;
+  ageDays?: number | null;
+  staleReason?: StaleAuditMeta["staleReason"];
 };
 
 export type ArticleDiscoveryOutcomeSummary = {
@@ -667,6 +674,292 @@ export const isWithinFreshnessWindow = (publishedAt: Date | null, now = new Date
 export const normalizePublishedAt = (value: Date | null) =>
   value && !Number.isNaN(value.getTime()) ? value : null;
 
+/**
+ * Attempt to normalize a raw date string into a parseable Date.
+ * Handles common edge cases:
+ * - Leading/trailing whitespace
+ * - ISO strings without timezone suffix (treated as UTC by appending Z)
+ * - Date-only ISO strings (YYYY-MM-DD) are left as-is (JS parses them)
+ * Returns null when the string cannot be parsed into a valid Date.
+ */
+export function normalizeRawDateString(raw: string): Date | null {
+  if (!raw || typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  // If it looks like an ISO datetime without timezone suffix, prefer UTC
+  // interpretation by appending Z. JS treats bare ISO datetimes as local
+  // time, which varies by server timezone and would produce inconsistent
+  // freshness checks. CMS platforms commonly emit these without TZ.
+  // Matches: 2026-07-18T14:00:00, 2026-07-18T14:00:00.000, etc.
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(trimmed) && !/[Zz+\-]\d{2}:?\d{2}$/.test(trimmed)) {
+    const withZ = new Date(trimmed + "Z");
+    if (!Number.isNaN(withZ.getTime())) return withZ;
+  }
+
+  // Fallback: try as-is (handles strings with explicit timezone, date-only
+  // ISO strings, RFC 2822 dates, etc.)
+  const direct = new Date(trimmed);
+  if (!Number.isNaN(direct.getTime())) return direct;
+
+  return null;
+}
+
+// ─── Date Extraction Provenance ──────────────────────────────────────────────
+
+export type PublishedAtSource =
+  | "article:published_time"
+  | "og:published_time"
+  | "article:modified_time"
+  | "og:updated_time"
+  | "datePublished"
+  | "time[datetime]"
+  | "meta[name=date]"
+  | "meta[itemprop=datePublished]"
+  | "url_date"
+  | "unknown";
+
+export type DateExtractionResult = {
+  rawDate: string | null;
+  source: PublishedAtSource;
+};
+
+export type StaleAuditMeta = {
+  rawPublishedAt: string | null;
+  normalizedPublishedAt: string | null;
+  publishedAtSource: PublishedAtSource;
+  freshnessCutoffIso: string;
+  ageDays: number | null;
+  staleReason:
+    | "published_at_before_cutoff"
+    | "missing_published_at"
+    | "invalid_published_at"
+    | "future_published_at"
+    | "unknown";
+};
+
+/**
+ * Extract the publication date from HTML with provenance tracking.
+ * Checks standard meta tags in priority order, then falls back to URL date.
+ *
+ * Priority order ensures publish dates win over modified/update timestamps:
+ *   1. article:published_time (property or name)
+ *   2. og:published_time (property or name)
+ *   3. pubdate / publishdate (legacy meta)
+ *   4. JSON-LD datePublished
+ *   5. meta itemprop=datePublished
+ *   6. <time datetime>
+ *   7. meta name=date
+ *   8. URL date pattern
+ *   9. article:modified_time (fallback — only when no publish date exists)
+ *  10. og:updated_time (fallback — only when no publish date exists)
+ *
+ * Returns the raw date string and which source it came from.
+ */
+export function extractDateFromHtml(html: string, pageUrl?: string): DateExtractionResult {
+  // ── Publish-side sources (highest priority) ──────────────────────────
+
+  // Priority 1: article:published_time (property or name)
+  const articlePublished =
+    html.match(/<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']article:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  if (articlePublished) return { rawDate: articlePublished, source: "article:published_time" };
+
+  // Priority 2: og:published_time (property or name)
+  const ogPublished =
+    html.match(/<meta[^>]+property=["']og:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']og:published_time["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  if (ogPublished) return { rawDate: ogPublished, source: "og:published_time" };
+
+  // Priority 3: pubdate / publishdate (legacy meta names)
+  const pubdate =
+    html.match(/<meta[^>]+name=["']pubdate["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']publishdate["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  if (pubdate) return { rawDate: pubdate, source: "article:published_time" };
+
+  // Priority 4: JSON-LD datePublished
+  const jsonLdDate = html.match(/"datePublished"\s*:\s*"([^"]+)"/i)?.[1];
+  if (jsonLdDate) return { rawDate: jsonLdDate, source: "datePublished" };
+
+  // Priority 5: meta itemprop=datePublished
+  const itempropDate = html.match(/<meta[^>]+itemprop=["']datePublished["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  if (itempropDate) return { rawDate: itempropDate, source: "meta[itemprop=datePublished]" };
+
+  // Priority 6: <time datetime>
+  const timeDatetime = html.match(/<time[^>]+datetime=["']([^"']+)["']/i)?.[1];
+  if (timeDatetime) return { rawDate: timeDatetime, source: "time[datetime]" };
+
+  // Priority 7: meta name=date
+  const metaDate = html.match(/<meta[^>]+name=["']date["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  if (metaDate) return { rawDate: metaDate, source: "meta[name=date]" };
+
+  // Priority 8: URL date pattern
+  if (pageUrl) {
+    const urlDate = extractDateFromUrl(pageUrl);
+    if (urlDate) return { rawDate: urlDate, source: "url_date" };
+  }
+
+  // ── Modified/update fallbacks (lowest priority) ──────────────────────
+  // Only used when no publish date was found above.
+  // These represent page modification times, not article publish dates,
+  // and can be misleadingly old (e.g. layout changes).
+
+  // Priority 9: article:modified_time
+  const articleModified =
+    html.match(/<meta[^>]+property=["']article:modified_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']article:modified_time["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  if (articleModified) return { rawDate: articleModified, source: "article:modified_time" };
+
+  // Priority 10: og:updated_time
+  const ogUpdated =
+    html.match(/<meta[^>]+property=["']og:updated_time["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]+name=["']og:updated_time["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  if (ogUpdated) return { rawDate: ogUpdated, source: "og:updated_time" };
+
+  return { rawDate: null, source: "unknown" };
+}
+
+/**
+ * Extract a date string from common URL path patterns.
+ * Returns the first matched pattern or null.
+ */
+export function extractDateFromUrl(url: string): string | null {
+  try {
+    const pathname = new URL(url).pathname;
+    // YYYY/MM/DD pattern
+    const ymd = pathname.match(/\/(\d{4})\/(\d{2})\/(\d{2})\b/);
+    if (ymd) return `${ymd[1]}-${ymd[2]}-${ymd[3]}`;
+    // YYYYMMDD in slug
+    const compact = pathname.match(/(\d{4})(\d{2})(\d{2})/);
+    if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+    // YYYY/MM pattern
+    const ym = pathname.match(/\/(\d{4})\/(\d{2})\b/);
+    if (ym) return `${ym[1]}-${ym[2]}-01`;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build stale audit metadata for a rejected_stale outcome.
+ */
+export function buildStaleAuditMeta(
+  extraction: DateExtractionResult,
+  normalizedDate: Date | null,
+  freshnessMs: number,
+  now = new Date(),
+): StaleAuditMeta {
+  const cutoff = new Date(now.getTime() - freshnessMs);
+
+  if (!extraction.rawDate) {
+    return {
+      rawPublishedAt: null,
+      normalizedPublishedAt: null,
+      publishedAtSource: extraction.source,
+      freshnessCutoffIso: cutoff.toISOString(),
+      ageDays: null,
+      staleReason: "missing_published_at",
+    };
+  }
+
+  if (!normalizedDate) {
+    return {
+      rawPublishedAt: extraction.rawDate,
+      normalizedPublishedAt: null,
+      publishedAtSource: extraction.source,
+      freshnessCutoffIso: cutoff.toISOString(),
+      ageDays: null,
+      staleReason: "invalid_published_at",
+    };
+  }
+
+  const ageMs = now.getTime() - normalizedDate.getTime();
+  const ageDays = Math.round(ageMs / (24 * 60 * 60 * 1000));
+
+  if (ageMs < 0) {
+    return {
+      rawPublishedAt: extraction.rawDate,
+      normalizedPublishedAt: normalizedDate.toISOString(),
+      publishedAtSource: extraction.source,
+      freshnessCutoffIso: cutoff.toISOString(),
+      ageDays,
+      staleReason: "future_published_at",
+    };
+  }
+
+  if (normalizedDate < cutoff) {
+    return {
+      rawPublishedAt: extraction.rawDate,
+      normalizedPublishedAt: normalizedDate.toISOString(),
+      publishedAtSource: extraction.source,
+      freshnessCutoffIso: cutoff.toISOString(),
+      ageDays,
+      staleReason: "published_at_before_cutoff",
+    };
+  }
+
+  return {
+    rawPublishedAt: extraction.rawDate,
+    normalizedPublishedAt: normalizedDate.toISOString(),
+    publishedAtSource: extraction.source,
+    freshnessCutoffIso: cutoff.toISOString(),
+    ageDays,
+    staleReason: "unknown",
+  };
+}
+
+/**
+ * Build a compact stale sample suffix for Agent 2 log messages.
+ * Returns up to 3 stale samples with truncated date and URL.
+ * Empty string when no stale rejections are present.
+ */
+export function buildStaleSampleLog(
+  rejectedOutcomes: ArticleDiscoveryCandidateOutcome[],
+  maxSamples = 3,
+): string {
+  const staleEntries = rejectedOutcomes
+    .filter((o) => o.status === "rejected_stale")
+    .slice(0, maxSamples);
+
+  if (staleEntries.length === 0) return "";
+
+  const samples = staleEntries.map((entry) => {
+    const reason = entry.staleReason || "unknown";
+    const date = entry.normalizedPublishedAt
+      ? entry.normalizedPublishedAt.slice(0, 10)
+      : entry.rawPublishedAt
+        ? `raw:${entry.rawPublishedAt.slice(0, 20)}`
+        : "missing-date";
+    const source = entry.publishedAtSource || "";
+    const shortUrl = truncateUrl(entry.url, 50);
+    return source
+      ? `${reason}|${date}|${source}:${shortUrl}`
+      : `${reason}|${date}:${shortUrl}`;
+  });
+
+  return ` staleSample=[${samples.join(", ")}]`;
+}
+
+/**
+ * Truncate a URL for compact display, preserving the domain and trimming
+ * the path safely in the middle if too long.
+ */
+function truncateUrl(url: string, maxLen: number): string {
+  if (url.length <= maxLen) return url;
+  try {
+    const u = new URL(url);
+    const domain = u.hostname.replace(/^www\./, "");
+    const path = u.pathname;
+    const budget = maxLen - domain.length - 4;
+    if (path.length <= budget) return `${domain}${path}`;
+    const halfBudget = Math.floor(budget / 2) - 1;
+    return `${domain}${path.slice(0, halfBudget)}...${path.slice(-halfBudget)}`;
+  } catch {
+    return url.length > maxLen ? `${url.slice(0, maxLen - 3)}...` : url;
+  }
+}
+
 export const isBlockedDiscoveryPath = (href: string) => {
   try {
     const pathname = new URL(href).pathname.replace(/\/+$/, "") || "/";
@@ -793,7 +1086,7 @@ export async function evaluateArticleLinkCandidate(input: {
 
   const html = await response.text();
   const meta = extractPageMetadata(html);
-  const normalizedPublishedAt = normalizePublishedAt(meta.publishedAt);
+  let normalizedPublishedAt = normalizePublishedAt(meta.publishedAt);
   const canonicalUrl = normalizeUrl(articleUrl);
 
   if (!canonicalUrl || isBlockedDiscoveryPath(canonicalUrl)) {
@@ -806,7 +1099,7 @@ export async function evaluateArticleLinkCandidate(input: {
     return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_cross_domain", { canonicalUrl, title: meta.title, reason: "cross-domain redirect" }) };
   }
 
-  if (categoryId) {
+  if (categoryId && (sourcePageUrl.startsWith("sitemap:") || sourcePageUrl.startsWith("jsonld:"))) {
     const categoryPath = targetUrl.replace(/\/+$/, "").replace(/^https?:\/\/[^/]+/, "") || "/";
     const articlePath = canonicalUrl.replace(/\/+$/, "").replace(/^https?:\/\/[^/]+/, "") || "/";
     if (categoryPath !== "/" && !(articlePath === categoryPath || articlePath.startsWith(`${categoryPath}/`))) {
@@ -828,8 +1121,44 @@ export async function evaluateArticleLinkCandidate(input: {
     return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_missing_title", { canonicalUrl, title: previewTitle, reason: "title too short or missing" }) };
   }
 
+  const freshnessMs = input.freshnessMs ?? DISCOVERY_FRESHNESS_MS;
+  const dateExtraction = extractDateFromHtml(html, articleUrl);
+
+  // Fallback: if extractPageMetadata didn't find a parseable date but
+  // extractDateFromHtml did (e.g. from JSON-LD datePublished), try parsing
+  // the broader extraction's raw date. This closes the gap where pages expose
+  // dates only in JSON-LD or less common meta tags.
+  if (!normalizedPublishedAt && dateExtraction.rawDate) {
+    const fallbackDate = normalizeRawDateString(dateExtraction.rawDate);
+    if (fallbackDate) {
+      normalizedPublishedAt = fallbackDate;
+    }
+  }
+
   if (!isWithinFreshnessWindow(normalizedPublishedAt, new Date())) {
-    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_stale", { canonicalUrl, title: previewTitle, publishedAt: normalizedPublishedAt?.toISOString(), reason: "outside freshness window" }) };
+    const staleAudit = buildStaleAuditMeta(dateExtraction, normalizedPublishedAt, freshnessMs);
+    return {
+      accepted: false,
+      candidate: null,
+      outcome: makeReject(articleUrl, sourcePageUrl, "rejected_stale", {
+        canonicalUrl,
+        title: previewTitle,
+        publishedAt: normalizedPublishedAt?.toISOString() ?? null,
+        reason: staleAudit.staleReason === "missing_published_at"
+          ? "missing publishedAt"
+          : staleAudit.staleReason === "invalid_published_at"
+            ? "invalid publishedAt"
+            : staleAudit.staleReason === "future_published_at"
+              ? "future publishedAt"
+              : "outside freshness window",
+        rawPublishedAt: staleAudit.rawPublishedAt,
+        normalizedPublishedAt: staleAudit.normalizedPublishedAt,
+        publishedAtSource: staleAudit.publishedAtSource,
+        freshnessCutoffIso: staleAudit.freshnessCutoffIso,
+        ageDays: staleAudit.ageDays,
+        staleReason: staleAudit.staleReason,
+      }),
+    };
   }
 
   const rawTitle = meta.title || canonicalUrl;

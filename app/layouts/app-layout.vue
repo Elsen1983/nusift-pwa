@@ -120,6 +120,23 @@
                   </button>
 
                   <button
+                    v-if="isAdminUser"
+                    @click="handleMenuNavigation('/audit/admin')"
+                    class="menu-item group w-full"
+                  >
+                    <span class="menu-item-icon material-symbols-outlined">admin_panel_settings</span>
+                    <span class="menu-item-text">
+                      <span class="block text-sm font-medium text-on-surface">
+                        {{ $t("appLayout.profileMenu.admin_console") }}
+                      </span>
+                      <span class="block text-[11px] text-on-surface-variant">
+                        {{ $t("appLayout.profileMenu.admin_console_desc") }}
+                      </span>
+                    </span>
+                    <span class="menu-item-chev material-symbols-outlined">chevron_right</span>
+                  </button>
+
+                  <button
                     @click="handleMenuNavigation('/notifications')"
                     class="menu-item group w-full"
                   >
@@ -271,6 +288,7 @@ const isUnsavedModalOpen = ref(false);
 const pendingNavPath = ref<string | null>(null);
 const unreadNotificationCount = useState<number>("unreadNotificationCount", () => 0);
 const isLightMode = computed(() => colorMode.value === "light");
+const isAdminUser = computed(() => authStore.user?.isAdmin === true || authStore.user?.role === "ADMIN");
 const showScrollUpButton = ref(false);
 const mainContentRef = ref<HTMLElement | null>(null);
 let resizeObserver: ResizeObserver | null = null;

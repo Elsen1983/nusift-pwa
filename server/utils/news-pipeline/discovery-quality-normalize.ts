@@ -4,6 +4,14 @@
  * article_discovery_headless_required artifact shapes.
  */
 
+export type DiscoveryQualityStaleSample = {
+  url: string;
+  normalizedPublishedAt: string | null;
+  publishedAtSource: string | null;
+  ageDays: number | null;
+  staleReason: string | null;
+};
+
 export type NormalizedDiscoveryQualityItem = {
   id: string;
   createdAt: Date;
@@ -18,6 +26,7 @@ export type NormalizedDiscoveryQualityItem = {
   shouldEscalateToHeadless: boolean;
   escalationReasons: string[];
   explanation: string | null;
+  staleSamples: DiscoveryQualityStaleSample[];
   outcomeSummary: {
     totalEvaluated: number;
     accepted: number;
@@ -31,6 +40,36 @@ export type NormalizedDiscoveryQualityItem = {
     jsonldUrls: number;
   };
 };
+
+const MAX_STALE_SAMPLES = 3;
+
+/**
+ * Extract up to 3 compact stale samples from rejectedCandidates in the payload.
+ * Only includes entries with staleReason audit metadata. Returns [] when absent.
+ */
+function extractStaleSamples(rejectedCandidates: unknown): DiscoveryQualityStaleSample[] {
+  if (!Array.isArray(rejectedCandidates)) return [];
+
+  const samples: DiscoveryQualityStaleSample[] = [];
+  for (const entry of rejectedCandidates) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const e = entry as Record<string, unknown>;
+    if (e.status !== "rejected_stale") continue;
+    if (typeof e.staleReason !== "string") continue;
+
+    samples.push({
+      url: typeof e.url === "string" ? e.url : "",
+      normalizedPublishedAt: typeof e.normalizedPublishedAt === "string" ? e.normalizedPublishedAt : null,
+      publishedAtSource: typeof e.publishedAtSource === "string" ? e.publishedAtSource : null,
+      ageDays: typeof e.ageDays === "number" && Number.isFinite(e.ageDays) ? e.ageDays : null,
+      staleReason: e.staleReason,
+    });
+
+    if (samples.length >= MAX_STALE_SAMPLES) break;
+  }
+
+  return samples;
+}
 
 export function normalizeDiscoveryQualityArtifact(artifact: {
   id: string;
@@ -73,6 +112,7 @@ export function normalizeDiscoveryQualityArtifact(artifact: {
       (qualityAssessment.explanation as string) ||
       (payload.explanation as string) ||
       null,
+    staleSamples: extractStaleSamples(payload.rejectedCandidates),
     outcomeSummary: {
       totalEvaluated: (outcomeSummary.totalEvaluated as number) ?? 0,
       accepted: (outcomeSummary.accepted as number) ?? 0,

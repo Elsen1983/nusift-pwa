@@ -60,6 +60,8 @@ type HeadlessQueueProcessResult = {
   // Browser-specific counters (when runBrowser=true)
   claimed?: number;
   browserProcessed?: number;
+  browserResolved?: number;
+  browserNoCandidates?: number;
   browserSkippedDisabled?: number;
   browserSkippedUnavailable?: number;
   browserFailed?: number;
@@ -196,6 +198,8 @@ export async function processArticleDiscoveryHeadlessQueue(
 
   // Browser-specific counters
   let browserProcessed = 0;
+  let browserResolved = 0;
+  let browserNoCandidates = 0;
   let browserSkippedDisabled = 0;
   let browserSkippedUnavailable = 0;
   let browserFailed = 0;
@@ -451,6 +455,11 @@ export async function processArticleDiscoveryHeadlessQueue(
       });
 
       browserProcessed += 1;
+      if (candidates.length > 0) {
+        browserResolved += 1;
+      } else {
+        browserNoCandidates += 1;
+      }
 
       await logAgentScan({
         sourceId: item.sourceId,
@@ -515,6 +524,8 @@ export async function processArticleDiscoveryHeadlessQueue(
   if (runBrowser) {
     result.claimed = updatedArtifactIds.length;
     result.browserProcessed = browserProcessed;
+    result.browserResolved = browserResolved;
+    result.browserNoCandidates = browserNoCandidates;
     result.browserSkippedDisabled = browserSkippedDisabled;
     result.browserSkippedUnavailable = browserSkippedUnavailable;
     result.browserFailed = browserFailed;

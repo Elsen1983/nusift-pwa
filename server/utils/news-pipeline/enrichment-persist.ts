@@ -369,7 +369,3 @@ export const readEnrichmentSummary = (
     },
   };
 };
-
-// Re-export the validator for callers that want to read full outcomes from
-// artifact payloads (keeps the single-entry-point guarantee).
-export { validateEnrichmentOutcome };

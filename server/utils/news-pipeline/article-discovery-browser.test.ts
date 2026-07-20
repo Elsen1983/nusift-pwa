@@ -98,6 +98,11 @@ describe("discoverArticleLinksWithBrowser", () => {
 
   async function loadFn() {
     const mod = await import("./article-discovery-browser");
+    mod.setArticleDiscoveryBrowserImporterForTest(async () => ({
+      chromium: {
+        launch: (...args: any[]) => mockChromiumLaunch(...args),
+      },
+    }));
     return mod.discoverArticleLinksWithBrowser;
   }
 

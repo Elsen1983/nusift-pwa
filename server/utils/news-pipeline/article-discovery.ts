@@ -18,6 +18,7 @@ import {
   normalizePublishedAt,
   extractPageMetadata,
   isBlockedDiscoveryPath,
+  buildStaleSampleLog,
   type ArticleDiscoveryCandidateOutcome,
   type ArticleDiscoveryOutcomeSummary,
   type ArticleDiscoveryQualityAssessment,
@@ -155,13 +156,6 @@ const extractListingArticleLinks = (
         if (links.has(resolved)) continue;
         if (isBlockedDiscoveryPath(resolved)) continue;
         if (!isLikelyArticleLink(resolved, pageUrl)) continue;
-        if (categoryPathUrl) {
-          const articlePath = normalizePath(resolved);
-          const categoryPath = normalizePath(categoryPathUrl);
-          if (categoryPath !== "/" && !(articlePath === categoryPath || articlePath.startsWith(`${categoryPath}/`))) {
-            continue;
-          }
-        }
         links.add(resolved);
         if (links.size >= MAX_LINKS_PER_PAGE) break;
       } catch {
@@ -323,6 +317,7 @@ const discoverArticleCandidatesForPage = async (
         publishedAt: result.outcome.publishedAt || null,
       });
     } else if (status === "rejected_stale") {
+      skipSummary.staleOrMissingPublishedAt += 1;
       skipSummary.htmlFallbackStale += 1;
       pushRejectedItem(rejectedItems, {
         reason: "html_fallback_stale",
@@ -645,6 +640,12 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
     byStatus: summary.byStatus,
   });
 
+  // ── Stale sample for log ──────────────────────────────────────────────
+  // Append whenever any rejected_stale outcomes exist, regardless of the
+  // top rejection reason (which may be "invalid publishedAt", "missing
+  // publishedAt", etc.).
+  const staleSampleSuffix = buildStaleSampleLog(tracker.getRejected());
+
   await logAgentScan({
     sourceId: target.sourceId,
     categoryId: target.categoryId || undefined,
@@ -654,7 +655,8 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
       `Sources: listing=${discoverySources.listingPages}, sitemap=${discoverySources.sitemapUrls}, jsonld=${discoverySources.jsonldUrls}. ` +
       `Top rejection: ${topReason}. ` +
       `Quality: ${qualityAssessment.quality} (confidence=${qualityAssessment.confidence}, escalate=${qualityAssessment.shouldEscalateToHeadless}). ` +
-      `Skipped: alreadySeen=${skipSummary.alreadySeenFeedItem}, stale=${skipSummary.staleOrMissingPublishedAt}, nonArticle=${skipSummary.htmlFallbackNonArticle}.`,
+      `Skipped: alreadySeen=${skipSummary.alreadySeenFeedItem}, stale=${skipSummary.staleOrMissingPublishedAt}, nonArticle=${skipSummary.htmlFallbackNonArticle}.` +
+      staleSampleSuffix,
   });
 
   return {
@@ -674,6 +676,150 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
     rejectedOutcomes: tracker.getRejected(),
     qualityAssessment,
   };
+}
+
+/**
+ * Check whether a marker targetUrl is same-origin and path-compatible with
+ * the productive source targetUrl. Used for source-level subpath matching:
+ * e.g. productive https://www.nba.com can resolve https://www.nba.com/news.
+ */
+function isSameOriginSubpath(rootUrl: string, candidateUrl: string): boolean {
+  try {
+    const root = new URL(rootUrl);
+    const candidate = new URL(candidateUrl);
+    if (root.origin !== candidate.origin) return false;
+    const rootPath = root.pathname.replace(/\/+$/, "") || "/";
+    const candidatePath = candidate.pathname.replace(/\/+$/, "") || "/";
+    // Exact match
+    if (candidatePath === rootPath) return true;
+    // Root is "/" — any non-root path is a subpath
+    if (rootPath === "/") return candidatePath !== "/";
+    // Candidate is nested under root path
+    return candidatePath.startsWith(`${rootPath}/`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * When Agent 2 finishes a target with "productive" quality, resolve any older
+ * PENDING_HEADLESS markers for the same target so they stop cluttering the
+ * active headless queue. Non-fatal — a failure here never blocks the batch.
+ *
+ * Matching rules:
+ * - Category-level: strict match on sourceId + categoryId + targetUrl.
+ * - Source-level (categoryId null): also resolves same-source subpath markers
+ *   where the marker's targetUrl is same-origin and under the productive root.
+ */
+async function resolveStaleHeadlessMarkers(input: {
+  result: ArticleDiscoveryResult;
+  artifactId?: string;
+  pipelineRunId?: string;
+}) {
+  const { result, artifactId, pipelineRunId } = input;
+
+  // Only resolve for productive runs.
+  if (result.qualityAssessment.quality !== "productive") return;
+
+  try {
+    // Build the WHERE clause to find matching PENDING_HEADLESS markers.
+    const where: Record<string, unknown> = {
+      artifactType: "article_discovery_headless_required",
+      status: "PENDING_HEADLESS",
+      sourceId: result.sourceId,
+    };
+
+    // When categoryId exists, match it strictly; otherwise look at all
+    // source-level markers (categoryId = null) for potential subpath match.
+    if (result.categoryId) {
+      where.categoryId = result.categoryId;
+    } else {
+      where.categoryId = null;
+    }
+
+    const markers = await prisma.pipelineArtifact.findMany({
+      where,
+      select: { id: true, payload: true },
+      orderBy: { createdAt: "desc" },
+    });
+
+    // Classify each marker as exact or source_subpath match.
+    const classified: Array<{ marker: typeof markers[number]; matchMode: "exact" | "source_subpath" }> = [];
+    for (const marker of markers) {
+      const payload = marker.payload as Record<string, unknown> | null;
+      if (!payload || typeof payload !== "object") continue;
+      const markerTargetUrl = typeof payload.targetUrl === "string" ? payload.targetUrl : null;
+
+      if (!markerTargetUrl) {
+        // No targetUrl in payload → skip (cannot verify origin/path compatibility)
+        continue;
+      }
+
+      // Exact match
+      if (markerTargetUrl === result.targetUrl) {
+        classified.push({ marker, matchMode: "exact" });
+        continue;
+      }
+
+      // Source-level subpath: marker targetUrl is under productive root
+      if (!result.categoryId && isSameOriginSubpath(result.targetUrl, markerTargetUrl)) {
+        classified.push({ marker, matchMode: "source_subpath" });
+      }
+      // Category-level: no subpath match — strict categoryId already filtered.
+    }
+
+    if (classified.length === 0) return;
+
+    const resolvedAt = new Date().toISOString();
+    let resolvedCount = 0;
+    for (const { marker, matchMode } of classified) {
+      try {
+        const existingPayload = (marker.payload as Record<string, unknown>) || {};
+        await prisma.pipelineArtifact.update({
+          where: { id: marker.id },
+          data: {
+            status: "RESOLVED_BY_STATIC_DISCOVERY",
+            payload: {
+              ...existingPayload,
+              resolvedByStaticDiscoveryAt: resolvedAt,
+              resolvedByStaticDiscoveryRunId: pipelineRunId || null,
+              resolvedByStaticDiscoveryArtifactId: artifactId || null,
+              resolvedByStaticDiscoveryQuality: "productive",
+              resolvedByStaticDiscoveryAcceptedCount: result.candidates.length,
+              resolvedByStaticDiscoveryEvaluatedCount: result.outcomeSummary.totalEvaluated,
+              resolvedByStaticDiscoveryMatchMode: matchMode,
+            },
+          },
+        });
+        resolvedCount += 1;
+      } catch {
+        // Individual marker update failure is non-fatal.
+      }
+    }
+
+    if (resolvedCount > 0) {
+      const matchModes = [...new Set(classified.map((c) => c.matchMode))];
+      await logAgentScan({
+        sourceId: result.sourceId,
+        categoryId: result.categoryId || undefined,
+        status: "ARTICLE_DISCOVERY_HEADLESS_MARKERS_RESOLVED",
+        executionTimeMs: 0,
+        errorLog:
+          `Resolved ${resolvedCount} PENDING_HEADLESS marker(s) for ${result.targetUrl}. ` +
+          `matchMode=${matchModes.join("+")}, ` +
+          `runId=${pipelineRunId || "n/a"}, ` +
+          `accepted=${result.candidates.length}, evaluated=${result.outcomeSummary.totalEvaluated}.`,
+      });
+    }
+  } catch (error: any) {
+    await logAgentScan({
+      sourceId: result.sourceId,
+      categoryId: result.categoryId || undefined,
+      status: "ARTICLE_DISCOVERY_HEADLESS_MARKERS_RESOLVE_FAILED",
+      executionTimeMs: 0,
+      errorLog: `Failed to resolve stale headless markers for ${result.targetUrl}: ${error?.message || String(error)}`,
+    }).catch(() => {}); // Log failure itself is non-fatal.
+  }
 }
 
 export async function runArticleDiscoveryBatch(input?: {
@@ -700,7 +846,7 @@ export async function runArticleDiscoveryBatch(input?: {
     try {
       const result = await discoverArticlesFromTarget(target);
       candidatesFound += result.candidates.length;
-      await persistArticleDiscoveryArtifact({ pipelineRunId: pipelineRun.id, result });
+      const artifact = await persistArticleDiscoveryArtifact({ pipelineRunId: pipelineRun.id, result });
       artifactCount += 1;
 
       // Persist escalation marker artifact when static discovery is insufficient.
@@ -730,6 +876,9 @@ export async function runArticleDiscoveryBatch(input?: {
         });
         artifactCount += 1;
       }
+
+      // Resolve stale PENDING_HEADLESS markers when static discovery is now productive.
+      await resolveStaleHeadlessMarkers({ result, artifactId: artifact.id, pipelineRunId: pipelineRun.id });
 
       const persisted = await persistCandidates(result.candidates);
       inserted += persisted.inserted;

@@ -278,6 +278,8 @@
             "agent_fine_tuning_desc": "Az ügynök finomhangolása és kategória-preferenciák",
             "source_manager": "Forráskezelő",
             "source_manager_desc": "Csatlakoztatott források kezelése",
+            "admin_console": "Admin Konzol",
+            "admin_console_desc": "Pipeline vezérlés és agent diagnosztika",
             "app_settings": "Alkalmazás Beállításai",
             "app_settings_desc": "Megjelenés, nyelv és beállítások",
             "logout": "Kijelentkezés",

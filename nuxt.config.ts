@@ -225,6 +225,11 @@ export default defineNuxtConfig({
           name: "source-manager-custom",
           path: "/audit/source-manager",
           file: resolve("app/pages/audit/source-manager.vue"),
+        },
+        {
+          name: "admin-custom",
+          path: "/audit/admin",
+          file: resolve("app/pages/audit/admin.vue"),
         }
       );
     },

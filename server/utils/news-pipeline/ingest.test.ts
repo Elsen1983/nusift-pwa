@@ -3,9 +3,11 @@ import {
   buildDiscoveryEvidencePayload,
   isFallbackFeedItemRelevantToCategory,
   isScopedCategoryFeed,
-  isWithinFreshnessWindow,
+  isRssIngestWithinFreshnessWindow,
   matchCategoryIdForUrl,
   shouldQueueHardCaseDiscovery,
+  hasFreshGenericEvidence,
+  GENERIC_EVIDENCE_TTL_MS,
 } from "./ingest";
 import { cleanFeedValue } from "./text";
 import type { ScopeMatch, TaxonomyEvidence } from "./types";
@@ -115,22 +117,22 @@ describe("isScopedCategoryFeed", () => {
   });
 });
 
-describe("isWithinFreshnessWindow", () => {
+describe("isRssIngestWithinFreshnessWindow", () => {
   const now = new Date("2026-07-03T12:00:00.000Z");
 
   it("accepts articles published within the last 14 days", () => {
-    expect(isWithinFreshnessWindow(new Date("2026-06-20T12:00:00.000Z"), now)).toBe(true);
+    expect(isRssIngestWithinFreshnessWindow(new Date("2026-06-20T12:00:00.000Z"), now)).toBe(true);
   });
 
   it("rejects articles older than 14 days or missing dates", () => {
-    expect(isWithinFreshnessWindow(new Date("2026-06-19T11:59:59.000Z"), now)).toBe(false);
-    expect(isWithinFreshnessWindow(null, now)).toBe(false);
+    expect(isRssIngestWithinFreshnessWindow(new Date("2026-06-19T11:59:59.000Z"), now)).toBe(false);
+    expect(isRssIngestWithinFreshnessWindow(null, now)).toBe(false);
   });
 });
 
 describe("publish date fallback behavior", () => {
   it("still treats missing dates as stale before fallback resolution", () => {
-    expect(isWithinFreshnessWindow(null, new Date("2026-07-06T12:00:00.000Z"))).toBe(false);
+    expect(isRssIngestWithinFreshnessWindow(null, new Date("2026-07-06T12:00:00.000Z"))).toBe(false);
   });
 });
 
@@ -363,5 +365,137 @@ describe("buildDiscoveryEvidencePayload", () => {
     expect(outcome.verified).toBe(false);
     expect(outcome.feedUrl).toBeNull();
     expect(outcome.resolverPath).toBe("fetch");
+  });
+});
+
+describe("hasFreshGenericEvidence", () => {
+  const now = new Date();
+
+  it("returns true when discovery evidence has scopeMatch 'generic' and no lastRssCheckAt", () => {
+    const evidence = { scopeMatch: "generic" as const };
+    expect(hasFreshGenericEvidence(evidence, null)).toBe(true);
+  });
+
+  it("returns true when discovery evidence has scopeMatch 'generic' and lastRssCheckAt is within TTL", () => {
+    const evidence = { scopeMatch: "generic" as const };
+    const recentCheck = new Date(now.getTime() - GENERIC_EVIDENCE_TTL_MS / 2);
+    expect(hasFreshGenericEvidence(evidence, recentCheck)).toBe(true);
+  });
+
+  it("returns false when discovery evidence has scopeMatch 'generic' but lastRssCheckAt is expired", () => {
+    const evidence = { scopeMatch: "generic" as const };
+    const expiredCheck = new Date(now.getTime() - GENERIC_EVIDENCE_TTL_MS - 1);
+    expect(hasFreshGenericEvidence(evidence, expiredCheck)).toBe(false);
+  });
+
+  it("returns false when discovery evidence has scopeMatch 'exact'", () => {
+    const evidence = { scopeMatch: "exact" as const };
+    expect(hasFreshGenericEvidence(evidence, now)).toBe(false);
+  });
+
+  it("returns false when discovery evidence has scopeMatch 'probable'", () => {
+    const evidence = { scopeMatch: "probable" as const };
+    expect(hasFreshGenericEvidence(evidence, now)).toBe(false);
+  });
+
+  it("returns false when discovery evidence is null", () => {
+    expect(hasFreshGenericEvidence(null, now)).toBe(false);
+  });
+
+  it("returns false when discovery evidence is undefined", () => {
+    expect(hasFreshGenericEvidence(undefined, now)).toBe(false);
+  });
+
+  it("returns false when discovery evidence has no scopeMatch", () => {
+    const evidence = { verified: true };
+    expect(hasFreshGenericEvidence(evidence, now)).toBe(false);
+  });
+
+  it("returns false when discovery evidence is malformed (non-object)", () => {
+    expect(hasFreshGenericEvidence("generic", now)).toBe(false);
+    expect(hasFreshGenericEvidence(42, now)).toBe(false);
+    expect(hasFreshGenericEvidence(true, now)).toBe(false);
+  });
+
+  it("reads top-level scopeMatch from evidence (not outcome.scopeMatch)", () => {
+    // hasFreshGenericEvidence uses readCategoryDiscoveryEvidence which reads top-level scopeMatch
+    // outcome.scopeMatch is used by isScopedCategoryFeed, not here
+    const evidenceExact = {
+      scopeMatch: "exact" as const,
+      outcome: { scopeMatch: "generic" as const },
+    };
+    expect(hasFreshGenericEvidence(evidenceExact, now)).toBe(false);
+
+    const evidenceGeneric = {
+      scopeMatch: "generic" as const,
+      outcome: { scopeMatch: "exact" as const },
+    };
+    expect(hasFreshGenericEvidence(evidenceGeneric, now)).toBe(true);
+  });
+
+  it("handles outcome as non-object (falls back to top-level scopeMatch)", () => {
+    const evidence = {
+      scopeMatch: "generic" as const,
+      outcome: "generic" as unknown,
+    };
+    expect(hasFreshGenericEvidence(evidence, now)).toBe(true);
+  });
+});
+
+describe("isScopedCategoryFeed – generic fallback edge cases", () => {
+  it("returns false for outcome.scopeMatch 'generic' even when legacy scopeMatch is 'exact'", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://telex.hu/rovat/belfold/",
+        "https://telex.hu/rss",
+        {
+          scopeMatch: "exact",
+          outcome: { scopeMatch: "generic" },
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it("returns true for outcome.scopeMatch 'exact' even when legacy scopeMatch is 'generic'", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://telex.hu/rovat/belfold/",
+        "https://telex.hu/rovat/belfold/rss",
+        {
+          scopeMatch: "generic",
+          outcome: { scopeMatch: "exact" },
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false for root feed URLs with generic scopeMatch", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://example.com/politics",
+        "https://example.com/rss",
+        { scopeMatch: "generic" },
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when no feedUrl provided", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://example.com/politics",
+        null,
+        { scopeMatch: "generic" },
+      ),
+    ).toBe(false);
+  });
+
+  it("returns true for scoped feed URL path matching category path", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://www.independent.ie/sport/gaelic-games/",
+        "https://www.independent.ie/sport/gaelic-games/rss/",
+        {},
+      ),
+    ).toBe(true);
   });
 });

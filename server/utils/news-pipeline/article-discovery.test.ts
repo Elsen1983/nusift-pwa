@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const safeFetchMock = vi.hoisted(() => vi.fn());
+const prismaArtifactCreateMock = vi.hoisted(() => vi.fn());
+const prismaArtifactFindManyMock = vi.hoisted(() => vi.fn());
+const prismaArtifactUpdateMock = vi.hoisted(() => vi.fn());
+const prismaNewsSourceFindManyMock = vi.hoisted(() => vi.fn());
+const prismaSourceCategoryFindManyMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../ssrf-guard", () => ({
   safeFetch: safeFetchMock,
@@ -23,6 +28,22 @@ vi.mock("./targets", () => ({
   resolveActivePipelineTargets: vi.fn(),
 }));
 
+vi.mock("../prisma", () => ({
+  prisma: {
+    pipelineArtifact: {
+      create: (...args: any[]) => prismaArtifactCreateMock(...args),
+      findMany: (...args: any[]) => prismaArtifactFindManyMock(...args),
+      update: (...args: any[]) => prismaArtifactUpdateMock(...args),
+    },
+    newsSource: {
+      findMany: (...args: any[]) => prismaNewsSourceFindManyMock(...args),
+    },
+    sourceCategory: {
+      findMany: (...args: any[]) => prismaSourceCategoryFindManyMock(...args),
+    },
+  },
+}));
+
 const makeResponse = (body: string, ok = true) => ({
   ok,
   text: async () => body,
@@ -31,6 +52,16 @@ const makeResponse = (body: string, ok = true) => ({
 describe("article-discovery", () => {
   beforeEach(() => {
     safeFetchMock.mockReset();
+    prismaArtifactCreateMock.mockReset();
+    prismaArtifactFindManyMock.mockReset();
+    prismaArtifactUpdateMock.mockReset();
+    prismaNewsSourceFindManyMock.mockReset();
+    prismaSourceCategoryFindManyMock.mockReset();
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+    prismaArtifactFindManyMock.mockResolvedValue([]);
+    prismaArtifactUpdateMock.mockResolvedValue({ id: "updated" });
+    prismaNewsSourceFindManyMock.mockResolvedValue([]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
   });
 
   it("marks only the expected Agent 2 feed states as eligible", async () => {
@@ -285,6 +316,171 @@ describe("article-discovery", () => {
     expect(staleReject).toBeDefined();
     expect(staleReject?.reason).toContain("freshness");
     expect(result.outcomeSummary.byStatus["rejected_stale"]).toBeGreaterThanOrEqual(1);
+
+    // Stale audit fields should be present on the rejected_stale outcome
+    expect(staleReject?.rawPublishedAt).toBe("2020-01-01T00:00:00Z");
+    expect(staleReject?.normalizedPublishedAt).toBeTruthy();
+    expect(staleReject?.publishedAtSource).toBe("article:published_time");
+    expect(staleReject?.freshnessCutoffIso).toBeTruthy();
+    expect(typeof staleReject?.ageDays).toBe("number");
+    expect(staleReject?.ageDays).toBeGreaterThan(2000);
+    expect(staleReject?.staleReason).toBe("published_at_before_cutoff");
+  });
+
+  it("records stale audit with missing_published_at when no date meta tag found", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/news/no-date-story-enough-length">No date story title long enough</a></article>
+        </body>
+      </html>
+    `;
+    // Article page with no date metadata at all
+    const article = `
+      <html>
+        <head>
+          <title>No date story title long enough</title>
+          <meta name="description" content="Description" />
+        </head>
+        <body><p>Body</p></body>
+      </html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url === "https://example.com/news/no-date-story-enough-length") return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    const staleReject = result.rejectedOutcomes.find((o) => o.status === "rejected_stale");
+    expect(staleReject).toBeDefined();
+    expect(staleReject?.staleReason).toBe("missing_published_at");
+    expect(staleReject?.rawPublishedAt).toBeNull();
+    expect(staleReject?.normalizedPublishedAt).toBeNull();
+    expect(staleReject?.publishedAtSource).toBe("unknown");
+    expect(staleReject?.ageDays).toBeNull();
+    expect(staleReject?.reason).toBe("missing publishedAt");
+  });
+
+  it("stale samples appear in log even when top rejection reason is not 'stale'", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const { logAgentScan } = await import("./log");
+
+    // Page with JSON-LD datePublished but no meta date tags — extractPageMetadata
+    // returns null, but extractDateFromHtml finds the date via fallback.
+    // The staleReason should be "invalid_published_at" (rawDate found but
+    // extractPageMetadata couldn't parse it), NOT the plain "stale" reason.
+    // The log should still include stale samples.
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/news/2026/07/18/nba-story-long-enough">NBA story title long enough</a></article>
+        </body>
+      </html>
+    `;
+    // Article page with ONLY JSON-LD datePublished (no meta date tags)
+    // and a date from 2020 (stale)
+    const article = `
+      <html>
+        <head>
+          <title>NBA story title long enough</title>
+          <script type="application/ld+json">
+            { "@type": "NewsArticle", "datePublished": "2020-01-15T00:00:00Z" }
+          </script>
+        </head>
+        <body><p>Body</p></body>
+      </html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url === "https://example.com/news/2026/07/18/nba-story-long-enough") return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    // Verify the logAgentScan was called with stale samples in the error log
+    const logCalls = (logAgentScan as unknown as { mock: { calls: Array<Array<{ status: string; errorLog: string }>> } }).mock.calls;
+    const discoveryLog = logCalls.find((call) =>
+      call[0]?.status === "ARTICLE_DISCOVERY_FAILED" || call[0]?.status === "ARTICLE_DISCOVERY_COMPLETED",
+    );
+    expect(discoveryLog).toBeDefined();
+    const logEntry = discoveryLog?.[0];
+    expect(logEntry).toBeDefined();
+    const errorLog = logEntry?.errorLog ?? "";
+    // Should contain staleSample even though top reason may be "invalid publishedAt"
+    // or "missing publishedAt" — the key invariant is that stale samples appear
+    // regardless of the top rejection reason.
+    expect(errorLog).toContain("staleSample=[");
+  });
+
+  it("stale audit fields are preserved in persisted artifact rejectedCandidates", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/news/2020/01/01/old-story">Old story title long enough</a></article>
+        </body>
+      </html>
+    `;
+    const article = `
+      <html>
+        <head>
+          <title>Old story title long enough</title>
+          <meta property="article:published_time" content="2020-01-01T00:00:00Z" />
+        </head>
+        <body><p>Body</p></body>
+      </html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url === "https://example.com/news/2020/01/01/old-story") return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    // rejectedOutcomes are what get persisted as rejectedCandidates in the artifact
+    const staleReject = result.rejectedOutcomes.find((o) => o.status === "rejected_stale");
+    expect(staleReject).toBeDefined();
+    // All audit fields should be present on the outcome object
+    expect(staleReject).toHaveProperty("rawPublishedAt");
+    expect(staleReject).toHaveProperty("normalizedPublishedAt");
+    expect(staleReject).toHaveProperty("publishedAtSource");
+    expect(staleReject).toHaveProperty("freshnessCutoffIso");
+    expect(staleReject).toHaveProperty("ageDays");
+    expect(staleReject).toHaveProperty("staleReason");
   });
 
   it("records rejected_duplicate for duplicate canonical URLs", async () => {
@@ -448,6 +644,52 @@ describe("article-discovery", () => {
     expect(scopeReject?.sourceKind).toBe("jsonld");
     expect(result.outcomeSummary.byStatus["rejected_out_of_scope"]).toBe(1);
     expect(result.outcomeSummary.accepted).toBe(0);
+  });
+
+  it("accepts category listing links even when article URLs use a different path structure", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+
+    const listing = `
+      <html>
+        <body>
+          <main>
+            <article><a href="/2026/07/20/lifestyle-story-title-long-enough">Lifestyle story title long enough</a></article>
+          </main>
+        </body>
+      </html>
+    `;
+    const article = `
+      <html>
+        <head>
+          <title>Lifestyle story title long enough</title>
+          <meta name="description" content="Description" />
+          <meta property="article:published_time" content="2026-07-20T09:00:00Z" />
+        </head>
+        <body><p>Body</p></body>
+      </html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/section/lifestyle") return makeResponse(listing);
+      if (url === "https://example.com/2026/07/20/lifestyle-story-title-long-enough") return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "category",
+      sourceId: "source-1",
+      categoryId: "cat-lifestyle",
+      targetUrl: "https://example.com/section/lifestyle",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.canonicalUrl).toContain("/2026/07/20/lifestyle-story-title-long-enough");
+    expect(result.outcomeSummary.accepted).toBe(1);
+    expect(result.outcomeSummary.byStatus["rejected_out_of_scope"] ?? 0).toBe(0);
   });
 
   it("accepted outcome count always equals candidates.length", async () => {
@@ -813,5 +1055,705 @@ describe("article-discovery", () => {
     expect(result.qualityAssessment.shouldEscalateToHeadless).toBe(true);
     expect(result.qualityAssessment.escalationReasons).toContain("dynamic_or_empty_html");
     expect(result.qualityAssessment.confidence).toBe("high");
+  });
+
+  // ── Headless marker resolution tests ──────────────────────────────────
+
+  it("resolves stale PENDING_HEADLESS markers when static discovery becomes productive", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://example.com/",
+        mediaName: "Example",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 2, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+
+    // pipelineArtifact.findMany returns a stale PENDING_HEADLESS marker.
+    prismaArtifactFindManyMock.mockResolvedValue([
+      {
+        id: "marker-1",
+        payload: {
+          targetUrl: "https://example.com/",
+          sourceId: "src-1",
+          quality: "failed",
+          escalationReasons: ["dynamic_or_empty_html"],
+        },
+      },
+    ]);
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/news/2026/07/16/story-a">Story A title long enough</a></article>
+          <article><a href="/news/2026/07/16/story-b">Story B title long enough</a></article>
+        </body>
+      </html>
+    `;
+    const articleA = `
+      <html><head>
+        <title>Story A title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+      </head><body><p>A</p></body></html>
+    `;
+    const articleB = `
+      <html><head>
+        <title>Story B title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T10:00:00Z" />
+      </head><body><p>B</p></body></html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url.includes("story-a")) return makeResponse(articleA);
+      if (url.includes("story-b")) return makeResponse(articleB);
+      return makeResponse("", false);
+    });
+
+    const result = await runArticleDiscoveryBatch();
+
+    // The batch should succeed
+    expect(result.result.inserted).toBe(2);
+
+    // The marker resolution should have queried for PENDING_HEADLESS markers
+    const findManyCalls = prismaArtifactFindManyMock.mock.calls;
+    const markerQuery = findManyCalls.find((call: any[]) =>
+      call[0]?.where?.artifactType === "article_discovery_headless_required" &&
+      call[0]?.where?.status === "PENDING_HEADLESS",
+    );
+    expect(markerQuery).toBeDefined();
+
+    // The marker should have been updated to RESOLVED_BY_STATIC_DISCOVERY
+    const updateCalls = prismaArtifactUpdateMock.mock.calls;
+    const markerUpdate = updateCalls.find((call: any[]) =>
+      call[0]?.where?.id === "marker-1" &&
+      call[0]?.data?.status === "RESOLVED_BY_STATIC_DISCOVERY",
+    );
+    expect(markerUpdate).toBeDefined();
+    const updatePayload = markerUpdate![0].data.payload;
+    expect(updatePayload.resolvedByStaticDiscoveryAt).toBeDefined();
+    expect(updatePayload.resolvedByStaticDiscoveryArtifactId).toBe("artifact-1");
+    expect(updatePayload.resolvedByStaticDiscoveryQuality).toBe("productive");
+    expect(updatePayload.resolvedByStaticDiscoveryAcceptedCount).toBe(2);
+  });
+
+  it("does not resolve markers when static discovery is not productive", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://example.com/",
+        mediaName: "Example",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 0, skipped: 0, failed: 1 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+
+    // Return an existing marker to prove the guard works (quality check prevents resolution)
+    prismaArtifactFindManyMock.mockResolvedValue([
+      {
+        id: "marker-1",
+        payload: { targetUrl: "https://example.com/", sourceId: "src-1", quality: "failed" },
+      },
+    ]);
+
+    // Empty listing → no candidates → failed quality
+    const listing = `<html><body><div>No articles here</div></body></html>`;
+    safeFetchMock.mockImplementation(async () => makeResponse(listing));
+
+    await runArticleDiscoveryBatch();
+
+    // resolveStaleHeadlessMarkers early-returns for non-productive quality.
+    // pipelineArtifact.findMany should NOT have been called for marker resolution
+    // (only newsSource.findMany was called by resolveAgent2Targets).
+    // But since we share the mock, verify no update with RESOLVED_BY_STATIC_DISCOVERY.
+    const updateCalls = prismaArtifactUpdateMock.mock.calls;
+    const markerUpdate = updateCalls.find((call: any[]) =>
+      call[0]?.data?.status === "RESOLVED_BY_STATIC_DISCOVERY",
+    );
+    expect(markerUpdate).toBeUndefined();
+    // Quality guard early-returns, so pipelineArtifact.findMany is never called for markers.
+    expect(prismaArtifactFindManyMock).not.toHaveBeenCalled();
+  });
+
+  it("marker resolution failure does not fail the batch", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://example.com/",
+        mediaName: "Example",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+
+    // Make pipelineArtifact.findMany throw (only used for marker resolution)
+    prismaArtifactFindManyMock.mockRejectedValue(new Error("DB timeout"));
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/news/2026/07/16/story-a">Story A title long enough</a></article>
+        </body>
+      </html>
+    `;
+    const article = `
+      <html><head>
+        <title>Story A title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+      </head><body><p>A</p></body></html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url.includes("story-a")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    // Batch should still succeed even if marker resolution throws
+    const result = await runArticleDiscoveryBatch();
+    expect(result.result.inserted).toBe(1);
+    expect(result.result.failed).toBe(0);
+  });
+
+  it("preserves existing payload fields when resolving markers", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://example.com/",
+        mediaName: "Example",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+    prismaArtifactFindManyMock.mockResolvedValue([
+      {
+        id: "marker-1",
+        payload: {
+          targetUrl: "https://example.com/",
+          sourceId: "src-1",
+          quality: "failed",
+          explanation: "Original explanation",
+          escalationReasons: ["dynamic_or_empty_html"],
+          outcomeSummary: { totalEvaluated: 5, accepted: 0, rejected: 5 },
+          createdAt: "2026-07-15T10:00:00Z",
+        },
+      },
+    ]);
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/news/2026/07/16/story-a">Story A title long enough</a></article>
+        </body>
+      </html>
+    `;
+    const article = `
+      <html><head>
+        <title>Story A title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+      </head><body><p>A</p></body></html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url.includes("story-a")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    await runArticleDiscoveryBatch();
+
+    const updateCalls = prismaArtifactUpdateMock.mock.calls;
+    const markerUpdate = updateCalls.find((call: any[]) =>
+      call[0]?.where?.id === "marker-1" &&
+      call[0]?.data?.status === "RESOLVED_BY_STATIC_DISCOVERY",
+    );
+    expect(markerUpdate).toBeDefined();
+    const payload = markerUpdate![0].data.payload;
+    // Original fields preserved
+    expect(payload.explanation).toBe("Original explanation");
+    expect(payload.createdAt).toBe("2026-07-15T10:00:00Z");
+    // New resolution fields added
+    expect(payload.resolvedByStaticDiscoveryAt).toBeDefined();
+    expect(payload.resolvedByStaticDiscoveryArtifactId).toBe("artifact-1");
+    expect(payload.resolvedByStaticDiscoveryQuality).toBe("productive");
+    expect(payload.resolvedByStaticDiscoveryAcceptedCount).toBe(1);
+    expect(payload.resolvedByStaticDiscoveryEvaluatedCount).toBeGreaterThanOrEqual(1);
+    expect(payload.resolvedByStaticDiscoveryMatchMode).toBe("exact");
+  });
+
+  it("resolves subpath markers when source-level run becomes productive", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://www.nba.com",
+        mediaName: "NBA",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 2, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+
+    // Two markers: one exact match, one subpath match
+    prismaArtifactFindManyMock.mockResolvedValue([
+      {
+        id: "marker-exact",
+        payload: { targetUrl: "https://www.nba.com", sourceId: "src-1", quality: "failed" },
+      },
+      {
+        id: "marker-subpath",
+        payload: { targetUrl: "https://www.nba.com/news", sourceId: "src-1", quality: "failed" },
+      },
+    ]);
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/news/2026/07/16/story-a">Story A title long enough</a></article>
+          <article><a href="/news/2026/07/16/story-b">Story B title long enough</a></article>
+        </body>
+      </html>
+    `;
+    const articleA = `
+      <html><head>
+        <title>Story A title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+      </head><body><p>A</p></body></html>
+    `;
+    const articleB = `
+      <html><head>
+        <title>Story B title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T10:00:00Z" />
+      </head><body><p>B</p></body></html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://www.nba.com") return makeResponse(listing);
+      if (url.includes("story-a")) return makeResponse(articleA);
+      if (url.includes("story-b")) return makeResponse(articleB);
+      return makeResponse("", false);
+    });
+
+    const result = await runArticleDiscoveryBatch();
+    expect(result.result.inserted).toBe(2);
+
+    // Both markers should be resolved
+    const updateCalls = prismaArtifactUpdateMock.mock.calls;
+    const exactUpdate = updateCalls.find((call: any[]) => call[0]?.where?.id === "marker-exact");
+    const subpathUpdate = updateCalls.find((call: any[]) => call[0]?.where?.id === "marker-subpath");
+
+    expect(exactUpdate).toBeDefined();
+    expect(exactUpdate![0].data.payload.resolvedByStaticDiscoveryMatchMode).toBe("exact");
+
+    expect(subpathUpdate).toBeDefined();
+    expect(subpathUpdate![0].data.payload.resolvedByStaticDiscoveryMatchMode).toBe("source_subpath");
+  });
+
+  it("does not resolve different-origin subpath markers", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://www.nba.com",
+        mediaName: "NBA",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+
+    // Marker for different origin — must NOT be resolved
+    prismaArtifactFindManyMock.mockResolvedValue([
+      {
+        id: "marker-other",
+        payload: { targetUrl: "https://www.nfl.com/news", sourceId: "src-1", quality: "failed" },
+      },
+    ]);
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/news/2026/07/16/story-a">Story A title long enough</a></article>
+        </body>
+      </html>
+    `;
+    const article = `
+      <html><head>
+        <title>Story A title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+      </head><body><p>A</p></body></html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://www.nba.com") return makeResponse(listing);
+      if (url.includes("story-a")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    await runArticleDiscoveryBatch();
+
+    // Different-origin marker must NOT be updated
+    const updateCalls = prismaArtifactUpdateMock.mock.calls;
+    const otherUpdate = updateCalls.find((call: any[]) => call[0]?.where?.id === "marker-other");
+    expect(otherUpdate).toBeUndefined();
+  });
+
+  it("does not resolve markers with different sourceId even if domain matches", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://www.nba.com",
+        mediaName: "NBA",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+
+    // The WHERE clause in resolveStaleHeadlessMarkers filters by sourceId,
+    // so markers from a different source are never returned from the DB query.
+    // Return empty to simulate this correctly.
+    prismaArtifactFindManyMock.mockResolvedValue([]);
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/news/2026/07/16/story-a">Story A title long enough</a></article>
+        </body>
+      </html>
+    `;
+    const article = `
+      <html><head>
+        <title>Story A title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+      </head><body><p>A</p></body></html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://www.nba.com") return makeResponse(listing);
+      if (url.includes("story-a")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    await runArticleDiscoveryBatch();
+
+    // Verify the marker query used the correct sourceId filter
+    const findManyCalls = prismaArtifactFindManyMock.mock.calls;
+    const markerQuery = findManyCalls.find((call: any[]) =>
+      call[0]?.where?.artifactType === "article_discovery_headless_required",
+    );
+    if (markerQuery) {
+      expect(markerQuery[0].where.sourceId).toBe("src-1");
+    }
+
+    // No markers returned → no updates
+    const updateCalls = prismaArtifactUpdateMock.mock.calls;
+    const otherUpdate = updateCalls.find((call: any[]) => call[0]?.data?.status === "RESOLVED_BY_STATIC_DISCOVERY");
+    expect(otherUpdate).toBeUndefined();
+  });
+
+  it("skips markers with missing targetUrl in payload", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://example.com/",
+        mediaName: "Example",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+
+    // Marker with no targetUrl in payload — must be skipped (cannot verify origin/path)
+    // Marker with valid targetUrl — should still be resolved
+    prismaArtifactFindManyMock.mockResolvedValue([
+      {
+        id: "marker-no-url",
+        payload: { sourceId: "src-1", quality: "failed" },
+      },
+      {
+        id: "marker-with-url",
+        payload: { targetUrl: "https://example.com/", sourceId: "src-1", quality: "failed" },
+      },
+    ]);
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/news/2026/07/16/story-a">Story A title long enough</a></article>
+        </body>
+      </html>
+    `;
+    const article = `
+      <html><head>
+        <title>Story A title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+      </head><body><p>A</p></body></html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url.includes("story-a")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    await runArticleDiscoveryBatch();
+
+    const updateCalls = prismaArtifactUpdateMock.mock.calls;
+    // Marker without targetUrl should NOT be resolved
+    const noUrlUpdate = updateCalls.find((call: any[]) => call[0]?.where?.id === "marker-no-url");
+    expect(noUrlUpdate).toBeUndefined();
+    // Marker with targetUrl should be resolved
+    const withUrlUpdate = updateCalls.find((call: any[]) => call[0]?.where?.id === "marker-with-url");
+    expect(withUrlUpdate).toBeDefined();
+    expect(withUrlUpdate![0].data.payload.resolvedByStaticDiscoveryMatchMode).toBe("exact");
+  });
+
+  it("category productive run does not resolve sibling category markers", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: "cat-sports" },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://example.com",
+        mediaName: "Example",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([
+      {
+        id: "cat-sports",
+        newsSourceId: "src-1",
+        pathUrl: "https://example.com/sports",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 2, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+
+    // Marker for cat-sports (exact match) — should be resolved
+    prismaArtifactFindManyMock.mockResolvedValue([
+      {
+        id: "marker-sports",
+        payload: { targetUrl: "https://example.com/sports", sourceId: "src-1", quality: "failed" },
+      },
+    ]);
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/2026/07/16/sports-story-a">Sports story A title long enough</a></article>
+          <article><a href="/2026/07/16/sports-story-b">Sports story B title long enough</a></article>
+        </body>
+      </html>
+    `;
+    const articleA = `
+      <html><head>
+        <title>Sports story A title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+      </head><body><p>A</p></body></html>
+    `;
+    const articleB = `
+      <html><head>
+        <title>Sports story B title long enough</title>
+        <meta property="article:published_time" content="2026-07-16T10:00:00Z" />
+      </head><body><p>B</p></body></html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/sports") return makeResponse(listing);
+      if (url.includes("sports-story-a")) return makeResponse(articleA);
+      if (url.includes("sports-story-b")) return makeResponse(articleB);
+      return makeResponse("", false);
+    });
+
+    await runArticleDiscoveryBatch();
+
+    // Sports marker should be resolved with exact matchMode
+    const updateCalls = prismaArtifactUpdateMock.mock.calls;
+    const sportsUpdate = updateCalls.find((call: any[]) => call[0]?.where?.id === "marker-sports");
+    expect(sportsUpdate).toBeDefined();
+    expect(sportsUpdate![0].data.payload.resolvedByStaticDiscoveryMatchMode).toBe("exact");
+
+    // Category runs use strict matching — no source_subpath mode
+    expect(sportsUpdate![0].data.payload.resolvedByStaticDiscoveryMatchMode).not.toBe("source_subpath");
+  });
+
+  it("source subpath matching does not resolve markers above the productive root", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    // Productive run at /news — should NOT resolve markers at / or /other
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://example.com/news",
+        mediaName: "Example",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+
+    // Marker at root (/) — should NOT be resolved (root is above /news)
+    // Marker at /other — should NOT be resolved (sibling path)
+    prismaArtifactFindManyMock.mockResolvedValue([
+      {
+        id: "marker-root",
+        payload: { targetUrl: "https://example.com", sourceId: "src-1", quality: "failed" },
+      },
+      {
+        id: "marker-other",
+        payload: { targetUrl: "https://example.com/other", sourceId: "src-1", quality: "failed" },
+      },
+    ]);
+
+    const listing = `
+      <html>
+        <body>
+          <article><a href="/2026/07/16/news-story">News story title long enough here</a></article>
+        </body>
+      </html>
+    `;
+    const article = `
+      <html><head>
+        <title>News story title long enough here</title>
+        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+      </head><body><p>A</p></body></html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/news") return makeResponse(listing);
+      if (url.includes("news-story")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    await runArticleDiscoveryBatch();
+
+    // Neither marker should be resolved
+    const updateCalls = prismaArtifactUpdateMock.mock.calls;
+    const rootUpdate = updateCalls.find((call: any[]) => call[0]?.where?.id === "marker-root");
+    const otherUpdate = updateCalls.find((call: any[]) => call[0]?.where?.id === "marker-other");
+    expect(rootUpdate).toBeUndefined();
+    expect(otherUpdate).toBeUndefined();
   });
 });

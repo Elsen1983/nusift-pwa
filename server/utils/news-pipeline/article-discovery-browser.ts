@@ -205,9 +205,24 @@ function scoreAndFilterBrowserLinks(
 
 // ─── Playwright Loader (lazy) ───────────────────────────────────────────────
 
+type OptionalDependencyImporter = (specifier: string) => Promise<any>;
+
+const defaultOptionalDependencyImporter = new Function(
+  "specifier",
+  "return import(specifier)",
+) as OptionalDependencyImporter;
+
+let importOptionalDependency = defaultOptionalDependencyImporter;
+
+export function setArticleDiscoveryBrowserImporterForTest(
+  importer: OptionalDependencyImporter | null,
+) {
+  importOptionalDependency = importer ?? defaultOptionalDependencyImporter;
+}
+
 async function launchBrowser(): Promise<any | null> {
   try {
-    const playwright = await import("playwright" as string);
+    const playwright = await importOptionalDependency("playwright");
     return await playwright.chromium.launch({ headless: true });
   } catch {
     return null;
