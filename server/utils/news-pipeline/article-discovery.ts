@@ -216,10 +216,12 @@ const extractListingArticleLinks = (
   pageUrl: string,
   categoryPathUrl?: string | null,
 ) => {
-  const links = new Set<string>();
+  const links = new Map<string, { url: string; score: number; order: number }>();
   const htmlLinks = extractHtmlLinkTags(html).filter((link) => link.tagName === "a");
+  let order = 0;
 
   for (const link of htmlLinks) {
+    order += 1;
     const href = link.href;
     if (!href || href.startsWith("#") || href.startsWith("javascript:")) continue;
     try {
@@ -227,14 +229,21 @@ const extractListingArticleLinks = (
       if (links.has(resolved)) continue;
       if (isBlockedDiscoveryPath(resolved)) continue;
       if (!isLikelyArticleLink(resolved, pageUrl)) continue;
-      links.add(resolved);
-      if (links.size >= MAX_LINKS_PER_PAGE) break;
+      const score = scoreCandidateUrl(resolved, pageUrl, {
+        title: link.text || link.title || link.ariaLabel,
+        categoryPathUrl,
+      });
+      if (score.rejected) continue;
+      links.set(resolved, { url: resolved, score: score.score, order });
     } catch {
       continue;
     }
   }
 
-  return [...links];
+  return [...links.values()]
+    .sort((a, b) => b.score - a.score || a.order - b.order)
+    .slice(0, MAX_LINKS_PER_PAGE)
+    .map((link) => link.url);
 };
 
 const extractPaginationLinks = (html: string, pageUrl: string) => {
@@ -754,7 +763,15 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
     allArticleLinks.set(link.url, link);
   }
 
-  const filteredSitemap = filterSitemapArticleUrls(sitemapEntries, target.targetUrl, target.categoryId ? target.targetUrl : null);
+  const filteredSitemap = filterSitemapArticleUrls(sitemapEntries, target.targetUrl, target.categoryId ? target.targetUrl : null)
+    .map((entry) => ({
+      entry,
+      score: scoreCandidateUrl(entry.url, target.targetUrl, {
+        categoryPathUrl: target.categoryId ? target.targetUrl : null,
+      }).score,
+    }))
+    .sort((a, b) => b.score - a.score || a.entry.url.length - b.entry.url.length)
+    .map(({ entry }) => entry);
   for (const entry of filteredSitemap) {
     if (!allArticleLinks.has(entry.url)) {
       allArticleLinks.set(entry.url, { url: entry.url, sourcePageUrl: `sitemap:${target.targetUrl}` });
