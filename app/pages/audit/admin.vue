@@ -65,7 +65,7 @@
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <button
-              v-if="showFullDevTools"
+              v-if="canRunManualPipeline"
               @click="runHardCaseQueue"
               :disabled="isHardCaseQueueRunning"
               class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-2 text-sm font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -73,6 +73,7 @@
               {{ isHardCaseQueueRunning ? "Running..." : "Run hard-case queue" }}
             </button>
             <button
+              v-if="canRunManualPipeline"
               @click="enrichExistingArticles"
               :disabled="isEnrichingExistingArticles"
               class="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm font-bold text-emerald-100 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -80,7 +81,7 @@
               {{ isEnrichingExistingArticles ? "Enriching..." : "Enrich existing articles" }}
             </button>
             <button
-              v-if="showFullDevTools"
+              v-if="canRunArticleDiscovery"
               @click="runArticleDiscovery"
               :disabled="isArticleDiscoveryRunning"
               class="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm font-bold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -88,6 +89,7 @@
               {{ isArticleDiscoveryRunning ? "Discovering..." : "Run article discovery" }}
             </button>
             <button
+              v-if="canRunManualPipeline"
               @click="runManualPipeline"
               :disabled="isPipelineRunning || !canRunManualPipeline"
               class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -246,6 +248,7 @@
 
           <div class="mt-3 flex flex-wrap items-center gap-2">
             <button
+              v-if="canRunManualPipeline"
               @click="inspectHeadlessQueue"
               :disabled="isInspectingHeadless"
               class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-1.5 text-xs font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -253,6 +256,7 @@
               {{ isInspectingHeadless ? "Inspecting..." : "Inspect queue (dry-run)" }}
             </button>
             <button
+              v-if="canRunManualPipeline"
               @click="runHeadlessBrowserFallback"
               :disabled="isRunningHeadlessBrowser"
               class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-xs font-bold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -260,6 +264,7 @@
               {{ isRunningHeadlessBrowser ? "Running..." : "Run browser fallback" }}
             </button>
             <button
+              v-if="canRunManualPipeline"
               @click="recoverStaleHeadless"
               :disabled="isRecoveringHeadless"
               class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -389,6 +394,7 @@
                 Refresh logs
               </button>
               <button
+                v-if="canRunDestructiveActions"
                 @click="clearAgentLogs"
                 :disabled="isClearingLogs"
                 class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -446,6 +452,8 @@ const feedStore = useFeedStore();
 
 const canAccessDevPanel = ref(false);
 const canRunManualPipeline = ref(false);
+const canRunArticleDiscovery = ref(false);
+const canRunDestructiveActions = ref(false);
 const canUseFullDevTools = ref(false);
 const isPipelineRunning = ref(false);
 const isEnrichingExistingArticles = ref(false);
@@ -518,8 +526,8 @@ const toastClass = computed(() =>
 );
 const toastIcon = computed(() => (toast.value.type === "success" ? "check_circle" : "error"));
 const isAdminUser = computed(() => authStore.user?.isAdmin === true || authStore.user?.role === "ADMIN");
-const showAdminPipelinePanel = computed(() => canAccessDevPanel.value && canRunManualPipeline.value);
-const showFullDevTools = computed(() => showAdminPipelinePanel.value && canUseFullDevTools.value);
+const showAdminPipelinePanel = computed(() => canAccessDevPanel.value);
+const showFullDevTools = computed(() => canAccessDevPanel.value && canUseFullDevTools.value);
 
 let devPanelPollTimer: number | null = null;
 const DEV_PANEL_POLL_MS = 10000;
@@ -565,6 +573,8 @@ const checkDevPanelAccess = async () => {
   if (!isAdminUser.value) {
     canAccessDevPanel.value = false;
     canRunManualPipeline.value = false;
+    canRunArticleDiscovery.value = false;
+    canRunDestructiveActions.value = false;
     canUseFullDevTools.value = false;
     stopDevPanelPolling();
     return false;
@@ -580,6 +590,8 @@ const checkDevPanelAccess = async () => {
     if (!response.ok) {
       canAccessDevPanel.value = false;
       canRunManualPipeline.value = false;
+      canRunArticleDiscovery.value = false;
+      canRunDestructiveActions.value = false;
       canUseFullDevTools.value = false;
       stopDevPanelPolling();
       return false;
@@ -589,15 +601,21 @@ const checkDevPanelAccess = async () => {
       ok: boolean;
       canAccess: boolean;
       manualPipelineEnabled?: boolean;
-      devToolsEnabled?: boolean;
+      manualArticleDiscoveryEnabled?: boolean;
+      destructiveActionsEnabled?: boolean;
+      diagnosticsEnabled?: boolean;
     };
     canAccessDevPanel.value = payload.canAccess === true;
     canRunManualPipeline.value = payload.manualPipelineEnabled !== false;
-    canUseFullDevTools.value = payload.devToolsEnabled === true;
+    canRunArticleDiscovery.value = payload.manualArticleDiscoveryEnabled === true;
+    canRunDestructiveActions.value = payload.destructiveActionsEnabled === true;
+    canUseFullDevTools.value = payload.diagnosticsEnabled === true;
     return canAccessDevPanel.value;
   } catch {
     canAccessDevPanel.value = false;
     canRunManualPipeline.value = false;
+    canRunArticleDiscovery.value = false;
+    canRunDestructiveActions.value = false;
     canUseFullDevTools.value = false;
     stopDevPanelPolling();
     return false;
@@ -658,7 +676,7 @@ const refreshDevPanel = async () => {
 };
 
 const clearAgentLogs = async () => {
-  if (!showFullDevTools.value || isClearingLogs.value) return;
+  if (!showFullDevTools.value || !canRunDestructiveActions.value || isClearingLogs.value) return;
   isClearingLogs.value = true;
   try {
     const response = await $api<{ ok: boolean; deletedCount: number; articleCount?: number; artifactCount?: number; runCount?: number }>("/api/dev/agent-logs", {
@@ -692,7 +710,7 @@ const runManualPipeline = async () => {
 };
 
 const runArticleDiscovery = async () => {
-  if (!showFullDevTools.value || isArticleDiscoveryRunning.value) return;
+  if (!showFullDevTools.value || !canRunArticleDiscovery.value || isArticleDiscoveryRunning.value) return;
   isArticleDiscoveryRunning.value = true;
   startDevPanelPolling();
   try {
@@ -735,7 +753,7 @@ const enrichExistingArticles = async () => {
 };
 
 const runHardCaseQueue = async () => {
-  if (!showFullDevTools.value || isHardCaseQueueRunning.value) return;
+  if (!showFullDevTools.value || !canRunManualPipeline.value || isHardCaseQueueRunning.value) return;
   isHardCaseQueueRunning.value = true;
   startDevPanelPolling();
   try {
@@ -757,7 +775,7 @@ const runHardCaseQueue = async () => {
 };
 
 const inspectHeadlessQueue = async () => {
-  if (!showFullDevTools.value || isInspectingHeadless.value) return;
+  if (!showFullDevTools.value || !canRunManualPipeline.value || isInspectingHeadless.value) return;
   isInspectingHeadless.value = true;
   try {
     const response = await $api<{
@@ -778,7 +796,7 @@ const inspectHeadlessQueue = async () => {
 };
 
 const runHeadlessBrowserFallback = async () => {
-  if (!showFullDevTools.value || isRunningHeadlessBrowser.value) return;
+  if (!showFullDevTools.value || !canRunManualPipeline.value || isRunningHeadlessBrowser.value) return;
   isRunningHeadlessBrowser.value = true;
   try {
     const response = await $api<{
@@ -814,7 +832,7 @@ const runHeadlessBrowserFallback = async () => {
 };
 
 const recoverStaleHeadless = async () => {
-  if (!showFullDevTools.value || isRecoveringHeadless.value) return;
+  if (!showFullDevTools.value || !canRunManualPipeline.value || isRecoveringHeadless.value) return;
   isRecoveringHeadless.value = true;
   try {
     const response = await $api<{
@@ -910,6 +928,8 @@ watch(
     if (!userId || !isAdminUser.value) {
       canAccessDevPanel.value = false;
       canRunManualPipeline.value = false;
+      canRunArticleDiscovery.value = false;
+      canRunDestructiveActions.value = false;
       canUseFullDevTools.value = false;
       stopDevPanelPolling();
       return;
@@ -924,6 +944,8 @@ watch(
     if (!isAdmin) {
       canAccessDevPanel.value = false;
       canRunManualPipeline.value = false;
+      canRunArticleDiscovery.value = false;
+      canRunDestructiveActions.value = false;
       canUseFullDevTools.value = false;
       stopDevPanelPolling();
       return;
