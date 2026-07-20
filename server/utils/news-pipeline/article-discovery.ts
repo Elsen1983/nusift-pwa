@@ -33,13 +33,6 @@ const MAX_LINKS_PER_PAGE = 20;
 const MAX_TOTAL_CANDIDATES = 60;
 const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
 
-type ArticleDiscoveryDom = {
-  window: {
-    document: Document;
-    close: () => void;
-  };
-};
-
 export type ArticleDiscoveryTarget = {
   targetType: "source" | "category";
   sourceId: string;
@@ -129,6 +122,73 @@ const normalizePath = (url: string) => {
 // isWithinFreshnessWindow, isBlockedDiscoveryPath, extractPageMetadata,
 // normalizePublishedAt — now imported from article-discovery-helpers
 
+const decodeHtmlAttribute = (value: string) =>
+  value
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+
+const stripTags = (value: string) => value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+
+const extractAttribute = (tag: string, name: string) => {
+  const pattern = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
+  const match = tag.match(pattern);
+  const value = match?.[1] ?? match?.[2] ?? match?.[3];
+  return value ? decodeHtmlAttribute(value.trim()) : null;
+};
+
+const extractTitleFromHtml = (html: string) => {
+  const match = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+  return match?.[1] ? stripTags(decodeHtmlAttribute(match[1])) || null : null;
+};
+
+type HtmlLinkTag = {
+  tag: string;
+  href: string;
+  text: string;
+  tagName: "a" | "link";
+  ariaLabel: string | null;
+  title: string | null;
+};
+
+const extractHtmlLinkTags = (html: string): HtmlLinkTag[] => {
+  const links: HtmlLinkTag[] = [];
+  const anchorPattern = /<a\b[^>]*href\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)[^>]*>[\s\S]*?<\/a>/gi;
+  const linkPattern = /<link\b[^>]*href\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)[^>]*>/gi;
+
+  for (const match of html.matchAll(anchorPattern)) {
+    const tag = match[0];
+    const href = extractAttribute(tag, "href");
+    if (!href) continue;
+    links.push({
+      tag,
+      href,
+      text: stripTags(tag),
+      tagName: "a",
+      ariaLabel: extractAttribute(tag, "aria-label"),
+      title: extractAttribute(tag, "title"),
+    });
+  }
+
+  for (const match of html.matchAll(linkPattern)) {
+    const tag = match[0];
+    const href = extractAttribute(tag, "href");
+    if (!href) continue;
+    links.push({
+      tag,
+      href,
+      text: "",
+      tagName: "link",
+      ariaLabel: extractAttribute(tag, "aria-label"),
+      title: extractAttribute(tag, "title"),
+    });
+  }
+
+  return links;
+};
+
 const isLikelyArticleLink = (href: string, sourceUrl: string) => {
   try {
     const url = new URL(href);
@@ -152,81 +212,54 @@ const isLikelyArticleLink = (href: string, sourceUrl: string) => {
 };
 
 const extractListingArticleLinks = (
-  document: Document,
+  html: string,
   pageUrl: string,
   categoryPathUrl?: string | null,
 ) => {
   const links = new Set<string>();
-  const selectors = [
-    "article a[href]",
-    "main a[href]",
-    "section a[href]",
-    "h1 a[href]",
-    "h2 a[href]",
-    "h3 a[href]",
-    "h4 a[href]",
-    "li a[href]",
-    "a[href]",
-  ];
+  const htmlLinks = extractHtmlLinkTags(html).filter((link) => link.tagName === "a");
 
-  for (const selector of selectors) {
-    const anchors = document.querySelectorAll(selector);
-    for (const anchor of anchors) {
-      const href = anchor.getAttribute("href");
-      if (!href || href.startsWith("#") || href.startsWith("javascript:")) continue;
-      try {
-        const resolved = new URL(href, pageUrl).toString();
-        if (links.has(resolved)) continue;
-        if (isBlockedDiscoveryPath(resolved)) continue;
-        if (!isLikelyArticleLink(resolved, pageUrl)) continue;
-        links.add(resolved);
-        if (links.size >= MAX_LINKS_PER_PAGE) break;
-      } catch {
-        continue;
-      }
+  for (const link of htmlLinks) {
+    const href = link.href;
+    if (!href || href.startsWith("#") || href.startsWith("javascript:")) continue;
+    try {
+      const resolved = new URL(href, pageUrl).toString();
+      if (links.has(resolved)) continue;
+      if (isBlockedDiscoveryPath(resolved)) continue;
+      if (!isLikelyArticleLink(resolved, pageUrl)) continue;
+      links.add(resolved);
+      if (links.size >= MAX_LINKS_PER_PAGE) break;
+    } catch {
+      continue;
     }
-    if (links.size >= MAX_LINKS_PER_PAGE) break;
   }
 
   return [...links];
 };
 
-const extractPaginationLinks = (document: Document, pageUrl: string) => {
+const extractPaginationLinks = (html: string, pageUrl: string) => {
   const links = new Set<string>();
-  const selectors = [
-    'a[rel="next"]',
-    'link[rel="next"]',
-    'a[aria-label*="next" i]',
-    'a[title*="next" i]',
-    'a[aria-label*="older" i]',
-    'a[title*="older" i]',
-    'a[href*="page="]',
-    'a[href*="p="]',
-  ];
+  const htmlLinks = extractHtmlLinkTags(html);
 
-  for (const selector of selectors) {
-    const anchors = document.querySelectorAll(selector);
-    for (const anchor of anchors) {
-      const href = anchor.getAttribute("href");
-      if (!href || href.startsWith("#") || href.startsWith("javascript:")) continue;
-      const isLinkElement = anchor.tagName.toLowerCase() === "link";
-      if (!isLinkElement) {
-        const text = (anchor.textContent || "").toLowerCase();
-        const label = `${text} ${(anchor.getAttribute("aria-label") || "").toLowerCase()} ${(anchor.getAttribute("title") || "").toLowerCase()}`;
-        if (!/next|older|more|page\s*\d+/i.test(label) && !selector.includes("page=")) continue;
-      }
-      try {
-        const resolved = new URL(href, pageUrl).toString();
-        if (isBlockedDiscoveryPath(resolved)) continue;
-        if (new URL(resolved).hostname.replace(/^www\./, "") !== new URL(pageUrl).hostname.replace(/^www\./, "")) continue;
-        links.add(resolved);
-      } catch {
-        continue;
-      }
+  for (const link of htmlLinks) {
+    const href = link.href;
+    if (!href || href.startsWith("#") || href.startsWith("javascript:")) continue;
+    const rel = extractAttribute(link.tag, "rel")?.toLowerCase() || "";
+    const label = `${link.text} ${link.ariaLabel || ""} ${link.title || ""}`.toLowerCase();
+    const looksPaginated = /(?:[?&](?:page|p)=|\/page\/\d+)/i.test(href);
+    const looksNext = rel.split(/\s+/).includes("next") || /next|older|more|page\s*\d+/i.test(label);
+    if (!looksPaginated && !looksNext) continue;
+    try {
+      const resolved = new URL(href, pageUrl).toString();
+      if (isBlockedDiscoveryPath(resolved)) continue;
+      if (new URL(resolved).hostname.replace(/^www\./, "") !== new URL(pageUrl).hostname.replace(/^www\./, "")) continue;
+      links.add(resolved);
+    } catch {
+      continue;
     }
   }
 
-  return [...links];
+  return [...links].slice(0, 2);
 };
 
 const detectListingFetchReason = (input: {
@@ -344,11 +377,17 @@ const crawlListingPages = async (
     }
 
     const html = await response.text();
-    let dom: ArticleDiscoveryDom;
+    let rawLinkCount = 0;
+    let articleLikeLinks: string[] = [];
+    let paginationLinks: string[] = [];
+    let title: string | null = null;
     try {
-      const { JSDOM } = await import("jsdom");
-      dom = new JSDOM(html, { url: pageUrl, contentType: "text/html" });
-    } catch {
+      const htmlLinks = extractHtmlLinkTags(html);
+      rawLinkCount = htmlLinks.filter((link) => link.tagName === "a").length;
+      articleLikeLinks = extractListingArticleLinks(html, pageUrl, categoryPathUrl);
+      paginationLinks = extractPaginationLinks(html, pageUrl);
+      title = extractTitleFromHtml(html);
+    } catch (error: any) {
       diagnostics.push({
         url: pageUrl,
         finalUrl: response.url || null,
@@ -360,7 +399,7 @@ const crawlListingPages = async (
         articleLikeLinkCount: 0,
         paginationLinkCount: 0,
         reason: "parser_error",
-        hints: ["jsdom parser failed"],
+        hints: [`html parser failed: ${String(error?.message || error).slice(0, 80)}`],
       });
       continue;
     }
@@ -368,10 +407,6 @@ const crawlListingPages = async (
     // Capture first page HTML for downstream JSON-LD extraction (avoids double fetch)
     if (!firstPageHtml) firstPageHtml = html;
 
-    const rawLinkCount = dom.window.document.querySelectorAll("a[href]").length;
-    const articleLikeLinks = extractListingArticleLinks(dom.window.document, pageUrl, categoryPathUrl);
-    const paginationLinks = extractPaginationLinks(dom.window.document, pageUrl);
-    const title = (dom.window.document.querySelector("title")?.textContent || "").trim() || null;
     const reason = detectListingFetchReason({
       ok: response.ok,
       contentType,
@@ -407,8 +442,6 @@ const crawlListingPages = async (
         queue.push(nextLink);
       }
     }
-
-    dom.window.close();
   }
 
   return { visitedPages, articleLinks: [...articleLinks.values()], firstPageHtml, diagnostics };
