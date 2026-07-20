@@ -40,17 +40,25 @@
               class="absolute top-full mt-1 left-0 w-full z-[60] shadow-xl bg-surface-container-highest border border-outline-variant/30 rounded-lg space-y-1 p-3 pt-2"
             >
               <div
-                v-for="option in visibleDateOptions"
+                v-for="option in dateOptions"
                 :key="option.key"
                 @click="selectDate(option.key)"
-                class="text-[13px] font-bold text-on-surface-variant/90 transition-colors py-1 hover:text-primary-container cursor-pointer"
+                :class="[
+                  'flex items-center justify-between gap-2 text-[13px] font-bold transition-colors py-1',
+                  isDateOptionLocked(option.key)
+                    ? 'cursor-not-allowed text-on-surface-variant/40'
+                    : 'cursor-pointer text-on-surface-variant/90 hover:text-primary-container',
+                ]"
               >
-                {{ $t("dashboard.filters.dates." + option.key) }}
-                <span
-                  v-if="option.isPro"
-                  class="material-symbols-outlined text-[12px] ml-1 align-text-bottom text-primary-container/70"
-                >
-                  workspace_premium
+                <span>{{ $t("dashboard.filters.dates." + option.key) }}</span>
+                <span class="flex items-center gap-1 text-[10px] uppercase tracking-wider">
+                  <span
+                    v-if="option.isPro"
+                    class="material-symbols-outlined text-[12px] text-primary-container/70"
+                  >
+                    workspace_premium
+                  </span>
+                  <span v-if="isDateOptionLocked(option.key)" class="text-warning/70">Pro</span>
                 </span>
               </div>
             </div>
@@ -333,13 +341,12 @@ const dateOptions = [
   { key: "last_1w", isPro: true },
 ] as const;
 
-const visibleDateOptions = computed(() =>
-  dateOptions.filter((option) => !option.isPro || !isUserFreeTier.value),
-);
+const isDateOptionLocked = (key: string) =>
+  dateOptions.some((option) => option.key === key && option.isPro && isUserFreeTier.value);
 
 const defaultDateKey = computed(() =>
-  visibleDateOptions.value.find((option) => option.key === "last_24h")?.key ||
-  visibleDateOptions.value[0]?.key ||
+  dateOptions.find((option) => option.key === "last_24h" && !isDateOptionLocked(option.key))?.key ||
+  dateOptions.find((option) => !isDateOptionLocked(option.key))?.key ||
   "last_24h",
 );
 
@@ -514,7 +521,8 @@ const toggleSourceDropdown = () => {
 };
 
 const selectDate = (key: string) => {
-  currentSelectedDateKey.value = isAllowedDateKey(key) ? key : defaultDateKey.value;
+  if (!isAllowedDateKey(key)) return;
+  currentSelectedDateKey.value = key;
   isDateDropdownOpen.value = false;
 };
 
@@ -559,7 +567,7 @@ const applyFilters = () => {
 };
 
 watch(
-  [isUserFreeTier, visibleDateOptions],
+  isUserFreeTier,
   () => {
     if (!isAllowedDateKey(currentSelectedDateKey.value)) {
       currentSelectedDateKey.value = defaultDateKey.value;
