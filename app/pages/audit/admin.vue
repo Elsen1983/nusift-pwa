@@ -328,6 +328,15 @@
                     <span v-if="item.headlessRecoveryCount">recovered: {{ item.headlessRecoveryCount }}x</span>
                     <span v-if="item.lastHeadlessRecoveryAt">last recovery: {{ formatLogTime(item.lastHeadlessRecoveryAt) }}</span>
                   </div>
+                  <div v-if="canRunManualPipeline && isRetryableHeadlessStatus(item.status)" class="mt-2">
+                    <button
+                      @click="retryHeadlessQueueItem(item)"
+                      :disabled="retryingHeadlessArtifactId === item.id"
+                      class="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {{ retryingHeadlessArtifactId === item.id ? "Retrying..." : "Retry browser" }}
+                    </button>
+                  </div>
                   <!-- Browser fallback result metadata (compact) -->
                   <div v-if="item.browserFallbackRan" class="mt-2 rounded-lg border border-sky-500/15 bg-sky-500/5 px-2.5 py-1.5">
                     <div class="flex flex-wrap items-center gap-1.5">
@@ -627,6 +636,7 @@ const isClearingLogs = ref(false);
 const isInspectingHeadless = ref(false);
 const isRunningHeadlessBrowser = ref(false);
 const isRecoveringHeadless = ref(false);
+const retryingHeadlessArtifactId = ref<string | null>(null);
 const headlessQueueLoading = ref(false);
 
 const toast = ref({ show: false, message: "", type: "success" as "success" | "error" });
@@ -1103,6 +1113,40 @@ const recoverStaleHeadless = async () => {
     showToast(error?.statusMessage || error?.message || "Stale headless recovery failed.", "error");
   } finally {
     isRecoveringHeadless.value = false;
+  }
+};
+
+const isRetryableHeadlessStatus = (status: string): boolean => {
+  return [
+    "BROWSER_NO_CANDIDATES",
+    "BROWSER_RUNTIME_UNAVAILABLE",
+    "BROWSER_FALLBACK_DISABLED",
+    "HEADLESS_PROCESSING_STALE",
+    "SKIPPED_UNIMPLEMENTED",
+    "INVALID",
+  ].includes(status);
+};
+
+const retryHeadlessQueueItem = async (item: { id: string; targetUrl: string | null; status: string }) => {
+  if (!showFullDevTools.value || !canRunManualPipeline.value || retryingHeadlessArtifactId.value) return;
+  retryingHeadlessArtifactId.value = item.id;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      retryArtifact: { id: string; status: string };
+    }>("/api/dev/retry-article-discovery-headless-queue", {
+      method: "POST",
+      body: {
+        artifactId: item.id,
+        reason: "manual_admin_retry_after_browser_fallback_change",
+      },
+    });
+    showToast(`Retry queued for ${item.targetUrl || item.id}: ${response.retryArtifact.status}. Run browser fallback to process it.`, "success", 3500);
+    await loadHeadlessQueue();
+  } catch (error: any) {
+    showToast(error?.statusMessage || error?.message || "Failed to queue browser retry.", "error");
+  } finally {
+    retryingHeadlessArtifactId.value = null;
   }
 };
 
