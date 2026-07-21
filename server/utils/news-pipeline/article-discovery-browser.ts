@@ -14,9 +14,10 @@
  * - Max 25 links per target
  *
  * ## Lazy import pattern
- * Playwright is imported lazily to avoid breaking environments where it is
- * not installed (e.g., Vercel serverless). If the import fails, the resolver
- * returns `ok: false, reason: "browser_runtime_unavailable"`.
+ * Browser dependencies are imported lazily, but production serverless
+ * dependencies use explicit dynamic imports so Nitro/Vercel can include them
+ * in the function bundle. If the import or launch fails, the resolver returns
+ * `ok: false, reason: "browser_runtime_unavailable"`.
  */
 
 import {
@@ -207,10 +208,21 @@ function scoreAndFilterBrowserLinks(
 
 type OptionalDependencyImporter = (specifier: string) => Promise<any>;
 
-const defaultOptionalDependencyImporter = new Function(
+const hiddenDynamicImporter = new Function(
   "specifier",
   "return import(specifier)",
 ) as OptionalDependencyImporter;
+
+async function defaultOptionalDependencyImporter(specifier: string): Promise<any> {
+  if (specifier === "playwright-core") {
+    return await import("playwright-core");
+  }
+  if (specifier === "@sparticuz/chromium") {
+    return await import("@sparticuz/chromium");
+  }
+
+  return await hiddenDynamicImporter(specifier);
+}
 
 let importOptionalDependency = defaultOptionalDependencyImporter;
 
