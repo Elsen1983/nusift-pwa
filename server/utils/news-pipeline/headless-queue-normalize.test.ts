@@ -922,6 +922,23 @@ describe("normalizeHeadlessQueueArtifact — browser fallback fields", () => {
     expect(result.browserError).toBe("Candidate persistence failed: connection lost");
   });
 
+  it("normalizes browser rate-limit cooldown fields", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserBlockedReason: "http_429",
+        browserRateLimitedAt: "2026-07-21T20:00:00.000Z",
+        browserRetryAfterAt: "2026-07-21T21:00:00.000Z",
+        browserRateLimitedCount: 2,
+      },
+    });
+
+    expect(result.browserBlockedReason).toBe("http_429");
+    expect(result.browserRateLimitedAt).toBe("2026-07-21T20:00:00.000Z");
+    expect(result.browserRetryAfterAt).toBe("2026-07-21T21:00:00.000Z");
+    expect(result.browserRateLimitedCount).toBe(2);
+  });
+
   it("normalizes browserFallbackRan string 'true' to false", () => {
     const result = normalizeHeadlessQueueArtifact({
       ...baseArtifact,
@@ -1151,6 +1168,10 @@ describe("buildHeadlessQueueSummary", () => {
     browserFailed: null,
     browserTopRejectionReasons: [] as Array<{ reason: string; count: number }>,
     browserError: null,
+    browserBlockedReason: null,
+    browserRateLimitedAt: null,
+    browserRetryAfterAt: null,
+    browserRateLimitedCount: null,
     browserQualityAssessment: null,
     renderedUrl: null,
     browserShortlistedLinks: null as number | null,

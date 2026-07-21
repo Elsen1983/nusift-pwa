@@ -4,6 +4,7 @@ const mockRequireAdminId = vi.fn();
 const mockAssertRateLimit = vi.fn();
 const mockReadBody = vi.fn();
 const mockFindUnique = vi.fn();
+const mockFindFirst = vi.fn();
 const mockArtifactCreate = vi.fn();
 const mockRunCreate = vi.fn();
 
@@ -41,6 +42,7 @@ vi.mock("../../utils/prisma", () => ({
   prisma: {
     pipelineArtifact: {
       findUnique: (...args: any[]) => mockFindUnique(...args),
+      findFirst: (...args: any[]) => mockFindFirst(...args),
       create: (...args: any[]) => mockArtifactCreate(...args),
     },
     pipelineRun: {
@@ -56,6 +58,7 @@ describe("POST /api/dev/retry-article-discovery-headless-queue", () => {
     mockRequireAdminId.mockResolvedValue("admin-1");
     mockAssertRateLimit.mockResolvedValue(undefined);
     mockReadBody.mockResolvedValue({ artifactId: "artifact-1" });
+    mockFindFirst.mockResolvedValue(null);
     mockFindUnique.mockResolvedValue({
       id: "artifact-1",
       artifactType: "article_discovery_headless_required",
@@ -169,5 +172,72 @@ describe("POST /api/dev/retry-article-discovery-headless-queue", () => {
       statusCode: 400,
       statusMessage: "Cannot retry artifact with missing targetUrl or sourceId.",
     });
+  });
+
+  it("blocks retry when the artifact has an active browser 429 cooldown", async () => {
+    const retryAfter = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    mockFindUnique.mockResolvedValue({
+      id: "artifact-1",
+      artifactType: "article_discovery_headless_required",
+      status: "BROWSER_NO_CANDIDATES",
+      sourceId: "source-1",
+      categoryId: "category-1",
+      payload: {
+        targetUrl: "https://example.com/category/news",
+        sourceId: "source-1",
+        categoryId: "category-1",
+        browserBlockedReason: "http_429",
+        browserRetryAfterAt: retryAfter,
+      },
+    });
+
+    const handler = await loadHandler();
+
+    await expect(handler({} as any)).rejects.toMatchObject({
+      statusCode: 429,
+      statusMessage: `Browser detail fetches are rate-limited for this target. Retry after ${retryAfter}.`,
+    });
+    expect(mockArtifactCreate).not.toHaveBeenCalled();
+  });
+
+  it("blocks retry when a newer artifact for the same target has an active browser 429 cooldown", async () => {
+    const retryAfter = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    mockFindFirst.mockResolvedValue({
+      payload: {
+        browserBlockedReason: "http_429",
+        browserRetryAfterAt: retryAfter,
+      },
+    });
+
+    const handler = await loadHandler();
+
+    await expect(handler({} as any)).rejects.toMatchObject({
+      statusCode: 429,
+      statusMessage: `Browser detail fetches are rate-limited for this target. Retry after ${retryAfter}.`,
+    });
+    expect(mockFindFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        artifactType: "article_discovery_headless_required",
+        sourceId: "source-1",
+        categoryId: "category-1",
+      }),
+      orderBy: { createdAt: "desc" },
+    }));
+    expect(mockArtifactCreate).not.toHaveBeenCalled();
+  });
+
+  it("allows retry when browser 429 cooldown has expired", async () => {
+    mockFindFirst.mockResolvedValue({
+      payload: {
+        browserBlockedReason: "http_429",
+        browserRetryAfterAt: new Date(Date.now() - 60 * 1000).toISOString(),
+      },
+    });
+
+    const handler = await loadHandler();
+    const result = await handler({} as any);
+
+    expect(result.ok).toBe(true);
+    expect(mockArtifactCreate).toHaveBeenCalled();
   });
 });

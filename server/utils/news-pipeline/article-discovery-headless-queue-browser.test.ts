@@ -766,6 +766,44 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
 
   // ── MAX_BROWSER_ACCEPTED_CANDIDATES stops early ────────────────────────
 
+  it("short-circuits browser detail evaluation after repeated HTTP 429 responses", async () => {
+    const links = Array.from({ length: 5 }, (_, i) =>
+      makeBrowserLink(`https://example.com/news/2026/07/2${i}/rate-limited-story`),
+    );
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(makeBrowserResultOk(links));
+
+    evaluateArticleLinkCandidateMock
+      .mockResolvedValueOnce(makeRejectedEvaluation(links[0]!.url, "fetch_failed", "HTTP 429"))
+      .mockResolvedValueOnce(makeRejectedEvaluation(links[1]!.url, "fetch_failed", "HTTP 429"))
+      .mockResolvedValueOnce(makeAcceptedEvaluation(links[2]!.url));
+    evaluateArticleLinkCandidateWithBrowserMock
+      .mockResolvedValueOnce(makeRejectedEvaluation(links[0]!.url, "fetch_failed", "HTTP 429"))
+      .mockResolvedValueOnce(makeRejectedEvaluation(links[1]!.url, "fetch_failed", "HTTP 429"));
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserNoCandidates).toBe(1);
+      expect(result.browserResolved).toBe(0);
+    }
+    expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledTimes(2);
+    expect(evaluateArticleLinkCandidateWithBrowserMock).toHaveBeenCalledTimes(2);
+    expect(persistCandidatesMock).not.toHaveBeenCalled();
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("BROWSER_NO_CANDIDATES");
+    expect(finalCall.data.payload.browserBlockedReason).toBe("http_429");
+    expect(finalCall.data.payload.browserRateLimitedAt).toEqual(expect.any(String));
+    expect(finalCall.data.payload.browserRetryAfterAt).toEqual(expect.any(String));
+    expect(finalCall.data.payload.browserRateLimitedCount).toBe(2);
+    expect(finalCall.data.payload.browserError).toContain("rate-limited");
+    expect(finalCall.data.payload.browserEvaluated).toBe(2);
+  });
+
   it("stops evaluating after MAX_BROWSER_ACCEPTED_CANDIDATES accepted", async () => {
     const links = Array.from({ length: 15 }, (_, i) =>
       makeBrowserLink(`https://example.com/news/2026/07/2${i}/story`),

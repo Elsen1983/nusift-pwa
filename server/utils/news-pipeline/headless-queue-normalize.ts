@@ -104,6 +104,10 @@ export type NormalizedHeadlessQueueItem = {
   browserFailed: number | null;
   browserTopRejectionReasons: NormalizedBrowserTopRejectionReason[];
   browserError: string | null;
+  browserBlockedReason: string | null;
+  browserRateLimitedAt: string | null;
+  browserRetryAfterAt: string | null;
+  browserRateLimitedCount: number | null;
   browserQualityAssessment: NormalizedBrowserQualityAssessment | null;
   renderedUrl: string | null;
   // ── Browser link audit fields ─────────────────────────────────────────
@@ -305,6 +309,10 @@ export function normalizeHeadlessQueueArtifact(artifact: {
     browserFailed: readNumber(payload.browserFailed),
     browserTopRejectionReasons: extractBrowserTopRejectionReasons(payload.browserTopRejectionReasons),
     browserError: readString(payload.browserError),
+    browserBlockedReason: readString(payload.browserBlockedReason),
+    browserRateLimitedAt: readString(payload.browserRateLimitedAt),
+    browserRetryAfterAt: readString(payload.browserRetryAfterAt),
+    browserRateLimitedCount: readNumber(payload.browserRateLimitedCount),
     browserQualityAssessment: browserQa,
     renderedUrl: readString(payload.renderedUrl),
     // ── Browser link audit fields ─────────────────────────────────────

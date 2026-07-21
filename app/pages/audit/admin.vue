@@ -436,6 +436,16 @@
                     <p v-else-if="item.browserQualityAssessment?.explanation" class="mt-1 line-clamp-2 text-[10px] text-on-surface-variant/60">
                       {{ item.browserQualityAssessment.explanation }}
                     </p>
+                    <div v-if="item.browserBlockedReason === 'http_429'" class="mt-2 rounded-lg border border-rose-400/20 bg-rose-500/5 px-2.5 py-1.5 text-[10px] text-rose-100/90">
+                      <div class="font-bold uppercase tracking-wider text-rose-200">Rate limited</div>
+                      <div class="mt-0.5">
+                        Browser detail fetches hit HTTP 429.
+                        <span v-if="item.browserRetryAfterAt">Retry after {{ formatLogTime(item.browserRetryAfterAt) }}.</span>
+                      </div>
+                      <div v-if="item.browserRateLimitedCount != null" class="mt-0.5 text-on-surface-variant/60">
+                        Consecutive 429 responses: {{ item.browserRateLimitedCount }}
+                      </div>
+                    </div>
                   </div>
                   <!-- Stale samples (headless queue) -->
                   <div v-if="item.staleSamples && item.staleSamples.length > 0" class="mt-2 rounded-lg border border-amber-500/10 bg-amber-500/5 px-2.5 py-1.5">
@@ -754,6 +764,10 @@ const headlessQueueItems = ref<Array<{
   browserFailed: number | null;
   browserTopRejectionReasons: BrowserTopRejectionReason[];
   browserError: string | null;
+  browserBlockedReason: string | null;
+  browserRateLimitedAt: string | null;
+  browserRetryAfterAt: string | null;
+  browserRateLimitedCount: number | null;
   browserQualityAssessment: BrowserQualityAssessment | null;
   renderedUrl: string | null;
   browserShortlistedLinks: number | null;

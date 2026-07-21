@@ -26,6 +26,14 @@ function readStringArray(value: unknown): string[] {
     : [];
 }
 
+function readRetryAfterMs(payload: Record<string, unknown>): number | null {
+  if (readString(payload.browserBlockedReason) !== "http_429") return null;
+  const retryAfter = readString(payload.browserRetryAfterAt);
+  if (!retryAfter) return null;
+  const time = Date.parse(retryAfter);
+  return Number.isFinite(time) ? time : null;
+}
+
 export default defineEventHandler(async (event) => {
   const adminId = await requireAdminId(event);
 
@@ -75,6 +83,39 @@ export default defineEventHandler(async (event) => {
     throw createError({
       statusCode: 400,
       statusMessage: "Cannot retry artifact with missing targetUrl or sourceId.",
+    });
+  }
+
+  const directRetryAfterMs = readRetryAfterMs(payload);
+  if (directRetryAfterMs && directRetryAfterMs > Date.now()) {
+    throw createError({
+      statusCode: 429,
+      statusMessage: `Browser detail fetches are rate-limited for this target. Retry after ${new Date(directRetryAfterMs).toISOString()}.`,
+    });
+  }
+
+  const activeCooldown = await prisma.pipelineArtifact.findFirst({
+    where: {
+      artifactType: "article_discovery_headless_required",
+      sourceId,
+      categoryId: categoryId || null,
+      payload: {
+        path: ["targetUrl"],
+        equals: targetUrl,
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    select: {
+      payload: true,
+    },
+  });
+
+  const cooldownPayload = isPlainObject(activeCooldown?.payload) ? activeCooldown.payload : {};
+  const activeRetryAfterMs = readRetryAfterMs(cooldownPayload);
+  if (activeRetryAfterMs && activeRetryAfterMs > Date.now()) {
+    throw createError({
+      statusCode: 429,
+      statusMessage: `Browser detail fetches are rate-limited for this target. Retry after ${new Date(activeRetryAfterMs).toISOString()}.`,
     });
   }
 

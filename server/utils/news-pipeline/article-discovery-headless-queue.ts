@@ -25,6 +25,8 @@ const MAX_LIMIT = 25;
 const MAX_BROWSER_LIMIT = 3;
 const MAX_BROWSER_DETAIL_EVALUATED_LINKS = 10;
 const MAX_BROWSER_ACCEPTED_CANDIDATES = 10;
+const BROWSER_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
+const MAX_CONSECUTIVE_BROWSER_429 = 2;
 
 type HeadlessQueueInput = {
   limit?: number;
@@ -478,6 +480,10 @@ export async function processArticleDiscoveryHeadlessQueue(
       let browserDetailRejected = 0;
       let browserDetailFetchRecovered = 0;
       const browserDetailRecoveryReasons: string[] = [];
+      let consecutiveBrowserRateLimitCount = 0;
+      let browserBlockedReason: string | null = null;
+      let browserRateLimitedAt: string | null = null;
+      let browserRetryAfterAt: string | null = null;
 
       const isRecoverableDetailRejection = (outcome: ArticleDiscoveryCandidateOutcome): boolean => {
         if (outcome.status === "fetch_failed" || outcome.status === "detail_validation_failed") {
@@ -576,14 +582,40 @@ export async function processArticleDiscoveryHeadlessQueue(
                   tracker.record(detailEval.outcome);
                 }
               } else {
-                browserDetailRejected += 1;
-                tracker.record(detailEval.outcome);
+              browserDetailRejected += 1;
+              tracker.record(detailEval.outcome);
+              const detailReason = String(detailEval.outcome.reason || "");
+              if (/\b429\b/.test(detailReason)) {
+                consecutiveBrowserRateLimitCount += 1;
+                if (consecutiveBrowserRateLimitCount >= MAX_CONSECUTIVE_BROWSER_429) {
+                  browserBlockedReason = "http_429";
+                  browserRateLimitedAt = new Date().toISOString();
+                  browserRetryAfterAt = new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString();
+                  browserError = `Browser detail fetches are rate-limited by ${targetUrl}; retry after ${browserRetryAfterAt}.`;
+                  break;
+                }
+              } else {
+                consecutiveBrowserRateLimitCount = 0;
               }
-            } else {
+            }
+          } else {
               // Normal rejection (stale, low score, missing title, etc.) or
               // detail recovery limit reached — record the original outcome.
               tracker.record(evaluation.outcome);
               browserRejected += 1;
+              const reason = String(evaluation.outcome.reason || "");
+              if (/\b429\b/.test(reason)) {
+                consecutiveBrowserRateLimitCount += 1;
+                if (consecutiveBrowserRateLimitCount >= MAX_CONSECUTIVE_BROWSER_429) {
+                  browserBlockedReason = "http_429";
+                  browserRateLimitedAt = new Date().toISOString();
+                  browserRetryAfterAt = new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString();
+                  browserError = `Browser detail fetches are rate-limited by ${targetUrl}; retry after ${browserRetryAfterAt}.`;
+                  break;
+                }
+              } else {
+                consecutiveBrowserRateLimitCount = 0;
+              }
             }
             continue;
           }
@@ -724,6 +756,10 @@ export async function processArticleDiscoveryHeadlessQueue(
             browserDetailFetchRecovered,
             browserDetailRecoveryReasons,
             browserError,
+            browserBlockedReason,
+            browserRateLimitedAt,
+            browserRetryAfterAt,
+            browserRateLimitedCount: consecutiveBrowserRateLimitCount,
             browserOutcomeSummary: browserOutcomeSummaryCompact,
             browserQualityAssessment: {
               quality: browserQualityAssessment.quality,
