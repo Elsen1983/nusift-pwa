@@ -45,6 +45,19 @@ export type HeadlessQueueStaleSample = {
   staleReason: string | null;
 };
 
+export type NormalizedBrowserTopRejectionReason = {
+  reason: string;
+  count: number;
+};
+
+export type NormalizedBrowserQualityAssessment = {
+  quality: string | null;
+  confidence: string | null;
+  shouldEscalateToHeadless: boolean;
+  escalationReasons: string[];
+  explanation: string | null;
+};
+
 export type NormalizedHeadlessQueueItem = {
   id: string;
   status: string;
@@ -63,6 +76,22 @@ export type NormalizedHeadlessQueueItem = {
   browserFallbackRan: boolean;
   candidateCount: number | null;
   staleSamples: HeadlessQueueStaleSample[];
+  // ── Compact browser fallback result metadata ───────────────────────────
+  // All of these are normalized defensively. Missing/wrong-type values
+  // fall back to null / false / [] / 0. Explicit zero counts are preserved.
+  browserFallbackStartedAt: string | null;
+  browserFallbackFinishedAt: string | null;
+  browserRawLinks: number | null;
+  browserEvaluated: number | null;
+  browserAccepted: number | null;
+  browserRejected: number | null;
+  browserInserted: number | null;
+  browserSkipped: number | null;
+  browserFailed: number | null;
+  browserTopRejectionReasons: NormalizedBrowserTopRejectionReason[];
+  browserError: string | null;
+  browserQualityAssessment: NormalizedBrowserQualityAssessment | null;
+  renderedUrl: string | null;
 };
 
 export type HeadlessQueueSummary = {
@@ -82,6 +111,47 @@ function readQualityAssessment(payload: Record<string, unknown>): Record<string,
 }
 
 const MAX_STALE_SAMPLES = 3;
+const MAX_BROWSER_REJECTION_REASONS = 5;
+
+/**
+ * Safely extract the nested browserQualityAssessment object from a payload.
+ * Returns null for any non-object value (arrays, strings, null, etc.).
+ * Distinct from readQualityAssessment because the browser QA is allowed
+ * to be missing entirely (e.g. runtime-unavailable failures).
+ */
+function readBrowserQualityAssessment(
+  value: unknown,
+): NormalizedBrowserQualityAssessment | null {
+  if (!isPlainObject(value)) return null;
+  return {
+    quality: readString(value.quality),
+    confidence: readString(value.confidence),
+    shouldEscalateToHeadless: readBoolean(value.shouldEscalateToHeadless),
+    escalationReasons: readStringArray(value.escalationReasons),
+    explanation: readString(value.explanation),
+  };
+}
+
+/**
+ * Extract up to 5 compact `{ reason, count }` entries from a raw array.
+ * Filters malformed entries (non-objects, missing reason/count, wrong types).
+ * Returns [] for any non-array input.
+ */
+function extractBrowserTopRejectionReasons(
+  value: unknown,
+): NormalizedBrowserTopRejectionReason[] {
+  if (!Array.isArray(value)) return [];
+  const results: NormalizedBrowserTopRejectionReason[] = [];
+  for (const entry of value) {
+    if (!isPlainObject(entry)) continue;
+    const reason = readString(entry.reason);
+    const count = readNumber(entry.count);
+    if (reason === null || count === null) continue;
+    results.push({ reason, count });
+    if (results.length >= MAX_BROWSER_REJECTION_REASONS) break;
+  }
+  return results;
+}
 
 /**
  * Extract up to 3 compact stale samples from rejectedCandidates in the payload.
@@ -123,6 +193,11 @@ export function normalizeHeadlessQueueArtifact(artifact: {
   const payload = isPlainObject(artifact.payload) ? artifact.payload : {};
   const qa = readQualityAssessment(payload);
 
+  // Browser quality assessment is stored under a dedicated key on browser
+  // fallback artifacts. It may be null when the browser failed before any
+  // candidate evaluation (e.g. runtime unavailable, navigation failed).
+  const browserQa = readBrowserQualityAssessment(payload.browserQualityAssessment);
+
   return {
     id: artifact.id,
     status: artifact.status,
@@ -144,6 +219,23 @@ export function normalizeHeadlessQueueArtifact(artifact: {
     browserFallbackRan: readBoolean(payload.browserFallbackRan),
     candidateCount: artifact.candidateCount,
     staleSamples: extractStaleSamples(payload.rejectedCandidates),
+    // ── Compact browser fallback result metadata ───────────────────────
+    browserFallbackStartedAt: readString(payload.browserFallbackStartedAt),
+    browserFallbackFinishedAt: readString(payload.browserFallbackFinishedAt),
+    // readNumber already preserves explicit zeros (0 is a finite number),
+    // so a browser run that evaluated links and accepted 0 surfaces as 0,
+    // not null. Missing/wrong-type values fall back to null for "—".
+    browserRawLinks: readNumber(payload.browserRawLinks),
+    browserEvaluated: readNumber(payload.browserEvaluated),
+    browserAccepted: readNumber(payload.browserAccepted),
+    browserRejected: readNumber(payload.browserRejected),
+    browserInserted: readNumber(payload.browserInserted),
+    browserSkipped: readNumber(payload.browserSkipped),
+    browserFailed: readNumber(payload.browserFailed),
+    browserTopRejectionReasons: extractBrowserTopRejectionReasons(payload.browserTopRejectionReasons),
+    browserError: readString(payload.browserError),
+    browserQualityAssessment: browserQa,
+    renderedUrl: readString(payload.renderedUrl),
   };
 }
 

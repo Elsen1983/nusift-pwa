@@ -328,6 +328,44 @@
                     <span v-if="item.headlessRecoveryCount">recovered: {{ item.headlessRecoveryCount }}x</span>
                     <span v-if="item.lastHeadlessRecoveryAt">last recovery: {{ formatLogTime(item.lastHeadlessRecoveryAt) }}</span>
                   </div>
+                  <!-- Browser fallback result metadata (compact) -->
+                  <div v-if="item.browserFallbackRan" class="mt-2 rounded-lg border border-sky-500/15 bg-sky-500/5 px-2.5 py-1.5">
+                    <div class="flex flex-wrap items-center gap-1.5">
+                      <span class="text-[9px] font-bold uppercase tracking-wider text-sky-300/80">Browser fallback</span>
+                      <span v-if="item.browserQualityAssessment?.quality" class="rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider" :class="qualityBadgeClass(item.browserQualityAssessment.quality)">
+                        {{ item.browserQualityAssessment.quality }}
+                      </span>
+                      <span v-if="item.renderedUrl" class="text-[9px] text-on-surface-variant/50">rendered</span>
+                    </div>
+                    <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-on-surface-variant/80">
+                      <span v-if="item.browserRawLinks != null">raw links: <strong>{{ item.browserRawLinks }}</strong></span>
+                      <span v-if="item.browserEvaluated != null">evaluated: <strong>{{ item.browserEvaluated }}</strong></span>
+                      <span v-if="item.browserAccepted != null">accepted: <strong class="text-emerald-300">{{ item.browserAccepted }}</strong></span>
+                      <span v-if="item.browserRejected != null">rejected: <strong class="text-rose-300">{{ item.browserRejected }}</strong></span>
+                      <span v-if="item.browserInserted != null">inserted: <strong class="text-emerald-300">{{ item.browserInserted }}</strong></span>
+                      <span v-if="item.browserSkipped != null">skipped: <strong>{{ item.browserSkipped }}</strong></span>
+                      <span v-if="item.browserFailed != null && item.browserFailed > 0">failed: <strong class="text-rose-300">{{ item.browserFailed }}</strong></span>
+                    </div>
+                    <div v-if="item.browserTopRejectionReasons && item.browserTopRejectionReasons.length > 0" class="mt-1 flex flex-wrap gap-1">
+                      <span
+                        v-for="reason in item.browserTopRejectionReasons.slice(0, 3)"
+                        :key="reason.reason"
+                        class="rounded bg-surface-container-highest px-1.5 py-0.5 text-[9px] font-medium text-on-surface-variant"
+                      >
+                        {{ reason.reason }} ({{ reason.count }})
+                      </span>
+                    </div>
+                    <div class="mt-1 flex flex-wrap gap-2 text-[9px] text-on-surface-variant/50">
+                      <span v-if="item.browserFallbackStartedAt">started: {{ formatLogTime(item.browserFallbackStartedAt) }}</span>
+                      <span v-if="item.browserFallbackFinishedAt">finished: {{ formatLogTime(item.browserFallbackFinishedAt) }}</span>
+                    </div>
+                    <p v-if="item.browserError" class="mt-1 line-clamp-2 text-[10px] text-rose-300/80">
+                      {{ item.browserError }}
+                    </p>
+                    <p v-else-if="item.browserQualityAssessment?.explanation" class="mt-1 line-clamp-2 text-[10px] text-on-surface-variant/60">
+                      {{ item.browserQualityAssessment.explanation }}
+                    </p>
+                  </div>
                   <!-- Stale samples (headless queue) -->
                   <div v-if="item.staleSamples && item.staleSamples.length > 0" class="mt-2 rounded-lg border border-amber-500/10 bg-amber-500/5 px-2.5 py-1.5">
                     <p class="text-[9px] font-bold uppercase tracking-wider text-amber-300/80">
@@ -364,6 +402,70 @@
                 </div>
                 <div class="shrink-0 text-right text-[10px] text-on-surface-variant">
                   <div>{{ formatLogTime(item.createdAt) }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Agent 2 hard sources
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Targets where static + browser fallback both failed. AI-inspection candidates for future admin-only profile generation.
+              </p>
+            </div>
+            <button
+              @click="loadHardSources"
+              :disabled="hardSourcesLoading"
+              class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ hardSourcesLoading ? "Loading..." : "Refresh" }}
+            </button>
+          </div>
+
+          <div v-if="hardSources.length === 0 && !hardSourcesLoading" class="mt-3 text-xs text-on-surface-variant">
+            No hard sources detected. Either all targets are productive statically, or browser fallback resolved the remaining ones.
+          </div>
+          <div v-else-if="hardSourcesLoading" class="mt-3 text-xs text-on-surface-variant">
+            Loading hard sources...
+          </div>
+          <div v-else class="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
+            <div
+              v-for="entry in hardSources"
+              :key="entry.key"
+              class="rounded-xl border px-3 py-2"
+              :class="entry.recommendedNextAction === 'ai_inspection_candidate'
+                ? 'border-fuchsia-500/20 bg-fuchsia-500/5'
+                : 'border-outline-variant/20 bg-surface-container'"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span
+                      class="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                      :class="hardSourceActionBadgeClass(entry.recommendedNextAction)"
+                    >
+                      {{ hardSourceActionLabel(entry.recommendedNextAction) }}
+                    </span>
+                    <span v-if="entry.lastStaticQuality" class="text-[10px] text-on-surface-variant">static: {{ entry.lastStaticQuality }}</span>
+                    <span v-if="entry.lastBrowserStatus" class="text-[10px] text-on-surface-variant">browser: {{ entry.lastBrowserStatus }}</span>
+                    <span v-if="entry.consecutiveFailedDiscoveryAttempts > 0" class="text-[10px] font-medium text-rose-300">
+                      {{ entry.consecutiveFailedDiscoveryAttempts }}x failed
+                    </span>
+                  </div>
+                  <p class="mt-1 truncate text-[11px] text-on-surface-variant">
+                    {{ entry.targetUrl }}
+                  </p>
+                  <div class="mt-0.5 flex flex-wrap gap-2 text-[10px] text-on-surface-variant/60">
+                    <span v-if="entry.sourceId">src: {{ entry.sourceId.slice(0, 8) }}...</span>
+                    <span v-if="entry.categoryId">cat: {{ entry.categoryId.slice(0, 8) }}...</span>
+                    <span v-if="entry.lastAcceptedCount != null">accepted: {{ entry.lastAcceptedCount }}</span>
+                    <span v-if="entry.lastInsertedCount != null">inserted: {{ entry.lastInsertedCount }}</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -494,6 +596,15 @@ const discoveryQualityItems = ref<Array<{
   discoverySources: { listingPages: number; sitemapUrls: number; jsonldUrls: number };
 }>>([]);
 
+type BrowserTopRejectionReason = { reason: string; count: number };
+type BrowserQualityAssessment = {
+  quality: string | null;
+  confidence: string | null;
+  shouldEscalateToHeadless: boolean;
+  escalationReasons: string[];
+  explanation: string | null;
+};
+
 const headlessQueueItems = ref<Array<{
   id: string;
   status: string;
@@ -512,7 +623,37 @@ const headlessQueueItems = ref<Array<{
   browserFallbackRan: boolean;
   candidateCount: number | null;
   staleSamples: StaleSample[];
+  // Compact browser fallback result metadata
+  browserFallbackStartedAt: string | null;
+  browserFallbackFinishedAt: string | null;
+  browserRawLinks: number | null;
+  browserEvaluated: number | null;
+  browserAccepted: number | null;
+  browserRejected: number | null;
+  browserInserted: number | null;
+  browserSkipped: number | null;
+  browserFailed: number | null;
+  browserTopRejectionReasons: BrowserTopRejectionReason[];
+  browserError: string | null;
+  browserQualityAssessment: BrowserQualityAssessment | null;
+  renderedUrl: string | null;
 }>>([]);
+
+type HardSourceEntry = {
+  key: string;
+  targetUrl: string;
+  sourceId: string;
+  categoryId: string | null;
+  lastStaticQuality: string | null;
+  lastBrowserStatus: string | null;
+  lastAcceptedCount: number | null;
+  lastInsertedCount: number | null;
+  consecutiveFailedDiscoveryAttempts: number;
+  recommendedNextAction: string;
+};
+
+const hardSources = ref<HardSourceEntry[]>([]);
+const hardSourcesLoading = ref(false);
 
 const headlessQueueSummary = ref<{ total: number; byStatus: Record<string, number> } | null>(null);
 const headlessBrowserEnvDisabled = ref(false);
@@ -666,10 +807,38 @@ const loadHeadlessQueue = async () => {
   }
 };
 
+const loadHardSources = async () => {
+  if (!showFullDevTools.value) return;
+  hardSourcesLoading.value = true;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      report: {
+        generatedAt: string;
+        scannedArtifacts: number;
+        hardSources: HardSourceEntry[];
+        total: number;
+      };
+    }>("/api/dev/article-discovery-hard-sources");
+    hardSources.value = response.report?.hardSources || [];
+  } catch (error) {
+    console.error("Failed to load hard sources:", error);
+    hardSources.value = [];
+  } finally {
+    hardSourcesLoading.value = false;
+  }
+};
+
 const refreshDevPanel = async () => {
   if (!showFullDevTools.value) return;
   try {
-    await Promise.all([loadAgentLogs(), loadEligibleSourceCount(), loadDiscoveryQuality(), loadHeadlessQueue()]);
+    await Promise.all([
+      loadAgentLogs(),
+      loadEligibleSourceCount(),
+      loadDiscoveryQuality(),
+      loadHeadlessQueue(),
+      loadHardSources(),
+    ]);
   } catch (error) {
     console.error("Failed to refresh admin panel:", error);
   }
@@ -810,6 +979,7 @@ const runHeadlessBrowserFallback = async () => {
         browserSkippedUnavailable?: number;
         browserFailed?: number;
         browserCandidatesFound?: number;
+        browserCandidatesPersisted?: { inserted: number; skipped: number; failed: number };
       };
       browserFallbackEnabled: boolean;
     }>("/api/dev/run-article-discovery-headless-queue", {
@@ -818,12 +988,18 @@ const runHeadlessBrowserFallback = async () => {
     });
     const r = response.result;
     headlessBrowserEnvDisabled.value = !response.browserFallbackEnabled;
+    const persisted = r.browserCandidatesPersisted;
     if (r.browserSkippedDisabled && r.browserSkippedDisabled > 0) {
       showToast(`Browser fallback disabled by env. ${r.browserSkippedDisabled} artifact(s) marked BROWSER_FALLBACK_DISABLED.`, "error");
+    } else if (r.browserSkippedUnavailable && r.browserSkippedUnavailable > 0) {
+      showToast(`Browser runtime unavailable for ${r.browserSkippedUnavailable} target(s). Resolved ${r.browserResolved ?? 0}, no-candidates ${r.browserNoCandidates ?? 0}, already-claimed ${r.skippedAlreadyClaimed ?? 0}. Install Playwright to enable browser fallback.`, "error");
     } else {
-      showToast(`Browser: ${r.browserResolved ?? 0} resolved, ${r.browserNoCandidates ?? 0} no candidates, ${r.browserCandidatesFound ?? 0} candidates found, ${r.browserFailed ?? 0} errors, ${r.browserSkippedUnavailable ?? 0} runtime unavailable, ${r.skippedAlreadyClaimed ?? 0} already claimed, ${r.skippedInvalid ?? 0} invalid.`);
+      const insertedText = persisted ? `, inserted ${persisted.inserted}/skipped ${persisted.skipped}/failed ${persisted.failed} candidates` : "";
+      showToast(`Browser: ${r.browserResolved ?? 0} resolved, ${r.browserNoCandidates ?? 0} no-candidates, ${r.browserFailed ?? 0} errors, ${r.browserCandidatesFound ?? 0} found${insertedText}. Already-claimed ${r.skippedAlreadyClaimed ?? 0}, invalid ${r.skippedInvalid ?? 0}.`);
     }
-    await loadHeadlessQueue();
+    // Refresh the full admin panel so the browser results, discovery quality,
+    // agent logs, and hard-source report all reflect the latest run.
+    await refreshDevPanel();
   } catch (error: any) {
     showToast(error?.statusMessage || error?.message || "Browser fallback run failed.", "error");
   } finally {
@@ -909,6 +1085,31 @@ const headlessStatusBadgeClass = (status: string) => {
       return "bg-slate-500/15 text-slate-400 border-slate-500/20";
     case "RESOLVED_BY_STATIC_DISCOVERY":
       return "bg-teal-500/15 text-teal-300 border-teal-500/20";
+    default:
+      return "bg-gray-500/15 text-gray-400 border-gray-500/20";
+  }
+};
+
+const hardSourceActionLabel = (action: string): string => {
+  const labels: Record<string, string> = {
+    retry_static: "retry static",
+    run_browser: "run browser",
+    manual_review: "manual review",
+    ai_inspection_candidate: "AI inspection",
+  };
+  return labels[action] || action;
+};
+
+const hardSourceActionBadgeClass = (action: string): string => {
+  switch (action) {
+    case "ai_inspection_candidate":
+      return "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/20";
+    case "run_browser":
+      return "bg-sky-500/15 text-sky-300 border-sky-500/20";
+    case "retry_static":
+      return "bg-amber-500/15 text-amber-300 border-amber-500/20";
+    case "manual_review":
+      return "bg-gray-500/15 text-gray-400 border-gray-500/20";
     default:
       return "bg-gray-500/15 text-gray-400 border-gray-500/20";
   }

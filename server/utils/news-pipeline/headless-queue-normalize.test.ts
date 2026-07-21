@@ -556,6 +556,353 @@ describe("normalizeHeadlessQueueArtifact", () => {
   });
 });
 
+// ─── Browser fallback result metadata normalization ─────────────────────────
+
+describe("normalizeHeadlessQueueArtifact — browser fallback fields", () => {
+  const baseArtifact = {
+    id: "art-browser-1",
+    status: "RESOLVED",
+    artifactType: "article_discovery_headless_required",
+    sourceId: "src-1",
+    categoryId: null,
+    createdAt: new Date("2026-07-21T10:00:00Z"),
+    updatedAt: new Date("2026-07-21T10:05:00Z"),
+    candidateCount: 3,
+    payload: {},
+  };
+
+  // ── Missing browser fields display safely ──────────────────────────────
+
+  it("returns null/false/[] defaults when browser fields are absent", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: { targetUrl: "https://example.com/news" },
+    });
+    expect(result.browserFallbackStartedAt).toBeNull();
+    expect(result.browserFallbackFinishedAt).toBeNull();
+    expect(result.browserRawLinks).toBeNull();
+    expect(result.browserEvaluated).toBeNull();
+    expect(result.browserAccepted).toBeNull();
+    expect(result.browserRejected).toBeNull();
+    expect(result.browserInserted).toBeNull();
+    expect(result.browserSkipped).toBeNull();
+    expect(result.browserFailed).toBeNull();
+    expect(result.browserTopRejectionReasons).toEqual([]);
+    expect(result.browserError).toBeNull();
+    expect(result.browserQualityAssessment).toBeNull();
+    expect(result.renderedUrl).toBeNull();
+    expect(result.browserFallbackRan).toBe(false);
+  });
+
+  // ── Explicit zero counts are preserved ─────────────────────────────────
+
+  it("preserves explicit zero counts (browser ran, evaluated links, accepted 0)", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      status: "BROWSER_NO_CANDIDATES",
+      candidateCount: 0,
+      payload: {
+        browserFallbackRan: true,
+        browserRawLinks: 5,
+        browserEvaluated: 5,
+        browserAccepted: 0,
+        browserRejected: 5,
+        browserInserted: 0,
+        browserSkipped: 0,
+        browserFailed: 0,
+      },
+    });
+    // Explicit zeros must be preserved — they mean "browser ran and found
+    // nothing", distinct from null which means "field absent".
+    expect(result.browserRawLinks).toBe(5);
+    expect(result.browserEvaluated).toBe(5);
+    expect(result.browserAccepted).toBe(0);
+    expect(result.browserRejected).toBe(5);
+    expect(result.browserInserted).toBe(0);
+    expect(result.browserSkipped).toBe(0);
+    expect(result.browserFailed).toBe(0);
+  });
+
+  // ── Malformed payload does not leak raw payload ────────────────────────
+
+  it("handles payload as a string without leaking raw payload", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: "not a payload" as any,
+    });
+    expect(result.browserFallbackRan).toBe(false);
+    expect(result.browserRawLinks).toBeNull();
+    expect(result.browserQualityAssessment).toBeNull();
+    expect(result).not.toHaveProperty("payload");
+  });
+
+  it("handles payload as an array without leaking raw payload", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: [1, 2, 3] as any,
+    });
+    expect(result.browserFallbackRan).toBe(false);
+    expect(result.browserRawLinks).toBeNull();
+    expect(result).not.toHaveProperty("payload");
+  });
+
+  it("handles payload as a number without leaking raw payload", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: 42 as any,
+    });
+    expect(result.browserFallbackRan).toBe(false);
+    expect(result.browserRawLinks).toBeNull();
+    expect(result).not.toHaveProperty("payload");
+  });
+
+  // ── Browser fields are normalized safely (wrong types) ─────────────────
+
+  it("normalizes non-number browser count fields to null", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserFallbackRan: true,
+        browserRawLinks: "10" as any,
+        browserEvaluated: [5] as any,
+        browserAccepted: { count: 3 } as any,
+        browserRejected: NaN as any,
+        browserInserted: Infinity as any,
+      },
+    });
+    expect(result.browserRawLinks).toBeNull();
+    expect(result.browserEvaluated).toBeNull();
+    expect(result.browserAccepted).toBeNull();
+    expect(result.browserRejected).toBeNull();
+    expect(result.browserInserted).toBeNull();
+  });
+
+  it("normalizes browserError to null for non-string values", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserError: 42 as any,
+      },
+    });
+    expect(result.browserError).toBeNull();
+  });
+
+  it("normalizes browserError to null for empty string", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserError: "",
+      },
+    });
+    expect(result.browserError).toBeNull();
+  });
+
+  it("preserves a valid browserError string", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserError: "Candidate persistence failed: connection lost",
+      },
+    });
+    expect(result.browserError).toBe("Candidate persistence failed: connection lost");
+  });
+
+  it("normalizes browserFallbackRan string 'true' to false", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserFallbackRan: "true" as any,
+      },
+    });
+    expect(result.browserFallbackRan).toBe(false);
+  });
+
+  it("normalizes browserFallbackRan truthy number to false", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserFallbackRan: 1 as any,
+      },
+    });
+    expect(result.browserFallbackRan).toBe(false);
+  });
+
+  // ── browserQualityAssessment normalization ──────────────────────────────
+
+  it("extracts browserQualityAssessment when valid object", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserQualityAssessment: {
+          quality: "productive",
+          confidence: "high",
+          shouldEscalateToHeadless: false,
+          escalationReasons: ["low_acceptance_rate"],
+          explanation: "Browser found 3 articles.",
+        },
+      },
+    });
+    expect(result.browserQualityAssessment).not.toBeNull();
+    expect(result.browserQualityAssessment?.quality).toBe("productive");
+    expect(result.browserQualityAssessment?.confidence).toBe("high");
+    expect(result.browserQualityAssessment?.shouldEscalateToHeadless).toBe(false);
+    expect(result.browserQualityAssessment?.escalationReasons).toEqual(["low_acceptance_rate"]);
+    expect(result.browserQualityAssessment?.explanation).toBe("Browser found 3 articles.");
+  });
+
+  it("returns null browserQualityAssessment for non-object value", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserQualityAssessment: "productive" as any,
+      },
+    });
+    expect(result.browserQualityAssessment).toBeNull();
+  });
+
+  it("returns null browserQualityAssessment for array value", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserQualityAssessment: [1, 2, 3] as any,
+      },
+    });
+    expect(result.browserQualityAssessment).toBeNull();
+  });
+
+  it("returns null browserQualityAssessment for null value", () => {
+    // Explicit null is the expected value for runtime-unavailable failures.
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserQualityAssessment: null,
+      },
+    });
+    expect(result.browserQualityAssessment).toBeNull();
+  });
+
+  it("filters non-string entries from browserQualityAssessment.escalationReasons", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserQualityAssessment: {
+          escalationReasons: ["valid", 42, null, "also_valid", true] as any,
+        },
+      },
+    });
+    expect(result.browserQualityAssessment?.escalationReasons).toEqual(["valid", "also_valid"]);
+  });
+
+  // ── browserTopRejectionReasons normalization ────────────────────────────
+
+  it("extracts browserTopRejectionReasons with reason + count", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserTopRejectionReasons: [
+          { reason: "stale", count: 8 },
+          { reason: "low_score", count: 5 },
+          { reason: "out_of_scope", count: 2 },
+        ],
+      },
+    });
+    expect(result.browserTopRejectionReasons).toHaveLength(3);
+    expect(result.browserTopRejectionReasons[0]).toEqual({ reason: "stale", count: 8 });
+  });
+
+  it("returns empty browserTopRejectionReasons for non-array value", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserTopRejectionReasons: "not an array" as any,
+      },
+    });
+    expect(result.browserTopRejectionReasons).toEqual([]);
+  });
+
+  it("filters malformed entries from browserTopRejectionReasons", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserTopRejectionReasons: [
+          { reason: "stale", count: 8 },
+          "not an object",
+          { reason: "", count: 5 },          // empty reason dropped
+          { reason: "low_score", count: "5" as any }, // non-number count dropped
+          { reason: "out_of_scope", count: 0 },       // count 0 preserved
+          { count: 5 },                                // missing reason dropped
+          null,
+        ],
+      },
+    });
+    expect(result.browserTopRejectionReasons).toEqual([
+      { reason: "stale", count: 8 },
+      { reason: "out_of_scope", count: 0 },
+    ]);
+  });
+
+  it("caps browserTopRejectionReasons at 5", () => {
+    const reasons = Array.from({ length: 10 }, (_, i) => ({
+      reason: `reason-${i}`,
+      count: i + 1,
+    }));
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserTopRejectionReasons: reasons,
+      },
+    });
+    expect(result.browserTopRejectionReasons).toHaveLength(5);
+  });
+
+  // ── Full browser fallback payload roundtrip ─────────────────────────────
+
+  it("roundtrip: full browser fallback artifact normalizes all fields correctly", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      candidateCount: 3,
+      payload: {
+        targetUrl: "https://example.com/news",
+        browserFallbackRan: true,
+        browserFallbackStartedAt: "2026-07-21T10:01:00Z",
+        browserFallbackFinishedAt: "2026-07-21T10:03:00Z",
+        browserRawLinks: 15,
+        browserEvaluated: 8,
+        browserAccepted: 3,
+        browserRejected: 5,
+        browserInserted: 3,
+        browserSkipped: 0,
+        browserFailed: 0,
+        browserTopRejectionReasons: [{ reason: "stale", count: 4 }],
+        browserError: null,
+        browserOutcomeSummary: { totalEvaluated: 8, accepted: 3, rejected: 5 },
+        browserQualityAssessment: {
+          quality: "productive",
+          confidence: "high",
+          shouldEscalateToHeadless: false,
+          escalationReasons: [],
+          explanation: "Browser found 3 articles.",
+        },
+        renderedUrl: "https://example.com/news",
+      },
+    });
+    expect(result.browserFallbackRan).toBe(true);
+    expect(result.browserFallbackStartedAt).toBe("2026-07-21T10:01:00Z");
+    expect(result.browserFallbackFinishedAt).toBe("2026-07-21T10:03:00Z");
+    expect(result.browserRawLinks).toBe(15);
+    expect(result.browserEvaluated).toBe(8);
+    expect(result.browserAccepted).toBe(3);
+    expect(result.browserRejected).toBe(5);
+    expect(result.browserInserted).toBe(3);
+    expect(result.browserSkipped).toBe(0);
+    expect(result.browserFailed).toBe(0);
+    expect(result.browserTopRejectionReasons).toEqual([{ reason: "stale", count: 4 }]);
+    expect(result.browserError).toBeNull();
+    expect(result.browserQualityAssessment?.quality).toBe("productive");
+    expect(result.renderedUrl).toBe("https://example.com/news");
+  });
+});
+
 // ─── Summary tests ──────────────────────────────────────────────────────────
 
 describe("buildHeadlessQueueSummary", () => {
@@ -577,6 +924,19 @@ describe("buildHeadlessQueueSummary", () => {
     browserFallbackRan: false,
     candidateCount: 0,
     staleSamples: [] as Array<{ url: string; normalizedPublishedAt: string | null; publishedAtSource: string | null; ageDays: number | null; staleReason: string | null }>,
+    browserFallbackStartedAt: null,
+    browserFallbackFinishedAt: null,
+    browserRawLinks: null,
+    browserEvaluated: null,
+    browserAccepted: null,
+    browserRejected: null,
+    browserInserted: null,
+    browserSkipped: null,
+    browserFailed: null,
+    browserTopRejectionReasons: [] as Array<{ reason: string; count: number }>,
+    browserError: null,
+    browserQualityAssessment: null,
+    renderedUrl: null,
   });
 
   it("counts items by status", () => {

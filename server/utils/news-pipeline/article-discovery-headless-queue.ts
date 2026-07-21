@@ -11,7 +11,12 @@
 import { prisma } from "../prisma";
 import { logAgentScan } from "./log";
 import { isBrowserFallbackEnabled, discoverArticleLinksWithBrowser } from "./article-discovery-browser";
-import { evaluateArticleLinkCandidate } from "./article-discovery-helpers";
+import {
+  evaluateArticleLinkCandidate,
+  ArticleDiscoveryOutcomeTracker,
+  assessArticleDiscoveryQuality,
+  type ArticleDiscoveryCandidateOutcome,
+} from "./article-discovery-helpers";
 import { persistCandidates } from "./ingest";
 import type { IngestCandidate } from "./types";
 
@@ -336,6 +341,17 @@ export async function processArticleDiscoveryHeadlessQueue(
       }
 
       if (!browserResult.ok) {
+        // Semantics note: the spec defines BROWSER_NO_CANDIDATES as "browser
+        // ran but no valid article candidates survived evaluation". Here we
+        // also map navigation_failed / http_error / browser_error to the
+        // same status. This is an intentional compromise given the
+        // constrained status set — there is no dedicated status for
+        // navigation/HTTP errors. The precise failure reason is preserved
+        // in browserError + browserDiagnostics.blockedReason so the admin
+        // can distinguish "page did not load" from "page loaded but had no
+        // article links". Only runtime-unavailable gets its own status
+        // (BROWSER_RUNTIME_UNAVAILABLE) because it implies a setup gap,
+        // not a per-target failure.
         const status = browserResult.reason === "browser_runtime_unavailable"
           ? "BROWSER_RUNTIME_UNAVAILABLE"
           : "BROWSER_NO_CANDIDATES";
@@ -346,7 +362,10 @@ export async function processArticleDiscoveryHeadlessQueue(
           browserFailed += 1;
         }
 
-        // Transition from HEADLESS_PROCESSING → final failure status
+        // Transition from HEADLESS_PROCESSING → final failure status.
+        // Preserve the same compact browser metadata shape as the success
+        // path so the admin normalizer can consume both uniformly.
+        const failedFinishedAt = new Date().toISOString();
         await prisma.pipelineArtifact.updateMany({
           where: {
             id: item.id,
@@ -358,13 +377,48 @@ export async function processArticleDiscoveryHeadlessQueue(
             errorLog: `Browser fallback failed: ${browserResult.reason}. ${browserResult.diagnostics.blockedReason || ""}`,
             payload: {
               ...claimedPayload,
+              // ── Compact browser fallback result metadata ──────────────
               browserFallbackRan: true,
+              browserFallbackStartedAt: claimedPayload.headlessProcessingStartedAt,
+              browserFallbackFinishedAt: failedFinishedAt,
+              // linkCount is always a number on the browser result type;
+              // for failures it reflects whatever the resolver observed.
+              browserRawLinks: browserResult.diagnostics.linkCount,
+              browserEvaluated: 0,
+              browserAccepted: 0,
+              browserRejected: 0,
+              browserInserted: 0,
+              browserSkipped: 0,
+              browserFailed: 0,
+              browserTopRejectionReasons: [],
+              browserError: `Browser fallback failed: ${browserResult.reason}. ${browserResult.diagnostics.blockedReason || ""}`,
+              browserOutcomeSummary: {
+                totalEvaluated: 0,
+                accepted: 0,
+                rejected: 0,
+                byStatus: {},
+                bySourceKind: {},
+                topRejectionReasons: [],
+              },
+              browserQualityAssessment: null,
+              browserDiagnostics: {
+                pageTitle: browserResult.diagnostics.pageTitle,
+                articleLikeLinkCount: browserResult.diagnostics.articleLikeLinkCount,
+                blockedReason: browserResult.diagnostics.blockedReason ?? null,
+                browserRuntimeAvailable: browserResult.diagnostics.browserRuntimeAvailable,
+                elapsedMs: browserResult.diagnostics.elapsedMs,
+              },
+              renderedUrl: null,
+              browserAcceptedOutcomes: [],
+              browserRejectedOutcomes: [],
+              // Legacy nested result preserved for backward-compat readers.
               browserResult: {
                 ok: false,
                 reason: browserResult.reason,
                 diagnostics: browserResult.diagnostics,
               },
-              processedAt: new Date().toISOString(),
+              resolvedAt: failedFinishedAt,
+              processedAt: failedFinishedAt,
             },
           },
         });
@@ -379,7 +433,10 @@ export async function processArticleDiscoveryHeadlessQueue(
         continue;
       }
 
-      // Browser returned links — evaluate each through shared helper
+      // Browser returned links — evaluate each through the same Agent 2
+      // candidate evaluation path used by static discovery (same-domain
+      // validation, utility path rejection, scoreCandidateUrl, title/date
+      // extraction, freshness checks, dedupe, outcome tracking).
       await logAgentScan({
         sourceId: item.sourceId,
         categoryId: item.categoryId || undefined,
@@ -388,7 +445,16 @@ export async function processArticleDiscoveryHeadlessQueue(
         errorLog: `Browser found ${browserResult.links.length} article-like links from ${targetUrl}.`,
       });
 
+      // Outcome tracker — same type used by static discovery so browser
+      // fallback produces an identical audit shape (byStatus, bySourceKind,
+      // topRejectionReasons, accepted/rejected lists).
+      const tracker = new ArticleDiscoveryOutcomeTracker();
       const candidates: IngestCandidate[] = [];
+      const seenCanonicalUrls = new Set<string>();
+      let browserRejected = 0;
+      let browserSkipped = 0;
+      let browserError: string | null = null;
+
       for (const link of browserResult.links) {
         try {
           const evaluation = await evaluateArticleLinkCandidate({
@@ -399,38 +465,103 @@ export async function processArticleDiscoveryHeadlessQueue(
             categoryId: item.categoryId,
           });
 
-          if (evaluation.accepted) {
-            candidates.push(evaluation.candidate as unknown as IngestCandidate);
+          if (!evaluation.accepted) {
+            // Rejected — record outcome and continue.
+            tracker.record(evaluation.outcome);
+            browserRejected += 1;
+            continue;
           }
-        } catch {
-          // Individual link evaluation failure — skip silently
+
+          const candidate = evaluation.candidate as unknown as IngestCandidate;
+
+          // Dedupe by canonical URL — same rule as static discovery.
+          if (seenCanonicalUrls.has(candidate.canonicalUrl)) {
+            tracker.record({
+              url: candidate.canonicalUrl,
+              sourceKind: "browser",
+              status: "rejected_duplicate",
+              canonicalUrl: candidate.canonicalUrl,
+              title: candidate.title,
+              reason: "duplicate canonical URL",
+            } as ArticleDiscoveryCandidateOutcome);
+            browserSkipped += 1;
+            continue;
+          }
+
+          seenCanonicalUrls.add(candidate.canonicalUrl);
+          candidates.push(candidate);
+          tracker.record(evaluation.outcome);
+        } catch (error: any) {
+          // Individual link evaluation failure — record as detail_validation_failed.
+          tracker.record({
+            url: link.url,
+            sourceKind: "browser",
+            status: "detail_validation_failed",
+            reason: error?.message || "unknown error",
+          } as ArticleDiscoveryCandidateOutcome);
+          browserSkipped += 1;
         }
       }
 
+      const browserOutcomeSummary = tracker.getSummary();
+      const acceptedOutcomes = tracker.getAccepted();
+      const rejectedOutcomes = tracker.getRejected();
+
+      // Quality assessment — reuse the static discovery classifier so browser
+      // fallback produces a comparable quality label for hard-source tracking.
+      const browserQualityAssessment = assessArticleDiscoveryQuality({
+        acceptedCount: candidates.length,
+        totalEvaluated: browserOutcomeSummary.totalEvaluated,
+        pagesVisited: 1, // browser fallback inspects exactly one rendered page
+        failed: 0,
+        byStatus: browserOutcomeSummary.byStatus,
+      });
+
       browserCandidatesFound += candidates.length;
 
-      // Persist candidates if any were accepted
+      // Compact browser outcome summary for the artifact payload + admin toast.
+      // Mirrors the static discovery summary shape but is nested under a
+      // browserOutcomeSummary key to keep static and browser audits separate.
+      const browserOutcomeSummaryCompact = {
+        totalEvaluated: browserOutcomeSummary.totalEvaluated,
+        accepted: browserOutcomeSummary.accepted,
+        rejected: browserOutcomeSummary.rejected,
+        byStatus: browserOutcomeSummary.byStatus,
+        bySourceKind: browserOutcomeSummary.bySourceKind,
+        topRejectionReasons: browserOutcomeSummary.topRejectionReasons,
+      };
+
+      // Persist accepted candidates through the same persistence path as
+      // static Agent 2. Persistence failure does NOT discard the audit data —
+      // we still record the browser result so the admin can see what happened.
       let persisted = { inserted: 0, skipped: 0, failed: 0 };
-      if (candidates.length > 0) {
-        try {
+      try {
+        if (candidates.length > 0) {
           persisted = await persistCandidates(candidates);
           totalInserted += persisted.inserted;
           totalSkipped += persisted.skipped;
           totalFailed += persisted.failed;
-        } catch (error: any) {
-          totalFailed += candidates.length;
-          await logAgentScan({
-            sourceId: item.sourceId,
-            categoryId: item.categoryId || undefined,
-            status: "ARTICLE_DISCOVERY_BROWSER_FAILED",
-            executionTimeMs: 0,
-            errorLog: `Candidate persistence failed: ${error?.message || String(error)}`,
-          });
         }
+      } catch (error: any) {
+        browserError = `Candidate persistence failed: ${error?.message || String(error)}`;
+        totalFailed += candidates.length;
+        await logAgentScan({
+          sourceId: item.sourceId,
+          categoryId: item.categoryId || undefined,
+          status: "ARTICLE_DISCOVERY_BROWSER_FAILED",
+          executionTimeMs: 0,
+          errorLog: browserError,
+        });
       }
 
-      // Transition from HEADLESS_PROCESSING → final success/failure status
+      // Transition from HEADLESS_PROCESSING → final success/failure status.
+      // RESOLVED requires accepted candidates AND candidate persistence to
+      // have been attempted (persistence errors still surface as RESOLVED
+      // when candidates were found, so the marker leaves the active queue;
+      // the persistence error is preserved in browserError for review).
       const finalStatus = candidates.length > 0 ? "RESOLVED" : "BROWSER_NO_CANDIDATES";
+      const finishedAt = new Date().toISOString();
+
       await prisma.pipelineArtifact.updateMany({
         where: {
           id: item.id,
@@ -442,14 +573,53 @@ export async function processArticleDiscoveryHeadlessQueue(
           candidateCount: candidates.length,
           payload: {
             ...claimedPayload,
+            // ── Compact browser fallback result metadata ──────────────
+            // All fields are compact counts / short strings / short arrays.
+            // No raw HTML, screenshots, or large DOM dumps are stored.
             browserFallbackRan: true,
-            resolvedAt: new Date().toISOString(),
-            browserCandidateCount: candidates.length,
+            browserFallbackStartedAt: claimedPayload.headlessProcessingStartedAt,
+            browserFallbackFinishedAt: finishedAt,
+            // linkCount is the total anchor count on the rendered page;
+            // it is always a number on a successful browser result.
+            browserRawLinks: browserResult.diagnostics.linkCount,
+            browserEvaluated: browserOutcomeSummaryCompact.totalEvaluated,
+            browserAccepted: browserOutcomeSummaryCompact.accepted,
+            browserRejected: browserOutcomeSummaryCompact.rejected,
             browserInserted: persisted.inserted,
-            browserSkipped: persisted.skipped,
+            // browserSkipped combines two kinds of skips: persistence-phase
+            // skips (candidates already in the DB) and evaluation-phase
+            // skips (duplicate canonical URLs + individual link evaluation
+            // errors). Both are non-productive outcomes for this run, so they
+            // are merged into a single compact field per the spec's field list.
+            // The detailed breakdown is available in browserOutcomeSummary
+            // (byStatus includes rejected_duplicate / detail_validation_failed)
+            // and browserRejectedOutcomes for admin drill-down.
+            browserSkipped: persisted.skipped + browserSkipped,
             browserFailed: persisted.failed,
-            browserDiagnostics: browserResult.diagnostics,
+            browserTopRejectionReasons: browserOutcomeSummaryCompact.topRejectionReasons.slice(0, 5),
+            browserError,
+            browserOutcomeSummary: browserOutcomeSummaryCompact,
+            browserQualityAssessment: {
+              quality: browserQualityAssessment.quality,
+              shouldEscalateToHeadless: browserQualityAssessment.shouldEscalateToHeadless,
+              escalationReasons: browserQualityAssessment.escalationReasons,
+              confidence: browserQualityAssessment.confidence,
+              explanation: browserQualityAssessment.explanation,
+            },
+            browserDiagnostics: {
+              pageTitle: browserResult.diagnostics.pageTitle,
+              articleLikeLinkCount: browserResult.diagnostics.articleLikeLinkCount,
+              blockedReason: browserResult.diagnostics.blockedReason ?? null,
+              browserRuntimeAvailable: browserResult.diagnostics.browserRuntimeAvailable,
+              elapsedMs: browserResult.diagnostics.elapsedMs,
+            },
             renderedUrl: browserResult.renderedUrl || null,
+            // Accepted/rejected outcome audit (capped by the tracker).
+            // These mirror the static discovery artifact shape so admin and
+            // hard-source tooling can consume both with the same code path.
+            browserAcceptedOutcomes: acceptedOutcomes,
+            browserRejectedOutcomes: rejectedOutcomes,
+            resolvedAt: finishedAt,
           },
         },
       });
@@ -466,7 +636,10 @@ export async function processArticleDiscoveryHeadlessQueue(
         categoryId: item.categoryId || undefined,
         status: candidates.length > 0 ? "ARTICLE_DISCOVERY_BROWSER_RESOLVED" : "ARTICLE_DISCOVERY_BROWSER_FAILED",
         executionTimeMs: browserResult.diagnostics.elapsedMs,
-        errorLog: `Browser fallback ${candidates.length > 0 ? "resolved" : "no candidates"} for ${targetUrl}. candidates=${candidates.length}, inserted=${persisted.inserted}, skipped=${persisted.skipped}, failed=${persisted.failed}.`,
+        errorLog: `Browser fallback ${candidates.length > 0 ? "resolved" : "no candidates"} for ${targetUrl}. ` +
+          `evaluated=${browserOutcomeSummaryCompact.totalEvaluated}, accepted=${candidates.length}, rejected=${browserRejected}, ` +
+          `inserted=${persisted.inserted}, skipped=${persisted.skipped}, failed=${persisted.failed}. ` +
+          `quality=${browserQualityAssessment.quality}.`,
       });
 
       continue;
