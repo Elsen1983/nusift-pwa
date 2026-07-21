@@ -89,6 +89,7 @@ export type NormalizedHeadlessQueueItem = {
   browserFallbackRan: boolean;
   candidateCount: number | null;
   staleSamples: HeadlessQueueStaleSample[];
+  dateAnomalySamples: HeadlessQueueStaleSample[];
   // ── Compact browser fallback result metadata ───────────────────────────
   // All of these are normalized defensively. Missing/wrong-type values
   // fall back to null / false / [] / 0. Explicit zero counts are preserved.
@@ -239,6 +240,15 @@ function extractStaleSamples(...rejectedOutcomeSources: unknown[]): HeadlessQueu
   return samples;
 }
 
+function extractDateAnomalySamples(browserRejectedOutcomes: unknown): HeadlessQueueStaleSample[] {
+  const allBrowserSamples = extractStaleSamples(browserRejectedOutcomes);
+  return allBrowserSamples.filter((sample) =>
+    sample.staleReason === "future_published_at" ||
+    sample.staleReason === "invalid_published_at" ||
+    sample.staleReason === "missing_published_at",
+  );
+}
+
 export function normalizeHeadlessQueueArtifact(artifact: {
   id: string;
   status: string;
@@ -279,6 +289,7 @@ export function normalizeHeadlessQueueArtifact(artifact: {
     browserFallbackRan: readBoolean(payload.browserFallbackRan),
     candidateCount: artifact.candidateCount,
     staleSamples: extractStaleSamples(payload.rejectedCandidates, payload.browserRejectedOutcomes),
+    dateAnomalySamples: extractDateAnomalySamples(payload.browserRejectedOutcomes),
     // ── Compact browser fallback result metadata ───────────────────────
     browserFallbackStartedAt: readString(payload.browserFallbackStartedAt),
     browserFallbackFinishedAt: readString(payload.browserFallbackFinishedAt),

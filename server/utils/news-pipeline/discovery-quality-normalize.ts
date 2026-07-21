@@ -27,6 +27,7 @@ export type NormalizedDiscoveryQualityItem = {
   escalationReasons: string[];
   explanation: string | null;
   staleSamples: DiscoveryQualityStaleSample[];
+  dateAnomalySamples: DiscoveryQualityStaleSample[];
   outcomeSummary: {
     totalEvaluated: number;
     accepted: number;
@@ -80,6 +81,15 @@ function extractStaleSamples(...rejectedOutcomeSources: unknown[]): DiscoveryQua
   return samples;
 }
 
+function extractDateAnomalySamples(browserRejectedOutcomes: unknown): DiscoveryQualityStaleSample[] {
+  const allBrowserSamples = extractStaleSamples(browserRejectedOutcomes);
+  return allBrowserSamples.filter((sample) =>
+    sample.staleReason === "future_published_at" ||
+    sample.staleReason === "invalid_published_at" ||
+    sample.staleReason === "missing_published_at",
+  );
+}
+
 export function normalizeDiscoveryQualityArtifact(artifact: {
   id: string;
   createdAt: Date;
@@ -122,6 +132,7 @@ export function normalizeDiscoveryQualityArtifact(artifact: {
       (payload.explanation as string) ||
       null,
     staleSamples: extractStaleSamples(payload.rejectedCandidates, payload.browserRejectedOutcomes),
+    dateAnomalySamples: extractDateAnomalySamples(payload.browserRejectedOutcomes),
     outcomeSummary: {
       totalEvaluated: (outcomeSummary.totalEvaluated as number) ?? 0,
       accepted: (outcomeSummary.accepted as number) ?? 0,

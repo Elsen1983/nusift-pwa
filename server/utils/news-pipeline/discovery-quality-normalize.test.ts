@@ -374,6 +374,8 @@ describe("normalizeDiscoveryQualityArtifact", () => {
     expect(result.staleSamples[0]?.url).toBe("https://example.com/future");
     expect(result.staleSamples[0]?.staleReason).toBe("future_published_at");
     expect(result.staleSamples[0]?.publishedAtSource).toBe("listing_context");
+    expect(result.dateAnomalySamples).toHaveLength(1);
+    expect(result.dateAnomalySamples[0]?.staleReason).toBe("future_published_at");
   });
 
   it("fills staleSamples from static candidates first, then browser outcomes up to cap", () => {
@@ -395,6 +397,23 @@ describe("normalizeDiscoveryQualityArtifact", () => {
       "https://example.com/static-1",
       "https://example.com/static-2",
       "https://example.com/browser-1",
+    ]);
+  });
+
+  it("dateAnomalySamples only contains browser date anomalies", () => {
+    const result = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      payload: {
+        browserRejectedOutcomes: [
+          { status: "rejected_stale", url: "https://example.com/future", staleReason: "future_published_at" },
+          { status: "rejected_stale", url: "https://example.com/old", staleReason: "published_at_before_cutoff" },
+          { status: "rejected_missing_title", url: "https://example.com/missing-title" },
+        ],
+      },
+    });
+
+    expect(result.dateAnomalySamples.map((sample) => sample.url)).toEqual([
+      "https://example.com/future",
     ]);
   });
 

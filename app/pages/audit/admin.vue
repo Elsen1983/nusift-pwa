@@ -470,6 +470,39 @@
                       </a>
                     </div>
                   </div>
+                  <!-- Browser date anomaly samples (headless queue) -->
+                  <div v-if="item.dateAnomalySamples && item.dateAnomalySamples.length > 0" class="mt-2 rounded-lg border border-rose-400/20 bg-rose-500/5 px-2.5 py-1.5">
+                    <p class="text-[9px] font-bold uppercase tracking-wider text-rose-200/85">
+                      Browser date anomalies ({{ item.dateAnomalySamples.length }})
+                    </p>
+                    <div
+                      v-for="(sample, si) in item.dateAnomalySamples.slice(0, 3)"
+                      :key="`date-anomaly-${si}`"
+                      class="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px]"
+                    >
+                      <span class="font-medium text-rose-100">
+                        {{ sample.staleReason ? staleReasonLabel(sample.staleReason) : '' }}
+                      </span>
+                      <span class="text-on-surface-variant/70">
+                        {{ sample.normalizedPublishedAt ? sample.normalizedPublishedAt.slice(0, 10) : 'missing date' }}
+                      </span>
+                      <span v-if="sample.publishedAtSource" class="text-on-surface-variant/50">
+                        {{ sample.publishedAtSource }}
+                      </span>
+                      <span v-if="sample.ageDays != null" class="text-on-surface-variant/50">
+                        {{ sample.ageDays }}d
+                      </span>
+                      <a
+                        v-if="sample.url"
+                        :href="sample.url"
+                        target="_blank"
+                        rel="noopener"
+                        class="truncate max-w-[200px] text-cyan-400/70 hover:text-cyan-300 hover:underline"
+                      >
+                        {{ truncateStaleUrl(sample.url) }}
+                      </a>
+                    </div>
+                  </div>
                 </div>
                 <div class="shrink-0 text-right text-[10px] text-on-surface-variant">
                   <div>{{ formatLogTime(item.createdAt) }}</div>
@@ -664,6 +697,7 @@ const discoveryQualityItems = ref<Array<{
   escalationReasons: string[];
   explanation: string | null;
   staleSamples: StaleSample[];
+  dateAnomalySamples: StaleSample[];
   outcomeSummary: { totalEvaluated: number; accepted: number; rejected: number; byStatus: Record<string, number>; topRejectionReasons: Array<{ reason: string; count: number }> };
   discoverySources: { listingPages: number; sitemapUrls: number; jsonldUrls: number };
 }>>([]);
@@ -707,6 +741,7 @@ const headlessQueueItems = ref<Array<{
   browserFallbackRan: boolean;
   candidateCount: number | null;
   staleSamples: StaleSample[];
+  dateAnomalySamples: StaleSample[];
   // Compact browser fallback result metadata
   browserFallbackStartedAt: string | null;
   browserFallbackFinishedAt: string | null;
