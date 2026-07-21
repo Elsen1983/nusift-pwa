@@ -1114,6 +1114,119 @@ describe("article-discovery-helpers", () => {
     });
   });
 
+  // ── evaluateArticleLinkCandidateFromExtractedMetadata — canonicalUrlOverride ──
+
+  describe("evaluateArticleLinkCandidateFromExtractedMetadata — canonicalUrlOverride", () => {
+    const baseInput = () => ({
+      articleUrl: "https://example.com/news/2026/07/20/some-article",
+      sourcePageUrl: "browser:https://example.com/news/2026/07/20/some-article",
+      targetUrl: "https://example.com",
+      sourceId: "src-1",
+      title: "A Valid Article Title For Testing",
+      description: "Description text",
+      keywords: ["news"],
+      publishedAtRaw: new Date().toISOString(),
+      publishedAtSource: "datePublished" as const,
+      bodyFallback: "Body text for testing.",
+    });
+
+    it("uses same-domain canonicalUrlOverride in accepted candidate", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const canonicalOverride = "https://example.com/news/2026/07/20/canonical-slug";
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        canonicalUrlOverride: canonicalOverride,
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(result.candidate!.canonicalUrl).toBe(canonicalOverride);
+    });
+
+    it("falls back to articleUrl when canonicalUrlOverride is invalid", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        canonicalUrlOverride: "not-a-valid-url",
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(result.candidate!.canonicalUrl).toBe(baseInput().articleUrl);
+    });
+
+    it("falls back to articleUrl when canonicalUrlOverride is empty string", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        canonicalUrlOverride: "",
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(result.candidate!.canonicalUrl).toBe(baseInput().articleUrl);
+    });
+
+    it("falls back to articleUrl when canonicalUrlOverride is null", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        canonicalUrlOverride: null,
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(result.candidate!.canonicalUrl).toBe(baseInput().articleUrl);
+    });
+
+    it("rejects cross-domain canonicalUrlOverride as rejected_cross_domain", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        canonicalUrlOverride: "https://evil.com/news/2026/07/20/hijack-slug-here",
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_cross_domain");
+    });
+
+    it("rejects utility-path canonicalUrlOverride as rejected_utility_path", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        canonicalUrlOverride: "https://example.com/about",
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_utility_path");
+    });
+
+    it("uses canonicalUrlOverride for dedupe identity (same canonical from different article URLs)", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const canonical = "https://example.com/news/2026/07/20/the-canonical-article";
+
+      const r1 = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://example.com/news/2026/07/20/the-canonical-article?ref=rss",
+        canonicalUrlOverride: canonical,
+      });
+      const r2 = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://example.com/news/2026/07/20/the-canonical-article?ref=sitemap",
+        canonicalUrlOverride: canonical,
+      });
+
+      expect(r1.accepted).toBe(true);
+      expect(r2.accepted).toBe(true);
+      expect(r1.candidate!.canonicalUrl).toBe(canonical);
+      expect(r2.candidate!.canonicalUrl).toBe(canonical);
+      expect(r1.candidate!.canonicalUrl).toBe(r2.candidate!.canonicalUrl);
+    });
+  });
+
   // ── Candidate Scoring ─────────────────────────────────────────────────
 
   describe("scoreCandidateUrl", () => {

@@ -1052,114 +1052,194 @@ export type EvaluateArticleLinkResult =
  * This function does NOT update skip summary or rejected items — the caller
  * is responsible for those bookkeeping concerns.
  */
-export async function evaluateArticleLinkCandidate(input: {
+type EvaluateArticleLinkCandidateFromMetadataInput = {
   articleUrl: string;
   sourcePageUrl: string;
   targetUrl: string;
   sourceId: string;
   categoryId?: string | null;
+  title: string;
+  description: string;
+  keywords: string[];
+  publishedAtRaw: string | null;
+  publishedAtSource: PublishedAtSource;
+  bodyFallback: string;
+  html?: string | null;
   freshnessMs?: number;
-}): Promise<EvaluateArticleLinkResult> {
-  const { articleUrl, sourcePageUrl, targetUrl, sourceId } = input;
+  extraRawSignals?: string[];
+  /**
+   * Optional canonical URL override extracted from the rendered page
+   * (e.g. <link rel="canonical"> or JSON-LD). When provided and valid,
+   * this is used instead of normalizeUrl(articleUrl) for candidate identity
+   * and dedupe. Invalid or cross-domain overrides safely fall back to
+   * the article URL.
+   */
+  canonicalUrlOverride?: string | null;
+};
+
+const resolveSourceKindFromSourcePageUrl = (spu: string): ArticleDiscoverySourceKind => {
+  if (spu.startsWith("sitemap:")) return "sitemap";
+  if (spu.startsWith("jsonld:")) return "jsonld";
+  if (spu.startsWith("browser:")) return "browser";
+  return "listing";
+};
+
+/**
+ * Shared builder for Agent 2 article candidates. Validates and scores a URL
+ * using already-extracted page metadata. Used by the static fetch path and by
+ * the browser-based detail recovery path so both produce the same candidate
+ * shape and outcome semantics.
+ */
+export async function evaluateArticleLinkCandidateFromExtractedMetadata(
+  input: EvaluateArticleLinkCandidateFromMetadataInput,
+): Promise<EvaluateArticleLinkResult> {
+  const {
+    articleUrl,
+    sourcePageUrl,
+    targetUrl,
+    sourceId,
+    title,
+    description,
+    keywords,
+    publishedAtRaw,
+    publishedAtSource,
+    bodyFallback,
+    html,
+    freshnessMs: customFreshnessMs,
+    extraRawSignals = [],
+  } = input;
   const categoryId = input.categoryId || undefined;
 
-  const resolveSourceKind = (spu: string): ArticleDiscoverySourceKind => {
-    if (spu.startsWith("sitemap:")) return "sitemap";
-    if (spu.startsWith("jsonld:")) return "jsonld";
-    if (spu.startsWith("browser:")) return "browser";
-    return "listing";
-  };
-
-  const makeReject = (
+  const makeOutcome = (
     url: string,
     spu: string,
     status: ArticleDiscoveryCandidateOutcome["status"],
     overrides?: Partial<ArticleDiscoveryCandidateOutcome>,
   ): ArticleDiscoveryCandidateOutcome => ({
     url,
-    sourceKind: resolveSourceKind(spu),
+    sourceKind: resolveSourceKindFromSourcePageUrl(spu),
     status,
     ...overrides,
   });
 
-  const response = await safeFetch(articleUrl, {
-    headers: {
-      "User-Agent": "NuSift/1.0 Agent2-Discovery",
-      Accept: "text/html,application/xhtml+xml",
-    },
-  }).catch(() => null);
+  const tryNormalize = (raw: string): string | null => {
+    try {
+      const normalized = normalizeUrl(raw);
+      return normalized || null;
+    } catch {
+      return null;
+    }
+  };
 
-  if (!response || !response.ok) {
-    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "fetch_failed", { reason: `HTTP ${response?.status || "no_response"}` }) };
-  }
+  const canonicalUrl =
+    tryNormalize(input.canonicalUrlOverride || "") ||
+    normalizeUrl(articleUrl);
 
-  const html = await response.text();
-  const meta = extractPageMetadata(html);
-  let normalizedPublishedAt = normalizePublishedAt(meta.publishedAt);
-  const canonicalUrl = normalizeUrl(articleUrl);
-
-  if (!canonicalUrl || isBlockedDiscoveryPath(canonicalUrl)) {
-    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_utility_path", { canonicalUrl, title: meta.title }) };
+  // Block utility paths on BOTH the article URL and the canonical URL so that
+  // a canonical override cannot bypass utility-path rejection.
+  if (!canonicalUrl || isBlockedDiscoveryPath(canonicalUrl) || isBlockedDiscoveryPath(articleUrl)) {
+    return {
+      accepted: false,
+      candidate: null,
+      outcome: makeOutcome(articleUrl, sourcePageUrl, "rejected_utility_path", { canonicalUrl, title }),
+    };
   }
 
   const canonicalHostname = new URL(canonicalUrl).hostname.replace(/^www\./, "");
   const targetHostname = new URL(targetUrl).hostname.replace(/^www\./, "");
   if (canonicalHostname !== targetHostname) {
-    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_cross_domain", { canonicalUrl, title: meta.title, reason: "cross-domain redirect" }) };
+    return {
+      accepted: false,
+      candidate: null,
+      outcome: makeOutcome(articleUrl, sourcePageUrl, "rejected_cross_domain", {
+        canonicalUrl,
+        title,
+        reason: "cross-domain redirect",
+      }),
+    };
   }
 
+  // Category scope check is preserved only for sitemap/jsonld sources, matching
+  // the behaviour of the original static path.
   if (categoryId && (sourcePageUrl.startsWith("sitemap:") || sourcePageUrl.startsWith("jsonld:"))) {
     const categoryPath = targetUrl.replace(/\/+$/, "").replace(/^https?:\/\/[^/]+/, "") || "/";
     const articlePath = canonicalUrl.replace(/\/+$/, "").replace(/^https?:\/\/[^/]+/, "") || "/";
     if (categoryPath !== "/" && !(articlePath === categoryPath || articlePath.startsWith(`${categoryPath}/`))) {
-      return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_out_of_scope", { canonicalUrl, title: meta.title, reason: "outside category path" }) };
+      return {
+        accepted: false,
+        candidate: null,
+        outcome: makeOutcome(articleUrl, sourcePageUrl, "rejected_out_of_scope", {
+          canonicalUrl,
+          title,
+          reason: "outside category path",
+        }),
+      };
     }
   }
 
   const score = scoreCandidateUrl(canonicalUrl, targetUrl, {
-    title: meta.title,
-    dateText: normalizedPublishedAt?.toISOString() || null,
+    title,
+    dateText: publishedAtRaw,
     categoryPathUrl: categoryId ? targetUrl : null,
   });
   if (score.rejected) {
-    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_low_score", { canonicalUrl, title: meta.title, score: score.score, scoreReasons: score.reasons, reason: score.rejectionReason }) };
+    return {
+      accepted: false,
+      candidate: null,
+      outcome: makeOutcome(articleUrl, sourcePageUrl, "rejected_low_score", {
+        canonicalUrl,
+        title,
+        score: score.score,
+        scoreReasons: score.reasons,
+        reason: score.rejectionReason,
+      }),
+    };
   }
 
-  const previewTitle = meta.title || canonicalUrl;
+  const previewTitle = title || canonicalUrl;
   if (!previewTitle || previewTitle.length < 12) {
-    return { accepted: false, candidate: null, outcome: makeReject(articleUrl, sourcePageUrl, "rejected_missing_title", { canonicalUrl, title: previewTitle, reason: "title too short or missing" }) };
+    return {
+      accepted: false,
+      candidate: null,
+      outcome: makeOutcome(articleUrl, sourcePageUrl, "rejected_missing_title", {
+        canonicalUrl,
+        title: previewTitle,
+        reason: "title too short or missing",
+      }),
+    };
   }
 
-  const freshnessMs = input.freshnessMs ?? DISCOVERY_FRESHNESS_MS;
-  const dateExtraction = extractDateFromHtml(html, articleUrl);
+  const freshnessMs = customFreshnessMs ?? DISCOVERY_FRESHNESS_MS;
 
-  // Fallback: if extractPageMetadata didn't find a parseable date but
-  // extractDateFromHtml did (e.g. from JSON-LD datePublished), try parsing
-  // the broader extraction's raw date. This closes the gap where pages expose
-  // dates only in JSON-LD or less common meta tags.
-  if (!normalizedPublishedAt && dateExtraction.rawDate) {
-    const fallbackDate = normalizeRawDateString(dateExtraction.rawDate);
-    if (fallbackDate) {
-      normalizedPublishedAt = fallbackDate;
+  // Build date extraction result, falling back to a URL-derived date when no
+  // explicit date metadata was supplied.
+  let dateExtraction: DateExtractionResult = { rawDate: publishedAtRaw, source: publishedAtSource };
+  if (!dateExtraction.rawDate) {
+    const urlDate = extractDateFromUrl(articleUrl);
+    if (urlDate) {
+      dateExtraction = { rawDate: urlDate, source: "url_date" };
     }
   }
+
+  const normalizedPublishedAt = normalizeRawDateString(dateExtraction.rawDate || "");
 
   if (!isWithinFreshnessWindow(normalizedPublishedAt, new Date())) {
     const staleAudit = buildStaleAuditMeta(dateExtraction, normalizedPublishedAt, freshnessMs);
     return {
       accepted: false,
       candidate: null,
-      outcome: makeReject(articleUrl, sourcePageUrl, "rejected_stale", {
+      outcome: makeOutcome(articleUrl, sourcePageUrl, "rejected_stale", {
         canonicalUrl,
         title: previewTitle,
         publishedAt: normalizedPublishedAt?.toISOString() ?? null,
-        reason: staleAudit.staleReason === "missing_published_at"
-          ? "missing publishedAt"
-          : staleAudit.staleReason === "invalid_published_at"
-            ? "invalid publishedAt"
-            : staleAudit.staleReason === "future_published_at"
-              ? "future publishedAt"
-              : "outside freshness window",
+        reason:
+          staleAudit.staleReason === "missing_published_at"
+            ? "missing publishedAt"
+            : staleAudit.staleReason === "invalid_published_at"
+              ? "invalid publishedAt"
+              : staleAudit.staleReason === "future_published_at"
+                ? "future publishedAt"
+                : "outside freshness window",
         rawPublishedAt: staleAudit.rawPublishedAt,
         normalizedPublishedAt: staleAudit.normalizedPublishedAt,
         publishedAtSource: staleAudit.publishedAtSource,
@@ -1170,15 +1250,15 @@ export async function evaluateArticleLinkCandidate(input: {
     };
   }
 
-  const rawTitle = meta.title || canonicalUrl;
-  const rawBodyText = meta.description || stripHtml(html).slice(0, 600);
+  const rawTitle = title || canonicalUrl;
+  const rawBodyText = description || bodyFallback || "";
   const normalizedTitle = normalizeFeedTextDetailed(rawTitle);
   const normalizedBody = normalizeFeedTextDetailed(rawBodyText);
-  const title = normalizedTitle.value || canonicalUrl;
+  const finalTitle = normalizedTitle.value || canonicalUrl;
   const bodyText = normalizedBody.value;
-  const contentHash = await hashText([title, canonicalUrl, bodyText].filter(Boolean).join("|"));
-  const isPaywall = /paywall|subscribe|premium/i.test(html);
-  const rawTags = [...new Set(meta.keywords.filter(Boolean))];
+  const contentHash = await hashText([finalTitle, canonicalUrl, bodyText].filter(Boolean).join("|"));
+  const isPaywall = /paywall|subscribe|premium/i.test(html || `${title} ${description}`);
+  const rawTags = [...new Set(keywords.filter(Boolean))];
 
   const candidate: EvaluatedCandidate = {
     sourceId,
@@ -1187,7 +1267,7 @@ export async function evaluateArticleLinkCandidate(input: {
     canonicalUrl,
     rssGuid: null,
     rawTitle,
-    title,
+    title: finalTitle,
     publishedAt: normalizedPublishedAt,
     rawBodyText,
     bodyText: bodyText || null,
@@ -1196,15 +1276,18 @@ export async function evaluateArticleLinkCandidate(input: {
     rawTags,
     rawSignals: [
       "agent2-web-discovery",
+      ...extraRawSignals,
       sourcePageUrl,
       `score:${score.score}`,
-      ...(meta.keywords.length > 0 ? [`keywords:${meta.keywords.slice(0, 5).join(",")}`] : []),
+      ...(keywords.length > 0 ? [`keywords:${keywords.slice(0, 5).join(",")}`] : []),
     ],
     reasoning: `Agent 2 web discovery from ${sourcePageUrl} (score=${score.score}, reasons=${score.reasons.join(",")})`,
-    normalizationFlags: [...new Set([
-      ...(normalizedTitle.changed ? normalizedTitle.flags : []),
-      ...(normalizedBody.changed ? normalizedBody.flags : []),
-    ])],
+    normalizationFlags: [
+      ...new Set([
+        ...(normalizedTitle.changed ? normalizedTitle.flags : []),
+        ...(normalizedBody.changed ? normalizedBody.flags : []),
+      ]),
+    ],
     provenance: {
       origin: "web_discovery",
       feedUrl: null,
@@ -1218,14 +1301,65 @@ export async function evaluateArticleLinkCandidate(input: {
   return {
     accepted: true,
     candidate,
-    outcome: makeReject(articleUrl, sourcePageUrl, "accepted", {
+    outcome: makeOutcome(articleUrl, sourcePageUrl, "accepted", {
       canonicalUrl,
-      title,
+      title: finalTitle,
       publishedAt: normalizedPublishedAt?.toISOString(),
       score: score.score,
       scoreReasons: score.reasons,
     }),
   };
+}
+
+export async function evaluateArticleLinkCandidate(input: {
+  articleUrl: string;
+  sourcePageUrl: string;
+  targetUrl: string;
+  sourceId: string;
+  categoryId?: string | null;
+  freshnessMs?: number;
+}): Promise<EvaluateArticleLinkResult> {
+  const { articleUrl, sourcePageUrl, targetUrl, sourceId } = input;
+
+  const response = await safeFetch(articleUrl, {
+    headers: {
+      "User-Agent": "NuSift/1.0 Agent2-Discovery",
+      Accept: "text/html,application/xhtml+xml",
+    },
+  }).catch(() => null);
+
+  if (!response || !response.ok) {
+    return {
+      accepted: false,
+      candidate: null,
+      outcome: {
+        url: articleUrl,
+        sourceKind: resolveSourceKindFromSourcePageUrl(sourcePageUrl),
+        status: "fetch_failed",
+        reason: `HTTP ${response?.status || "no_response"}`,
+      } as ArticleDiscoveryCandidateOutcome,
+    };
+  }
+
+  const html = await response.text();
+  const meta = extractPageMetadata(html);
+  const dateExtraction = extractDateFromHtml(html, articleUrl);
+
+  return evaluateArticleLinkCandidateFromExtractedMetadata({
+    articleUrl,
+    sourcePageUrl,
+    targetUrl,
+    sourceId,
+    categoryId: input.categoryId,
+    title: meta.title,
+    description: meta.description,
+    keywords: meta.keywords,
+    publishedAtRaw: dateExtraction.rawDate,
+    publishedAtSource: dateExtraction.source,
+    bodyFallback: stripHtml(html).slice(0, 600),
+    html,
+    freshnessMs: input.freshnessMs,
+  });
 }
 
 // ─── Candidate URL Scoring ─────────────────────────────────────────────────

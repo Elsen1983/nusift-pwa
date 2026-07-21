@@ -8,6 +8,7 @@ const logAgentScanMock = vi.fn();
 const isBrowserFallbackEnabledMock = vi.fn();
 const discoverArticleLinksWithBrowserMock = vi.fn();
 const evaluateArticleLinkCandidateMock = vi.fn();
+const evaluateArticleLinkCandidateWithBrowserMock = vi.fn();
 const persistCandidatesMock = vi.fn();
 
 vi.mock("../prisma", () => ({
@@ -26,6 +27,8 @@ vi.mock("./log", () => ({
 vi.mock("./article-discovery-browser", () => ({
   isBrowserFallbackEnabled: (...args: any[]) => isBrowserFallbackEnabledMock(...args),
   discoverArticleLinksWithBrowser: (...args: any[]) => discoverArticleLinksWithBrowserMock(...args),
+  evaluateArticleLinkCandidateWithBrowser: (...args: any[]) =>
+    evaluateArticleLinkCandidateWithBrowserMock(...args),
 }));
 
 vi.mock("./article-discovery-helpers", () => ({
@@ -138,6 +141,7 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     isBrowserFallbackEnabledMock.mockReset();
     discoverArticleLinksWithBrowserMock.mockReset();
     evaluateArticleLinkCandidateMock.mockReset();
+    evaluateArticleLinkCandidateWithBrowserMock.mockReset();
     persistCandidatesMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
     isBrowserFallbackEnabledMock.mockReturnValue(true);
@@ -489,5 +493,165 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     expect(payload).not.toHaveProperty("rawHtml");
     expect(payload).not.toHaveProperty("screenshot");
     expect(payload).not.toHaveProperty("domDump");
+  });
+
+  // ── browser detail recovery ─────────────────────────────────────────────
+
+  it("attempts browser detail recovery when static evaluation fails with fetch_failed", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/recovered";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: true,
+      renderedUrl: "https://example.com/news",
+      links: [makeBrowserLink(articleUrl)],
+      diagnostics: {
+        pageTitle: "News",
+        linkCount: 8,
+        articleLikeLinkCount: 1,
+        browserRuntimeAvailable: true,
+        elapsedMs: 1500,
+      },
+    });
+
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
+      makeRejectedEvaluation(articleUrl, "fetch_failed", "HTTP 403"),
+    );
+    evaluateArticleLinkCandidateWithBrowserMock.mockResolvedValueOnce(
+      makeAcceptedEvaluation(articleUrl),
+    );
+    persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserResolved).toBe(1);
+      expect(result.browserCandidatesFound).toBe(1);
+    }
+
+    expect(evaluateArticleLinkCandidateWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(evaluateArticleLinkCandidateWithBrowserMock).toHaveBeenCalledWith(
+      expect.objectContaining({ articleUrl }),
+    );
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("RESOLVED");
+    expect(finalCall.data.payload.browserDetailEvaluated).toBe(1);
+    expect(finalCall.data.payload.browserDetailAccepted).toBe(1);
+    expect(finalCall.data.payload.browserDetailFetchRecovered).toBe(1);
+    expect(finalCall.data.payload.browserDetailRecoveryReasons).toEqual(["fetch_failed"]);
+  });
+
+  it("does not attempt browser detail recovery for normal quality rejections", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/stale";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: true,
+      renderedUrl: "https://example.com/news",
+      links: [makeBrowserLink(articleUrl)],
+      diagnostics: {
+        pageTitle: "News",
+        linkCount: 8,
+        articleLikeLinkCount: 1,
+        browserRuntimeAvailable: true,
+        elapsedMs: 1500,
+      },
+    });
+
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
+      makeRejectedEvaluation(articleUrl, "rejected_stale", "stale"),
+    );
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    expect(evaluateArticleLinkCandidateWithBrowserMock).not.toHaveBeenCalled();
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("BROWSER_NO_CANDIDATES");
+    expect(finalCall.data.payload.browserDetailEvaluated).toBe(0);
+    expect(finalCall.data.payload.browserDetailAccepted).toBe(0);
+  });
+
+  it("enforces the max 5 browser detail recovery page limit", async () => {
+    const links = Array.from({ length: 7 }, (_, i) =>
+      makeBrowserLink(`https://example.com/news/2026/07/2${i}/story`),
+    );
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: true,
+      renderedUrl: "https://example.com/news",
+      links,
+      diagnostics: {
+        pageTitle: "News",
+        linkCount: 7,
+        articleLikeLinkCount: 7,
+        browserRuntimeAvailable: true,
+        elapsedMs: 1500,
+      },
+    });
+
+    // All static evaluations fail with HTTP 403.
+    for (const link of links) {
+      evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
+        makeRejectedEvaluation(link.url, "fetch_failed", "HTTP 403"),
+      );
+      evaluateArticleLinkCandidateWithBrowserMock.mockResolvedValueOnce(
+        makeRejectedEvaluation(link.url, "rejected_stale", "stale"),
+      );
+    }
+
+    const fn = await loadFn();
+    await fn({ dryRun: false, runBrowser: true });
+
+    expect(evaluateArticleLinkCandidateWithBrowserMock).toHaveBeenCalledTimes(5);
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.payload.browserDetailEvaluated).toBe(5);
+    expect(finalCall.data.payload.browserDetailAccepted).toBe(0);
+    expect(finalCall.data.payload.browserDetailRejected).toBe(5);
+  });
+
+  it("keeps browser detail recovery failure non-fatal and records audit counters", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/failure";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: true,
+      renderedUrl: "https://example.com/news",
+      links: [makeBrowserLink(articleUrl)],
+      diagnostics: {
+        pageTitle: "News",
+        linkCount: 8,
+        articleLikeLinkCount: 1,
+        browserRuntimeAvailable: true,
+        elapsedMs: 1500,
+      },
+    });
+
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
+      makeRejectedEvaluation(articleUrl, "fetch_failed", "HTTP 403"),
+    );
+    evaluateArticleLinkCandidateWithBrowserMock.mockResolvedValueOnce(
+      makeRejectedEvaluation(articleUrl, "detail_validation_failed", "navigation failed"),
+    );
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserNoCandidates).toBe(1);
+    }
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("BROWSER_NO_CANDIDATES");
+    expect(finalCall.data.payload.browserDetailEvaluated).toBe(1);
+    expect(finalCall.data.payload.browserDetailRejected).toBe(1);
   });
 });

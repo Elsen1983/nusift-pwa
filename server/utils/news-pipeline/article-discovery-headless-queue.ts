@@ -10,7 +10,7 @@
 
 import { prisma } from "../prisma";
 import { logAgentScan } from "./log";
-import { isBrowserFallbackEnabled, discoverArticleLinksWithBrowser } from "./article-discovery-browser";
+import { isBrowserFallbackEnabled, discoverArticleLinksWithBrowser, evaluateArticleLinkCandidateWithBrowser } from "./article-discovery-browser";
 import {
   evaluateArticleLinkCandidate,
   ArticleDiscoveryOutcomeTracker,
@@ -391,6 +391,12 @@ export async function processArticleDiscoveryHeadlessQueue(
               browserSkipped: 0,
               browserFailed: 0,
               browserTopRejectionReasons: [],
+              // No detail recovery attempted when the listing page itself failed.
+              browserDetailEvaluated: 0,
+              browserDetailAccepted: 0,
+              browserDetailRejected: 0,
+              browserDetailFetchRecovered: 0,
+              browserDetailRecoveryReasons: [],
               browserError: `Browser fallback failed: ${browserResult.reason}. ${browserResult.diagnostics.blockedReason || ""}`,
               browserOutcomeSummary: {
                 totalEvaluated: 0,
@@ -455,6 +461,26 @@ export async function processArticleDiscoveryHeadlessQueue(
       let browserSkipped = 0;
       let browserError: string | null = null;
 
+      // Browser detail recovery bounds. We only attempt recovery when the
+      // static detail fetch fails (fetch_failed / detail_validation_failed or
+      // HTTP 401/403/429). Normal quality rejections (stale, low score,
+      // missing title, duplicate, out of scope) are not retried.
+      const MAX_DETAIL_RECOVERY_PAGES = 5;
+      let detailRecoveryAttempts = 0;
+      let browserDetailEvaluated = 0;
+      let browserDetailAccepted = 0;
+      let browserDetailRejected = 0;
+      let browserDetailFetchRecovered = 0;
+      const browserDetailRecoveryReasons: string[] = [];
+
+      const isRecoverableDetailRejection = (outcome: ArticleDiscoveryCandidateOutcome): boolean => {
+        if (outcome.status === "fetch_failed" || outcome.status === "detail_validation_failed") {
+          return true;
+        }
+        const reason = String(outcome.reason || "");
+        return /\b(403|401|429)\b/.test(reason);
+      };
+
       for (const link of browserResult.links) {
         try {
           const evaluation = await evaluateArticleLinkCandidate({
@@ -466,9 +492,58 @@ export async function processArticleDiscoveryHeadlessQueue(
           });
 
           if (!evaluation.accepted) {
-            // Rejected — record outcome and continue.
-            tracker.record(evaluation.outcome);
-            browserRejected += 1;
+            const shouldRecover =
+              detailRecoveryAttempts < MAX_DETAIL_RECOVERY_PAGES &&
+              isRecoverableDetailRejection(evaluation.outcome);
+
+            if (shouldRecover) {
+              detailRecoveryAttempts += 1;
+              browserDetailRecoveryReasons.push(evaluation.outcome.status);
+
+              const detailEval = await evaluateArticleLinkCandidateWithBrowser({
+                articleUrl: link.url,
+                sourcePageUrl: `browser:${link.url}`,
+                targetUrl,
+                sourceId: sourceId!,
+                categoryId: item.categoryId,
+              });
+
+              browserDetailEvaluated += 1;
+
+              if (detailEval.accepted) {
+                browserDetailAccepted += 1;
+                if (evaluation.outcome.status === "fetch_failed") {
+                  browserDetailFetchRecovered += 1;
+                }
+
+                const candidate = detailEval.candidate as unknown as IngestCandidate;
+
+                // Dedupe by canonical URL — same rule as static discovery.
+                if (seenCanonicalUrls.has(candidate.canonicalUrl)) {
+                  tracker.record({
+                    url: candidate.canonicalUrl,
+                    sourceKind: "browser",
+                    status: "rejected_duplicate",
+                    canonicalUrl: candidate.canonicalUrl,
+                    title: candidate.title,
+                    reason: "duplicate canonical URL",
+                  } as ArticleDiscoveryCandidateOutcome);
+                  browserSkipped += 1;
+                } else {
+                  seenCanonicalUrls.add(candidate.canonicalUrl);
+                  candidates.push(candidate);
+                  tracker.record(detailEval.outcome);
+                }
+              } else {
+                browserDetailRejected += 1;
+                tracker.record(detailEval.outcome);
+              }
+            } else {
+              // Normal rejection (stale, low score, missing title, etc.) or
+              // detail recovery limit reached — record the original outcome.
+              tracker.record(evaluation.outcome);
+              browserRejected += 1;
+            }
             continue;
           }
 
@@ -597,6 +672,12 @@ export async function processArticleDiscoveryHeadlessQueue(
             browserSkipped: persisted.skipped + browserSkipped,
             browserFailed: persisted.failed,
             browserTopRejectionReasons: browserOutcomeSummaryCompact.topRejectionReasons.slice(0, 5),
+            // Browser detail-recovery counters (compact).
+            browserDetailEvaluated,
+            browserDetailAccepted,
+            browserDetailRejected,
+            browserDetailFetchRecovered,
+            browserDetailRecoveryReasons,
             browserError,
             browserOutcomeSummary: browserOutcomeSummaryCompact,
             browserQualityAssessment: {
