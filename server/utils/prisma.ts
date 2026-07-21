@@ -2,19 +2,28 @@ import { PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 
-// Globális példány a fejlesztői környezet memóriaszivárgásának megelőzésére
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
+  prismaPgPool: Pool | undefined;
 };
 
-// 1. Létrehozzuk a natív PostgreSQL kapcsolatot a Vercel URL-el
 const connectionString = process.env.DATABASE_URL;
-const pool = new Pool({ connectionString });
+const parsedPoolMax = Number(process.env.DATABASE_POOL_MAX);
+const poolMax = Number.isFinite(parsedPoolMax) && parsedPoolMax > 0
+  ? Math.floor(parsedPoolMax)
+  : process.env.NODE_ENV === 'production' ? 1 : 10;
 
-// 2. Becsomagoljuk a Prisma Adapterbe
+const pool = globalForPrisma.prismaPgPool ?? new Pool({
+  connectionString,
+  max: poolMax,
+  idleTimeoutMillis: 10_000,
+  connectionTimeoutMillis: 5_000,
+});
+
+globalForPrisma.prismaPgPool = pool;
+
 const adapter = new PrismaPg(pool);
 
-// 3. Átadjuk az Adaptert a Prisma Kliensnek (Ez a Prisma 7+ standard)
 export const prisma = globalForPrisma.prisma ?? new PrismaClient({ adapter });
 
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+globalForPrisma.prisma = prisma;
