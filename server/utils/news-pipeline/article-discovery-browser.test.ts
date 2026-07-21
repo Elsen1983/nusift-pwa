@@ -285,6 +285,65 @@ describe("discoverArticleLinksWithBrowser", () => {
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
 
+  it("uses serverless Chromium with playwright-core on Vercel", async () => {
+    const originalFlag = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    const originalVercel = process.env.VERCEL;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    process.env.VERCEL = "1";
+
+    mockPageEvaluate
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce([
+        { url: "https://example.com/news/2026/07/16/serverless-browser-story", text: "Serverless browser story" },
+      ]);
+    makePlaywrightPage();
+
+    const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
+    const mockCoreLaunch = vi.fn().mockResolvedValue(mockBrowser);
+    const mockExecutablePath = vi.fn().mockResolvedValue("/tmp/chromium");
+
+    const mod = await import("./article-discovery-browser");
+    mod.setArticleDiscoveryBrowserImporterForTest(async (specifier: string) => {
+      if (specifier === "playwright-core") {
+        return {
+          chromium: {
+            launch: (...args: any[]) => mockCoreLaunch(...args),
+          },
+        };
+      }
+      if (specifier === "@sparticuz/chromium") {
+        return {
+          default: {
+            args: ["--no-sandbox"],
+            defaultViewport: { width: 1280, height: 720 },
+            executablePath: mockExecutablePath,
+            headless: true,
+          },
+        };
+      }
+      throw new Error(`Unexpected import: ${specifier}`);
+    });
+
+    const result = await mod.discoverArticleLinksWithBrowser({
+      targetUrl: "https://example.com/news",
+      sourceId: "src-1",
+      targetType: "source",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockExecutablePath).toHaveBeenCalled();
+    expect(mockCoreLaunch).toHaveBeenCalledWith(expect.objectContaining({
+      args: ["--no-sandbox"],
+      executablePath: "/tmp/chromium",
+      headless: true,
+    }));
+    expect(mockChromiumLaunch).not.toHaveBeenCalled();
+
+    mod.setArticleDiscoveryBrowserImporterForTest(null);
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = originalFlag || "";
+    process.env.VERCEL = originalVercel || "";
+  });
+
   it("caps timeout at 15 seconds", async () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";

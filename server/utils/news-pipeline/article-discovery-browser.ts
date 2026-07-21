@@ -221,6 +221,28 @@ export function setArticleDiscoveryBrowserImporterForTest(
 }
 
 async function launchBrowser(): Promise<any | null> {
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    try {
+      const [playwrightCoreModule, chromiumModule] = await Promise.all([
+        importOptionalDependency("playwright-core"),
+        importOptionalDependency("@sparticuz/chromium"),
+      ]);
+      const playwrightCore = playwrightCoreModule.default ?? playwrightCoreModule;
+      const serverlessChromium = chromiumModule.default ?? chromiumModule;
+      const executablePath = await serverlessChromium.executablePath();
+
+      return await playwrightCore.chromium.launch({
+        args: serverlessChromium.args,
+        defaultViewport: serverlessChromium.defaultViewport,
+        executablePath,
+        headless: serverlessChromium.headless ?? true,
+      });
+    } catch {
+      // Fall through to the regular Playwright runtime. This keeps local/dev installs working
+      // and preserves the existing runtime-unavailable result when no browser can launch.
+    }
+  }
+
   try {
     const playwright = await importOptionalDependency("playwright");
     return await playwright.chromium.launch({ headless: true });
