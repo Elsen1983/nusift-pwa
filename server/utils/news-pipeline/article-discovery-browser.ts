@@ -189,6 +189,51 @@ type ScoreAndFilterResult = {
   topRejectionReasons: Array<{ reason: string; count: number }>;
 };
 
+function isCategoryDirectoryPath(url: string | null): boolean {
+  if (!url) return false;
+  try {
+    const path = new URL(url).pathname.replace(/\/+$/, "") || "/";
+    return /^\/categor(?:y|ies)\/[^/]+$/i.test(path);
+  } catch {
+    return false;
+  }
+}
+
+function isStrongListingContextArticle(
+  raw: RawBrowserLink,
+  pageUrl: string,
+  categoryPathUrl: string | null,
+): { accepted: boolean; score: number; reasons: string[] } {
+  if (!isCategoryDirectoryPath(categoryPathUrl)) {
+    return { accepted: false, score: 0, reasons: [] };
+  }
+
+  try {
+    const path = new URL(raw.url).pathname.replace(/\/+$/, "") || "/";
+    if (isCategoryDirectoryPath(raw.url) || path === "/" || path === new URL(pageUrl).pathname.replace(/\/+$/, "")) {
+      return { accepted: false, score: 0, reasons: ["category_directory_or_listing_page"] };
+    }
+  } catch {
+    return { accepted: false, score: 0, reasons: ["invalid_url"] };
+  }
+
+  const score = scoreCandidateUrl(raw.url, pageUrl, {
+    title: raw.text,
+    dateText: null,
+    categoryPathUrl: null,
+  });
+
+  const hasUsefulAnchor = Boolean(raw.text && raw.text.trim().length >= 12);
+  const accepted = !score.rejected && score.score >= 50 && hasUsefulAnchor;
+  return {
+    accepted,
+    score: score.score,
+    reasons: accepted
+      ? [...score.reasons, "listing_context_scope"]
+      : [...score.reasons, hasUsefulAnchor ? "weak_listing_context" : "weak_anchor_text"],
+  };
+}
+
 function scoreAndFilterBrowserLinks(
   rawLinks: RawBrowserLink[],
   pageUrl: string,
@@ -274,11 +319,39 @@ function scoreAndFilterBrowserLinks(
       continue;
     }
 
-    // Reject out-of-category-scope links
+    // Reject out-of-category-scope links unless the target is a category
+    // directory page whose article URLs intentionally live outside that
+    // directory. This is common on sites such as /category/arizona-news where
+    // the listing page is category-scoped but article detail URLs are global.
     if (categoryScoped === false) {
-      const entry = makeAuditEntry(true, "out_of_category_scope", { score: 0, reasons: ["out_of_category_scope"] });
-      rejectedLinks.push(entry);
-      rejectionReasonCounts["out_of_category_scope"] = (rejectionReasonCounts["out_of_category_scope"] || 0) + 1;
+      const listingContext = isStrongListingContextArticle(raw, pageUrl, categoryPathUrl);
+      if (!listingContext.accepted) {
+        const entry = makeAuditEntry(true, "out_of_category_scope", {
+          score: listingContext.score,
+          reasons: listingContext.reasons.length > 0 ? listingContext.reasons : ["out_of_category_scope"],
+        });
+        rejectedLinks.push(entry);
+        rejectionReasonCounts["out_of_category_scope"] = (rejectionReasonCounts["out_of_category_scope"] || 0) + 1;
+        continue;
+      }
+
+      const entry = makeAuditEntry(false, null, {
+        score: listingContext.score,
+        reasons: listingContext.reasons,
+      });
+      allAcceptedEntries.push(entry);
+
+      allAccepted.push({
+        url: raw.url,
+        text: raw.text,
+        sourcePageUrl: `browser:${pageUrl}`,
+        sourceKind: "browser",
+        rawSignals: {
+          anchorText: raw.text?.slice(0, 100) || null,
+          score: listingContext.score,
+          scoreReasons: listingContext.reasons,
+        },
+      });
       continue;
     }
 
@@ -1018,5 +1091,4 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
     }
   }
 }
-
 

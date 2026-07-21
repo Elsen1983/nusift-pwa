@@ -527,6 +527,109 @@ describe("discoverArticleLinksWithBrowser", () => {
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
 
+  it("allows strong article links from category-directory pages even when article URLs are global", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    mockPageEvaluate
+      .mockResolvedValueOnce(5)
+      .mockResolvedValueOnce([
+        { url: "https://www.bignewsnetwork.com/", text: "Home" },
+        { url: "https://www.bignewsnetwork.com/category/breaking-business-news", text: "Breaking Business News" },
+        { url: "https://www.bignewsnetwork.com/news/278416836/arizona-heat-warning-remains-in-effect", text: "Arizona heat warning remains in effect" },
+        { url: "https://www.bignewsnetwork.com/news/278416837/phoenix-schools-expand-summer-programs", text: "Phoenix schools expand summer programs" },
+        { url: "https://other-site.com/news/278416838/cross-domain", text: "Cross domain story" },
+      ]);
+    mockPageGoto.mockResolvedValue({ ok: () => true, status: () => 200 });
+    mockPageTitle.mockResolvedValue("Arizona News");
+    mockPageUrl.mockReturnValue("https://www.bignewsnetwork.com/category/arizona-news");
+    mockPageRoute.mockImplementation(async () => {});
+
+    const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
+    const mockCtx = { newPage: mockContextNewPage, close: mockContextClose };
+    const mockPg = {
+      goto: mockPageGoto,
+      evaluate: mockPageEvaluate,
+      title: mockPageTitle,
+      url: mockPageUrl,
+      route: mockPageRoute,
+    };
+    mockContextNewPage.mockResolvedValue(mockPg);
+    mockBrowserNewContext.mockResolvedValue(mockCtx);
+    mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+    const fn = await loadFn();
+    const result = await fn({
+      targetUrl: "https://www.bignewsnetwork.com/category/arizona-news",
+      sourceId: "src-1",
+      targetType: "category",
+      categoryPathUrl: "https://www.bignewsnetwork.com/category/arizona-news",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.shortlistedLinkCount).toBe(2);
+    expect(result.links.map((link) => link.url)).toEqual([
+      "https://www.bignewsnetwork.com/news/278416836/arizona-heat-warning-remains-in-effect",
+      "https://www.bignewsnetwork.com/news/278416837/phoenix-schools-expand-summer-programs",
+    ]);
+    expect(result.shortlistedLinkSamples.every((entry) => entry.scoreReasons.includes("listing_context_scope"))).toBe(true);
+
+    const rejectionReasons = Object.fromEntries(
+      result.topRejectionReasons.map((r) => [r.reason, r.count]),
+    );
+    expect(rejectionReasons["out_of_category_scope"]).toBe(1);
+    expect(rejectionReasons["utility_path"]).toBe(1);
+    expect(rejectionReasons["different_domain"]).toBe(1);
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("does not allow sibling category links through the category-directory escape hatch", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    mockPageEvaluate
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce([
+        { url: "https://www.bignewsnetwork.com/category/breaking-business-news", text: "Breaking Business News" },
+        { url: "https://www.bignewsnetwork.com/category/international-business-news", text: "International Business News" },
+      ]);
+    mockPageGoto.mockResolvedValue({ ok: () => true, status: () => 200 });
+    mockPageTitle.mockResolvedValue("Arizona News");
+    mockPageUrl.mockReturnValue("https://www.bignewsnetwork.com/category/arizona-news");
+    mockPageRoute.mockImplementation(async () => {});
+
+    const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
+    const mockCtx = { newPage: mockContextNewPage, close: mockContextClose };
+    const mockPg = {
+      goto: mockPageGoto,
+      evaluate: mockPageEvaluate,
+      title: mockPageTitle,
+      url: mockPageUrl,
+      route: mockPageRoute,
+    };
+    mockContextNewPage.mockResolvedValue(mockPg);
+    mockBrowserNewContext.mockResolvedValue(mockCtx);
+    mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+    const fn = await loadFn();
+    const result = await fn({
+      targetUrl: "https://www.bignewsnetwork.com/category/arizona-news",
+      sourceId: "src-1",
+      targetType: "category",
+      categoryPathUrl: "https://www.bignewsnetwork.com/category/arizona-news",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.shortlistedLinkCount).toBe(0);
+    expect(result.links).toEqual([]);
+    expect(result.topRejectionReasons).toEqual([
+      { reason: "out_of_category_scope", count: 2 },
+    ]);
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
   it("audits all raw links even after 25 accepted shortlist links are collected", async () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
