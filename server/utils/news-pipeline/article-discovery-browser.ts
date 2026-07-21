@@ -38,7 +38,9 @@ const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const MAX_LINKS_PER_TARGET = 25;
+const MAX_BROWSER_SHORTLISTED_LINKS = 25;
+const MAX_BROWSER_TOP_REJECTED_LINKS = 20;
+const MAX_BROWSER_RAW_LINKS = 700;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -50,11 +52,34 @@ export type BrowserArticleLink = {
   rawSignals: Record<string, unknown>;
 };
 
+/**
+ * Compact audit entry for a raw browser link that was evaluated by
+ * scoreAndFilterBrowserLinks. Explains why a link was rejected or accepted
+ * for detail evaluation.
+ */
+export type BrowserLinkAuditEntry = {
+  url: string;
+  normalizedUrl: string | null;
+  anchorText: string | null;
+  score: number;
+  rejected: boolean;
+  reason: string | null;
+  scoreReasons: string[];
+  sameDomain: boolean;
+  utilityPath: boolean;
+  categoryScoped: boolean | null;
+};
+
 export type BrowserArticleLinkResult = {
   ok: boolean;
   reason?: string;
   renderedUrl?: string;
   links: BrowserArticleLink[];
+  rawLinkCount: number;
+  shortlistedLinkCount: number;
+  topRejectedLinks: BrowserLinkAuditEntry[];
+  shortlistedLinkSamples: BrowserLinkAuditEntry[];
+  topRejectionReasons: Array<{ reason: string; count: number }>;
   diagnostics: {
     pageTitle: string | null;
     linkCount: number;
@@ -89,30 +114,35 @@ type RawBrowserLink = {
 /**
  * Extract raw anchor URLs from the rendered DOM inside the browser context.
  * Runs via page.evaluate() so it has access to the live DOM.
- * Returns only same-domain, deduplicated, non-utility URLs.
+ * Returns deduplicated, resolved anchor URLs. Only obviously non-link hrefs
+ * (hash-only, javascript:, mailto:, tel:) are skipped. Domain, category,
+ * and URL quality validation happen Node-side in scoreAndFilterBrowserLinks
+ * so the full bounded raw sample can be audited.
  */
 async function extractRawLinksFromBrowser(
   page: any,
   pageUrl: string,
-  categoryPathUrl: string | null,
 ): Promise<RawBrowserLink[]> {
   return page.evaluate(
-    (args: { pageUrl: string; categoryPathUrl: string | null; maxLinks: number }) => {
-      const { pageUrl, categoryPathUrl, maxLinks } = args;
+    (args: { pageUrl: string; maxLinks: number }) => {
+      const { pageUrl, maxLinks } = args;
       const results: Array<{ url: string; text: string | null }> = [];
       const seen = new Set<string>();
 
       try {
-        const pageHostname = new URL(pageUrl).hostname.replace(/^www\./, "");
         const anchors = Array.from(document.querySelectorAll("a[href]"));
 
         for (const anchor of anchors) {
           const href = (anchor as HTMLAnchorElement).getAttribute("href");
+          // Only skip obviously non-link hrefs. Domain, category, and URL
+          // validation are handled Node-side by scoreAndFilterBrowserLinks
+          // so the full bounded raw sample can be audited.
           if (
             !href ||
             href.startsWith("#") ||
             href.startsWith("javascript:") ||
-            href.startsWith("mailto:")
+            href.startsWith("mailto:") ||
+            href.startsWith("tel:")
           ) {
             continue;
           }
@@ -128,30 +158,6 @@ async function extractRawLinksFromBrowser(
           if (seen.has(normalized)) continue;
           seen.add(normalized);
 
-          let linkHostname: string;
-          try {
-            linkHostname = new URL(resolved).hostname.replace(/^www\./, "");
-          } catch {
-            continue;
-          }
-          if (linkHostname !== pageHostname) continue;
-
-          // Category scope filter (in-browser)
-          if (categoryPathUrl) {
-            try {
-              const articlePath = new URL(resolved).pathname.replace(/\/+$/, "") || "/";
-              const categoryPath = new URL(categoryPathUrl).pathname.replace(/\/+$/, "") || "/";
-              if (
-                categoryPath !== "/" &&
-                !(articlePath === categoryPath || articlePath.startsWith(`${categoryPath}/`))
-              ) {
-                continue;
-              }
-            } catch {
-              continue;
-            }
-          }
-
           results.push({
             url: resolved,
             text: (anchor as HTMLAnchorElement).textContent?.trim().slice(0, 200) || null,
@@ -165,7 +171,7 @@ async function extractRawLinksFromBrowser(
 
       return results;
     },
-    { pageUrl, categoryPathUrl, maxLinks: MAX_LINKS_PER_TARGET * 2 },
+    { pageUrl, maxLinks: MAX_BROWSER_RAW_LINKS },
   );
 }
 
@@ -173,27 +179,130 @@ async function extractRawLinksFromBrowser(
  * Score and filter raw browser links in Node.js using the same scoring
  * logic as static Agent 2. Returns fully typed BrowserArticleLink[].
  */
+type ScoreAndFilterResult = {
+  /** Capped to MAX_BROWSER_SHORTLISTED_LINKS */
+  links: BrowserArticleLink[];
+  /** Total accepted before cap (may exceed links.length) */
+  totalAcceptedBeforeCap: number;
+  topRejectedLinks: BrowserLinkAuditEntry[];
+  shortlistedLinkSamples: BrowserLinkAuditEntry[];
+  topRejectionReasons: Array<{ reason: string; count: number }>;
+};
+
 function scoreAndFilterBrowserLinks(
   rawLinks: RawBrowserLink[],
   pageUrl: string,
   categoryPathUrl: string | null,
-): BrowserArticleLink[] {
-  const results: BrowserArticleLink[] = [];
+): ScoreAndFilterResult {
+  // Collect ALL accepted candidates — we iterate the full raw sample so that
+  // rejectedLinks and rejectionReasonCounts cover every link, not just the
+  // ones seen before the shortlist cap is hit.
+  const allAccepted: BrowserArticleLink[] = [];
+  const allAcceptedEntries: BrowserLinkAuditEntry[] = [];
+  const rejectedLinks: BrowserLinkAuditEntry[] = [];
+  const rejectionReasonCounts: Record<string, number> = {};
+
+  const pageHostname = (() => {
+    try { return new URL(pageUrl).hostname.replace(/^www\./, ""); } catch { return ""; }
+  })();
 
   for (const raw of rawLinks) {
-    // Utility path filter (Node.js side)
-    if (isBlockedDiscoveryPath(raw.url)) continue;
+    let normalizedUrl: string | null = null;
+    try { normalizedUrl = normalizeUrl(raw.url); } catch { normalizedUrl = null; }
 
-    // Article-like path check via scoring
+    // ── Domain validation (moved from browser-context extraction) ──
+    let sameDomain = false;
+    try { sameDomain = new URL(raw.url).hostname.replace(/^www\./, "") === pageHostname; } catch { /* invalid URL below */ }
+
+    // ── Invalid URL detection ──────────────────────────────────────
+    if (!normalizedUrl) {
+      const entry: BrowserLinkAuditEntry = {
+        url: raw.url,
+        normalizedUrl: null,
+        anchorText: raw.text?.slice(0, 100) || null,
+        score: 0,
+        rejected: true,
+        reason: "invalid_url",
+        scoreReasons: ["invalid_url"],
+        sameDomain: false,
+        utilityPath: false,
+        categoryScoped: null,
+      };
+      rejectedLinks.push(entry);
+      rejectionReasonCounts["invalid_url"] = (rejectionReasonCounts["invalid_url"] || 0) + 1;
+      continue;
+    }
+
+    const isUtilityPath = isBlockedDiscoveryPath(raw.url);
+
+    // ── Category scope validation (moved from browser-context extraction) ──
+    let categoryScoped: boolean | null = null;
+    if (categoryPathUrl) {
+      try {
+        const articlePath = new URL(raw.url).pathname.replace(/\/+$/, "") || "/";
+        const categoryPath = new URL(categoryPathUrl).pathname.replace(/\/+$/, "") || "/";
+        categoryScoped = categoryPath === "/" || articlePath === categoryPath || articlePath.startsWith(`${categoryPath}/`);
+      } catch { categoryScoped = false; }
+    }
+
+    const makeAuditEntry = (rejected: boolean, reason: string | null, scoreResult: { score: number; reasons: string[] }): BrowserLinkAuditEntry => ({
+      url: raw.url,
+      normalizedUrl,
+      anchorText: raw.text?.slice(0, 100) || null,
+      score: scoreResult.score,
+      rejected,
+      reason,
+      scoreReasons: scoreResult.reasons,
+      sameDomain,
+      utilityPath: isUtilityPath,
+      categoryScoped,
+    });
+
+    // Reject cross-domain links
+    if (!sameDomain) {
+      const entry = makeAuditEntry(true, "different_domain", { score: 0, reasons: ["different_domain"] });
+      rejectedLinks.push(entry);
+      rejectionReasonCounts["different_domain"] = (rejectionReasonCounts["different_domain"] || 0) + 1;
+      continue;
+    }
+
+    // Reject utility path links
+    if (isUtilityPath) {
+      const entry = makeAuditEntry(true, "utility_path", { score: 0, reasons: ["utility_path"] });
+      rejectedLinks.push(entry);
+      rejectionReasonCounts["utility_path"] = (rejectionReasonCounts["utility_path"] || 0) + 1;
+      continue;
+    }
+
+    // Reject out-of-category-scope links
+    if (categoryScoped === false) {
+      const entry = makeAuditEntry(true, "out_of_category_scope", { score: 0, reasons: ["out_of_category_scope"] });
+      rejectedLinks.push(entry);
+      rejectionReasonCounts["out_of_category_scope"] = (rejectionReasonCounts["out_of_category_scope"] || 0) + 1;
+      continue;
+    }
+
+    // Score the candidate URL
     const score = scoreCandidateUrl(raw.url, pageUrl, {
       title: raw.text,
       dateText: null,
       categoryPathUrl,
     });
 
-    if (score.rejected) continue;
+    if (score.rejected) {
+      const rejectionReason = score.rejectionReason || "low_score";
+      const entry = makeAuditEntry(true, rejectionReason, { score: score.score, reasons: score.reasons });
+      rejectedLinks.push(entry);
+      rejectionReasonCounts[rejectionReason] = (rejectionReasonCounts[rejectionReason] || 0) + 1;
+      continue;
+    }
 
-    results.push({
+    // Accepted for shortlist — collect ALL accepted candidates; the links
+    // array is capped later so audit covers the full raw sample.
+    const entry = makeAuditEntry(false, null, { score: score.score, reasons: score.reasons });
+    allAcceptedEntries.push(entry);
+
+    allAccepted.push({
       url: raw.url,
       text: raw.text,
       sourcePageUrl: `browser:${pageUrl}`,
@@ -204,11 +313,39 @@ function scoreAndFilterBrowserLinks(
         scoreReasons: score.reasons,
       },
     });
-
-    if (results.length >= MAX_LINKS_PER_TARGET) break;
   }
 
-  return results;
+  // ── Cap the returned links array ────────────────────────────────
+  // Sort accepted by score desc, then cap to MAX_BROWSER_SHORTLISTED_LINKS.
+  allAccepted.sort((a, b) => {
+    const sa = (a.rawSignals as Record<string, unknown>).score as number || 0;
+    const sb = (b.rawSignals as Record<string, unknown>).score as number || 0;
+    return sb - sa;
+  });
+  allAcceptedEntries.sort((a, b) => b.score - a.score);
+  const links = allAccepted.slice(0, MAX_BROWSER_SHORTLISTED_LINKS);
+
+  // ── Build shortlisted samples (capped at 25) ───────────────────
+  const shortlistedSamples: BrowserLinkAuditEntry[] = allAcceptedEntries
+    .slice(0, MAX_BROWSER_SHORTLISTED_LINKS);
+
+  // ── Build top rejected links (capped at 20, sorted by score desc)
+  rejectedLinks.sort((a, b) => b.score - a.score);
+  const topRejectedLinks = rejectedLinks.slice(0, MAX_BROWSER_TOP_REJECTED_LINKS);
+
+  // ── Build top rejection reasons (from the full audited sample) ──
+  const topRejectionReasons = Object.entries(rejectionReasonCounts)
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  return {
+    links,
+    totalAcceptedBeforeCap: allAccepted.length,
+    topRejectedLinks,
+    shortlistedLinkSamples: shortlistedSamples,
+    topRejectionReasons,
+  };
 }
 
 // ─── Playwright Loader (lazy) ───────────────────────────────────────────────
@@ -317,6 +454,11 @@ export async function discoverArticleLinksWithBrowser(input: {
       ok: false,
       reason: "browser_fallback_disabled",
       links: [],
+      rawLinkCount: 0,
+      shortlistedLinkCount: 0,
+      topRejectedLinks: [],
+      shortlistedLinkSamples: [],
+      topRejectionReasons: [],
       diagnostics: {
         pageTitle: null,
         linkCount: 0,
@@ -336,6 +478,11 @@ export async function discoverArticleLinksWithBrowser(input: {
       ok: false,
       reason: "browser_runtime_unavailable",
       links: [],
+      rawLinkCount: 0,
+      shortlistedLinkCount: 0,
+      topRejectedLinks: [],
+      shortlistedLinkSamples: [],
+      topRejectionReasons: [],
       diagnostics: {
         pageTitle: null,
         linkCount: 0,
@@ -377,6 +524,11 @@ export async function discoverArticleLinksWithBrowser(input: {
         ok: false,
         reason: "navigation_failed",
         links: [],
+        rawLinkCount: 0,
+        shortlistedLinkCount: 0,
+        topRejectedLinks: [],
+        shortlistedLinkSamples: [],
+        topRejectionReasons: [],
         diagnostics: {
           pageTitle: null,
           linkCount: 0,
@@ -395,6 +547,11 @@ export async function discoverArticleLinksWithBrowser(input: {
         ok: false,
         reason: "http_error",
         links: [],
+        rawLinkCount: 0,
+        shortlistedLinkCount: 0,
+        topRejectedLinks: [],
+        shortlistedLinkSamples: [],
+        topRejectionReasons: [],
         diagnostics: {
           pageTitle: null,
           linkCount: 0,
@@ -415,20 +572,24 @@ export async function discoverArticleLinksWithBrowser(input: {
     const rawLinks = await extractRawLinksFromBrowser(
       page,
       renderedUrl || input.targetUrl,
-      categoryPathUrl,
     ).catch(() => [] as RawBrowserLink[]);
-    const links = scoreAndFilterBrowserLinks(rawLinks, renderedUrl || input.targetUrl, categoryPathUrl);
+    const filterResult = scoreAndFilterBrowserLinks(rawLinks, renderedUrl || input.targetUrl, categoryPathUrl);
 
     await browser.close();
 
     return {
       ok: true,
       renderedUrl,
-      links,
+      links: filterResult.links,
+      rawLinkCount: rawLinks.length,
+      shortlistedLinkCount: filterResult.totalAcceptedBeforeCap,
+      topRejectedLinks: filterResult.topRejectedLinks,
+      shortlistedLinkSamples: filterResult.shortlistedLinkSamples,
+      topRejectionReasons: filterResult.topRejectionReasons,
       diagnostics: {
         pageTitle,
         linkCount: allAnchors,
-        articleLikeLinkCount: links.length,
+        articleLikeLinkCount: filterResult.links.length,
         browserRuntimeAvailable: true,
         elapsedMs: Date.now() - startedAt,
       },
@@ -443,6 +604,11 @@ export async function discoverArticleLinksWithBrowser(input: {
       ok: false,
       reason: "browser_error",
       links: [],
+      rawLinkCount: 0,
+      shortlistedLinkCount: 0,
+      topRejectedLinks: [],
+      shortlistedLinkSamples: [],
+      topRejectionReasons: [],
       diagnostics: {
         pageTitle: null,
         linkCount: 0,

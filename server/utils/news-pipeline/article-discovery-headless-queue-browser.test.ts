@@ -99,6 +99,36 @@ const makeBrowserLink = (url: string, text = "Article") => ({
   rawSignals: { anchorText: text, score: 50, scoreReasons: [] },
 });
 
+const makeBrowserResultOk = (links: any[], overrides: Record<string, any> = {}) => ({
+  ok: true as const,
+  renderedUrl: "https://example.com/news",
+  links,
+  rawLinkCount: links.length + 10,
+  shortlistedLinkCount: links.length,
+  topRejectedLinks: [] as any[],
+  shortlistedLinkSamples: links.map((l: any) => ({
+    url: l.url,
+    normalizedUrl: l.url,
+    anchorText: l.text,
+    score: 50,
+    rejected: false,
+    reason: null,
+    scoreReasons: [] as string[],
+    sameDomain: true,
+    utilityPath: false,
+    categoryScoped: null,
+  })),
+  topRejectionReasons: [] as any[],
+  diagnostics: {
+    pageTitle: "News",
+    linkCount: links.length + 10,
+    articleLikeLinkCount: links.length,
+    browserRuntimeAvailable: true,
+    elapsedMs: 1500,
+  },
+  ...overrides,
+});
+
 const makeAcceptedCandidate = (url: string) => ({
   sourceId: "src-1",
   categoryId: null,
@@ -216,18 +246,11 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const link2 = "https://example.com/news/2026/07/19/story-2";
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
-    discoverArticleLinksWithBrowserMock.mockResolvedValue({
-      ok: true,
-      renderedUrl: "https://example.com/news",
-      links: [makeBrowserLink(link1), makeBrowserLink(link2)],
-      diagnostics: {
-        pageTitle: "News",
-        linkCount: 10,
-        articleLikeLinkCount: 2,
-        browserRuntimeAvailable: true,
-        elapsedMs: 3000,
-      },
-    });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(link1), makeBrowserLink(link2)], {
+        diagnostics: { pageTitle: "News", linkCount: 10, articleLikeLinkCount: 2, browserRuntimeAvailable: true, elapsedMs: 3000 },
+      }),
+    );
     evaluateArticleLinkCandidateMock
       .mockResolvedValueOnce(makeAcceptedEvaluation(link1))
       .mockResolvedValueOnce(makeAcceptedEvaluation(link2));
@@ -251,7 +274,9 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     expect(finalCall.data.payload.browserFallbackRan).toBe(true);
     expect(finalCall.data.payload.browserAccepted).toBe(2);
     expect(finalCall.data.payload.browserInserted).toBe(2);
-    expect(finalCall.data.payload.browserRawLinks).toBe(10);
+    // browserRawLinks comes from browserResult.rawLinkCount (makeBrowserResultOk default: links.length + 10 = 12)
+    expect(finalCall.data.payload.browserRawLinks).toBe(12);
+    expect(finalCall.data.payload.browserShortlistedLinks).toBe(2);
     expect(finalCall.data.payload.browserEvaluated).toBe(2);
     expect(finalCall.data.payload.browserQualityAssessment.quality).toBe("productive");
   });
@@ -262,18 +287,11 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const utilityLink = "https://example.com/about";
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
-    discoverArticleLinksWithBrowserMock.mockResolvedValue({
-      ok: true,
-      renderedUrl: "https://example.com/news",
-      links: [makeBrowserLink(utilityLink)],
-      diagnostics: {
-        pageTitle: "News",
-        linkCount: 5,
-        articleLikeLinkCount: 1,
-        browserRuntimeAvailable: true,
-        elapsedMs: 2000,
-      },
-    });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(utilityLink)], {
+        diagnostics: { pageTitle: "News", linkCount: 5, articleLikeLinkCount: 1, browserRuntimeAvailable: true, elapsedMs: 2000 },
+      }),
+    );
     evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
       makeRejectedEvaluation(utilityLink, "rejected_utility_path", "utility_path"),
     );
@@ -300,18 +318,9 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const articleUrl = "https://example.com/news/2026/07/20/breaking";
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
-    discoverArticleLinksWithBrowserMock.mockResolvedValue({
-      ok: true,
-      renderedUrl: "https://example.com/news",
-      links: [makeBrowserLink(articleUrl)],
-      diagnostics: {
-        pageTitle: "News",
-        linkCount: 8,
-        articleLikeLinkCount: 1,
-        browserRuntimeAvailable: true,
-        elapsedMs: 1500,
-      },
-    });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
     evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
     persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
 
@@ -334,18 +343,11 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const link2 = "https://example.com/news/another-old";
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
-    discoverArticleLinksWithBrowserMock.mockResolvedValue({
-      ok: true,
-      renderedUrl: "https://example.com/news",
-      links: [makeBrowserLink(link1), makeBrowserLink(link2)],
-      diagnostics: {
-        pageTitle: "News",
-        linkCount: 4,
-        articleLikeLinkCount: 2,
-        browserRuntimeAvailable: true,
-        elapsedMs: 1000,
-      },
-    });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(link1), makeBrowserLink(link2)], {
+        diagnostics: { pageTitle: "News", linkCount: 4, articleLikeLinkCount: 2, browserRuntimeAvailable: true, elapsedMs: 1000 },
+      }),
+    );
     evaluateArticleLinkCandidateMock
       .mockResolvedValueOnce(makeRejectedEvaluation(link1, "rejected_stale", "stale"))
       .mockResolvedValueOnce(makeRejectedEvaluation(link2, "rejected_stale", "stale"));
@@ -411,18 +413,11 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const dupUrl = "https://example.com/news/2026/07/20/duplicate-story";
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
-    discoverArticleLinksWithBrowserMock.mockResolvedValue({
-      ok: true,
-      renderedUrl: "https://example.com/news",
-      links: [makeBrowserLink(dupUrl), makeBrowserLink(dupUrl)],
-      diagnostics: {
-        pageTitle: "News",
-        linkCount: 2,
-        articleLikeLinkCount: 2,
-        browserRuntimeAvailable: true,
-        elapsedMs: 1000,
-      },
-    });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(dupUrl), makeBrowserLink(dupUrl)], {
+        diagnostics: { pageTitle: "News", linkCount: 2, articleLikeLinkCount: 2, browserRuntimeAvailable: true, elapsedMs: 1000 },
+      }),
+    );
     // Both links evaluate to accepted with the same canonical URL
     evaluateArticleLinkCandidateMock
       .mockResolvedValueOnce(makeAcceptedEvaluation(dupUrl))
@@ -451,18 +446,11 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const articleUrl = "https://example.com/news/2026/07/20/metadata-test";
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
-    discoverArticleLinksWithBrowserMock.mockResolvedValue({
-      ok: true,
-      renderedUrl: "https://example.com/news",
-      links: [makeBrowserLink(articleUrl)],
-      diagnostics: {
-        pageTitle: "News Page",
-        linkCount: 15,
-        articleLikeLinkCount: 1,
-        browserRuntimeAvailable: true,
-        elapsedMs: 2500,
-      },
-    });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)], {
+        diagnostics: { pageTitle: "News Page", linkCount: 15, articleLikeLinkCount: 1, browserRuntimeAvailable: true, elapsedMs: 2500 },
+      }),
+    );
     evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
     persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
 
@@ -475,7 +463,9 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     expect(payload.browserFallbackRan).toBe(true);
     expect(payload.browserFallbackStartedAt).toBeDefined();
     expect(payload.browserFallbackFinishedAt).toBeDefined();
-    expect(payload.browserRawLinks).toBe(15);
+    // browserRawLinks comes from browserResult.rawLinkCount (makeBrowserResultOk default: links.length + 10 = 11)
+    expect(payload.browserRawLinks).toBe(11);
+    expect(payload.browserShortlistedLinks).toBe(1);
     expect(payload.browserEvaluated).toBe(1);
     expect(payload.browserAccepted).toBe(1);
     expect(payload.browserRejected).toBe(0);
@@ -501,18 +491,9 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const articleUrl = "https://example.com/news/2026/07/20/recovered";
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
-    discoverArticleLinksWithBrowserMock.mockResolvedValue({
-      ok: true,
-      renderedUrl: "https://example.com/news",
-      links: [makeBrowserLink(articleUrl)],
-      diagnostics: {
-        pageTitle: "News",
-        linkCount: 8,
-        articleLikeLinkCount: 1,
-        browserRuntimeAvailable: true,
-        elapsedMs: 1500,
-      },
-    });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
 
     evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
       makeRejectedEvaluation(articleUrl, "fetch_failed", "HTTP 403"),
@@ -548,18 +529,9 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const articleUrl = "https://example.com/news/2026/07/20/stale";
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
-    discoverArticleLinksWithBrowserMock.mockResolvedValue({
-      ok: true,
-      renderedUrl: "https://example.com/news",
-      links: [makeBrowserLink(articleUrl)],
-      diagnostics: {
-        pageTitle: "News",
-        linkCount: 8,
-        articleLikeLinkCount: 1,
-        browserRuntimeAvailable: true,
-        elapsedMs: 1500,
-      },
-    });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
 
     evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
       makeRejectedEvaluation(articleUrl, "rejected_stale", "stale"),
@@ -577,24 +549,15 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     expect(finalCall.data.payload.browserDetailAccepted).toBe(0);
   });
 
-  it("enforces the max 5 browser detail recovery page limit", async () => {
-    const links = Array.from({ length: 7 }, (_, i) =>
+  it("enforces the max detail evaluation limit of 10", async () => {
+    const links = Array.from({ length: 15 }, (_, i) =>
       makeBrowserLink(`https://example.com/news/2026/07/2${i}/story`),
     );
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
-    discoverArticleLinksWithBrowserMock.mockResolvedValue({
-      ok: true,
-      renderedUrl: "https://example.com/news",
-      links,
-      diagnostics: {
-        pageTitle: "News",
-        linkCount: 7,
-        articleLikeLinkCount: 7,
-        browserRuntimeAvailable: true,
-        elapsedMs: 1500,
-      },
-    });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk(links),
+    );
 
     // All static evaluations fail with HTTP 403.
     for (const link of links) {
@@ -609,6 +572,9 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const fn = await loadFn();
     await fn({ dryRun: false, runBrowser: true });
 
+    // totalDetailEvaluations limits to 10 (static + recovery combined)
+    // Each link uses 2 evaluations (static + browser recovery), so 5 links = 10 evaluations
+    expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledTimes(5);
     expect(evaluateArticleLinkCandidateWithBrowserMock).toHaveBeenCalledTimes(5);
 
     const finalCall = updateManyMock.mock.calls[1]![0];
@@ -621,18 +587,9 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const articleUrl = "https://example.com/news/2026/07/20/failure";
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
-    discoverArticleLinksWithBrowserMock.mockResolvedValue({
-      ok: true,
-      renderedUrl: "https://example.com/news",
-      links: [makeBrowserLink(articleUrl)],
-      diagnostics: {
-        pageTitle: "News",
-        linkCount: 8,
-        articleLikeLinkCount: 1,
-        browserRuntimeAvailable: true,
-        elapsedMs: 1500,
-      },
-    });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
 
     evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
       makeRejectedEvaluation(articleUrl, "fetch_failed", "HTTP 403"),
@@ -653,5 +610,160 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     expect(finalCall.data.status).toBe("BROWSER_NO_CANDIDATES");
     expect(finalCall.data.payload.browserDetailEvaluated).toBe(1);
     expect(finalCall.data.payload.browserDetailRejected).toBe(1);
+  });
+
+  // ── Browser link audit fields are persisted ────────────────────────────
+
+  it("persists browserTopRejectedLinks, browserShortlistedLinkSamples, and browserTopLinkRejectionReasons", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/audit-test";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk(
+        [makeBrowserLink(articleUrl)],
+        {
+          rawLinkCount: 663,
+          shortlistedLinkCount: 1,
+          topRejectedLinks: [
+            { url: "https://example.com/about", normalizedUrl: null, anchorText: "About", score: 0, rejected: true, reason: "utility_path", scoreReasons: [], sameDomain: true, utilityPath: true, categoryScoped: null },
+          ],
+          shortlistedLinkSamples: [
+            { url: articleUrl, normalizedUrl: articleUrl, anchorText: "Article", score: 50, rejected: false, reason: null, scoreReasons: [], sameDomain: true, utilityPath: false, categoryScoped: null },
+          ],
+          topRejectionReasons: [{ reason: "utility_path", count: 300 }, { reason: "different_domain", count: 200 }],
+        },
+      ),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    await fn({ dryRun: false, runBrowser: true });
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.payload.browserRawLinks).toBe(663);
+    expect(finalCall.data.payload.browserShortlistedLinks).toBe(1);
+    expect(finalCall.data.payload.browserTopRejectedLinks).toHaveLength(1);
+    expect(finalCall.data.payload.browserTopRejectedLinks[0].reason).toBe("utility_path");
+    expect(finalCall.data.payload.browserShortlistedLinkSamples).toHaveLength(1);
+    expect(finalCall.data.payload.browserTopLinkRejectionReasons).toHaveLength(2);
+    expect(finalCall.data.payload.browserTopLinkRejectionReasons[0]).toEqual({ reason: "utility_path", count: 300 });
+  });
+
+  // ── Multiple detail evaluation: first rejected, second accepted ───────
+
+  it("evaluates multiple shortlisted links and resolves if second is accepted", async () => {
+    const link1 = "https://example.com/news/2026/07/20/first-rejected";
+    const link2 = "https://example.com/news/2026/07/20/second-accepted";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(link1), makeBrowserLink(link2)]),
+    );
+
+    evaluateArticleLinkCandidateMock
+      .mockResolvedValueOnce(makeRejectedEvaluation(link1, "rejected_stale", "stale"))
+      .mockResolvedValueOnce(makeAcceptedEvaluation(link2));
+    persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserResolved).toBe(1);
+      expect(result.browserCandidatesFound).toBe(1);
+    }
+    expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledTimes(2);
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("RESOLVED");
+    expect(finalCall.data.payload.browserAccepted).toBe(1);
+    expect(finalCall.data.payload.browserRejected).toBe(1);
+  });
+
+  // ── All candidates missing date: BROWSER_NO_CANDIDATES with audit ──────
+
+  it("marks BROWSER_NO_CANDIDATES with useful audit when all candidates missing date", async () => {
+    const link1 = "https://example.com/news/2026/07/20/no-date-1";
+    const link2 = "https://example.com/news/2026/07/20/no-date-2";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk(
+        [makeBrowserLink(link1), makeBrowserLink(link2)],
+        {
+          rawLinkCount: 500,
+          shortlistedLinkCount: 2,
+          topRejectedLinks: [],
+          shortlistedLinkSamples: [
+            { url: link1, normalizedUrl: link1, anchorText: "Story 1", score: 50, rejected: false, reason: null, scoreReasons: [], sameDomain: true, utilityPath: false, categoryScoped: null },
+            { url: link2, normalizedUrl: link2, anchorText: "Story 2", score: 45, rejected: false, reason: null, scoreReasons: [], sameDomain: true, utilityPath: false, categoryScoped: null },
+          ],
+          topRejectionReasons: [],
+        },
+      ),
+    );
+
+    // Both rejected for missing date but with title (wouldAcceptWithWeakDate)
+    evaluateArticleLinkCandidateMock
+      .mockResolvedValueOnce({
+        accepted: false,
+        candidate: null,
+        outcome: { url: link1, sourceKind: "browser", status: "rejected_stale", staleReason: "missing_published_at", title: "A Valid Article Title Here", reason: "missing publishedAt" },
+      })
+      .mockResolvedValueOnce({
+        accepted: false,
+        candidate: null,
+        outcome: { url: link2, sourceKind: "browser", status: "rejected_stale", staleReason: "missing_published_at", title: "Another Valid Title Text", reason: "missing publishedAt" },
+      });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserNoCandidates).toBe(1);
+    }
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("BROWSER_NO_CANDIDATES");
+    expect(finalCall.data.payload.browserShortlistedLinks).toBe(2);
+    expect(finalCall.data.payload.browserShortlistedLinkSamples).toHaveLength(2);
+    // The reason should include the wouldAcceptWithWeakDate diagnostic flag
+    const rejectedOutcomes = finalCall.data.payload.browserRejectedOutcomes;
+    for (const outcome of rejectedOutcomes) {
+      if (outcome.staleReason === "missing_published_at") {
+        expect(outcome.reason).toContain("wouldAcceptWithWeakDate");
+      }
+    }
+  });
+
+  // ── MAX_BROWSER_ACCEPTED_CANDIDATES stops early ────────────────────────
+
+  it("stops evaluating after MAX_BROWSER_ACCEPTED_CANDIDATES accepted", async () => {
+    const links = Array.from({ length: 15 }, (_, i) =>
+      makeBrowserLink(`https://example.com/news/2026/07/2${i}/story`),
+    );
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk(links),
+    );
+
+    // First 10 accept, rest would accept too
+    for (const link of links) {
+      evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(link.url));
+    }
+    persistCandidatesMock.mockResolvedValue({ inserted: 10, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    await fn({ dryRun: false, runBrowser: true });
+
+    // Should only evaluate 10 before stopping
+    expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledTimes(10);
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.payload.browserAccepted).toBe(10);
   });
 });

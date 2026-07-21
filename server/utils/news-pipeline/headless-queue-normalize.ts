@@ -50,6 +50,19 @@ export type NormalizedBrowserTopRejectionReason = {
   count: number;
 };
 
+export type NormalizedBrowserLinkAuditEntry = {
+  url: string;
+  normalizedUrl: string | null;
+  anchorText: string | null;
+  score: number;
+  rejected: boolean;
+  reason: string | null;
+  scoreReasons: string[];
+  sameDomain: boolean;
+  utilityPath: boolean;
+  categoryScoped: boolean | null;
+};
+
 export type NormalizedBrowserQualityAssessment = {
   quality: string | null;
   confidence: string | null;
@@ -92,6 +105,11 @@ export type NormalizedHeadlessQueueItem = {
   browserError: string | null;
   browserQualityAssessment: NormalizedBrowserQualityAssessment | null;
   renderedUrl: string | null;
+  // ── Browser link audit fields ─────────────────────────────────────────
+  browserShortlistedLinks: number | null;
+  browserTopRejectedLinks: NormalizedBrowserLinkAuditEntry[];
+  browserShortlistedLinkSamples: NormalizedBrowserLinkAuditEntry[];
+  browserTopLinkRejectionReasons: NormalizedBrowserTopRejectionReason[];
 };
 
 export type HeadlessQueueSummary = {
@@ -112,6 +130,8 @@ function readQualityAssessment(payload: Record<string, unknown>): Record<string,
 
 const MAX_STALE_SAMPLES = 3;
 const MAX_BROWSER_REJECTION_REASONS = 5;
+const MAX_NORMALIZED_REJECTED_LINKS = 20;
+const MAX_NORMALIZED_SHORTLISTED_SAMPLES = 25;
 
 /**
  * Safely extract the nested browserQualityAssessment object from a payload.
@@ -149,6 +169,37 @@ function extractBrowserTopRejectionReasons(
     if (reason === null || count === null) continue;
     results.push({ reason, count });
     if (results.length >= MAX_BROWSER_REJECTION_REASONS) break;
+  }
+  return results;
+}
+
+/**
+ * Safely normalize a BrowserLinkAuditEntry array from payload.
+ * Drops malformed entries and caps at the provided limit.
+ */
+function extractBrowserLinkAuditEntries(
+  value: unknown,
+  maxEntries: number,
+): NormalizedBrowserLinkAuditEntry[] {
+  if (!Array.isArray(value)) return [];
+  const results: NormalizedBrowserLinkAuditEntry[] = [];
+  for (const entry of value) {
+    if (!isPlainObject(entry)) continue;
+    const url = readString(entry.url);
+    if (!url) continue;
+    results.push({
+      url,
+      normalizedUrl: readString(entry.normalizedUrl),
+      anchorText: readString(entry.anchorText),
+      score: readNumber(entry.score) ?? 0,
+      rejected: readBoolean(entry.rejected),
+      reason: readString(entry.reason),
+      scoreReasons: readStringArray(entry.scoreReasons),
+      sameDomain: readBoolean(entry.sameDomain),
+      utilityPath: readBoolean(entry.utilityPath),
+      categoryScoped: entry.categoryScoped === null ? null : readBoolean(entry.categoryScoped),
+    });
+    if (results.length >= maxEntries) break;
   }
   return results;
 }
@@ -236,6 +287,19 @@ export function normalizeHeadlessQueueArtifact(artifact: {
     browserError: readString(payload.browserError),
     browserQualityAssessment: browserQa,
     renderedUrl: readString(payload.renderedUrl),
+    // ── Browser link audit fields ─────────────────────────────────────
+    browserShortlistedLinks: readNumber(payload.browserShortlistedLinks),
+    browserTopRejectedLinks: extractBrowserLinkAuditEntries(
+      payload.browserTopRejectedLinks,
+      MAX_NORMALIZED_REJECTED_LINKS,
+    ),
+    browserShortlistedLinkSamples: extractBrowserLinkAuditEntries(
+      payload.browserShortlistedLinkSamples,
+      MAX_NORMALIZED_SHORTLISTED_SAMPLES,
+    ),
+    browserTopLinkRejectionReasons: extractBrowserTopRejectionReasons(
+      payload.browserTopLinkRejectionReasons,
+    ),
   };
 }
 

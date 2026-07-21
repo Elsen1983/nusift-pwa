@@ -125,6 +125,11 @@ describe("discoverArticleLinksWithBrowser", () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe("browser_fallback_disabled");
     expect(result.links).toEqual([]);
+    expect(result.rawLinkCount).toBe(0);
+    expect(result.shortlistedLinkCount).toBe(0);
+    expect(result.topRejectedLinks).toEqual([]);
+    expect(result.shortlistedLinkSamples).toEqual([]);
+    expect(result.topRejectionReasons).toEqual([]);
     expect(result.diagnostics.browserRuntimeAvailable).toBe(false);
     expect(result.diagnostics.blockedReason).toContain("NUXT_ENABLE_AGENT2_BROWSER_FALLBACK");
     expect(mockChromiumLaunch).not.toHaveBeenCalled();
@@ -283,6 +288,84 @@ describe("discoverArticleLinksWithBrowser", () => {
     expect(result.links[0]!.rawSignals.anchorText).toBe("Big breaking story here");
     expect(result.diagnostics.articleLikeLinkCount).toBe(2);
 
+    // New audit fields
+    expect(result.rawLinkCount).toBe(3); // 3 raw links extracted from DOM
+    expect(result.shortlistedLinkCount).toBe(2); // 2 passed scoring
+    expect(result.topRejectedLinks.length).toBe(1); // /about was rejected as utility_path
+    expect(result.topRejectedLinks[0]!.reason).toBe("utility_path");
+    expect(result.topRejectedLinks[0]!.utilityPath).toBe(true);
+    expect(result.shortlistedLinkSamples.length).toBe(2);
+    expect(result.shortlistedLinkSamples[0]!.rejected).toBe(false);
+    expect(result.topRejectionReasons.length).toBe(1);
+    expect(result.topRejectionReasons[0]!.reason).toBe("utility_path");
+    expect(result.topRejectionReasons[0]!.count).toBe(1);
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("produces correct rejection buckets for mixed raw links", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    // Mock page.evaluate to return a mix of link types:
+    // - cross-domain link (different_domain)
+    // - utility path (utility_path)
+    // - category-out-of-scope link (out_of_category_scope)
+    // - valid article links
+    mockPageEvaluate
+      .mockResolvedValueOnce(6) // allAnchors count
+      .mockResolvedValueOnce([
+        { url: "https://other-site.com/news/2026/07/20/cross-domain", text: "Cross domain" },
+        { url: "https://example.com/about", text: "About us" },
+        { url: "https://example.com/news/politics/old-article", text: "Old politics" },
+        { url: "https://example.com/news/sports/2026/07/20/valid-story-here", text: "Valid sports story here" },
+      ]);
+    mockPageGoto.mockResolvedValue({ ok: () => true, status: () => 200 });
+    mockPageTitle.mockResolvedValue("News Site");
+    mockPageUrl.mockReturnValue("https://example.com/news");
+    mockPageRoute.mockImplementation(async () => {});
+
+    const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
+    const mockCtx = { newPage: mockContextNewPage, close: mockContextClose };
+    const mockPg = {
+      goto: mockPageGoto,
+      evaluate: mockPageEvaluate,
+      title: mockPageTitle,
+      url: mockPageUrl,
+      route: mockPageRoute,
+    };
+    mockContextNewPage.mockResolvedValue(mockPg);
+    mockBrowserNewContext.mockResolvedValue(mockCtx);
+    mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+    const fn = await loadFn();
+    const result = await fn({
+      targetUrl: "https://example.com/news",
+      sourceId: "src-1",
+      targetType: "source",
+      categoryPathUrl: "https://example.com/news/sports",
+    });
+
+    expect(result.ok).toBe(true);
+    // Check rejection buckets
+    const rejectionReasons = result.topRejectedLinks.map((e) => e.reason);
+    expect(rejectionReasons).toContain("different_domain");
+    expect(rejectionReasons).toContain("utility_path");
+    // /news/politics/old-article is out of category scope (/news/sports)
+    expect(rejectionReasons).toContain("out_of_category_scope");
+
+    // Check top rejection reasons aggregation
+    const reasonCounts = Object.fromEntries(
+      result.topRejectionReasons.map((r) => [r.reason, r.count]),
+    );
+    expect(reasonCounts["different_domain"]).toBe(1);
+    expect(reasonCounts["utility_path"]).toBe(1);
+    expect(reasonCounts["out_of_category_scope"]).toBe(1);
+
+    // Only the valid sports-category article should be shortlisted
+    expect(result.shortlistedLinkCount).toBe(1);
+    expect(result.shortlistedLinkSamples[0]!.url).toBe("https://example.com/news/sports/2026/07/20/valid-story-here");
+
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
 
@@ -364,6 +447,208 @@ describe("discoverArticleLinksWithBrowser", () => {
       "https://example.com",
       expect.objectContaining({ timeout: 15000 }),
     );
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("includes deterministic rejection buckets for mixed raw links", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    // Cover the deterministic rejection buckets:
+    // - different_domain: cross-domain link
+    // - utility_path: /about link
+    // - out_of_category_scope: /news/politics/ under /news/sports/ category
+    //
+    // Note: "low_score" and "invalid_url" are defensive buckets that are
+    // unreachable from browser-resolved URLs with the current scoring:
+    // - scoreCandidateUrl gives +20 (same_domain) +15 (not_utility) = 35
+    //   minimum, which exceeds the REJECTION_THRESHOLD of 30.
+    // - Browser-resolved URLs pass new URL() and normalizeUrl().
+    mockPageEvaluate
+      .mockResolvedValueOnce(8) // allAnchors count
+      .mockResolvedValueOnce([
+        { url: "https://other-site.com/news/2026/07/20/cross-domain", text: "Cross domain" },
+        { url: "https://example.com/about", text: "About us" },
+        { url: "https://example.com/news/politics/old-politics-article", text: "Out of scope politics" },
+        { url: "https://example.com/news/sports/2026/07/20/article-one-here-today", text: "Good article one here today" },
+        { url: "https://example.com/news/sports/2026/07/19/article-two-here-today", text: "Good article two here today" },
+        { url: "https://example.com/news/sports/2026/07/18/article-three-here-today", text: "Good article three here today" },
+        { url: "https://example.com/news/sports/2026/07/17/article-four-here-today", text: "Good article four here today" },
+        { url: "https://example.com/news/sports/2026/07/16/article-five-here-today", text: "Good article five here today" },
+      ]);
+    mockPageGoto.mockResolvedValue({ ok: () => true, status: () => 200 });
+    mockPageTitle.mockResolvedValue("News Site");
+    mockPageUrl.mockReturnValue("https://example.com/news");
+    mockPageRoute.mockImplementation(async () => {});
+
+    const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
+    const mockCtx = { newPage: mockContextNewPage, close: mockContextClose };
+    const mockPg = {
+      goto: mockPageGoto,
+      evaluate: mockPageEvaluate,
+      title: mockPageTitle,
+      url: mockPageUrl,
+      route: mockPageRoute,
+    };
+    mockContextNewPage.mockResolvedValue(mockPg);
+    mockBrowserNewContext.mockResolvedValue(mockCtx);
+    mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+    const fn = await loadFn();
+    const result = await fn({
+      targetUrl: "https://example.com/news",
+      sourceId: "src-1",
+      targetType: "source",
+      categoryPathUrl: "https://example.com/news/sports",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.rawLinkCount).toBe(8);
+
+    // Deterministic rejection buckets
+    const rejectionReasons = Object.fromEntries(
+      result.topRejectionReasons.map((r) => [r.reason, r.count]),
+    );
+    expect(rejectionReasons["different_domain"]).toBe(1);
+    expect(rejectionReasons["utility_path"]).toBe(1);
+    expect(rejectionReasons["out_of_category_scope"]).toBe(1);
+
+    // 5 valid sports-category articles should be shortlisted
+    expect(result.shortlistedLinkCount).toBe(5);
+    expect(result.links.length).toBe(5);
+
+    // The rejected links should cover all 3 deterministic buckets
+    const rejectedReasons = result.topRejectedLinks.map((e) => e.reason);
+    expect(rejectedReasons).toContain("different_domain");
+    expect(rejectedReasons).toContain("utility_path");
+    expect(rejectedReasons).toContain("out_of_category_scope");
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("audits all raw links even after 25 accepted shortlist links are collected", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    // Generate 30 valid article links that pass scoring (date-pattern URLs)
+    // and 5 cross-domain links that should be rejected.
+    const validLinks = Array.from({ length: 30 }, (_, i) => ({
+      url: `https://example.com/news/2026/07/${String(i + 1).padStart(2, "0")}/story-${i + 1}-headline-here`,
+      text: `Story ${i + 1} headline here`,
+    }));
+    const crossDomainLinks = Array.from({ length: 5 }, (_, i) => ({
+      url: `https://other-${i}.com/news/2026/07/20/article-${i}`,
+      text: `Cross domain ${i}`,
+    }));
+    const rawLinks = [...validLinks, ...crossDomainLinks];
+
+    mockPageEvaluate
+      .mockResolvedValueOnce(rawLinks.length)
+      .mockResolvedValueOnce(rawLinks);
+    mockPageGoto.mockResolvedValue({ ok: () => true, status: () => 200 });
+    mockPageTitle.mockResolvedValue("Big News Network");
+    mockPageUrl.mockReturnValue("https://example.com/news");
+    mockPageRoute.mockImplementation(async () => {});
+
+    const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
+    const mockCtx = { newPage: mockContextNewPage, close: mockContextClose };
+    const mockPg = {
+      goto: mockPageGoto,
+      evaluate: mockPageEvaluate,
+      title: mockPageTitle,
+      url: mockPageUrl,
+      route: mockPageRoute,
+    };
+    mockContextNewPage.mockResolvedValue(mockPg);
+    mockBrowserNewContext.mockResolvedValue(mockCtx);
+    mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+    const fn = await loadFn();
+    const result = await fn({
+      targetUrl: "https://example.com/news",
+      sourceId: "src-1",
+      targetType: "source",
+    });
+
+    expect(result.ok).toBe(true);
+    // All 35 raw links were audited
+    expect(result.rawLinkCount).toBe(35);
+    // 30 valid articles accepted (pre-cap count)
+    expect(result.shortlistedLinkCount).toBe(30);
+    // But returned links array is capped at 25
+    expect(result.links.length).toBe(25);
+    // Top 5 cross-domain links rejected (all 5 domains)
+    expect(result.topRejectedLinks.length).toBe(5);
+    const rejectionReasons = Object.fromEntries(
+      result.topRejectionReasons.map((r) => [r.reason, r.count]),
+    );
+    expect(rejectionReasons["different_domain"]).toBe(5);
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("caps returned links at MAX_BROWSER_SHORTLISTED_LINKS but rejection reasons reflect the full raw sample", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    // 30 accepted + 5 cross-domain = 35 raw links.
+    // After the cap, only 25 links are returned, but all 5 cross-domain
+    // rejections must still appear in topRejectionReasons.
+    const validLinks = Array.from({ length: 30 }, (_, i) => ({
+      url: `https://example.com/news/2026/07/${String(i + 1).padStart(2, "0")}/article-${i + 1}-long-slug`,
+      text: `Article ${i + 1} long slug`,
+    }));
+    const rejectedLinks = [
+      { url: "https://other-a.com/article", text: "Cross A" },
+      { url: "https://other-b.com/article", text: "Cross B" },
+      { url: "https://other-c.com/article", text: "Cross C" },
+      { url: "https://other-d.com/article", text: "Cross D" },
+      { url: "https://other-e.com/article", text: "Cross E" },
+    ];
+    const rawLinks = [...validLinks, ...rejectedLinks];
+
+    mockPageEvaluate
+      .mockResolvedValueOnce(rawLinks.length)
+      .mockResolvedValueOnce(rawLinks);
+    mockPageGoto.mockResolvedValue({ ok: () => true, status: () => 200 });
+    mockPageTitle.mockResolvedValue("Big News Network");
+    mockPageUrl.mockReturnValue("https://example.com/news");
+    mockPageRoute.mockImplementation(async () => {});
+
+    const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
+    const mockCtx = { newPage: mockContextNewPage, close: mockContextClose };
+    const mockPg = {
+      goto: mockPageGoto,
+      evaluate: mockPageEvaluate,
+      title: mockPageTitle,
+      url: mockPageUrl,
+      route: mockPageRoute,
+    };
+    mockContextNewPage.mockResolvedValue(mockPg);
+    mockBrowserNewContext.mockResolvedValue(mockCtx);
+    mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+    const fn = await loadFn();
+    const result = await fn({
+      targetUrl: "https://example.com/news",
+      sourceId: "src-1",
+      targetType: "source",
+    });
+
+    expect(result.ok).toBe(true);
+    // Returned links are capped at 25
+    expect(result.links.length).toBe(25);
+    // But shortlistedLinkCount reports the full pre-cap count
+    expect(result.shortlistedLinkCount).toBe(30);
+    // All 5 cross-domain rejections are captured in rejection reasons
+    const rejectionReasons = Object.fromEntries(
+      result.topRejectionReasons.map((r) => [r.reason, r.count]),
+    );
+    expect(rejectionReasons["different_domain"]).toBe(5);
+    // Top rejected links are capped at 20 but contain all 5 cross-domain entries
+    expect(result.topRejectedLinks.length).toBe(5);
+    expect(result.topRejectedLinks.every((e) => e.reason === "different_domain")).toBe(true);
 
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });

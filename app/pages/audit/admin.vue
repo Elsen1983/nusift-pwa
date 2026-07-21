@@ -346,14 +346,76 @@
                       <span v-if="item.browserSkipped != null">skipped: <strong>{{ item.browserSkipped }}</strong></span>
                       <span v-if="item.browserFailed != null && item.browserFailed > 0">failed: <strong class="text-rose-300">{{ item.browserFailed }}</strong></span>
                     </div>
+                    <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-on-surface-variant/80">
+                      <span v-if="item.browserShortlistedLinks != null">shortlisted: <strong>{{ item.browserShortlistedLinks }}</strong></span>
+                    </div>
                     <div v-if="item.browserTopRejectionReasons && item.browserTopRejectionReasons.length > 0" class="mt-1 flex flex-wrap gap-1">
                       <span
-                        v-for="reason in item.browserTopRejectionReasons.slice(0, 3)"
+                        v-for="reason in item.browserTopRejectionReasons.slice(0, 5)"
                         :key="reason.reason"
                         class="rounded bg-surface-container-highest px-1.5 py-0.5 text-[9px] font-medium text-on-surface-variant"
                       >
                         {{ reason.reason }} ({{ reason.count }})
                       </span>
+                    </div>
+                    <div v-if="item.browserTopLinkRejectionReasons && item.browserTopLinkRejectionReasons.length > 0" class="mt-1 flex flex-wrap gap-1">
+                      <span class="text-[9px] font-bold uppercase tracking-wider text-rose-300/70 mr-1">link filter:</span>
+                      <span
+                        v-for="reason in item.browserTopLinkRejectionReasons.slice(0, 5)"
+                        :key="reason.reason"
+                        class="rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-medium text-rose-200"
+                      >
+                        {{ reason.reason }} ({{ reason.count }})
+                      </span>
+                    </div>
+                    <!-- Top rejected links -->
+                    <div v-if="item.browserTopRejectedLinks && item.browserTopRejectedLinks.length > 0" class="mt-1.5">
+                      <p class="text-[9px] font-bold uppercase tracking-wider text-rose-300/70">
+                        Top rejected links ({{ item.browserTopRejectedLinks.length }})
+                      </p>
+                      <div
+                        v-for="(entry, ri) in item.browserTopRejectedLinks.slice(0, 5)"
+                        :key="ri"
+                        class="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px]"
+                      >
+                        <span class="rounded bg-rose-500/10 px-1 py-0.5 text-[8px] font-bold text-rose-200">
+                          {{ entry.reason || 'unknown' }}
+                        </span>
+                        <span class="text-on-surface-variant/40">score: {{ entry.score }}</span>
+                        <span v-if="entry.anchorText" class="text-on-surface-variant/40">"{{ entry.anchorText.slice(0, 40) }}"</span>
+                        <a
+                          v-if="entry.url"
+                          :href="entry.url"
+                          target="_blank"
+                          rel="noopener"
+                          class="truncate max-w-[200px] text-cyan-400/60 hover:text-cyan-300 hover:underline"
+                        >
+                          {{ truncateStaleUrl(entry.url) }}
+                        </a>
+                      </div>
+                    </div>
+                    <!-- Shortlisted link samples -->
+                    <div v-if="item.browserShortlistedLinkSamples && item.browserShortlistedLinkSamples.length > 0" class="mt-1.5">
+                      <p class="text-[9px] font-bold uppercase tracking-wider text-emerald-300/70">
+                        Shortlisted links ({{ item.browserShortlistedLinkSamples.length }})
+                      </p>
+                      <div
+                        v-for="(entry, si) in item.browserShortlistedLinkSamples.slice(0, 5)"
+                        :key="si"
+                        class="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px]"
+                      >
+                        <span class="text-emerald-300/70">score: {{ entry.score }}</span>
+                        <span v-if="entry.anchorText" class="text-on-surface-variant/40">"{{ entry.anchorText.slice(0, 40) }}"</span>
+                        <a
+                          v-if="entry.url"
+                          :href="entry.url"
+                          target="_blank"
+                          rel="noopener"
+                          class="truncate max-w-[200px] text-cyan-400/60 hover:text-cyan-300 hover:underline"
+                        >
+                          {{ truncateStaleUrl(entry.url) }}
+                        </a>
+                      </div>
                     </div>
                     <div class="mt-1 flex flex-wrap gap-2 text-[9px] text-on-surface-variant/50">
                       <span v-if="item.browserFallbackStartedAt">started: {{ formatLogTime(item.browserFallbackStartedAt) }}</span>
@@ -597,6 +659,18 @@ const discoveryQualityItems = ref<Array<{
 }>>([]);
 
 type BrowserTopRejectionReason = { reason: string; count: number };
+type BrowserLinkAuditEntry = {
+  url: string;
+  normalizedUrl: string | null;
+  anchorText: string | null;
+  score: number;
+  rejected: boolean;
+  reason: string | null;
+  scoreReasons: string[];
+  sameDomain: boolean;
+  utilityPath: boolean;
+  categoryScoped: boolean | null;
+};
 type BrowserQualityAssessment = {
   quality: string | null;
   confidence: string | null;
@@ -637,6 +711,10 @@ const headlessQueueItems = ref<Array<{
   browserError: string | null;
   browserQualityAssessment: BrowserQualityAssessment | null;
   renderedUrl: string | null;
+  browserShortlistedLinks: number | null;
+  browserTopRejectedLinks: BrowserLinkAuditEntry[];
+  browserShortlistedLinkSamples: BrowserLinkAuditEntry[];
+  browserTopLinkRejectionReasons: BrowserTopRejectionReason[];
 }>>([]);
 
 type HardSourceEntry = {

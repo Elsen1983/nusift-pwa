@@ -656,6 +656,156 @@ describe("normalizeHeadlessQueueArtifact — browser fallback fields", () => {
     expect(result).not.toHaveProperty("payload");
   });
 
+  // ── Browser link audit field normalization ─────────────────────────────
+
+  it("returns null/false/[] defaults for absent browser link audit fields", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: { targetUrl: "https://example.com" },
+    });
+    expect(result.browserShortlistedLinks).toBeNull();
+    expect(result.browserTopRejectedLinks).toEqual([]);
+    expect(result.browserShortlistedLinkSamples).toEqual([]);
+    expect(result.browserTopLinkRejectionReasons).toEqual([]);
+  });
+
+  it("normalizes browserTopRejectedLinks with valid entries", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserTopRejectedLinks: [
+          { url: "https://example.com/about", normalizedUrl: null, anchorText: "About", score: 0, rejected: true, reason: "utility_path", scoreReasons: [], sameDomain: true, utilityPath: true, categoryScoped: null },
+          { url: "https://example.com/news/low", normalizedUrl: "https://example.com/news/low", anchorText: "Low", score: 10, rejected: true, reason: "low_score", scoreReasons: ["date_in_url"], sameDomain: true, utilityPath: false, categoryScoped: null },
+        ],
+      },
+    });
+    expect(result.browserTopRejectedLinks).toHaveLength(2);
+    expect(result.browserTopRejectedLinks[0]!.url).toBe("https://example.com/about");
+    expect(result.browserTopRejectedLinks[0]!.reason).toBe("utility_path");
+    expect(result.browserTopRejectedLinks[0]!.utilityPath).toBe(true);
+    expect(result.browserTopRejectedLinks[1]!.score).toBe(10);
+  });
+
+  it("drops malformed browserTopRejectedLinks entries", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserTopRejectedLinks: [
+          { url: "https://example.com/valid", rejected: true, reason: "low_score", score: 5, scoreReasons: [], sameDomain: true, utilityPath: false, categoryScoped: null },
+          "not an object",
+          { reason: "missing url" },
+          null,
+          42,
+          { url: "", rejected: true, reason: "invalid" },  // empty url dropped
+        ],
+      },
+    });
+    expect(result.browserTopRejectedLinks).toHaveLength(1);
+    expect(result.browserTopRejectedLinks[0]!.url).toBe("https://example.com/valid");
+  });
+
+  it("caps browserTopRejectedLinks at 20", () => {
+    const entries = Array.from({ length: 25 }, (_, i) => ({
+      url: `https://example.com/rejected-${i}`,
+      rejected: true,
+      reason: "low_score",
+      score: i,
+      scoreReasons: [],
+      sameDomain: true,
+      utilityPath: false,
+      categoryScoped: null,
+    }));
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: { browserTopRejectedLinks: entries },
+    });
+    expect(result.browserTopRejectedLinks).toHaveLength(20);
+  });
+
+  it("normalizes browserShortlistedLinkSamples with valid entries", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserShortlistedLinkSamples: [
+          { url: "https://example.com/news/article", score: 65, rejected: false, reason: null, scoreReasons: ["same_domain", "multi_segment_path"], sameDomain: true, utilityPath: false, categoryScoped: null },
+        ],
+      },
+    });
+    expect(result.browserShortlistedLinkSamples).toHaveLength(1);
+    expect(result.browserShortlistedLinkSamples[0]!.score).toBe(65);
+    expect(result.browserShortlistedLinkSamples[0]!.rejected).toBe(false);
+    expect(result.browserShortlistedLinkSamples[0]!.scoreReasons).toEqual(["same_domain", "multi_segment_path"]);
+  });
+
+  it("caps browserShortlistedLinkSamples at 25", () => {
+    const entries = Array.from({ length: 30 }, (_, i) => ({
+      url: `https://example.com/news/article-${i}`,
+      score: 50,
+      rejected: false,
+      reason: null,
+      scoreReasons: [],
+      sameDomain: true,
+      utilityPath: false,
+      categoryScoped: null,
+    }));
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: { browserShortlistedLinkSamples: entries },
+    });
+    expect(result.browserShortlistedLinkSamples).toHaveLength(25);
+  });
+
+  it("normalizes browserShortlistedLinks as a finite number", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: { browserShortlistedLinks: 5 },
+    });
+    expect(result.browserShortlistedLinks).toBe(5);
+  });
+
+  it("normalizes browserShortlistedLinks non-number to null", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: { browserShortlistedLinks: "5" as any },
+    });
+    expect(result.browserShortlistedLinks).toBeNull();
+  });
+
+  it("normalizes browserTopLinkRejectionReasons", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserTopLinkRejectionReasons: [
+          { reason: "utility_path", count: 300 },
+          { reason: "different_domain", count: 200 },
+          { reason: "low_score", count: 100 },
+        ],
+      },
+    });
+    expect(result.browserTopLinkRejectionReasons).toHaveLength(3);
+    expect(result.browserTopLinkRejectionReasons[0]).toEqual({ reason: "utility_path", count: 300 });
+  });
+
+  it("returns empty browserTopLinkRejectionReasons for non-array", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: { browserTopLinkRejectionReasons: "not an array" as any },
+    });
+    expect(result.browserTopLinkRejectionReasons).toEqual([]);
+  });
+
+  it("handles categoryScoped as null in audit entries", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserTopRejectedLinks: [
+          { url: "https://example.com/x", rejected: true, reason: "low_score", score: 0, scoreReasons: [], sameDomain: true, utilityPath: false, categoryScoped: null },
+        ],
+      },
+    });
+    expect(result.browserTopRejectedLinks[0]!.categoryScoped).toBeNull();
+  });
+
   // ── Browser fields are normalized safely (wrong types) ─────────────────
 
   it("normalizes non-number browser count fields to null", () => {
@@ -937,6 +1087,10 @@ describe("buildHeadlessQueueSummary", () => {
     browserError: null,
     browserQualityAssessment: null,
     renderedUrl: null,
+    browserShortlistedLinks: null as number | null,
+    browserTopRejectedLinks: [] as Array<{ url: string; normalizedUrl: string | null; anchorText: string | null; score: number; rejected: boolean; reason: string | null; scoreReasons: string[]; sameDomain: boolean; utilityPath: boolean; categoryScoped: boolean | null }>,
+    browserShortlistedLinkSamples: [] as Array<{ url: string; normalizedUrl: string | null; anchorText: string | null; score: number; rejected: boolean; reason: string | null; scoreReasons: string[]; sameDomain: boolean; utilityPath: boolean; categoryScoped: boolean | null }>,
+    browserTopLinkRejectionReasons: [] as Array<{ reason: string; count: number }>,
   });
 
   it("counts items by status", () => {

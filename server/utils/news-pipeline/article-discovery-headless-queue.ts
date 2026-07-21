@@ -23,6 +23,8 @@ import type { IngestCandidate } from "./types";
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 25;
 const MAX_BROWSER_LIMIT = 3;
+const MAX_BROWSER_DETAIL_EVALUATED_LINKS = 10;
+const MAX_BROWSER_ACCEPTED_CANDIDATES = 10;
 
 type HeadlessQueueInput = {
   limit?: number;
@@ -383,7 +385,11 @@ export async function processArticleDiscoveryHeadlessQueue(
               browserFallbackFinishedAt: failedFinishedAt,
               // linkCount is always a number on the browser result type;
               // for failures it reflects whatever the resolver observed.
-              browserRawLinks: browserResult.diagnostics.linkCount,
+              browserRawLinks: browserResult.rawLinkCount ?? browserResult.diagnostics.linkCount,
+              browserShortlistedLinks: browserResult.shortlistedLinkCount ?? browserResult.diagnostics.articleLikeLinkCount,
+              browserTopRejectedLinks: browserResult.topRejectedLinks ?? [],
+              browserShortlistedLinkSamples: browserResult.shortlistedLinkSamples ?? [],
+              browserTopLinkRejectionReasons: browserResult.topRejectionReasons ?? [],
               browserEvaluated: 0,
               browserAccepted: 0,
               browserRejected: 0,
@@ -465,7 +471,7 @@ export async function processArticleDiscoveryHeadlessQueue(
       // static detail fetch fails (fetch_failed / detail_validation_failed or
       // HTTP 401/403/429). Normal quality rejections (stale, low score,
       // missing title, duplicate, out of scope) are not retried.
-      const MAX_DETAIL_RECOVERY_PAGES = 5;
+      const MAX_DETAIL_RECOVERY_PAGES = MAX_BROWSER_DETAIL_EVALUATED_LINKS;
       let detailRecoveryAttempts = 0;
       let browserDetailEvaluated = 0;
       let browserDetailAccepted = 0;
@@ -481,8 +487,17 @@ export async function processArticleDiscoveryHeadlessQueue(
         return /\b(403|401|429)\b/.test(reason);
       };
 
+      // Limit total detail evaluations (static + recovery) to MAX_BROWSER_DETAIL_EVALUATED_LINKS.
+      let totalDetailEvaluations = 0;
+
       for (const link of browserResult.links) {
+        // Stop early if we have enough accepted candidates
+        if (candidates.length >= MAX_BROWSER_ACCEPTED_CANDIDATES) break;
+        // Stop early if we've evaluated enough detail pages
+        if (totalDetailEvaluations >= MAX_BROWSER_DETAIL_EVALUATED_LINKS) break;
+
         try {
+          totalDetailEvaluations += 1;
           const evaluation = await evaluateArticleLinkCandidate({
             articleUrl: link.url,
             sourcePageUrl: link.sourcePageUrl,
@@ -491,6 +506,25 @@ export async function processArticleDiscoveryHeadlessQueue(
             categoryId: item.categoryId,
           });
 
+          // Weak-date diagnostic: if rejected for missing date but otherwise
+          // article-like (has title, description/body), flag it for audit.
+          if (!evaluation.accepted &&
+            evaluation.outcome.status === "rejected_stale" &&
+            evaluation.outcome.staleReason === "missing_published_at"
+          ) {
+            // Check if the page had enough quality signals to be article-like
+            // despite missing a date. The title must be non-empty (indicates
+            // the page rendered properly).
+            const hasTitle = Boolean(evaluation.outcome.title && evaluation.outcome.title.length >= 12);
+            if (hasTitle) {
+              // Augment the outcome with a diagnostic flag for admin audit.
+              // Use a backward-compatible way: add to reason metadata.
+              evaluation.outcome.reason =
+                (evaluation.outcome.reason ? evaluation.outcome.reason + "; " : "") +
+                "wouldAcceptWithWeakDate";
+            }
+          }
+
           if (!evaluation.accepted) {
             const shouldRecover =
               detailRecoveryAttempts < MAX_DETAIL_RECOVERY_PAGES &&
@@ -498,6 +532,7 @@ export async function processArticleDiscoveryHeadlessQueue(
 
             if (shouldRecover) {
               detailRecoveryAttempts += 1;
+              totalDetailEvaluations += 1;
               browserDetailRecoveryReasons.push(evaluation.outcome.status);
 
               const detailEval = await evaluateArticleLinkCandidateWithBrowser({
@@ -656,7 +691,11 @@ export async function processArticleDiscoveryHeadlessQueue(
             browserFallbackFinishedAt: finishedAt,
             // linkCount is the total anchor count on the rendered page;
             // it is always a number on a successful browser result.
-            browserRawLinks: browserResult.diagnostics.linkCount,
+            browserRawLinks: browserResult.rawLinkCount ?? browserResult.diagnostics.linkCount,
+            browserShortlistedLinks: browserResult.shortlistedLinkCount ?? browserResult.diagnostics.articleLikeLinkCount,
+            browserTopRejectedLinks: browserResult.topRejectedLinks ?? [],
+            browserShortlistedLinkSamples: browserResult.shortlistedLinkSamples ?? [],
+            browserTopLinkRejectionReasons: browserResult.topRejectionReasons ?? [],
             browserEvaluated: browserOutcomeSummaryCompact.totalEvaluated,
             browserAccepted: browserOutcomeSummaryCompact.accepted,
             browserRejected: browserOutcomeSummaryCompact.rejected,
