@@ -63,7 +63,7 @@ export type BrowserArticleLinkResult = {
  * Check if the Agent 2 browser fallback is enabled via environment flag.
  */
 export function isBrowserFallbackEnabled(): boolean {
-  return process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK === "true";
+  return (process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK || "").trim().toLowerCase() === "true";
 }
 
 // ─── Link Extraction from Rendered DOM ──────────────────────────────────────

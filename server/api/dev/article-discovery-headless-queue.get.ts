@@ -5,6 +5,7 @@ import {
   normalizeHeadlessQueueArtifact,
   buildHeadlessQueueSummary,
 } from "../../utils/news-pipeline/headless-queue-normalize";
+import { isBrowserFallbackEnabled } from "../../utils/news-pipeline/article-discovery-browser";
 
 export default defineEventHandler(async (event) => {
   await requireAdminId(event);
@@ -54,7 +55,6 @@ export default defineEventHandler(async (event) => {
     ok: true,
     items,
     summary,
-    browserFallbackEnabled:
-      process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK === "true",
+    browserFallbackEnabled: isBrowserFallbackEnabled(),
   };
 });

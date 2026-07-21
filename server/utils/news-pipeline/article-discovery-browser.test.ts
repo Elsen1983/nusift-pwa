@@ -219,6 +219,16 @@ describe("discoverArticleLinksWithBrowser", () => {
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
 
+  it("isBrowserFallbackEnabled tolerates surrounding whitespace and casing", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = " TRUE\n";
+
+    const isEnabled = await loadIsEnabled();
+    expect(isEnabled()).toBe(true);
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
   it("returns scored links on successful Playwright render", async () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
