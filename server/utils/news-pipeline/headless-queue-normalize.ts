@@ -204,13 +204,11 @@ function extractBrowserLinkAuditEntries(
   return results;
 }
 
-/**
- * Extract up to 3 compact stale samples from rejectedCandidates in the payload.
- */
-function extractStaleSamples(rejectedCandidates: unknown): HeadlessQueueStaleSample[] {
-  if (!Array.isArray(rejectedCandidates)) return [];
-
-  const samples: HeadlessQueueStaleSample[] = [];
+function collectStaleSamplesFromRejected(
+  rejectedCandidates: unknown,
+  samples: HeadlessQueueStaleSample[],
+): void {
+  if (!Array.isArray(rejectedCandidates)) return;
   for (const entry of rejectedCandidates) {
     if (!isPlainObject(entry)) continue;
     if (entry.status !== "rejected_stale") continue;
@@ -226,7 +224,18 @@ function extractStaleSamples(rejectedCandidates: unknown): HeadlessQueueStaleSam
 
     if (samples.length >= MAX_STALE_SAMPLES) break;
   }
+}
 
+/**
+ * Extract up to 3 compact stale/date anomaly samples from static and browser
+ * rejected outcomes in the payload.
+ */
+function extractStaleSamples(...rejectedOutcomeSources: unknown[]): HeadlessQueueStaleSample[] {
+  const samples: HeadlessQueueStaleSample[] = [];
+  for (const source of rejectedOutcomeSources) {
+    collectStaleSamplesFromRejected(source, samples);
+    if (samples.length >= MAX_STALE_SAMPLES) break;
+  }
   return samples;
 }
 
@@ -269,7 +278,7 @@ export function normalizeHeadlessQueueArtifact(artifact: {
     lastHeadlessRecoveryAt: readString(payload.lastHeadlessRecoveryAt),
     browserFallbackRan: readBoolean(payload.browserFallbackRan),
     candidateCount: artifact.candidateCount,
-    staleSamples: extractStaleSamples(payload.rejectedCandidates),
+    staleSamples: extractStaleSamples(payload.rejectedCandidates, payload.browserRejectedOutcomes),
     // ── Compact browser fallback result metadata ───────────────────────
     browserFallbackStartedAt: readString(payload.browserFallbackStartedAt),
     browserFallbackFinishedAt: readString(payload.browserFallbackFinishedAt),

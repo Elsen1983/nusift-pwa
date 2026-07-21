@@ -351,6 +351,53 @@ describe("normalizeDiscoveryQualityArtifact", () => {
 
   // ── Artifact roundtrip: invalid_published_at ─────────────────────────
 
+  it("extracts staleSamples from browserRejectedOutcomes on headless marker artifacts", () => {
+    const result = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      artifactType: "article_discovery_headless_required",
+      payload: {
+        browserRejectedOutcomes: [
+          {
+            status: "rejected_stale",
+            url: "https://example.com/future",
+            staleReason: "future_published_at",
+            rawPublishedAt: "2099-01-01",
+            normalizedPublishedAt: "2099-01-01T00:00:00.000Z",
+            publishedAtSource: "listing_context",
+            ageDays: -26472,
+          },
+        ],
+      },
+    });
+
+    expect(result.staleSamples).toHaveLength(1);
+    expect(result.staleSamples[0]?.url).toBe("https://example.com/future");
+    expect(result.staleSamples[0]?.staleReason).toBe("future_published_at");
+    expect(result.staleSamples[0]?.publishedAtSource).toBe("listing_context");
+  });
+
+  it("fills staleSamples from static candidates first, then browser outcomes up to cap", () => {
+    const result = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      payload: {
+        rejectedCandidates: [
+          { status: "rejected_stale", url: "https://example.com/static-1", staleReason: "missing_published_at" },
+          { status: "rejected_stale", url: "https://example.com/static-2", staleReason: "invalid_published_at" },
+        ],
+        browserRejectedOutcomes: [
+          { status: "rejected_stale", url: "https://example.com/browser-1", staleReason: "future_published_at" },
+          { status: "rejected_stale", url: "https://example.com/browser-2", staleReason: "published_at_before_cutoff" },
+        ],
+      },
+    });
+
+    expect(result.staleSamples.map((sample) => sample.url)).toEqual([
+      "https://example.com/static-1",
+      "https://example.com/static-2",
+      "https://example.com/browser-1",
+    ]);
+  });
+
   it("roundtrip: invalid_published_at stale audit survives from artifact payload to normalized staleSamples", () => {
     // Simulates what persistArticleDiscoveryArtifact would produce for a
     // rejected_stale outcome with staleReason: "invalid_published_at".

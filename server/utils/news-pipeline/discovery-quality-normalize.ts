@@ -43,14 +43,11 @@ export type NormalizedDiscoveryQualityItem = {
 
 const MAX_STALE_SAMPLES = 3;
 
-/**
- * Extract up to 3 compact stale samples from rejectedCandidates in the payload.
- * Only includes entries with staleReason audit metadata. Returns [] when absent.
- */
-function extractStaleSamples(rejectedCandidates: unknown): DiscoveryQualityStaleSample[] {
-  if (!Array.isArray(rejectedCandidates)) return [];
-
-  const samples: DiscoveryQualityStaleSample[] = [];
+function collectStaleSamplesFromRejected(
+  rejectedCandidates: unknown,
+  samples: DiscoveryQualityStaleSample[],
+): void {
+  if (!Array.isArray(rejectedCandidates)) return;
   for (const entry of rejectedCandidates) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const e = entry as Record<string, unknown>;
@@ -67,7 +64,19 @@ function extractStaleSamples(rejectedCandidates: unknown): DiscoveryQualityStale
 
     if (samples.length >= MAX_STALE_SAMPLES) break;
   }
+}
 
+/**
+ * Extract up to 3 compact stale/date anomaly samples from static and browser
+ * rejected outcomes in the payload. Only includes entries with staleReason
+ * audit metadata. Returns [] when absent.
+ */
+function extractStaleSamples(...rejectedOutcomeSources: unknown[]): DiscoveryQualityStaleSample[] {
+  const samples: DiscoveryQualityStaleSample[] = [];
+  for (const source of rejectedOutcomeSources) {
+    collectStaleSamplesFromRejected(source, samples);
+    if (samples.length >= MAX_STALE_SAMPLES) break;
+  }
   return samples;
 }
 
@@ -112,7 +121,7 @@ export function normalizeDiscoveryQualityArtifact(artifact: {
       (qualityAssessment.explanation as string) ||
       (payload.explanation as string) ||
       null,
-    staleSamples: extractStaleSamples(payload.rejectedCandidates),
+    staleSamples: extractStaleSamples(payload.rejectedCandidates, payload.browserRejectedOutcomes),
     outcomeSummary: {
       totalEvaluated: (outcomeSummary.totalEvaluated as number) ?? 0,
       accepted: (outcomeSummary.accepted as number) ?? 0,
