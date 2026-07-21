@@ -1225,6 +1225,52 @@ describe("article-discovery-helpers", () => {
       expect(r2.candidate!.canonicalUrl).toBe(canonical);
       expect(r1.candidate!.canonicalUrl).toBe(r2.candidate!.canonicalUrl);
     });
+
+    it("accepts listing_context dates that are only slightly in the future", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const nearFuture = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString();
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        publishedAtRaw: nearFuture,
+        publishedAtSource: "listing_context",
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(result.candidate!.rawSignals).toContain("accepted_with_listing_future_tolerance");
+      expect(result.outcome.scoreReasons).toContain("accepted_with_listing_future_tolerance");
+      expect(result.outcome.reason).toBe("accepted with listing-context future-date tolerance");
+    });
+
+    it("does not apply future-date tolerance to non-listing date sources", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const nearFuture = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString();
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        publishedAtRaw: nearFuture,
+        publishedAtSource: "datePublished",
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_stale");
+      expect(result.outcome.staleReason).toBe("future_published_at");
+    });
+
+    it("does not accept listing_context dates beyond the future tolerance", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const farFuture = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        publishedAtRaw: farFuture,
+        publishedAtSource: "listing_context",
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_stale");
+      expect(result.outcome.staleReason).toBe("future_published_at");
+    });
   });
 
   // ── Candidate Scoring ─────────────────────────────────────────────────

@@ -748,6 +748,18 @@ export type StaleAuditMeta = {
     | "unknown";
 };
 
+const LISTING_CONTEXT_FUTURE_TOLERANCE_MS = 36 * 60 * 60 * 1000;
+
+function isWithinListingContextFutureTolerance(
+  extraction: DateExtractionResult,
+  normalizedDate: Date | null,
+  now = new Date(),
+): boolean {
+  if (extraction.source !== "listing_context" || !normalizedDate) return false;
+  const futureMs = normalizedDate.getTime() - now.getTime();
+  return futureMs > 0 && futureMs <= LISTING_CONTEXT_FUTURE_TOLERANCE_MS;
+}
+
 /**
  * Extract the publication date from HTML with provenance tracking.
  * Checks standard meta tags in priority order, then falls back to URL date.
@@ -1223,8 +1235,12 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
   }
 
   const normalizedPublishedAt = normalizeRawDateString(dateExtraction.rawDate || "");
+  const acceptedWithListingFutureTolerance = isWithinListingContextFutureTolerance(
+    dateExtraction,
+    normalizedPublishedAt,
+  );
 
-  if (!isWithinFreshnessWindow(normalizedPublishedAt, new Date())) {
+  if (!isWithinFreshnessWindow(normalizedPublishedAt, new Date()) && !acceptedWithListingFutureTolerance) {
     const staleAudit = buildStaleAuditMeta(dateExtraction, normalizedPublishedAt, freshnessMs);
     return {
       accepted: false,
@@ -1278,6 +1294,7 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
     rawSignals: [
       "agent2-web-discovery",
       ...extraRawSignals,
+      ...(acceptedWithListingFutureTolerance ? ["accepted_with_listing_future_tolerance"] : []),
       sourcePageUrl,
       `score:${score.score}`,
       ...(keywords.length > 0 ? [`keywords:${keywords.slice(0, 5).join(",")}`] : []),
@@ -1307,7 +1324,11 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
       title: finalTitle,
       publishedAt: normalizedPublishedAt?.toISOString(),
       score: score.score,
-      scoreReasons: score.reasons,
+      scoreReasons: [
+        ...score.reasons,
+        ...(acceptedWithListingFutureTolerance ? ["accepted_with_listing_future_tolerance"] : []),
+      ],
+      reason: acceptedWithListingFutureTolerance ? "accepted with listing-context future-date tolerance" : undefined,
     }),
   };
 }
