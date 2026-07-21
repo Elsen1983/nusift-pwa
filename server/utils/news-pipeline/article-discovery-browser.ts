@@ -109,6 +109,7 @@ export function isBrowserFallbackEnabled(): boolean {
 type RawBrowserLink = {
   url: string;
   text: string | null;
+  dateText: string | null;
 };
 
 /**
@@ -126,8 +127,37 @@ async function extractRawLinksFromBrowser(
   return page.evaluate(
     (args: { pageUrl: string; maxLinks: number }) => {
       const { pageUrl, maxLinks } = args;
-      const results: Array<{ url: string; text: string | null }> = [];
+      const results: Array<{ url: string; text: string | null; dateText: string | null }> = [];
       const seen = new Set<string>();
+
+      const extractNearbyDateText = (anchor: Element): string | null => {
+        const containers = [
+          anchor.closest("article"),
+          anchor.closest("li"),
+          anchor.closest("[class*='story' i]"),
+          anchor.closest("[class*='article' i]"),
+          anchor.closest("[class*='news' i]"),
+          anchor.parentElement,
+          anchor.parentElement?.parentElement || null,
+        ].filter(Boolean) as Element[];
+
+        const patterns = [
+          /\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}\b/i,
+          /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{4}\b/i,
+          /\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b/,
+          /\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b/,
+        ];
+
+        for (const container of containers) {
+          const text = (container.textContent || "").replace(/\s+/g, " ").trim().slice(0, 800);
+          for (const pattern of patterns) {
+            const match = text.match(pattern);
+            if (match?.[0]) return match[0];
+          }
+        }
+
+        return null;
+      };
 
       try {
         const anchors = Array.from(document.querySelectorAll("a[href]"));
@@ -161,6 +191,7 @@ async function extractRawLinksFromBrowser(
           results.push({
             url: resolved,
             text: (anchor as HTMLAnchorElement).textContent?.trim().slice(0, 200) || null,
+            dateText: extractNearbyDateText(anchor),
           });
 
           if (results.length >= maxLinks) break;
@@ -217,11 +248,11 @@ function isStrongListingContextArticle(
     return { accepted: false, score: 0, reasons: ["invalid_url"] };
   }
 
-  const score = scoreCandidateUrl(raw.url, pageUrl, {
-    title: raw.text,
-    dateText: null,
-    categoryPathUrl: null,
-  });
+      const score = scoreCandidateUrl(raw.url, pageUrl, {
+        title: raw.text,
+        dateText: raw.dateText,
+        categoryPathUrl: null,
+      });
 
   const hasUsefulAnchor = Boolean(raw.text && raw.text.trim().length >= 12);
   const accepted = !score.rejected && score.score >= 50 && hasUsefulAnchor;
@@ -319,6 +350,13 @@ function scoreAndFilterBrowserLinks(
       continue;
     }
 
+    if (normalizedUrl === normalizeUrl(pageUrl)) {
+      const entry = makeAuditEntry(true, "listing_page", { score: 0, reasons: ["listing_page"] });
+      rejectedLinks.push(entry);
+      rejectionReasonCounts["listing_page"] = (rejectionReasonCounts["listing_page"] || 0) + 1;
+      continue;
+    }
+
     // Reject out-of-category-scope links unless the target is a category
     // directory page whose article URLs intentionally live outside that
     // directory. This is common on sites such as /category/arizona-news where
@@ -348,6 +386,7 @@ function scoreAndFilterBrowserLinks(
         sourceKind: "browser",
         rawSignals: {
           anchorText: raw.text?.slice(0, 100) || null,
+          listingDateText: raw.dateText,
           score: listingContext.score,
           scoreReasons: listingContext.reasons,
         },
@@ -358,7 +397,7 @@ function scoreAndFilterBrowserLinks(
     // Score the candidate URL
     const score = scoreCandidateUrl(raw.url, pageUrl, {
       title: raw.text,
-      dateText: null,
+      dateText: raw.dateText,
       categoryPathUrl,
     });
 
@@ -382,6 +421,7 @@ function scoreAndFilterBrowserLinks(
       sourceKind: "browser",
       rawSignals: {
         anchorText: raw.text?.slice(0, 100) || null,
+        listingDateText: raw.dateText,
         score: score.score,
         scoreReasons: score.reasons,
       },
@@ -941,6 +981,7 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
   sourceId: string;
   categoryId?: string | null;
   timeoutMs?: number;
+  listingDateFallbackRaw?: string | null;
 }): Promise<EvaluateArticleLinkResult> {
   const startedAt = Date.now();
   const { articleUrl, sourcePageUrl, targetUrl, sourceId, categoryId } = input;
@@ -1063,6 +1104,12 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
     }, { pageUrl: renderedUrl || articleUrl })) as RawArticleDetailData;
 
     const extracted = normalizeArticleDetailFromRaw(raw);
+    const publishedAtRaw = extracted.publishedAtRaw || input.listingDateFallbackRaw || null;
+    const publishedAtSource = extracted.publishedAtRaw
+      ? extracted.publishedAtSource
+      : input.listingDateFallbackRaw
+        ? "listing_context"
+        : extracted.publishedAtSource;
 
     const evaluation = await evaluateArticleLinkCandidateFromExtractedMetadata({
       articleUrl,
@@ -1073,8 +1120,8 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
       title: extracted.title,
       description: extracted.description,
       keywords: extracted.keywords,
-      publishedAtRaw: extracted.publishedAtRaw,
-      publishedAtSource: (extracted.publishedAtSource as PublishedAtSource) || "unknown",
+      publishedAtRaw,
+      publishedAtSource: (publishedAtSource as PublishedAtSource) || "unknown",
       bodyFallback: extracted.bodyFallback,
       extraRawSignals: ["agent2-browser-detail-recovery"],
       canonicalUrlOverride: extracted.canonicalUrl,
@@ -1091,4 +1138,3 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
     }
   }
 }
-

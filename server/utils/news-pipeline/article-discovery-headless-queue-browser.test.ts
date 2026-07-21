@@ -91,12 +91,12 @@ const makeArtifact = (overrides: Record<string, unknown> = {}) => ({
   },
 });
 
-const makeBrowserLink = (url: string, text = "Article") => ({
+const makeBrowserLink = (url: string, text = "Article", rawSignals: Record<string, unknown> = {}) => ({
   url,
   text,
   sourcePageUrl: `browser:https://example.com/news`,
   sourceKind: "browser" as const,
-  rawSignals: { anchorText: text, score: 50, scoreReasons: [] },
+  rawSignals: { anchorText: text, score: 50, scoreReasons: [], ...rawSignals },
 });
 
 const makeBrowserResultOk = (links: any[], overrides: Record<string, any> = {}) => ({
@@ -279,6 +279,31 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     expect(finalCall.data.payload.browserShortlistedLinks).toBe(2);
     expect(finalCall.data.payload.browserEvaluated).toBe(2);
     expect(finalCall.data.payload.browserQualityAssessment.quality).toBe("productive");
+  });
+
+  it("passes listing context date fallback into browser detail evaluation", async () => {
+    const articleUrl = "https://example.com/news/278416836/arizona-heat-warning";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([
+        makeBrowserLink(articleUrl, "Arizona heat warning remains in effect", {
+          listingDateText: "10 July 2026",
+        }),
+      ]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    await fn({ dryRun: false, runBrowser: true });
+
+    expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        articleUrl,
+        listingDateFallbackRaw: "10 July 2026",
+      }),
+    );
   });
 
   // ── browser returns only utility links → no candidates ────────────────

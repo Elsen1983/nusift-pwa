@@ -498,12 +498,17 @@ export async function processArticleDiscoveryHeadlessQueue(
 
         try {
           totalDetailEvaluations += 1;
+          const listingDateFallbackRaw =
+            typeof link.rawSignals?.listingDateText === "string"
+              ? link.rawSignals.listingDateText
+              : null;
           const evaluation = await evaluateArticleLinkCandidate({
             articleUrl: link.url,
             sourcePageUrl: link.sourcePageUrl,
             targetUrl,
             sourceId: sourceId!,
             categoryId: item.categoryId,
+            listingDateFallbackRaw,
           });
 
           // Weak-date diagnostic: if rejected for missing date but otherwise
@@ -541,6 +546,7 @@ export async function processArticleDiscoveryHeadlessQueue(
                 targetUrl,
                 sourceId: sourceId!,
                 categoryId: item.categoryId,
+                listingDateFallbackRaw,
               });
 
               browserDetailEvaluated += 1;

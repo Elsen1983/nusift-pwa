@@ -722,6 +722,7 @@ export type PublishedAtSource =
   | "article:modified_time"
   | "og:updated_time"
   | "datePublished"
+  | "listing_context"
   | "time[datetime]"
   | "meta[name=date]"
   | "meta[itemprop=datePublished]"
@@ -1318,6 +1319,7 @@ export async function evaluateArticleLinkCandidate(input: {
   sourceId: string;
   categoryId?: string | null;
   freshnessMs?: number;
+  listingDateFallbackRaw?: string | null;
 }): Promise<EvaluateArticleLinkResult> {
   const { articleUrl, sourcePageUrl, targetUrl, sourceId } = input;
 
@@ -1343,7 +1345,16 @@ export async function evaluateArticleLinkCandidate(input: {
 
   const html = await response.text();
   const meta = extractPageMetadata(html);
-  const dateExtraction = extractDateFromHtml(html, articleUrl);
+  let dateExtraction = extractDateFromHtml(html, articleUrl);
+  if (
+    input.listingDateFallbackRaw &&
+    (!dateExtraction.rawDate || !normalizeRawDateString(dateExtraction.rawDate))
+  ) {
+    dateExtraction = {
+      rawDate: input.listingDateFallbackRaw,
+      source: "listing_context",
+    };
+  }
 
   return evaluateArticleLinkCandidateFromExtractedMetadata({
     articleUrl,
