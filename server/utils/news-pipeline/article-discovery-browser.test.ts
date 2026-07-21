@@ -134,7 +134,7 @@ describe("discoverArticleLinksWithBrowser", () => {
     }
   });
 
-  it("returns runtime unavailable when Playwright cannot be imported", async () => {
+  it("returns runtime unavailable with launch diagnostics when Playwright cannot launch", async () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
 
@@ -151,6 +151,7 @@ describe("discoverArticleLinksWithBrowser", () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe("browser_runtime_unavailable");
     expect(result.diagnostics.browserRuntimeAvailable).toBe(false);
+    expect(result.diagnostics.blockedReason).toContain("playwright: Browser not installed");
 
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
@@ -291,12 +292,12 @@ describe("discoverArticleLinksWithBrowser", () => {
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
     process.env.VERCEL = "1";
 
+    makePlaywrightPage();
     mockPageEvaluate
       .mockResolvedValueOnce(2)
       .mockResolvedValueOnce([
         { url: "https://example.com/news/2026/07/16/serverless-browser-story", text: "Serverless browser story" },
       ]);
-    makePlaywrightPage();
 
     const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
     const mockCoreLaunch = vi.fn().mockResolvedValue(mockBrowser);

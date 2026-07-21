@@ -220,7 +220,13 @@ export function setArticleDiscoveryBrowserImporterForTest(
   importOptionalDependency = importer ?? defaultOptionalDependencyImporter;
 }
 
-async function launchBrowser(): Promise<any | null> {
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function launchBrowser(): Promise<{ browser: any | null; blockedReason?: string }> {
+  const errors: string[] = [];
+
   if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
     try {
       const [playwrightCoreModule, chromiumModule] = await Promise.all([
@@ -231,13 +237,16 @@ async function launchBrowser(): Promise<any | null> {
       const serverlessChromium = chromiumModule.default ?? chromiumModule;
       const executablePath = await serverlessChromium.executablePath();
 
-      return await playwrightCore.chromium.launch({
-        args: serverlessChromium.args,
-        defaultViewport: serverlessChromium.defaultViewport,
-        executablePath,
-        headless: serverlessChromium.headless ?? true,
-      });
-    } catch {
+      return {
+        browser: await playwrightCore.chromium.launch({
+          args: serverlessChromium.args,
+          defaultViewport: serverlessChromium.defaultViewport,
+          executablePath,
+          headless: serverlessChromium.headless ?? true,
+        }),
+      };
+    } catch (error) {
+      errors.push(`serverless chromium: ${getErrorMessage(error)}`);
       // Fall through to the regular Playwright runtime. This keeps local/dev installs working
       // and preserves the existing runtime-unavailable result when no browser can launch.
     }
@@ -245,9 +254,17 @@ async function launchBrowser(): Promise<any | null> {
 
   try {
     const playwright = await importOptionalDependency("playwright");
-    return await playwright.chromium.launch({ headless: true });
-  } catch {
-    return null;
+    return {
+      browser: await playwright.chromium.launch({ headless: true }),
+    };
+  } catch (error) {
+    errors.push(`playwright: ${getErrorMessage(error)}`);
+    return {
+      browser: null,
+      blockedReason: errors.length > 0
+        ? `Browser launch failed (${errors.join("; ")})`
+        : "Playwright is not installed or could not be launched",
+    };
   }
 }
 
@@ -293,7 +310,8 @@ export async function discoverArticleLinksWithBrowser(input: {
   }
 
   // Launch browser
-  const browser = await launchBrowser();
+  const launchResult = await launchBrowser();
+  const browser = launchResult.browser;
   if (!browser) {
     return {
       ok: false,
@@ -303,7 +321,7 @@ export async function discoverArticleLinksWithBrowser(input: {
         pageTitle: null,
         linkCount: 0,
         articleLikeLinkCount: 0,
-        blockedReason: "Playwright is not installed or could not be launched",
+        blockedReason: launchResult.blockedReason || "Playwright is not installed or could not be launched",
         browserRuntimeAvailable: false,
         elapsedMs: Date.now() - startedAt,
       },
