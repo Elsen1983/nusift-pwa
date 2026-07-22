@@ -906,6 +906,7 @@ const resolveCategoryFeedUrl = async (
       feedUrl: category?.rssFeedUrl || null,
       isScopedFeed: category ? true : false,
       genericFeedDiscovered: false,
+      categoryStateAlreadyHandled: false,
       hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
     };
   }
@@ -918,6 +919,7 @@ const resolveCategoryFeedUrl = async (
       feedUrl: null,
       isScopedFeed: false,
       genericFeedDiscovered: true,
+      categoryStateAlreadyHandled: false,
       hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
     };
   }
@@ -983,6 +985,7 @@ const resolveCategoryFeedUrl = async (
       feedUrl: isGeneric ? null : discoveredFeedUrl,
       isScopedFeed: isScoped,
       genericFeedDiscovered: isGeneric,
+      categoryStateAlreadyHandled: false,
       hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
         targetType: "category",
         sourceId,
@@ -1001,10 +1004,34 @@ const resolveCategoryFeedUrl = async (
       executionTimeMs: 0,
       errorLog: errorMessage,
     });
+
+    // When category feed discovery throws an exception, the category state
+    // was not updated by the try block's prisma.sourceCategory.update.
+    // Ensure the category is marked so Agent 2 can pick it up.
+    await markCategoryAsNoRssFound(category.id, sourceId, {
+      reason: "category_discovery_exception",
+      targetUrl: category.pathUrl,
+      lastError: errorMessage,
+      discoveryEvidence: buildDiscoveryEvidencePayload(
+        category.pathUrl,
+        {
+          feedUrl: null,
+          detection: "none",
+          score: 0,
+          scopeConfidence: "low",
+          scopeMatch: "unrelated",
+          lastError: errorMessage,
+        },
+      ),
+    });
+
     return {
       feedUrl: null,
       isScopedFeed: false,
       genericFeedDiscovered: false,
+      // Indicates the catch block already handled the category DB state update,
+      // so downstream code should not call markCategoryAsNoRssFound again.
+      categoryStateAlreadyHandled: true,
       hardCaseQueueCandidate: buildHardCaseDiscoveryCandidate({
         targetType: "category",
         sourceId,
@@ -1125,6 +1152,73 @@ const formatPrismaError = (error: any) => {
   return [name, code, meta, message].filter(Boolean).join(" | ");
 };
 
+/**
+ * Canonical reason buckets for why a category is being handed off to Agent 2.
+ * Every path that marks a category NO_RSS_FOUND for Agent 2 handoff must
+ * use one of these reasons.
+ */
+export type CategoryHandoffReason =
+  | "category_discovery_exception"
+  | "root_feed_empty"
+  | "root_feed_fetch_exception"
+  | "html_fallback_failed"
+  | "html_fallback_exception";
+
+/**
+ * The single canonical place that defines the NO_RSS_FOUND handoff update shape.
+ *
+ * When a category target fails RSS discovery or feed fetch completely,
+ * update its DB state so Agent 2 can pick it up in the same pipeline cycle.
+ *
+ * Only applies to category targets that do NOT have a scoped category feed.
+ * A category with a genuinely scoped feed that has transient fetch failures
+ * should NOT be downgraded — it will be handled by the productivity tracking
+ * path (ACTIVE + consecutiveNonProductiveRuns >= 2).
+ *
+ * Preserves discoveryEvidence when present so the hard-case-queue and
+ * future re-discovery have access to prior resolution context.
+ *
+ * @param opts.discoveryEvidence - Optional discovery evidence payload to persist.
+ *   When provided, overwrites existing evidence (used by resolveCategoryFeedUrl catch).
+ * @param opts.shouldIncrementNonProductiveRuns - Default true. Set to false when
+ *   the caller has already incremented the counter (e.g. via markFeedRunOutcome).
+ */
+const markCategoryAsNoRssFound = async (
+  categoryId: string,
+  sourceId: string,
+  opts?: {
+    reason?: CategoryHandoffReason;
+    targetUrl?: string;
+    lastError?: string;
+    discoveryEvidence?: ReturnType<typeof buildDiscoveryEvidencePayload>;
+    shouldIncrementNonProductiveRuns?: boolean;
+  },
+) => {
+  const shouldIncrement = opts?.shouldIncrementNonProductiveRuns !== false;
+  try {
+    await prisma.sourceCategory.update({
+      where: { id: categoryId },
+      data: {
+        rssStatus: "NO_RSS_FOUND",
+        rssFeedUrl: null,
+        currentFeedProductive: false,
+        ...(shouldIncrement ? { consecutiveNonProductiveRuns: { increment: 1 } } : {}),
+        lastRssCheckAt: new Date(),
+        ...(opts?.discoveryEvidence ? { discoveryEvidence: opts.discoveryEvidence } : {}),
+      },
+    });
+    await logAgentScan({
+      sourceId,
+      categoryId,
+      status: "CATEGORY_HANDOFF_TO_AGENT2",
+      executionTimeMs: 0,
+      errorLog: `reason=${opts?.reason || "unknown"}${opts?.targetUrl ? `, targetUrl=${opts.targetUrl}` : ""}${opts?.lastError ? `, lastError=${opts.lastError}` : ""}`,
+    });
+  } catch {
+    // Non-fatal: category state update failure should never block the pipeline.
+  }
+};
+
 export async function ingestSource(sourceId: string, categoryId?: string): Promise<IngestResult> {
   const startedAt = Date.now();
   const [source, category] = await Promise.all([
@@ -1181,6 +1275,16 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
   const genericFeedDiscovered = Boolean(
     categoryId && categoryFeedResolution.genericFeedDiscovered,
   );
+  // When resolveCategoryFeedUrl's catch block already handled the category
+  // DB state update (set NO_RSS_FOUND), downstream failure paths must not
+  // call markCategoryAsNoRssFound again to avoid double-incrementing
+  // consecutiveNonProductiveRuns. Also set to true when markCategoryAsNoRssFound
+  // is called in the FEED_EMPTY path (!response block) to prevent the outer
+  // catch from calling it a second time.
+  let categoryFeedDiscoveryFailed = Boolean(
+    categoryId && categoryFeedResolution.categoryStateAlreadyHandled,
+  );
+  const isUnscopedCategoryTarget = Boolean(categoryId && !isUsingDedicatedCategoryFeed);
   const hardCaseQueueCandidates = [
     categoryFeedResolution.hardCaseQueueCandidate,
     sourceFeedResolution.hardCaseQueueCandidate,
@@ -1284,6 +1388,21 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         executionTimeMs: Date.now() - startedAt,
         errorLog: lastFeedFetchError || `No usable feed response from ${feedUrls.join(", ")}.`,
       });
+
+      // When the feed was fetched OK but parsed to 0 RSS/Atom items for
+      // an unscoped category target, mark it as NO_RSS_FOUND with the
+      // specific "root_feed_empty" reason so Agent 2 can pick it up.
+      // Setting categoryFeedDiscoveryFailed prevents the outer catch block
+      // from calling markCategoryAsNoRssFound a second time.
+      if (isUnscopedCategoryTarget && !categoryFeedDiscoveryFailed) {
+        await markCategoryAsNoRssFound(categoryId!, sourceId, {
+          reason: "root_feed_empty",
+          targetUrl: category?.pathUrl || undefined,
+          lastError: lastFeedFetchError || "Feed parsed but produced 0 usable RSS/Atom items.",
+        });
+        categoryFeedDiscoveryFailed = true;
+      }
+
       throw new Error(lastFeedFetchError || "No usable feed response.");
     }
 
@@ -1468,6 +1587,12 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             executionTimeMs: Date.now() - startedAt,
             errorLog: `HTML fallback failed for ${preferredFrontPageUrl} with HTTP ${htmlResponse.status}.`,
           });
+          if (isUnscopedCategoryTarget && !categoryFeedDiscoveryFailed) {
+            await markCategoryAsNoRssFound(categoryId!, sourceId, {
+              reason: "html_fallback_failed",
+              targetUrl: category?.pathUrl || undefined,
+            });
+          }
           return {
             sourceId,
             categoryId: categoryId || null,
@@ -1514,6 +1639,13 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
           executionTimeMs: Date.now() - startedAt,
           errorLog: fallbackError?.message || String(fallbackError),
         });
+        if (isUnscopedCategoryTarget && !categoryFeedDiscoveryFailed) {
+          await markCategoryAsNoRssFound(categoryId!, sourceId, {
+            reason: "html_fallback_exception",
+            targetUrl: category?.pathUrl || undefined,
+            lastError: fallbackError?.message || String(fallbackError),
+          });
+        }
         return {
           sourceId,
           categoryId: categoryId || null,
@@ -1611,6 +1743,18 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
           errorLog: fallbackError?.message || String(fallbackError),
         });
       }
+    }
+
+    // When a category target without a scoped feed reaches this point,
+    // all RSS paths and HTML fallbacks have failed. Mark it as NO_RSS_FOUND
+    // so Agent 2 can pick it up in the same pipeline cycle.
+    // Skip if resolveCategoryFeedUrl already handled the DB state update.
+    if (isUnscopedCategoryTarget && !categoryFeedDiscoveryFailed) {
+      await markCategoryAsNoRssFound(categoryId!, sourceId, {
+        reason: "root_feed_fetch_exception",
+        targetUrl: category?.pathUrl || undefined,
+        lastError: error?.message || String(error),
+      });
     }
 
     return {

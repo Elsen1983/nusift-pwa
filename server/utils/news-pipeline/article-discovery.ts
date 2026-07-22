@@ -544,10 +544,52 @@ export const isAgent2EligibleTarget = (input: {
   input.rssStatus === "NO_RSS_FOUND" ||
   (input.rssStatus === "ACTIVE" && !input.currentFeedProductive && input.consecutiveNonProductiveRuns >= 2);
 
+export type TargetSkipReason =
+  | "not_found_in_db"
+  | "missing_target_url"
+  | "rss_active_productive"
+  | "rss_active_waiting_for_second_nonproductive_run"
+  | "rss_pending_discovery"
+  | "unsupported_status"
+  | "requested_filter_excluded";
+
+export type TargetResolutionDiagnostics = {
+  totalActive: number;
+  eligible: number;
+  skipped: number;
+  skippedReasons: Record<TargetSkipReason, number>;
+};
+
+const EMPTY_SKIP_REASONS = (): Record<TargetSkipReason, number> => ({
+  not_found_in_db: 0,
+  missing_target_url: 0,
+  rss_active_productive: 0,
+  rss_active_waiting_for_second_nonproductive_run: 0,
+  rss_pending_discovery: 0,
+  unsupported_status: 0,
+  requested_filter_excluded: 0,
+});
+
+const classifySkipReason = (input: {
+  rssStatus: string;
+  currentFeedProductive: boolean;
+  consecutiveNonProductiveRuns: number;
+}): TargetSkipReason => {
+  if (input.rssStatus === "ACTIVE") {
+    return input.currentFeedProductive
+      ? "rss_active_productive"
+      : "rss_active_waiting_for_second_nonproductive_run";
+  }
+  if (input.rssStatus === "PENDING_DISCOVERY") {
+    return "rss_pending_discovery";
+  }
+  return "unsupported_status";
+};
+
 export async function resolveAgent2Targets(input?: {
   sourceIds?: string[];
   categoryIds?: string[];
-}) {
+}): Promise<{ targets: ArticleDiscoveryTarget[]; diagnostics: TargetResolutionDiagnostics }> {
   const activeTargets = await resolveActivePipelineTargets();
   const targetKeys = new Set(activeTargets.map((target) => `${target.sourceId}|${target.categoryId || ""}`));
 
@@ -590,19 +632,59 @@ export async function resolveAgent2Targets(input?: {
   const categoryById = new Map(categories.map((category) => [category.id, category]));
 
   const targets: ArticleDiscoveryTarget[] = [];
+  const skippedReasons = EMPTY_SKIP_REASONS();
+  const skippedSamples: Array<{
+    sourceId: string;
+    categoryId: string | null;
+    targetType: string;
+    targetUrl: string;
+    rssStatus: string;
+    currentFeedProductive: boolean;
+    consecutiveNonProductiveRuns: number;
+    skipReason: TargetSkipReason;
+  }> = [];
+  const MAX_SKIP_SAMPLES = 5;
 
   for (const target of activeTargets) {
     const key = `${target.sourceId}|${target.categoryId || ""}`;
     if (!targetKeys.has(key)) continue;
-    if (requestedSourceIds && !requestedSourceIds.has(target.sourceId)) continue;
-    if (requestedCategoryIds && target.categoryId && !requestedCategoryIds.has(target.categoryId)) continue;
-    if (requestedCategoryIds && !target.categoryId && requestedCategoryIds.size > 0) continue;
+    if (requestedSourceIds && !requestedSourceIds.has(target.sourceId)) {
+      skippedReasons.requested_filter_excluded += 1;
+      continue;
+    }
+    if (requestedCategoryIds && target.categoryId && !requestedCategoryIds.has(target.categoryId)) {
+      skippedReasons.requested_filter_excluded += 1;
+      continue;
+    }
+    if (requestedCategoryIds && !target.categoryId && requestedCategoryIds.size > 0) {
+      skippedReasons.requested_filter_excluded += 1;
+      continue;
+    }
 
     if (target.categoryId) {
       const category = categoryById.get(target.categoryId);
       const source = sourceById.get(target.sourceId);
-      if (!category || !source) continue;
-      if (!isAgent2EligibleTarget(category)) continue;
+      if (!category || !source) {
+        skippedReasons.not_found_in_db += 1;
+        continue;
+      }
+      if (!isAgent2EligibleTarget(category)) {
+        const reason = classifySkipReason(category);
+        skippedReasons[reason] += 1;
+        if (skippedSamples.length < MAX_SKIP_SAMPLES) {
+          skippedSamples.push({
+            sourceId: target.sourceId,
+            categoryId: target.categoryId,
+            targetType: "category",
+            targetUrl: category.pathUrl,
+            rssStatus: category.rssStatus,
+            currentFeedProductive: category.currentFeedProductive,
+            consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
+            skipReason: reason,
+          });
+        }
+        continue;
+      }
       targets.push({
         targetType: "category",
         sourceId: target.sourceId,
@@ -615,8 +697,27 @@ export async function resolveAgent2Targets(input?: {
       });
     } else {
       const source = sourceById.get(target.sourceId);
-      if (!source) continue;
-      if (!isAgent2EligibleTarget(source)) continue;
+      if (!source) {
+        skippedReasons.not_found_in_db += 1;
+        continue;
+      }
+      if (!isAgent2EligibleTarget(source)) {
+        const reason = classifySkipReason(source);
+        skippedReasons[reason] += 1;
+        if (skippedSamples.length < MAX_SKIP_SAMPLES) {
+          skippedSamples.push({
+            sourceId: target.sourceId,
+            categoryId: null,
+            targetType: "source",
+            targetUrl: source.frontPageUrl,
+            rssStatus: source.rssStatus,
+            currentFeedProductive: source.currentFeedProductive,
+            consecutiveNonProductiveRuns: source.consecutiveNonProductiveRuns,
+            skipReason: reason,
+          });
+        }
+        continue;
+      }
       targets.push({
         targetType: "source",
         sourceId: target.sourceId,
@@ -629,7 +730,33 @@ export async function resolveAgent2Targets(input?: {
     }
   }
 
-  return targets;
+  const skipped = Object.values(skippedReasons).reduce((a, b) => a + b, 0);
+
+  await logAgentScan({
+    status: "ARTICLE_DISCOVERY_TARGETS_RESOLVED",
+    executionTimeMs: 0,
+    errorLog: `targets=${targets.length}, skipped=${skipped}, total=${activeTargets.length}. reasons=${JSON.stringify(skippedReasons)}`,
+  });
+
+  // Capped per-target skip diagnostics for debugging specific missing targets.
+  // Avoids spamming logs — only emits when there are skipped targets.
+  if (skippedSamples.length > 0) {
+    await logAgentScan({
+      status: "ARTICLE_DISCOVERY_TARGET_SKIPPED",
+      executionTimeMs: 0,
+      errorLog: `sample=${JSON.stringify(skippedSamples)}`,
+    });
+  }
+
+  return {
+    targets,
+    diagnostics: {
+      totalActive: activeTargets.length,
+      eligible: targets.length,
+      skipped,
+      skippedReasons,
+    },
+  };
 }
 
 const serializeDiscoveryCandidate = (candidate: IngestCandidate) => ({
@@ -1033,7 +1160,7 @@ export async function runArticleDiscoveryBatch(input?: {
   categoryIds?: string[];
 }) {
   const startedAt = Date.now();
-  const targets = await resolveAgent2Targets(input);
+  const { targets } = await resolveAgent2Targets(input);
   const pipelineRun = await createPipelineRun(targets.length);
 
   await logAgentScan({

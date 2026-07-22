@@ -37,7 +37,7 @@ vi.mock("../prisma", () => ({
 
 // ── Safe fetch mock ───────────────────────────────────────────────────
 const safeFetchMock = vi.hoisted(() => vi.fn());
-vi.mock("../ssrf-guard", () => ({ safeFetch: safeFetchMock }));
+vi.mock("../ssrf-guard", () => ({ safeFetch: safeFetchMock, SSRFError: class SSRFError extends Error {} }));
 
 // ── Log mock ──────────────────────────────────────────────────────────
 const logAgentScanMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -508,6 +508,460 @@ describe("generic RSS fallback integration", () => {
     // Relevance filtering still applies — politics article accepted
     expect(result.candidates.length).toBeGreaterThanOrEqual(1);
     expect(result.candidates.some((c) => c.canonicalUrl.includes("/politics/"))).toBe(true);
+  });
+
+  // ── 10. Category RSS discovery fails completely → NO_RSS_FOUND for Agent 2 ──
+  it("category with failed RSS discovery is marked NO_RSS_FOUND for Agent 2 handoff", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    // Category with no existing feed and no fresh generic evidence
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: null,
+      discoveryEvidence: null,
+      lastRssCheckAt: null,
+    });
+
+    // Discovery throws (simulating network failure or invalid feed)
+    discoverFeedForUrlMock.mockRejectedValue(new Error("Candidate https://example.com/rss did not validate as a feed"));
+
+    // Source feed also fails to parse (no RSS/Atom items)
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(rssXml([]));
+      return makeResponse("", false);
+    });
+
+    const result = await ingestSource("src-1", "cat-politics");
+
+    // Result should be failed
+    expect(result.failed).toBe(1);
+    expect(result.candidates).toHaveLength(0);
+
+    // resolveCategoryFeedUrl catch block should have updated the category to NO_RSS_FOUND
+    const categoryUpdates = prismaSourceCategoryUpdateMock.mock.calls.filter(
+      (call: any[]) => call[0]?.where?.id === "cat-politics",
+    );
+    expect(categoryUpdates.length).toBeGreaterThanOrEqual(1);
+    // The catch block in resolveCategoryFeedUrl sets NO_RSS_FOUND with currentFeedProductive: false
+    const noRssUpdate = categoryUpdates.find(
+      (call: any[]) => call[0]?.data?.rssStatus === "NO_RSS_FOUND" && call[0]?.data?.currentFeedProductive === false,
+    );
+    expect(noRssUpdate).toBeDefined();
+    expect(noRssUpdate![0].data.rssFeedUrl).toBeNull();
+    expect(noRssUpdate![0].data.consecutiveNonProductiveRuns).toEqual({ increment: 1 });
+
+    // resolveCategoryFeedUrl catch block logs CATEGORY_DISCOVERY_FAILED
+    const discoveryFailedLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_DISCOVERY_FAILED" && call[0]?.categoryId === "cat-politics",
+    );
+    expect(discoveryFailedLog).toBeDefined();
+
+    // resolveCategoryFeedUrl catch block also logs CATEGORY_HANDOFF_TO_AGENT2 via shared helper
+    const handoffLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2" && call[0]?.categoryId === "cat-politics",
+    );
+    expect(handoffLog).toBeDefined();
+    expect(handoffLog![0].errorLog).toContain("category_discovery_exception");
+
+    // Agent 2 eligibility check: NO_RSS_FOUND is always eligible
+    const { isAgent2EligibleTarget } = await import("./article-discovery");
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 1,
+      }),
+    ).toBe(true);
+  });
+
+  // ── 11. Source feed fetch exception → category NO_RSS_FOUND ──
+  it("source feed fetch exception marks category as NO_RSS_FOUND", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    // Category with no existing feed, discovery returns null
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: null,
+      discoveryEvidence: null,
+      lastRssCheckAt: null,
+    });
+
+    // Discovery returns no feed
+    discoverFeedForUrlMock.mockResolvedValue({
+      feedUrl: null,
+      scopeMatch: "unrelated",
+      detection: "none",
+      score: 0,
+      scopeConfidence: "low",
+    });
+
+    // All fetches fail (simulating SOURCE_FETCH_EXCEPTION)
+    safeFetchMock.mockImplementation(async () => {
+      throw new Error("fetch failed");
+    });
+
+    const result = await ingestSource("src-1", "cat-politics");
+
+    // Result should be failed
+    expect(result.failed).toBe(1);
+
+    // resolveCategoryFeedUrl success path + outer catch markCategoryAsNoRssFound both update category
+    const categoryUpdates = prismaSourceCategoryUpdateMock.mock.calls.filter(
+      (call: any[]) => call[0]?.where?.id === "cat-politics",
+    );
+    // At least one update from resolveCategoryFeedUrl (NO_RSS_FOUND)
+    expect(categoryUpdates.length).toBeGreaterThanOrEqual(1);
+    // markCategoryAsNoRssFound from the outer catch sets currentFeedProductive: false
+    const noRssUpdates = categoryUpdates.filter(
+      (call: any[]) => call[0]?.data?.rssStatus === "NO_RSS_FOUND",
+    );
+    expect(noRssUpdates.length).toBeGreaterThanOrEqual(1);
+    // At least one update explicitly sets currentFeedProductive to false
+    const explicitProductiveFalse = noRssUpdates.find(
+      (call: any[]) => call[0]?.data?.currentFeedProductive === false,
+    );
+    expect(explicitProductiveFalse).toBeDefined();
+    expect(explicitProductiveFalse![0].data.rssFeedUrl).toBeNull();
+
+    // Verify CATEGORY_HANDOFF_TO_AGENT2 log was emitted.
+    // Note: when safeFetch throws for all URLs (including feed candidates), the feed URL
+    // loop catches those errors internally and the !response block fires with
+    // "root_feed_empty" (not "root_feed_fetch_exception"). The "root_feed_fetch_exception"
+    // reason only fires from the outer catch for errors that occur after a successful
+    // feed response, e.g. when prisma.article.findMany throws during candidate processing.
+    const handoffLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) =>
+        call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2" &&
+        call[0]?.categoryId === "cat-politics",
+    );
+    expect(handoffLog).toBeDefined();
+  });
+
+  // ── 12. Scoped feed exists → markCategoryAsNoRssFound NOT called ──
+  it("scoped category feed failure does NOT mark category as NO_RSS_FOUND", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    // Category has a scoped feed
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: "https://example.com/politics/rss",
+      discoveryEvidence: SCOPED_EVIDENCE,
+    });
+
+    // Scoped feed fetch throws
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/politics/rss") throw new Error("fetch failed");
+      return makeResponse("", false);
+    });
+
+    const result = await ingestSource("src-1", "cat-politics");
+
+    // Result should be failed
+    expect(result.failed).toBe(1);
+
+    // markCategoryAsNoRssFound should NOT have been called (scoped feed exists)
+    const handoffLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2",
+    );
+    expect(handoffLog).toBeUndefined();
+  });
+
+  // ── 13. HTML fallback fails → category NO_RSS_FOUND ──
+  it("HTML fallback failure marks category as NO_RSS_FOUND", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    // Category with no existing feed, discovery returns null
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: null,
+      discoveryEvidence: null,
+      lastRssCheckAt: null,
+    });
+
+    // Discovery returns no feed
+    discoverFeedForUrlMock.mockResolvedValue({
+      feedUrl: null,
+      scopeMatch: "unrelated",
+      detection: "none",
+      score: 0,
+      scopeConfidence: "low",
+    });
+
+    // Source feed returns empty RSS → HTML fallback runs → HTML fallback fails
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(rssXml([]));
+      if (url === "https://example.com") return makeResponse("", false);
+      return makeResponse("", false);
+    });
+
+    const result = await ingestSource("src-1", "cat-politics");
+
+    // Result should be failed
+    expect(result.failed).toBe(1);
+
+    // markCategoryAsNoRssFound should have been called
+    const handoffLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2",
+    );
+    expect(handoffLog).toBeDefined();
+  });
+
+  // ── 14. Double-increment prevention ──
+  it("does not double-increment consecutiveNonProductiveRuns when discovery and fetch both fail", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    // Category with no existing feed
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: null,
+      discoveryEvidence: null,
+      lastRssCheckAt: null,
+    });
+
+    // Discovery throws
+    discoverFeedForUrlMock.mockRejectedValue(new Error("discovery failed"));
+
+    // Source feed also throws
+    safeFetchMock.mockImplementation(async () => {
+      throw new Error("fetch failed");
+    });
+
+    await ingestSource("src-1", "cat-politics");
+
+    // resolveCategoryFeedUrl catch block should have updated the category once
+    const categoryUpdates = prismaSourceCategoryUpdateMock.mock.calls.filter(
+      (call: any[]) => call[0]?.where?.id === "cat-politics",
+    );
+
+    // Only ONE update should have been made (by resolveCategoryFeedUrl catch block)
+    // The outer catch block should NOT call markCategoryAsNoRssFound again
+    const noRssFoundUpdates = categoryUpdates.filter(
+      (call: any[]) => call[0]?.data?.rssStatus === "NO_RSS_FOUND",
+    );
+    expect(noRssFoundUpdates).toHaveLength(1);
+  });
+
+  // ── 15. Same-cycle handoff: ingestSource state → resolveAgent2Targets eligibility ──
+  it("Times-like category becomes Agent 2 eligible immediately after complete RSS failure", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    // Simulate Times of India-like category: https://example-news.test/world/europe
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      id: "cat-europe",
+      pathUrl: "https://example-news.test/world/europe",
+      rssFeedUrl: null,
+      discoveryEvidence: null,
+      lastRssCheckAt: null,
+    });
+    prismaNewsSourceFindUniqueMock.mockResolvedValue({
+      id: "src-news",
+      frontPageUrl: "https://example-news.test",
+      rssFeedUrl: "https://example-news.test/rss",
+      rssStatus: "ACTIVE",
+      mediaName: "Example News",
+    });
+
+    // Discovery fails (simulates "Candidate did not validate as a feed")
+    discoverFeedForUrlMock.mockRejectedValue(new Error("Candidate https://example-news.test/rss did not validate as a feed"));
+
+    // Root fallback also fails (simulates "No RSS/Atom items found")
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example-news.test/rss") return makeResponse(rssXml([]));
+      return makeResponse("", false);
+    });
+
+    // Step 1: ingestSource runs — category RSS fails completely
+    const ingestResult = await ingestSource("src-news", "cat-europe");
+    expect(ingestResult.failed).toBe(1);
+    expect(ingestResult.candidates).toHaveLength(0);
+
+    // Verify category was updated to NO_RSS_FOUND
+    const categoryUpdates = prismaSourceCategoryUpdateMock.mock.calls.filter(
+      (call: any[]) => call[0]?.where?.id === "cat-europe",
+    );
+    const noRssUpdate = categoryUpdates.find(
+      (call: any[]) => call[0]?.data?.rssStatus === "NO_RSS_FOUND",
+    );
+    expect(noRssUpdate).toBeDefined();
+    expect(noRssUpdate![0].data.rssFeedUrl).toBeNull();
+    expect(noRssUpdate![0].data.currentFeedProductive).toBe(false);
+
+    // Verify CATEGORY_HANDOFF_TO_AGENT2 log was emitted
+    const handoffLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2" && call[0]?.categoryId === "cat-europe",
+    );
+    expect(handoffLog).toBeDefined();
+    expect(handoffLog![0].errorLog).toContain("category_discovery_exception");
+
+    // Step 2: Verify Agent 2 eligibility — NO_RSS_FOUND is immediately eligible
+    const { isAgent2EligibleTarget } = await import("./article-discovery");
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 1,
+      }),
+    ).toBe(true);
+  });
+
+  // ── 16. Scoped ACTIVE feed with transient failure stays ACTIVE (no NO_RSS_FOUND) ──
+  it("scoped ACTIVE feed with transient fetch failure does NOT downgrade to NO_RSS_FOUND", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    // Category has a confirmed scoped feed
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: "https://example.com/politics/rss",
+      discoveryEvidence: SCOPED_EVIDENCE,
+    });
+
+    // Scoped feed fetch throws (transient failure)
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/politics/rss") throw new Error("ECONNRESET");
+      return makeResponse("", false);
+    });
+
+    const result = await ingestSource("src-1", "cat-politics");
+    expect(result.failed).toBe(1);
+
+    // NO category update should have occurred — scoped feed is ACTIVE
+    const categoryUpdates = prismaSourceCategoryUpdateMock.mock.calls.filter(
+      (call: any[]) => call[0]?.where?.id === "cat-politics",
+    );
+    // No NO_RSS_FOUND update from markCategoryAsNoRssFound
+    const noRssUpdates = categoryUpdates.filter(
+      (call: any[]) => call[0]?.data?.rssStatus === "NO_RSS_FOUND",
+    );
+    expect(noRssUpdates).toHaveLength(0);
+
+    // No CATEGORY_HANDOFF_TO_AGENT2 log
+    const handoffLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2",
+    );
+    expect(handoffLog).toBeUndefined();
+
+    // Agent 2 eligibility: ACTIVE + productive=true → NOT eligible
+    const { isAgent2EligibleTarget } = await import("./article-discovery");
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "ACTIVE",
+        currentFeedProductive: true,
+        consecutiveNonProductiveRuns: 0,
+      }),
+    ).toBe(false);
+  });
+
+  // ── 17. CATEGORY_HANDOFF_TO_AGENT2 log includes reason bucket ──
+  it("CATEGORY_HANDOFF_TO_AGENT2 log includes reason bucket from every handoff path", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    // Test root_feed_empty reason (feed fetches OK but 0 items)
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: null,
+      discoveryEvidence: null,
+      lastRssCheckAt: null,
+    });
+    discoverFeedForUrlMock.mockResolvedValue({
+      feedUrl: null,
+      scopeMatch: "unrelated",
+      detection: "none",
+      score: 0,
+      scopeConfidence: "low",
+    });
+    // Root feed request succeeds but RSS body has 0 items
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(rssXml([]));
+      return makeResponse("", false);
+    });
+
+    await ingestSource("src-1", "cat-politics");
+
+    const handoffLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2",
+    );
+    expect(handoffLog).toBeDefined();
+    // root_feed_empty is the reason when feed fetches OK but has 0 items
+    expect(handoffLog![0].errorLog).toContain("root_feed_empty");
+  });
+
+  // ── 18. Root feed fetches OK but parses 0 items → root_feed_empty ──
+  it("root fallback feed that parses 0 items marks category with root_feed_empty reason", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    // Category with no existing feed and no fresh generic evidence
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      pathUrl: "https://example-news.test/world/europe",
+      rssFeedUrl: null,
+      discoveryEvidence: null,
+      lastRssCheckAt: null,
+    });
+    prismaNewsSourceFindUniqueMock.mockResolvedValue({
+      id: "src-news",
+      frontPageUrl: "https://example-news.test",
+      rssFeedUrl: "https://example-news.test/rss",
+      rssStatus: "ACTIVE",
+      mediaName: "Example News",
+    });
+
+    // Discovery returns null (no scoped feed found) — does NOT throw
+    discoverFeedForUrlMock.mockResolvedValue({
+      feedUrl: null,
+      scopeMatch: "unrelated",
+      detection: "none",
+      score: 0,
+      scopeConfidence: "low",
+    });
+
+    // Root fallback feed request succeeds but RSS body has 0 items
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example-news.test/rss") return makeResponse(rssXml([]));
+      return makeResponse("", false);
+    });
+
+    const result = await ingestSource("src-news", "cat-politics");
+
+    // Result should be failed
+    expect(result.failed).toBe(1);
+    expect(result.candidates).toHaveLength(0);
+
+    // Category should be marked NO_RSS_FOUND via root_feed_empty path
+    const categoryUpdates = prismaSourceCategoryUpdateMock.mock.calls.filter(
+      (call: any[]) => call[0]?.where?.id === "cat-politics",
+    );
+    const noRssUpdate = categoryUpdates.find(
+      (call: any[]) => call[0]?.data?.rssStatus === "NO_RSS_FOUND" && call[0]?.data?.currentFeedProductive === false,
+    );
+    expect(noRssUpdate).toBeDefined();
+    expect(noRssUpdate![0].data.rssFeedUrl).toBeNull();
+    expect(noRssUpdate![0].data.consecutiveNonProductiveRuns).toEqual({ increment: 1 });
+
+    // CATEGORY_HANDOFF_TO_AGENT2 log should contain root_feed_empty reason
+    const handoffLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) =>
+        call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2" &&
+        call[0]?.categoryId === "cat-politics",
+    );
+    expect(handoffLog).toBeDefined();
+    expect(handoffLog![0].errorLog).toContain("root_feed_empty");
+
+    // Outer catch should NOT produce a second markCategoryAsNoRssFound call
+    // (only ONE NO_RSS_FOUND + currentFeedProductive=false update)
+    const allNoRssUpdates = categoryUpdates.filter(
+      (call: any[]) => call[0]?.data?.rssStatus === "NO_RSS_FOUND" && call[0]?.data?.currentFeedProductive === false,
+    );
+    expect(allNoRssUpdates).toHaveLength(1);
+
+    // Agent 2 eligibility: NO_RSS_FOUND is immediately eligible
+    const { isAgent2EligibleTarget } = await import("./article-discovery");
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 1,
+      }),
+    ).toBe(true);
   });
 
   // ── 9. Expired generic evidence re-discovers generic fallback ────────

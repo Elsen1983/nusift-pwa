@@ -11,8 +11,9 @@ vi.mock("../ssrf-guard", () => ({
   safeFetch: safeFetchMock,
 }));
 
+const logAgentScanMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("./log", () => ({
-  logAgentScan: vi.fn().mockResolvedValue(undefined),
+  logAgentScan: logAgentScanMock,
 }));
 
 vi.mock("./artifacts", () => ({
@@ -62,11 +63,119 @@ describe("article-discovery", () => {
     prismaArtifactUpdateMock.mockResolvedValue({ id: "updated" });
     prismaNewsSourceFindManyMock.mockResolvedValue([]);
     prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    logAgentScanMock.mockClear();
+  });
+
+  // ── Target resolution diagnostics tests ──────────────────────────────
+
+  it("logs ARTICLE_DISCOVERY_TARGETS_RESOLVED with granular skip reasons", async () => {
+    const { resolveAgent2Targets } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },           // source: productive → skip rss_active_productive
+      { sourceId: "src-2", categoryId: null },           // source: NO_RSS_FOUND → eligible
+      { sourceId: "src-3", categoryId: "cat-pending" }, // category: PENDING_DISCOVERY → skip rss_pending_discovery
+      { sourceId: "src-4", categoryId: "cat-good" },    // category: NO_RSS_FOUND → eligible
+    ]);
+
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-1", frontPageUrl: "https://a.com", mediaName: "A", rssStatus: "ACTIVE", currentFeedProductive: true, consecutiveNonProductiveRuns: 0 },
+      { id: "src-2", frontPageUrl: "https://b.com", mediaName: "B", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-3", frontPageUrl: "https://c.com", mediaName: "C", rssStatus: "ACTIVE", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-4", frontPageUrl: "https://d.com", mediaName: "D", rssStatus: "ACTIVE", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([
+      { id: "cat-pending", newsSourceId: "src-3", pathUrl: "https://c.com/pending", rssStatus: "PENDING_DISCOVERY", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "cat-good", newsSourceId: "src-4", pathUrl: "https://d.com/good", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+
+    const { targets, diagnostics } = await resolveAgent2Targets();
+
+    // 2 eligible targets: src-2 (NO_RSS_FOUND) and cat-good (NO_RSS_FOUND)
+    expect(targets).toHaveLength(2);
+    expect(targets.some((t) => t.sourceId === "src-2" && t.targetType === "source")).toBe(true);
+    expect(targets.some((t) => t.sourceId === "src-4" && t.categoryId === "cat-good" && t.targetType === "category")).toBe(true);
+
+    // Diagnostics
+    expect(diagnostics.totalActive).toBe(4);
+    expect(diagnostics.eligible).toBe(2);
+    expect(diagnostics.skipped).toBe(2);
+    expect(diagnostics.skippedReasons.rss_active_productive).toBe(1);
+    expect(diagnostics.skippedReasons.rss_pending_discovery).toBe(1);
+    expect(diagnostics.skippedReasons.rss_active_waiting_for_second_nonproductive_run).toBe(0);
+    expect(diagnostics.skippedReasons.not_found_in_db).toBe(0);
+
+    // Log should be present with ARTICLE_DISCOVERY_TARGETS_RESOLVED
+    const resolvedLog = logAgentScanMock.mock.calls.find((call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_TARGETS_RESOLVED");
+    expect(resolvedLog).toBeDefined();
+    const errorLog = resolvedLog?.[0]?.errorLog ?? "";
+    expect(errorLog).toContain("targets=2");
+    expect(errorLog).toContain("skipped=2");
+    expect(errorLog).toContain("rss_active_productive");
+  });
+
+  it("target resolver diagnostics: ACTIVE non-productive waiting for second run", async () => {
+    const { resolveAgent2Targets } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-waiting", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-waiting", frontPageUrl: "https://w.com", mediaName: "W", rssStatus: "ACTIVE", currentFeedProductive: false, consecutiveNonProductiveRuns: 1 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+
+    const { targets, diagnostics } = await resolveAgent2Targets();
+
+    // Not eligible yet (needs 2 consecutive non-productive runs)
+    expect(targets).toHaveLength(0);
+    expect(diagnostics.skippedReasons.rss_active_waiting_for_second_nonproductive_run).toBe(1);
+  });
+
+  it("target resolver diagnostics: not_found_in_db for missing source", async () => {
+    const { resolveAgent2Targets } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-missing", categoryId: null },
+    ]);
+    // Source not returned from DB
+    prismaNewsSourceFindManyMock.mockResolvedValue([]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+
+    const { targets, diagnostics } = await resolveAgent2Targets();
+
+    expect(targets).toHaveLength(0);
+    expect(diagnostics.skippedReasons.not_found_in_db).toBe(1);
+  });
+
+  it("target resolver diagnostics: requested_filter_excluded", async () => {
+    const { resolveAgent2Targets } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+      { sourceId: "src-2", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-1", frontPageUrl: "https://a.com", mediaName: "A", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-2", frontPageUrl: "https://b.com", mediaName: "B", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+
+    // Filter to only src-1
+    const { targets, diagnostics } = await resolveAgent2Targets({ sourceIds: ["src-1"] });
+
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.sourceId).toBe("src-1");
+    expect(diagnostics.skippedReasons.requested_filter_excluded).toBe(1);
   });
 
   it("marks only the expected Agent 2 feed states as eligible", async () => {
     const { isAgent2EligibleTarget } = await import("./article-discovery");
 
+    // NO_RSS_FOUND is always eligible regardless of consecutiveNonProductiveRuns
     expect(
       isAgent2EligibleTarget({
         rssStatus: "NO_RSS_FOUND",
@@ -76,6 +185,22 @@ describe("article-discovery", () => {
     ).toBe(true);
     expect(
       isAgent2EligibleTarget({
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 1,
+      }),
+    ).toBe(true);
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 5,
+      }),
+    ).toBe(true);
+
+    // ACTIVE + not productive + 2+ consecutive → eligible
+    expect(
+      isAgent2EligibleTarget({
         rssStatus: "ACTIVE",
         currentFeedProductive: false,
         consecutiveNonProductiveRuns: 2,
@@ -84,10 +209,30 @@ describe("article-discovery", () => {
     expect(
       isAgent2EligibleTarget({
         rssStatus: "ACTIVE",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 3,
+      }),
+    ).toBe(true);
+
+    // ACTIVE + not productive + only 1 → NOT eligible (two-run rule preserved)
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "ACTIVE",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 1,
+      }),
+    ).toBe(false);
+
+    // ACTIVE + productive → NOT eligible even with 2+ runs
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "ACTIVE",
         currentFeedProductive: true,
         consecutiveNonProductiveRuns: 2,
       }),
     ).toBe(false);
+
+    // PENDING_DISCOVERY is never eligible
     expect(
       isAgent2EligibleTarget({
         rssStatus: "PENDING_DISCOVERY",
@@ -95,6 +240,41 @@ describe("article-discovery", () => {
         consecutiveNonProductiveRuns: 10,
       }),
     ).toBe(false);
+  });
+
+  it("logs ARTICLE_DISCOVERY_TARGET_SKIPPED with capped per-target samples", async () => {
+    const { resolveAgent2Targets } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    // 3 targets: 1 eligible, 2 skipped (different reasons)
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-eligible", categoryId: null },
+      { sourceId: "src-productive", categoryId: null },
+      { sourceId: "src-waiting", categoryId: "cat-waiting" },
+    ]);
+
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-eligible", frontPageUrl: "https://e.com", mediaName: "E", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-productive", frontPageUrl: "https://p.com", mediaName: "P", rssStatus: "ACTIVE", currentFeedProductive: true, consecutiveNonProductiveRuns: 0 },
+      { id: "src-waiting", frontPageUrl: "https://w.com", mediaName: "W", rssStatus: "ACTIVE", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([
+      { id: "cat-waiting", newsSourceId: "src-waiting", pathUrl: "https://w.com/waiting", rssStatus: "ACTIVE", currentFeedProductive: false, consecutiveNonProductiveRuns: 1 },
+    ]);
+
+    await resolveAgent2Targets();
+
+    // Verify ARTICLE_DISCOVERY_TARGET_SKIPPED log was emitted
+    // With mockClear in beforeEach, no need to filter for stale calls
+    const skippedLogs = logAgentScanMock.mock.calls.filter((call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_TARGET_SKIPPED");
+    expect(skippedLogs.length).toBeGreaterThanOrEqual(1);
+    const skippedLog = skippedLogs[skippedLogs.length - 1];
+    const errorLog = skippedLog?.[0]?.errorLog ?? "";
+    expect(errorLog).toContain("sample=");
+    // Should include the skipped targets with their details
+    expect(errorLog).toContain("src-productive");
+    expect(errorLog).toContain("rss_active_productive");
+    expect(errorLog).toContain("src-waiting");
+    expect(errorLog).toContain("rss_active_waiting_for_second_nonproductive_run");
   });
 
   it("discovers article candidates from a listing page and follows one pagination hop", async () => {
@@ -376,7 +556,6 @@ describe("article-discovery", () => {
 
   it("stale samples appear in log even when top rejection reason is not 'stale'", async () => {
     const { discoverArticlesFromTarget } = await import("./article-discovery");
-    const { logAgentScan } = await import("./log");
 
     // Page with JSON-LD datePublished but no meta date tags — extractPageMetadata
     // returns null, but extractDateFromHtml finds the date via fallback.
@@ -421,8 +600,7 @@ describe("article-discovery", () => {
     });
 
     // Verify the logAgentScan was called with stale samples in the error log
-    const logCalls = (logAgentScan as unknown as { mock: { calls: Array<Array<{ status: string; errorLog: string }>> } }).mock.calls;
-    const discoveryLog = logCalls.find((call) =>
+    const discoveryLog = logAgentScanMock.mock.calls.find((call: any[]) =>
       call[0]?.status === "ARTICLE_DISCOVERY_FAILED" || call[0]?.status === "ARTICLE_DISCOVERY_COMPLETED",
     );
     expect(discoveryLog).toBeDefined();
