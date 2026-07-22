@@ -964,6 +964,133 @@ describe("generic RSS fallback integration", () => {
     ).toBe(true);
   });
 
+  // ── 19. CATEGORY_HANDOFF_STATE_CONFIRMED readback after markCategoryAsNoRssFound ──
+  it("logs CATEGORY_HANDOFF_STATE_CONFIRMED with readback snapshot after handoff", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    // Category with no existing feed and no fresh generic evidence
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      pathUrl: "https://example-news.test/world/europe",
+      rssFeedUrl: null,
+      discoveryEvidence: null,
+      lastRssCheckAt: null,
+    });
+    prismaNewsSourceFindUniqueMock.mockResolvedValue({
+      id: "src-news",
+      frontPageUrl: "https://example-news.test",
+      rssFeedUrl: "https://example-news.test/rss",
+      rssStatus: "ACTIVE",
+      mediaName: "Example News",
+    });
+
+    // Discovery fails completely
+    discoverFeedForUrlMock.mockRejectedValue(new Error("Candidate did not validate as a feed"));
+    safeFetchMock.mockImplementation(async () => { throw new Error("fetch failed"); });
+
+    // After prisma.sourceCategory.update, the readback findUnique should return
+    // the NO_RSS_FOUND state. We set it up on the mock:
+    // First call: ingestSource loads the category. All subsequent calls
+    // (readback in markCategoryAsNoRssFound) return the NO_RSS_FOUND state.
+    prismaSourceCategoryFindUniqueMock
+      .mockResolvedValueOnce({
+        ...CATEGORY_BASE,
+        pathUrl: "https://example-news.test/world/europe",
+        rssFeedUrl: null,
+        discoveryEvidence: null,
+        lastRssCheckAt: null,
+      })
+      .mockResolvedValue({
+        id: "cat-politics",
+        rssStatus: "NO_RSS_FOUND",
+        rssFeedUrl: null,
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 1,
+        lastRssCheckAt: new Date("2026-07-22T12:00:00Z"),
+      });
+
+    await ingestSource("src-news", "cat-politics");
+
+    // CATEGORY_HANDOFF_TO_AGENT2 should be logged
+    const handoffLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2",
+    );
+    expect(handoffLog).toBeDefined();
+
+    // CATEGORY_HANDOFF_STATE_CONFIRMED should be logged with readback snapshot
+    const confirmedLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_STATE_CONFIRMED",
+    );
+    expect(confirmedLog).toBeDefined();
+    const snapshot = JSON.parse(confirmedLog![0].errorLog);
+    expect(snapshot.rssStatus).toBe("NO_RSS_FOUND");
+    expect(snapshot.rssFeedUrl).toBeNull();
+    expect(snapshot.currentFeedProductive).toBe(false);
+    expect(snapshot.consecutiveNonProductiveRuns).toBe(1);
+    expect(snapshot.reason).toBe("category_discovery_exception");
+    expect(snapshot.sourceId).toBe("src-news");
+    expect(snapshot.categoryId).toBe("cat-politics");
+  });
+
+  // ── 20. CATEGORY_HANDOFF_STATE_CONFIRM_FAILED is non-fatal ──
+  it("logs CATEGORY_HANDOFF_STATE_CONFIRM_FAILED when readback throws, but does not block pipeline", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      pathUrl: "https://example-news.test/world/europe",
+      rssFeedUrl: null,
+      discoveryEvidence: null,
+      lastRssCheckAt: null,
+    });
+    prismaNewsSourceFindUniqueMock.mockResolvedValue({
+      id: "src-news",
+      frontPageUrl: "https://example-news.test",
+      rssFeedUrl: "https://example-news.test/rss",
+      rssStatus: "ACTIVE",
+      mediaName: "Example News",
+    });
+
+    discoverFeedForUrlMock.mockRejectedValue(new Error("discovery failed"));
+    safeFetchMock.mockImplementation(async () => { throw new Error("fetch failed"); });
+
+    // First call: ingestSource loads the category. Second call (readback)
+    // throws to simulate a DB error during the confirmation readback.
+    prismaSourceCategoryFindUniqueMock
+      .mockResolvedValueOnce({
+        ...CATEGORY_BASE,
+        pathUrl: "https://example-news.test/world/europe",
+        rssFeedUrl: null,
+        discoveryEvidence: null,
+        lastRssCheckAt: null,
+      })
+      .mockRejectedValueOnce(new Error("readback DB timeout"));
+
+    // ingestSource should NOT throw — the confirm failure is non-fatal
+    const result = await ingestSource("src-news", "cat-politics");
+    expect(result.failed).toBe(1);
+
+    // CATEGORY_HANDOFF_TO_AGENT2 should still be logged (update succeeded)
+    const handoffLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2",
+    );
+    expect(handoffLog).toBeDefined();
+
+    // CATEGORY_HANDOFF_STATE_CONFIRM_FAILED should be logged
+    const confirmFailedLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_STATE_CONFIRM_FAILED",
+    );
+    expect(confirmFailedLog).toBeDefined();
+    expect(confirmFailedLog![0].errorLog).toContain("readback failed");
+    expect(confirmFailedLog![0].errorLog).toContain("readback DB timeout");
+
+    // CATEGORY_HANDOFF_STATE_CONFIRMED should NOT be logged
+    const confirmedLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_STATE_CONFIRMED",
+    );
+    expect(confirmedLog).toBeUndefined();
+  });
+
   // ── 9. Expired generic evidence re-discovers generic fallback ────────
   it("expired generic evidence that re-discovers generic feed falls back to parent root feed", async () => {
     const { ingestSource } = await import("./ingest");

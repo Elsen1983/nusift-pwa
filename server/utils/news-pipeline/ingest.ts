@@ -1214,6 +1214,49 @@ const markCategoryAsNoRssFound = async (
       executionTimeMs: 0,
       errorLog: `reason=${opts?.reason || "unknown"}${opts?.targetUrl ? `, targetUrl=${opts.targetUrl}` : ""}${opts?.lastError ? `, lastError=${opts.lastError}` : ""}`,
     });
+
+    // ── Post-handoff DB snapshot verification ─────────────────────────
+    // Read back the updated row to prove the write persisted. This catches
+    // Prisma Accelerate edge-caching, read-replica lag, or silent write
+    // failures that would otherwise leave A1 and A2 disagreeing about the
+    // category state.
+    try {
+      const confirmed = await prisma.sourceCategory.findUnique({
+        where: { id: categoryId },
+        select: {
+          rssStatus: true,
+          rssFeedUrl: true,
+          currentFeedProductive: true,
+          consecutiveNonProductiveRuns: true,
+          lastRssCheckAt: true,
+        },
+      });
+      await logAgentScan({
+        sourceId,
+        categoryId,
+        status: "CATEGORY_HANDOFF_STATE_CONFIRMED",
+        executionTimeMs: 0,
+        errorLog: JSON.stringify({
+          sourceId,
+          categoryId,
+          targetUrl: opts?.targetUrl,
+          reason: opts?.reason || "unknown",
+          rssStatus: confirmed?.rssStatus ?? "NOT_FOUND",
+          rssFeedUrl: confirmed?.rssFeedUrl ?? null,
+          currentFeedProductive: confirmed?.currentFeedProductive ?? null,
+          consecutiveNonProductiveRuns: confirmed?.consecutiveNonProductiveRuns ?? null,
+          lastRssCheckAt: confirmed?.lastRssCheckAt?.toISOString() ?? null,
+        }),
+      });
+    } catch (confirmError: any) {
+      await logAgentScan({
+        sourceId,
+        categoryId,
+        status: "CATEGORY_HANDOFF_STATE_CONFIRM_FAILED",
+        executionTimeMs: 0,
+        errorLog: `readback failed: ${confirmError?.message || String(confirmError)}`,
+      }).catch(() => {});
+    }
   } catch {
     // Non-fatal: category state update failure should never block the pipeline.
   }

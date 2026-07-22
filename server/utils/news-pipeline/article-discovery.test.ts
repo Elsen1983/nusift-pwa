@@ -242,6 +242,84 @@ describe("article-discovery", () => {
     ).toBe(false);
   });
 
+  it("logs ARTICLE_DISCOVERY_CATEGORY_TARGETS_AUDIT with all category targets (eligible + skipped)", async () => {
+    const { resolveAgent2Targets } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },                  // source: productive → skip
+      { sourceId: "src-2", categoryId: "cat-no-rss" },          // category: NO_RSS_FOUND → eligible
+      { sourceId: "src-3", categoryId: "cat-active" },          // category: ACTIVE productive → skip
+      { sourceId: "src-4", categoryId: "cat-waiting" },         // category: ACTIVE non-productive 1 run → skip
+      { sourceId: "src-5", categoryId: "cat-missing" },         // category: not found in DB
+    ]);
+
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-1", frontPageUrl: "https://a.com", mediaName: "A", rssStatus: "ACTIVE", currentFeedProductive: true, consecutiveNonProductiveRuns: 0 },
+      { id: "src-2", frontPageUrl: "https://b.com", mediaName: "B", rssStatus: "ACTIVE", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-3", frontPageUrl: "https://c.com", mediaName: "C", rssStatus: "ACTIVE", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-4", frontPageUrl: "https://d.com", mediaName: "D", rssStatus: "ACTIVE", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-5", frontPageUrl: "https://e.com", mediaName: "E", rssStatus: "ACTIVE", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([
+      { id: "cat-no-rss", newsSourceId: "src-2", pathUrl: "https://b.com/europe", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 1 },
+      { id: "cat-active", newsSourceId: "src-3", pathUrl: "https://c.com/sports", rssStatus: "ACTIVE", currentFeedProductive: true, consecutiveNonProductiveRuns: 0 },
+      { id: "cat-waiting", newsSourceId: "src-4", pathUrl: "https://d.com/tech", rssStatus: "ACTIVE", currentFeedProductive: false, consecutiveNonProductiveRuns: 1 },
+      // cat-missing intentionally NOT in findMany result
+    ]);
+
+    const { targets } = await resolveAgent2Targets();
+
+    // Only cat-no-rss should be eligible (NO_RSS_FOUND)
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.categoryId).toBe("cat-no-rss");
+
+    // ARTICLE_DISCOVERY_CATEGORY_TARGETS_AUDIT log should be emitted
+    const auditLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_CATEGORY_TARGETS_AUDIT",
+    );
+    expect(auditLog).toBeDefined();
+    const errorLog = auditLog![0].errorLog ?? "";
+
+    // Should contain summary counts
+    expect(errorLog).toContain("categoryTargets=");
+    expect(errorLog).toContain("eligible=1");
+
+    // Parse entries to verify all category targets are present
+    const entriesMatch = errorLog.match(/entries=(\[.*\])/);
+    expect(entriesMatch).toBeTruthy();
+    const entries = JSON.parse(entriesMatch![1]);
+
+    // Should have entries for all 4 categories (cat-no-rss, cat-active, cat-waiting, cat-missing)
+    expect(entries).toHaveLength(4);
+
+    // cat-no-rss: eligible
+    const noRss = entries.find((e: any) => e.categoryId === "cat-no-rss");
+    expect(noRss).toBeDefined();
+    expect(noRss.eligible).toBe(true);
+    expect(noRss.skipReason).toBeNull();
+    expect(noRss.rssStatus).toBe("NO_RSS_FOUND");
+    expect(noRss.targetUrl).toBe("https://b.com/europe");
+
+    // cat-active: skipped as rss_active_productive
+    const active = entries.find((e: any) => e.categoryId === "cat-active");
+    expect(active).toBeDefined();
+    expect(active.eligible).toBe(false);
+    expect(active.skipReason).toBe("rss_active_productive");
+
+    // cat-waiting: skipped as rss_active_waiting_for_second_nonproductive_run
+    const waiting = entries.find((e: any) => e.categoryId === "cat-waiting");
+    expect(waiting).toBeDefined();
+    expect(waiting.eligible).toBe(false);
+    expect(waiting.skipReason).toBe("rss_active_waiting_for_second_nonproductive_run");
+
+    // cat-missing: skipped as not_found_in_db
+    const missing = entries.find((e: any) => e.categoryId === "cat-missing");
+    expect(missing).toBeDefined();
+    expect(missing.eligible).toBe(false);
+    expect(missing.skipReason).toBe("not_found_in_db");
+  });
+
   it("logs ARTICLE_DISCOVERY_TARGET_SKIPPED with capped per-target samples", async () => {
     const { resolveAgent2Targets } = await import("./article-discovery");
     const { resolveActivePipelineTargets } = await import("./targets");

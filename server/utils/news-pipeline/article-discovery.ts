@@ -645,6 +645,20 @@ export async function resolveAgent2Targets(input?: {
   }> = [];
   const MAX_SKIP_SAMPLES = 5;
 
+  // Collect all category-level targets (eligible + skipped) for audit diagnostics.
+  // This makes it possible to trace a specific category through A2 resolution.
+  const categoryAuditEntries: Array<{
+    sourceId: string;
+    categoryId: string;
+    targetUrl: string;
+    rssStatus: string;
+    currentFeedProductive: boolean;
+    consecutiveNonProductiveRuns: number;
+    eligible: boolean;
+    skipReason: string | null;
+  }> = [];
+  const MAX_CATEGORY_AUDIT = 20;
+
   for (const target of activeTargets) {
     const key = `${target.sourceId}|${target.categoryId || ""}`;
     if (!targetKeys.has(key)) continue;
@@ -666,11 +680,35 @@ export async function resolveAgent2Targets(input?: {
       const source = sourceById.get(target.sourceId);
       if (!category || !source) {
         skippedReasons.not_found_in_db += 1;
+        if (categoryAuditEntries.length < MAX_CATEGORY_AUDIT) {
+          categoryAuditEntries.push({
+            sourceId: target.sourceId,
+            categoryId: target.categoryId,
+            targetUrl: "",
+            rssStatus: "NOT_FOUND_IN_DB",
+            currentFeedProductive: false,
+            consecutiveNonProductiveRuns: 0,
+            eligible: false,
+            skipReason: "not_found_in_db",
+          });
+        }
         continue;
       }
-      if (!isAgent2EligibleTarget(category)) {
-        const reason = classifySkipReason(category);
-        skippedReasons[reason] += 1;
+      const categorySkipReason = isAgent2EligibleTarget(category) ? null /* eligible */ : classifySkipReason(category);
+      if (categoryAuditEntries.length < MAX_CATEGORY_AUDIT) {
+        categoryAuditEntries.push({
+          sourceId: target.sourceId,
+          categoryId: target.categoryId,
+          targetUrl: category.pathUrl,
+          rssStatus: category.rssStatus,
+          currentFeedProductive: category.currentFeedProductive,
+          consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
+          eligible: categorySkipReason === null,
+          skipReason: categorySkipReason,
+        });
+      }
+      if (categorySkipReason) {
+        skippedReasons[categorySkipReason] += 1;
         if (skippedSamples.length < MAX_SKIP_SAMPLES) {
           skippedSamples.push({
             sourceId: target.sourceId,
@@ -680,7 +718,7 @@ export async function resolveAgent2Targets(input?: {
             rssStatus: category.rssStatus,
             currentFeedProductive: category.currentFeedProductive,
             consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
-            skipReason: reason,
+            skipReason: categorySkipReason,
           });
         }
         continue;
@@ -731,11 +769,16 @@ export async function resolveAgent2Targets(input?: {
   }
 
   const skipped = Object.values(skippedReasons).reduce((a, b) => a + b, 0);
+  const categoryTotal = categoryAuditEntries.length;
+  const categoryEligible = categoryAuditEntries.filter((e) => e.eligible).length;
+  const categorySkipped = categoryTotal - categoryEligible;
 
   await logAgentScan({
     status: "ARTICLE_DISCOVERY_TARGETS_RESOLVED",
     executionTimeMs: 0,
-    errorLog: `targets=${targets.length}, skipped=${skipped}, total=${activeTargets.length}. reasons=${JSON.stringify(skippedReasons)}`,
+    errorLog: `targets=${targets.length}, skipped=${skipped}, total=${activeTargets.length}. ` +
+      `categories={total=${categoryTotal}, eligible=${categoryEligible}, skipped=${categorySkipped}}. ` +
+      `reasons=${JSON.stringify(skippedReasons)}`,
   });
 
   // Capped per-target skip diagnostics for debugging specific missing targets.
@@ -745,6 +788,19 @@ export async function resolveAgent2Targets(input?: {
       status: "ARTICLE_DISCOVERY_TARGET_SKIPPED",
       executionTimeMs: 0,
       errorLog: `sample=${JSON.stringify(skippedSamples)}`,
+    });
+  }
+
+  // Full category targets audit — shows every category-level target A2 evaluated,
+  // including both eligible and skipped. This makes it possible to trace a specific
+  // category (e.g. Times of India /world/europe) through the A2 resolution step.
+  if (categoryAuditEntries.length > 0) {
+    const catEligible = categoryAuditEntries.filter((e) => e.eligible).length;
+    const catSkipped = categoryAuditEntries.filter((e) => !e.eligible).length;
+    await logAgentScan({
+      status: "ARTICLE_DISCOVERY_CATEGORY_TARGETS_AUDIT",
+      executionTimeMs: 0,
+      errorLog: `categoryTargets=${categoryAuditEntries.length}, eligible=${catEligible}, skipped=${catSkipped}. entries=${JSON.stringify(categoryAuditEntries)}`,
     });
   }
 
