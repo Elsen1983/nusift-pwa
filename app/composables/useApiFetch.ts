@@ -10,7 +10,7 @@ export function useApiFetch<T>(
   const options = {
     ...opts,
     onResponseError(context: any) {
-      if (context.response.status === 401 || context.response.status === 404) {
+      if (context.response.status === 401) {
         console.error('Sovereign Shield: Session invalid. Logging out...');
         // httpOnly cookies (auth_token, session_status) are cleared server-side;
         // we only handle the client-side redirect here.

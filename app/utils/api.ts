@@ -3,7 +3,7 @@ import { $fetch } from 'ofetch';
 
 export const $api = $fetch.create({
   onResponseError({ response }) {
-    if (response.status === 401 || response.status === 404) {
+    if (response.status === 401) {
       console.error('Sovereign Shield Intercept: Unauthorized API access. Terminating session.');
       
       if (import.meta.client) {
