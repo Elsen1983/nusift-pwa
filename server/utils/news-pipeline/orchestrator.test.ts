@@ -44,7 +44,24 @@ vi.mock("./article-discovery", () => ({
   runArticleDiscoveryBatch: runArticleDiscoveryBatchMock,
 }));
 
-describe("orchestrator – Agent 2 hook", () => {
+const makeA2Result = () => ({
+  pipelineRunId: "a2-run-1",
+  targets: [],
+  result: {
+    sourcesScanned: 0,
+    candidatesFound: 0,
+    inserted: 0,
+    skipped: 0,
+    failed: 0,
+    artifactCount: 0,
+  },
+  stoppedReason: "no_targets" as const,
+  processed: 0,
+  deferred: 0,
+  remainingEligible: 0,
+});
+
+describe("orchestrator – Agent 1 / Agent 2 split", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -57,32 +74,45 @@ describe("orchestrator – Agent 2 hook", () => {
     persistPipelineArtifactMock.mockResolvedValue(undefined);
     persistHardCaseDiscoveryArtifactsMock.mockResolvedValue(0);
     markFeedRunOutcomeMock.mockResolvedValue(undefined);
-    runArticleDiscoveryBatchMock.mockResolvedValue({
-      pipelineRunId: "a2-run-1",
-      targets: [],
-      result: {
-        sourcesScanned: 0,
-        candidatesFound: 0,
-        inserted: 0,
-        skipped: 0,
-        failed: 0,
-        artifactCount: 0,
-      },
-    });
+    runArticleDiscoveryBatchMock.mockResolvedValue(makeA2Result());
   });
 
-  it("calls runArticleDiscoveryBatch with no filters for a global pipeline run", async () => {
+  // ── Default behavior: A1 only, no A2 hook ─────────────────────────────
+
+  it("does NOT call runArticleDiscoveryBatch by default (A1 only)", async () => {
     const { runNewsPipeline } = await import("./orchestrator");
     await runNewsPipeline();
 
+    expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call runArticleDiscoveryBatch for targeted A1 run", async () => {
+    const { runNewsPipeline } = await import("./orchestrator");
+    await runNewsPipeline(["src-1"]);
+
+    expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call runArticleDiscoveryBatch for targeted A1 run with categoryIds", async () => {
+    const { runNewsPipeline } = await import("./orchestrator");
+    await runNewsPipeline(["src-1"], ["cat-1"]);
+
+    expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
+  });
+
+  // ── runAgent2Afterwards: true ─────────────────────────────────────────
+
+  it("calls runArticleDiscoveryBatch when runAgent2Afterwards=true (global)", async () => {
+    const { runNewsPipeline } = await import("./orchestrator");
+    await runNewsPipeline(undefined, undefined, { runAgent2Afterwards: true });
+
     expect(runArticleDiscoveryBatchMock).toHaveBeenCalledTimes(1);
-    // Global run → no filters passed
     expect(runArticleDiscoveryBatchMock).toHaveBeenCalledWith(undefined);
   });
 
-  it("calls runArticleDiscoveryBatch with the same sourceIds for a targeted rerun", async () => {
+  it("calls runArticleDiscoveryBatch with source filters when runAgent2Afterwards=true", async () => {
     const { runNewsPipeline } = await import("./orchestrator");
-    await runNewsPipeline(["src-1"]);
+    await runNewsPipeline(["src-1"], undefined, { runAgent2Afterwards: true });
 
     expect(runArticleDiscoveryBatchMock).toHaveBeenCalledTimes(1);
     expect(runArticleDiscoveryBatchMock).toHaveBeenCalledWith({
@@ -91,9 +121,9 @@ describe("orchestrator – Agent 2 hook", () => {
     });
   });
 
-  it("calls runArticleDiscoveryBatch with the same sourceIds and categoryIds for a targeted rerun", async () => {
+  it("calls runArticleDiscoveryBatch with source+category filters when runAgent2Afterwards=true", async () => {
     const { runNewsPipeline } = await import("./orchestrator");
-    await runNewsPipeline(["src-1"], ["cat-1"]);
+    await runNewsPipeline(["src-1"], ["cat-1"], { runAgent2Afterwards: true });
 
     expect(runArticleDiscoveryBatchMock).toHaveBeenCalledTimes(1);
     expect(runArticleDiscoveryBatchMock).toHaveBeenCalledWith({
@@ -102,6 +132,8 @@ describe("orchestrator – Agent 2 hook", () => {
     });
   });
 
+  // ── Target resolution / hydrate ───────────────────────────────────────
+
   it("uses targeted path for category-only runNewsPipeline(undefined, [cat-1])", async () => {
     const { runNewsPipeline } = await import("./orchestrator");
     await runNewsPipeline(undefined, ["cat-1"]);
@@ -109,12 +141,8 @@ describe("orchestrator – Agent 2 hook", () => {
     // Agent 1 should use the targeted hydrate path, not global
     expect(prismaMock.sourceCategory.findMany).toHaveBeenCalled();
 
-    // Agent 2 should receive the category filter
-    expect(runArticleDiscoveryBatchMock).toHaveBeenCalledTimes(1);
-    expect(runArticleDiscoveryBatchMock).toHaveBeenCalledWith({
-      sourceIds: [],
-      categoryIds: ["cat-1"],
-    });
+    // Agent 2 should NOT be called by default
+    expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
   });
 
   it("uses targeted path for category-only runNewsPipeline([], [cat-1])", async () => {
@@ -122,12 +150,7 @@ describe("orchestrator – Agent 2 hook", () => {
     await runNewsPipeline([], ["cat-1"]);
 
     expect(prismaMock.sourceCategory.findMany).toHaveBeenCalled();
-
-    expect(runArticleDiscoveryBatchMock).toHaveBeenCalledTimes(1);
-    expect(runArticleDiscoveryBatchMock).toHaveBeenCalledWith({
-      sourceIds: [],
-      categoryIds: ["cat-1"],
-    });
+    expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
   });
 
   it("does not use targeted path when both lists are empty", async () => {
@@ -140,11 +163,13 @@ describe("orchestrator – Agent 2 hook", () => {
     expect(prismaMock.userSourceSubscription.findMany).toHaveBeenCalled();
   });
 
-  it("returns Agent 1 result even when Agent 2 throws", async () => {
+  // ── A1 result isolation ───────────────────────────────────────────────
+
+  it("returns Agent 1 result when Agent 2 throws (with runAgent2Afterwards=true)", async () => {
     runArticleDiscoveryBatchMock.mockRejectedValue(new Error("A2 exploded"));
 
     const { runNewsPipeline } = await import("./orchestrator");
-    const result = await runNewsPipeline();
+    const result = await runNewsPipeline(undefined, undefined, { runAgent2Afterwards: true });
 
     // Agent 1 result is still returned
     expect(result).toBeDefined();
@@ -152,29 +177,16 @@ describe("orchestrator – Agent 2 hook", () => {
     expect(result.inserted).toBe(0);
   });
 
-  it("returns Agent 1 result when Agent 2 finds no eligible targets", async () => {
-    runArticleDiscoveryBatchMock.mockResolvedValue({
-      pipelineRunId: "a2-run-2",
-      targets: [],
-      result: {
-        sourcesScanned: 0,
-        candidatesFound: 0,
-        inserted: 0,
-        skipped: 0,
-        failed: 0,
-        artifactCount: 0,
-      },
-    });
-
+  it("returns Agent 1 result when Agent 2 has no targets (with runAgent2Afterwards=true)", async () => {
     const { runNewsPipeline } = await import("./orchestrator");
-    const result = await runNewsPipeline();
+    const result = await runNewsPipeline(undefined, undefined, { runAgent2Afterwards: true });
 
     expect(runArticleDiscoveryBatchMock).toHaveBeenCalledTimes(1);
     expect(result).toBeDefined();
     expect(result.sourcesScanned).toBe(0);
   });
 
-  it("calls Agent 2 even when Agent 1 has per-target failures", async () => {
+  it("Agent 1 result is unaffected by Agent 2 success/failure", async () => {
     // Simulate one active source target
     prismaMock.userSourceSubscription.findMany.mockResolvedValue([
       { sourceId: "src-1" },
@@ -191,8 +203,7 @@ describe("orchestrator – Agent 2 hook", () => {
     expect(result.failed).toBe(1);
     expect(result.sourcesScanned).toBe(1);
 
-    // Agent 2 still runs (global, since no sourceIds filter was passed)
-    expect(runArticleDiscoveryBatchMock).toHaveBeenCalledTimes(1);
-    expect(runArticleDiscoveryBatchMock).toHaveBeenCalledWith(undefined);
+    // Agent 2 NOT called (default)
+    expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
   });
 });

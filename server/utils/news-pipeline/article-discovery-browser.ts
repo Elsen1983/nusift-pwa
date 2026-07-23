@@ -84,6 +84,8 @@ export type BrowserArticleLinkResult = {
     pageTitle: string | null;
     linkCount: number;
     articleLikeLinkCount: number;
+    rawExtractionFallbackUsed?: boolean;
+    rawExtractionError?: string;
     blockedReason?: string;
     browserRuntimeAvailable: boolean;
     elapsedMs: number;
@@ -124,6 +126,90 @@ async function extractRawLinksFromBrowser(
   page: any,
   pageUrl: string,
 ): Promise<RawBrowserLink[]> {
+  return page.evaluate(`(() => {
+    const pageUrl = ${JSON.stringify(pageUrl)};
+    const maxLinks = ${MAX_BROWSER_RAW_LINKS};
+    const results = [];
+    const seen = new Set();
+
+    const addContainer = (containers, candidate) => {
+      if (candidate && !containers.includes(candidate)) containers.push(candidate);
+    };
+
+    const closestClassMatch = (anchor, terms) => {
+      let current = anchor;
+      for (let depth = 0; current && depth < 6; depth += 1) {
+        const className = typeof current.className === "string" ? current.className.toLowerCase() : "";
+        if (terms.some((term) => className.includes(term))) return current;
+        current = current.parentElement;
+      }
+      return null;
+    };
+
+    const extractNearbyDateText = (anchor) => {
+      const containers = [];
+      try { addContainer(containers, anchor.closest("article")); } catch {}
+      try { addContainer(containers, anchor.closest("li")); } catch {}
+      addContainer(containers, closestClassMatch(anchor, ["story", "article", "news"]));
+      addContainer(containers, anchor.parentElement);
+      addContainer(containers, anchor.parentElement && anchor.parentElement.parentElement);
+
+      const patterns = [
+        new RegExp("\\\\b\\\\d{1,2}\\\\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\\\s+\\\\d{4}\\\\b", "i"),
+        new RegExp("\\\\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\\\s+\\\\d{1,2},?\\\\s+\\\\d{4}\\\\b", "i"),
+        new RegExp("\\\\b\\\\d{4}[/-]\\\\d{1,2}[/-]\\\\d{1,2}\\\\b"),
+        new RegExp("\\\\b\\\\d{1,2}[/-]\\\\d{1,2}[/-]\\\\d{4}\\\\b"),
+      ];
+
+      for (const container of containers) {
+        const text = (container.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 800);
+        for (const pattern of patterns) {
+          const match = text.match(pattern);
+          if (match && match[0]) return match[0];
+        }
+      }
+
+      return null;
+    };
+
+    for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
+      try {
+        const href = anchor.getAttribute("href");
+        if (
+          !href ||
+          href.startsWith("#") ||
+          href.startsWith("javascript:") ||
+          href.startsWith("mailto:") ||
+          href.startsWith("tel:")
+        ) {
+          continue;
+        }
+
+        let resolved;
+        try {
+          resolved = new URL(href, pageUrl).toString();
+        } catch {
+          continue;
+        }
+
+        const normalized = resolved.toLowerCase();
+        if (seen.has(normalized)) continue;
+        seen.add(normalized);
+
+        const text = anchor.textContent && anchor.textContent.trim()
+          ? anchor.textContent.trim().slice(0, 200)
+          : null;
+        results.push({ url: resolved, text, dateText: extractNearbyDateText(anchor) });
+
+        if (results.length >= maxLinks) break;
+      } catch {
+        continue;
+      }
+    }
+
+    return results;
+  })()`);
+
   return page.evaluate(
     (args: { pageUrl: string; maxLinks: number }) => {
       const { pageUrl, maxLinks } = args;
@@ -131,15 +217,32 @@ async function extractRawLinksFromBrowser(
       const seen = new Set<string>();
 
       const extractNearbyDateText = (anchor: Element): string | null => {
-        const containers = [
-          anchor.closest("article"),
-          anchor.closest("li"),
-          anchor.closest("[class*='story' i]"),
-          anchor.closest("[class*='article' i]"),
-          anchor.closest("[class*='news' i]"),
-          anchor.parentElement,
-          anchor.parentElement?.parentElement || null,
-        ].filter(Boolean) as Element[];
+        const containers: Element[] = [];
+        const addContainer = (candidate: Element | null | undefined) => {
+          if (candidate && !containers.includes(candidate)) containers.push(candidate);
+        };
+        const safeClosest = (selector: string) => {
+          try {
+            return anchor.closest(selector);
+          } catch {
+            return null;
+          }
+        };
+        const closestClassMatch = (terms: string[]) => {
+          let current: Element | null = anchor;
+          for (let depth = 0; current && depth < 6; depth += 1) {
+            const className = typeof current.className === "string" ? current.className.toLowerCase() : "";
+            if (terms.some((term) => className.includes(term))) return current;
+            current = current.parentElement;
+          }
+          return null;
+        };
+
+        addContainer(safeClosest("article"));
+        addContainer(safeClosest("li"));
+        addContainer(closestClassMatch(["story", "article", "news"]));
+        addContainer(anchor.parentElement);
+        addContainer(anchor.parentElement?.parentElement || null);
 
         const patterns = [
           /\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}\b/i,
@@ -159,10 +262,10 @@ async function extractRawLinksFromBrowser(
         return null;
       };
 
-      try {
-        const anchors = Array.from(document.querySelectorAll("a[href]"));
+      const anchors = Array.from(document.querySelectorAll("a[href]"));
 
-        for (const anchor of anchors) {
+      for (const anchor of anchors) {
+        try {
           const href = (anchor as HTMLAnchorElement).getAttribute("href");
           // Only skip obviously non-link hrefs. Domain, category, and URL
           // validation are handled Node-side by scoreAndFilterBrowserLinks
@@ -195,9 +298,59 @@ async function extractRawLinksFromBrowser(
           });
 
           if (results.length >= maxLinks) break;
+        } catch {
+          // Keep extraction page-wide resilient. A single unusual anchor or DOM
+          // API quirk must not turn an entire rendered page into raw links: 0.
+          continue;
         }
-      } catch {
-        // DOM extraction failed
+      }
+
+      return results;
+    },
+    { pageUrl, maxLinks: MAX_BROWSER_RAW_LINKS },
+  );
+}
+
+async function extractBasicRawLinksFromBrowser(
+  page: any,
+  pageUrl: string,
+): Promise<RawBrowserLink[]> {
+  return page.evaluate(
+    (args: { pageUrl: string; maxLinks: number }) => {
+      const { pageUrl, maxLinks } = args;
+      const results: Array<{ url: string; text: string | null; dateText: null }> = [];
+      const seen = new Set<string>();
+
+      for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
+        const href = (anchor as HTMLAnchorElement).getAttribute("href");
+        if (
+          !href ||
+          href.startsWith("#") ||
+          href.startsWith("javascript:") ||
+          href.startsWith("mailto:") ||
+          href.startsWith("tel:")
+        ) {
+          continue;
+        }
+
+        let resolved: string;
+        try {
+          resolved = new URL(href, pageUrl).toString();
+        } catch {
+          continue;
+        }
+
+        const normalized = resolved.toLowerCase();
+        if (seen.has(normalized)) continue;
+        seen.add(normalized);
+
+        results.push({
+          url: resolved,
+          text: (anchor as HTMLAnchorElement).textContent?.trim().slice(0, 200) || null,
+          dateText: null,
+        });
+
+        if (results.length >= maxLinks) break;
       }
 
       return results;
@@ -230,6 +383,18 @@ function isCategoryDirectoryPath(url: string | null): boolean {
   }
 }
 
+function isSameListingPath(rawUrl: string, pageUrl: string): boolean {
+  try {
+    const raw = new URL(rawUrl);
+    const page = new URL(pageUrl);
+    const rawPath = raw.pathname.replace(/\/+$/, "") || "/";
+    const pagePath = page.pathname.replace(/\/+$/, "") || "/";
+    return raw.hostname.replace(/^www\./, "") === page.hostname.replace(/^www\./, "") && rawPath === pagePath;
+  } catch {
+    return false;
+  }
+}
+
 function isStrongListingContextArticle(
   raw: RawBrowserLink,
   pageUrl: string,
@@ -241,7 +406,7 @@ function isStrongListingContextArticle(
 
   try {
     const path = new URL(raw.url).pathname.replace(/\/+$/, "") || "/";
-    if (isCategoryDirectoryPath(raw.url) || path === "/" || path === new URL(pageUrl).pathname.replace(/\/+$/, "")) {
+    if (isCategoryDirectoryPath(raw.url) || path === "/" || isSameListingPath(raw.url, pageUrl)) {
       return { accepted: false, score: 0, reasons: ["category_directory_or_listing_page"] };
     }
   } catch {
@@ -350,7 +515,7 @@ function scoreAndFilterBrowserLinks(
       continue;
     }
 
-    if (normalizedUrl === normalizeUrl(pageUrl)) {
+    if (normalizedUrl === normalizeUrl(pageUrl) || isSameListingPath(raw.url, pageUrl)) {
       const entry = makeAuditEntry(true, "listing_page", { score: 0, reasons: ["listing_page"] });
       rejectedLinks.push(entry);
       rejectionReasonCounts["listing_page"] = (rejectionReasonCounts["listing_page"] || 0) + 1;
@@ -623,7 +788,7 @@ export async function discoverArticleLinksWithBrowser(input: {
 
     const response = await page
       .goto(input.targetUrl, {
-        waitUntil: "networkidle",
+        waitUntil: "domcontentloaded",
         timeout: timeoutMs,
       })
       .catch((err: any) => {
@@ -677,15 +842,37 @@ export async function discoverArticleLinksWithBrowser(input: {
     }
 
     renderedUrl = page.url();
+    if (typeof page.waitForTimeout === "function") {
+      await page.waitForTimeout(750).catch(() => {});
+    }
 
     // Extract article links from rendered DOM via page.evaluate()
     // (runs inside the browser context where document is available)
     const pageTitle = await page.title().catch(() => null);
     const allAnchors = await page.evaluate(() => document.querySelectorAll("a[href]").length);
-    const rawLinks = await extractRawLinksFromBrowser(
-      page,
-      renderedUrl || input.targetUrl,
-    ).catch(() => [] as RawBrowserLink[]);
+    let rawExtractionFallbackUsed = false;
+    let rawExtractionError: string | undefined;
+    let rawLinks: RawBrowserLink[] = [];
+
+    try {
+      rawLinks = await extractRawLinksFromBrowser(page, renderedUrl || input.targetUrl);
+    } catch (error) {
+      rawExtractionFallbackUsed = true;
+      rawExtractionError = getErrorMessage(error);
+    }
+
+    if (rawLinks.length === 0 && allAnchors > 0) {
+      rawExtractionFallbackUsed = true;
+      try {
+        rawLinks = await extractBasicRawLinksFromBrowser(page, renderedUrl || input.targetUrl);
+      } catch (error) {
+        const fallbackError = getErrorMessage(error);
+        rawExtractionError = rawExtractionError
+          ? `${rawExtractionError}; basic fallback failed: ${fallbackError}`
+          : fallbackError;
+      }
+    }
+
     const filterResult = scoreAndFilterBrowserLinks(rawLinks, renderedUrl || input.targetUrl, categoryPathUrl);
 
     await browser.close();
@@ -703,6 +890,8 @@ export async function discoverArticleLinksWithBrowser(input: {
         pageTitle,
         linkCount: allAnchors,
         articleLikeLinkCount: filterResult.links.length,
+        rawExtractionFallbackUsed,
+        rawExtractionError,
         browserRuntimeAvailable: true,
         elapsedMs: Date.now() - startedAt,
       },
@@ -1022,7 +1211,7 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
     );
 
     const response = await page
-      .goto(articleUrl, { waitUntil: "networkidle", timeout: timeoutMs })
+      .goto(articleUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs })
       .catch((err: any) => {
         return null;
       });
@@ -1036,6 +1225,9 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
     }
 
     const renderedUrl = page.url();
+    if (typeof page.waitForTimeout === "function") {
+      await page.waitForTimeout(500).catch(() => {});
+    }
 
     // Extract raw primitive data from the live DOM. The page.evaluate()
     // callback uses only document and args — no module-scope closures.
@@ -1045,25 +1237,21 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
     //
     // NOTE: Keep this extraction in sync with extractArticleDetailFromDocument()
     // below — both must produce the same RawArticleDetailData shape.
-    const raw = (await page.evaluate((args: { pageUrl: string }) => {
-      const { pageUrl } = args;
+    const raw = (await page.evaluate(`(() => {
+      const pageUrl = ${JSON.stringify(renderedUrl || articleUrl)};
 
-      const getMetaContent = (selector: string): string | null => {
+      const getMetaContent = (selector) => {
         const el = document.querySelector(selector);
-        return el?.getAttribute("content")?.trim() || null;
+        const content = el && el.getAttribute("content");
+        return content && content.trim() ? content.trim() : null;
       };
 
-      const getTextContent = (selector: string): string | null => {
-        const el = document.querySelector(selector);
-        return el?.textContent?.trim() || null;
-      };
+      const canonicalLink = document.querySelector('link[rel="canonical"]');
 
-      const canonicalLink = document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null;
-
-      const jsonLdScripts: string[] = [];
+      const jsonLdScripts = [];
       const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-      for (let i = 0; i < scripts.length; i++) {
-        const text = scripts[i]!.textContent || "";
+      for (let i = 0; i < scripts.length; i += 1) {
+        const text = scripts[i] && scripts[i].textContent ? scripts[i].textContent : "";
         if (text.trim()) jsonLdScripts.push(text);
       }
 
@@ -1072,11 +1260,14 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
         document.querySelector("main") ||
         document.body;
 
+      const h1 = document.querySelector("h1");
+      const time = document.querySelector("time[datetime]");
+
       return {
         pageUrl,
-        canonicalHref: canonicalLink?.getAttribute("href") || null,
+        canonicalHref: canonicalLink ? canonicalLink.getAttribute("href") : null,
         docTitle: document.title || "",
-        h1Text: (document.querySelector("h1") as HTMLElement | null)?.innerText?.trim() || null,
+        h1Text: h1 && h1.innerText ? h1.innerText.trim() : null,
         ogTitle: getMetaContent('meta[property="og:title"]'),
         twitterTitle: getMetaContent('meta[name="twitter:title"]'),
         metaTitle: getMetaContent('meta[name="title"]'),
@@ -1094,14 +1285,12 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
           null,
         pubdate: getMetaContent('meta[name="pubdate"]'),
         publishdate: getMetaContent('meta[name="publishdate"]'),
-        timeDatetime: (document.querySelector("time[datetime]") as HTMLTimeElement | null)?.getAttribute("datetime") || null,
+        timeDatetime: time ? time.getAttribute("datetime") : null,
         metaDate: getMetaContent('meta[name="date"]'),
         jsonLdScripts,
-        bodyText: articleEl
-          ? (articleEl as HTMLElement).innerText || ""
-          : "",
+        bodyText: articleEl && articleEl.innerText ? articleEl.innerText : "",
       };
-    }, { pageUrl: renderedUrl || articleUrl })) as RawArticleDetailData;
+    })()`)) as RawArticleDetailData;
 
     const extracted = normalizeArticleDetailFromRaw(raw);
     const publishedAtRaw = extracted.publishedAtRaw || input.listingDateFallbackRaw || null;
@@ -1125,6 +1314,7 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
       bodyFallback: extracted.bodyFallback,
       extraRawSignals: ["agent2-browser-detail-recovery"],
       canonicalUrlOverride: extracted.canonicalUrl,
+      allowWeakPublishedAt: true,
     });
 
     return evaluation;

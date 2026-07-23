@@ -11,7 +11,11 @@
     "prisma:studio": "prisma studio",
     "clean": "nuxi clean",
     "normalize-avatars": "node ./scripts/normalize-avatars.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "agent2:docker": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1",
+    "agent2:docker:batch": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1 -batch",
+    "agent2:docker:headless": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1 -headless",
+    "agent2:docker:check": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1 -checkRuntime"
   },
   "dependencies": {
     "@nuxtjs/color-mode": "^4.0.1",
@@ -55,6 +59,7 @@
     "nuxi": "^3.35.1",
     "prisma": "^7.8.0",
     "vitest": "^4.1.9",
+    "tsx": "^4.19.0",
     "vue-tsc": "^3.3.6"
   },
   "allowScripts": {

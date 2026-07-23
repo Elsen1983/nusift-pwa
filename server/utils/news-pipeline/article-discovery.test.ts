@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const safeFetchMock = vi.hoisted(() => vi.fn());
 const prismaArtifactCreateMock = vi.hoisted(() => vi.fn());
+const prismaArtifactCreateManyMock = vi.hoisted(() => vi.fn());
 const prismaArtifactFindManyMock = vi.hoisted(() => vi.fn());
 const prismaArtifactUpdateMock = vi.hoisted(() => vi.fn());
+const prismaPipelineRunFindFirstMock = vi.hoisted(() => vi.fn());
 const prismaNewsSourceFindManyMock = vi.hoisted(() => vi.fn());
 const prismaSourceCategoryFindManyMock = vi.hoisted(() => vi.fn());
 
@@ -33,8 +35,12 @@ vi.mock("../prisma", () => ({
   prisma: {
     pipelineArtifact: {
       create: (...args: any[]) => prismaArtifactCreateMock(...args),
+      createMany: (...args: any[]) => prismaArtifactCreateManyMock(...args),
       findMany: (...args: any[]) => prismaArtifactFindManyMock(...args),
       update: (...args: any[]) => prismaArtifactUpdateMock(...args),
+    },
+    pipelineRun: {
+      findFirst: (...args: any[]) => prismaPipelineRunFindFirstMock(...args),
     },
     newsSource: {
       findMany: (...args: any[]) => prismaNewsSourceFindManyMock(...args),
@@ -54,13 +60,16 @@ describe("article-discovery", () => {
   beforeEach(() => {
     safeFetchMock.mockReset();
     prismaArtifactCreateMock.mockReset();
+    prismaArtifactCreateManyMock.mockReset();
     prismaArtifactFindManyMock.mockReset();
     prismaArtifactUpdateMock.mockReset();
+    prismaPipelineRunFindFirstMock.mockReset();
     prismaNewsSourceFindManyMock.mockReset();
     prismaSourceCategoryFindManyMock.mockReset();
     prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
     prismaArtifactFindManyMock.mockResolvedValue([]);
     prismaArtifactUpdateMock.mockResolvedValue({ id: "updated" });
+    prismaPipelineRunFindFirstMock.mockResolvedValue(null);
     prismaNewsSourceFindManyMock.mockResolvedValue([]);
     prismaSourceCategoryFindManyMock.mockResolvedValue([]);
     logAgentScanMock.mockClear();
@@ -2011,5 +2020,266 @@ describe("article-discovery", () => {
     const otherUpdate = updateCalls.find((call: any[]) => call[0]?.where?.id === "marker-other");
     expect(rootUpdate).toBeUndefined();
     expect(otherUpdate).toBeUndefined();
+  });
+
+  // ── Bounded batch processing tests ──────────────────────────────────
+
+  it("returns stoppedReason=no_targets when no eligible targets exist", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([]);
+
+    const result = await runArticleDiscoveryBatch();
+
+    expect(result.stoppedReason).toBe("no_targets");
+    expect(result.processed).toBe(0);
+    expect(result.deferred).toBe(0);
+    expect(result.remainingEligible).toBe(0);
+    expect(result.pipelineRunId).toBeNull();
+    expect(result.targets).toHaveLength(0);
+  });
+
+  it("returns stoppedReason=max_targets when maxTargets is reached", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+      { sourceId: "src-2", categoryId: null },
+      { sourceId: "src-3", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-1", frontPageUrl: "https://a.com/", mediaName: "A", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-2", frontPageUrl: "https://b.com/", mediaName: "B", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-3", frontPageUrl: "https://c.com/", mediaName: "C", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-bounded" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "a-1" });
+
+    const listing = `<html><body><article><a href="/news/story-1">Story title long enough</a></article></body></html>`;
+    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-20T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith(".com/")) return makeResponse(listing);
+      if (url.includes("story-1")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    const result = await runArticleDiscoveryBatch({ maxTargets: 1 });
+
+    expect(result.stoppedReason).toBe("max_targets");
+    expect(result.processed).toBe(1);
+    expect(result.deferred).toBe(2);
+    // remainingEligible tracks the active bounded batch cycle, not global eligibility.
+    expect(result.remainingEligible).toBe(2);
+    expect(result.pipelineRunId).toBe("run-bounded");
+  });
+
+  it("prioritizes latest deferred targets on the next bounded run", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+      { sourceId: "src-2", categoryId: null },
+      { sourceId: "src-3", categoryId: "cat-times" },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-1", frontPageUrl: "https://a.com/", mediaName: "A", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-2", frontPageUrl: "https://b.com/", mediaName: "B", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-3", frontPageUrl: "https://times.example/world/europe", mediaName: "Times", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 6 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([
+      { id: "cat-times", newsSourceId: "src-3", pathUrl: "https://times.example/world/europe", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 6 },
+    ]);
+    prismaPipelineRunFindFirstMock.mockResolvedValue({ id: "previous-run" });
+    prismaArtifactFindManyMock
+      .mockResolvedValueOnce([
+        {
+          sourceId: "src-3",
+          categoryId: "cat-times",
+          createdAt: new Date("2026-07-22T13:33:01Z"),
+          payload: {
+            runId: "previous-run",
+            targetUrl: "https://times.example/world/europe",
+            position: 0,
+          },
+        },
+      ])
+      .mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-next" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-next" });
+
+    const listing = `<html><body><article><a href="/world/europe/story-1">Story title long enough</a></article></body></html>`;
+    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-20T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://times.example/world/europe") return makeResponse(listing);
+      if (url.includes("story-1")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    const result = await runArticleDiscoveryBatch({ maxTargets: 1 });
+
+    expect(result.processed).toBe(1);
+    expect(result.deferred).toBe(0);
+    expect(result.remainingEligible).toBe(0);
+    expect(result.targets[0]?.sourceId).toBe("src-3");
+    expect(result.targets[0]?.categoryId).toBe("cat-times");
+    expect(prismaArtifactCreateMock).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        sourceId: "src-3",
+        categoryId: "cat-times",
+        artifactType: "article_discovery_candidates",
+      }),
+    }));
+  });
+
+  it("creates deferred artifacts with compact payload for unprocessed targets", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+      { sourceId: "src-2", categoryId: "cat-def" },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-1", frontPageUrl: "https://a.com/", mediaName: "A", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-2", frontPageUrl: "https://b.com/", mediaName: "B", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([
+      { id: "cat-def", newsSourceId: "src-2", pathUrl: "https://b.com/def", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-def" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "a-1" });
+
+    const listing = `<html><body><article><a href="/news/story-1">Story title long enough</a></article></body></html>`;
+    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-20T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith(".com/")) return makeResponse(listing);
+      if (url.includes("story-1")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    const result = await runArticleDiscoveryBatch({ maxTargets: 1 });
+
+    expect(result.stoppedReason).toBe("max_targets");
+    expect(result.processed).toBe(1);
+    expect(result.deferred).toBe(1);
+
+    // Verify deferred artifact was created via createMany
+    expect(prismaArtifactCreateManyMock).toHaveBeenCalled();
+    const createManyCalls = prismaArtifactCreateManyMock.mock.calls;
+    const deferredBatch = createManyCalls.find((call: any[]) =>
+      call[0]?.data?.some?.((d: any) => d.artifactType === "article_discovery_deferred")
+    );
+    expect(deferredBatch).toBeDefined();
+    if (deferredBatch) {
+      const deferredData = deferredBatch[0].data[0];
+      expect(deferredData.artifactType).toBe("article_discovery_deferred");
+      expect(deferredData.status).toBe("DEFERRED_MAX_TARGETS");
+      expect(deferredData.candidateCount).toBe(0);
+      expect(deferredData.payload.reason).toBe("max_targets");
+      expect(deferredData.payload.schemaVersion).toBe(1);
+      expect(deferredData.payload.artifactKind).toBe("agent2_deferred_target");
+      // No HTML, DOM, or raw content in deferred payloads
+      expect(deferredData.payload).not.toHaveProperty("html");
+      expect(deferredData.payload).not.toHaveProperty("candidates");
+      expect(deferredData.payload).not.toHaveProperty("rawBodyText");
+    }
+
+    const a2StoppedLog = logAgentScanMock.mock.calls.find((call: any[]) => call[0]?.status === "A2_BATCH_STOPPED");
+    expect(a2StoppedLog).toBeDefined();
+    expect(a2StoppedLog![0].errorLog).toContain("stoppedReason=max_targets");
+
+    const deferredLog = logAgentScanMock.mock.calls.find((call: any[]) => call[0]?.status === "A2_TARGETS_DEFERRED");
+    expect(deferredLog).toBeDefined();
+    expect(deferredLog![0].errorLog).toContain("deferred=1");
+    expect(deferredLog![0].errorLog).toContain("reason=max_targets");
+  });
+
+  it("returns stoppedReason=completed when all targets processed", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-1", frontPageUrl: "https://a.com/", mediaName: "A", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-complete" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "a-1" });
+
+    const listing = `<html><body><article><a href="/news/story-1">Story title long enough</a></article></body></html>`;
+    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-20T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith(".com/")) return makeResponse(listing);
+      if (url.includes("story-1")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    const result = await runArticleDiscoveryBatch({ maxTargets: 5 });
+
+    expect(result.stoppedReason).toBe("completed");
+    expect(result.processed).toBe(1);
+    expect(result.deferred).toBe(0);
+    expect(result.remainingEligible).toBe(0);
+    // No A2_BATCH_STOPPED log for completed runs
+    const stoppedLog = logAgentScanMock.mock.calls.find((call: any[]) => call[0]?.status === "A2_BATCH_STOPPED");
+    expect(stoppedLog).toBeUndefined();
+  });
+
+  it("passes bounded count to createPipelineRun (not full eligible count)", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+      { sourceId: "src-2", categoryId: null },
+      { sourceId: "src-3", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-1", frontPageUrl: "https://a.com/", mediaName: "A", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-2", frontPageUrl: "https://b.com/", mediaName: "B", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+      { id: "src-3", frontPageUrl: "https://c.com/", mediaName: "C", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "a-1" });
+
+    const listing = `<html><body><article><a href="/news/story-1">Story title long enough</a></article></body></html>`;
+    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-20T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith(".com/")) return makeResponse(listing);
+      if (url.includes("story-1")) return makeResponse(article);
+      return makeResponse("", false);
+    });
+
+    await runArticleDiscoveryBatch({ maxTargets: 2 });
+
+    // createPipelineRun should receive min(3, 2) = 2, not 3
+    expect(createPipelineRun).toHaveBeenCalledWith(2);
   });
 });

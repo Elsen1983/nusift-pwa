@@ -49,6 +49,8 @@ const ESSENTIAL_AGENT_LOG_STATUSES = new Set([
   "HARD_CASE_CHAIN_PIPELINE_STARTED",
   "HARD_CASE_CHAIN_PIPELINE_FINISHED",
   "HARD_CASE_CHAIN_PIPELINE_SKIPPED",
+  "A2_BATCH_STOPPED",
+  "A2_TARGETS_DEFERRED",
 ]);
 
 const isPersistedAgentLogStatus = (status: string) =>
@@ -106,6 +108,8 @@ export const getAgentLogPrefix = (status: string) => {
       "ARTICLE_DISCOVERY_SKIPPED",
       "ARTICLE_DISCOVERY_HEADLESS_MARKERS_RESOLVED",
       "ARTICLE_DISCOVERY_HEADLESS_MARKERS_RESOLVE_FAILED",
+      "A2_BATCH_STOPPED",
+      "A2_TARGETS_DEFERRED",
     ].includes(status)
   ) {
     return "A2";

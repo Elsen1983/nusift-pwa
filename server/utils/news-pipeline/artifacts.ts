@@ -127,6 +127,69 @@ export async function persistPipelineArtifact(input: {
   });
 }
 
+export async function persistAgent1TargetOutcomeArtifact(input: {
+  pipelineRunId: string;
+  result: IngestResult;
+  persisted: { inserted: number; skipped: number; failed: number; enriched?: number };
+}) {
+  const categoryTarget = input.result.categoryId
+    ? await prisma.sourceCategory.findUnique({
+        where: { id: input.result.categoryId },
+        select: { pathUrl: true },
+      })
+    : null;
+  const sourceTarget = input.result.categoryId
+    ? null
+    : await prisma.newsSource.findUnique({
+        where: { id: input.result.sourceId },
+        select: { frontPageUrl: true },
+      });
+  const sourceUrl = categoryTarget?.pathUrl || sourceTarget?.frontPageUrl || null;
+  const enriched = input.persisted.enriched || 0;
+  const passed = input.result.failed === 0 && (input.persisted.inserted > 0 || enriched > 0);
+  const handedToAgent2 = input.result.feedUrl == null && input.result.candidates.length === 0;
+  const failureReason = passed
+    ? null
+    : handedToAgent2
+      ? "No usable RSS/feed candidates were produced; target is eligible for Agent 2."
+      : input.result.failed > 0
+        ? "Agent 1 failed while fetching or parsing this target."
+        : "Agent 1 produced no newly inserted articles for this target.";
+
+  const payload: Prisma.InputJsonObject = {
+    schemaVersion: 1,
+    artifactKind: "agent1_target_outcome",
+    sourceId: input.result.sourceId,
+    categoryId: input.result.categoryId || null,
+    sourceUrl,
+    passed,
+    handedToAgent2,
+    candidates: input.result.candidates.length,
+    inserted: input.persisted.inserted,
+    skipped: input.persisted.skipped,
+    failed: input.persisted.failed + input.result.failed,
+    enriched,
+    feedUrl: input.result.feedUrl || null,
+    feedFormat: input.result.feedFormat || null,
+    failureReason,
+    skipSummary: serializeSkipSummary(input.result.skipSummary),
+    capturedAt: new Date().toISOString(),
+  };
+
+  return prisma.pipelineArtifact.create({
+    data: {
+      pipelineRunId: input.pipelineRunId,
+      sourceId: input.result.sourceId,
+      categoryId: input.result.categoryId || null,
+      artifactType: "agent1_target_outcome",
+      status: passed ? "PASS" : handedToAgent2 ? "HANDOFF_TO_AGENT2" : "FAILED",
+      candidateCount: input.result.candidates.length,
+      payload,
+      errorLog: failureReason,
+    },
+  });
+}
+
 export async function persistHardCaseDiscoveryArtifacts(input: {
   pipelineRunId: string;
   result: IngestResult;

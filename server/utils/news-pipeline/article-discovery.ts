@@ -25,6 +25,7 @@ import {
   type ArticleDiscoverySourceKind,
   type JsonLdArticle,
 } from "./article-discovery-helpers";
+import { Prisma } from "@prisma/client";
 import type { IngestCandidate, IngestRejectedItem, IngestSkipSummary, PipelineResult } from "./types";
 
 // DISCOVERY_FRESHNESS_MS re-exported from article-discovery-helpers for backward compat
@@ -43,6 +44,12 @@ export type ArticleDiscoveryTarget = {
   consecutiveNonProductiveRuns: number;
   mediaName: string;
 };
+
+const agent2TargetKey = (input: {
+  sourceId: string | null | undefined;
+  categoryId?: string | null;
+  targetUrl?: string | null;
+}) => `${input.sourceId || ""}|${input.categoryId || ""}|${input.targetUrl || ""}`;
 
 export type ArticleDiscoveryResult = {
   targetType: "source" | "category";
@@ -1211,18 +1218,174 @@ async function resolveStaleHeadlessMarkers(input: {
   }
 }
 
+export type Agent2BatchStoppedReason =
+  | "completed"
+  | "max_targets"
+  | "time_budget"
+  | "no_targets";
+
+export type Agent2BatchResult = {
+  /** PipelineRun ID, or null when no targets exist. */
+  pipelineRunId: string | null;
+  targets: ArticleDiscoveryTarget[];
+  result: PipelineResult;
+  /** Why the batch stopped. */
+  stoppedReason: Agent2BatchStoppedReason;
+  /** Number of targets actually processed in this run. */
+  processed: number;
+  /** Number of targets deferred due to budget/limit constraints. */
+  deferred: number;
+  /** Number of targets remaining in the active bounded batch cycle. */
+  remainingEligible: number;
+};
+
+const readPayloadRecord = (payload: Prisma.JsonValue | null): Record<string, unknown> | null =>
+  payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null;
+
+async function getLatestDeferredTargetPriority(input?: {
+  sourceIds?: string[];
+  categoryIds?: string[];
+}): Promise<string[]> {
+  const latestRun = await prisma.pipelineRun.findFirst({
+    where: {
+      status: { in: ["COMPLETED", "COMPLETED_WITH_ERRORS"] },
+      artifacts: {
+        some: {
+          artifactType: { in: ["article_discovery_candidates", "article_discovery_deferred"] },
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+
+  if (!latestRun) return [];
+
+  const sourceFilter = input?.sourceIds && input.sourceIds.length > 0
+    ? { in: input.sourceIds }
+    : undefined;
+  const categoryFilter = input?.categoryIds && input.categoryIds.length > 0
+    ? { in: input.categoryIds }
+    : undefined;
+
+  const deferredArtifacts = await prisma.pipelineArtifact.findMany({
+    where: {
+      pipelineRunId: latestRun.id,
+      artifactType: "article_discovery_deferred",
+      status: { in: ["DEFERRED_MAX_TARGETS", "DEFERRED_TIME_BUDGET"] },
+      ...(sourceFilter ? { sourceId: sourceFilter } : {}),
+      ...(categoryFilter ? { categoryId: categoryFilter } : {}),
+    },
+    select: {
+      sourceId: true,
+      categoryId: true,
+      payload: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+
+  return deferredArtifacts
+    .map((artifact) => {
+      const payload = readPayloadRecord(artifact.payload);
+      if (!payload) return null;
+      const targetUrl = typeof payload.targetUrl === "string" ? payload.targetUrl : null;
+      const position = typeof payload.position === "number" && Number.isFinite(payload.position)
+        ? payload.position
+        : Number.MAX_SAFE_INTEGER;
+      return {
+        key: agent2TargetKey({
+          sourceId: artifact.sourceId,
+          categoryId: artifact.categoryId,
+          targetUrl,
+        }),
+        position,
+      };
+    })
+    .filter((entry): entry is { key: string; position: number } => Boolean(entry))
+    .sort((a, b) => a.position - b.position)
+    .map((entry) => entry.key);
+}
+
+async function prioritizeDeferredTargets(
+  targets: ArticleDiscoveryTarget[],
+  input?: { sourceIds?: string[]; categoryIds?: string[] }
+): Promise<ArticleDiscoveryTarget[]> {
+  let deferredPriority: string[] = [];
+  try {
+    deferredPriority = await getLatestDeferredTargetPriority(input);
+  } catch {
+    return targets;
+  }
+  if (deferredPriority.length === 0) return targets;
+
+  const priorityByKey = new Map(deferredPriority.map((key, index) => [key, index]));
+  return targets
+    .filter((target) => priorityByKey.has(agent2TargetKey(target)))
+    .sort((a, b) => {
+      const aPriority = priorityByKey.get(agent2TargetKey(a)) ?? Number.MAX_SAFE_INTEGER;
+      const bPriority = priorityByKey.get(agent2TargetKey(b)) ?? Number.MAX_SAFE_INTEGER;
+      return aPriority - bPriority;
+    });
+}
+
 export async function runArticleDiscoveryBatch(input?: {
   sourceIds?: string[];
   categoryIds?: string[];
-}) {
+  /**
+   * Maximum number of targets to process in this batch.
+   * Default: 5. Set higher for dedicated Agent 2 cron slots.
+   */
+  maxTargets?: number;
+  /**
+   * Soft time budget in milliseconds. When elapsed time exceeds
+   * (timeBudgetMs - minRemainingMs), the batch stops cleanly before
+   * starting a new target.
+   * Default: 240000 (4 minutes).
+   */
+  timeBudgetMs?: number;
+  /**
+   * Minimum remaining time before the batch stops early.
+   * The batch will not start a new target if remaining < minRemainingMs.
+   * Default: 30000 (30 seconds).
+   */
+  minRemainingMs?: number;
+}): Promise<Agent2BatchResult> {
+  const maxTargets = input?.maxTargets ?? 5;
+  const timeBudgetMs = input?.timeBudgetMs ?? 240_000;
+  const minRemainingMs = input?.minRemainingMs ?? 30_000;
+
   const startedAt = Date.now();
-  const { targets } = await resolveAgent2Targets(input);
-  const pipelineRun = await createPipelineRun(targets.length);
+  const { targets: resolvedTargets } = await resolveAgent2Targets(input);
+  const targets = await prioritizeDeferredTargets(resolvedTargets, input);
+
+  if (targets.length === 0) {
+    await logAgentScan({
+      status: "A2_BATCH_STOPPED",
+      executionTimeMs: Date.now() - startedAt,
+      errorLog: `stoppedReason=no_targets, eligible=0, elapsed=${Date.now() - startedAt}ms`,
+    });
+    // No PipelineRun created when there are zero targets.
+    return {
+      pipelineRunId: null,
+      targets,
+      result: { sourcesScanned: 0, candidatesFound: 0, inserted: 0, skipped: 0, failed: 0, artifactCount: 0 },
+      stoppedReason: "no_targets",
+      processed: 0,
+      deferred: 0,
+      remainingEligible: 0,
+    } as Agent2BatchResult;
+  }
+
+  const pipelineRun = await createPipelineRun(Math.min(targets.length, maxTargets));
 
   await logAgentScan({
     status: "ARTICLE_DISCOVERY_BATCH_STARTED",
     executionTimeMs: 0,
-    errorLog: `Agent 2 discovery started for ${targets.length} target(s). runId=${pipelineRun.id}.`,
+    errorLog: `Agent 2 discovery started for ${targets.length} target(s). runId=${pipelineRun.id}. maxTargets=${maxTargets}, timeBudgetMs=${timeBudgetMs}, minRemainingMs=${minRemainingMs}.`,
   });
 
   let candidatesFound = 0;
@@ -1230,8 +1393,25 @@ export async function runArticleDiscoveryBatch(input?: {
   let skipped = 0;
   let failed = 0;
   let artifactCount = 0;
+  let processed = 0;
+  let stoppedReason: Agent2BatchStoppedReason = "completed";
 
-  for (const target of targets) {
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i]!;
+
+    // ── Budget guard: check before starting each target ──
+    if (processed >= maxTargets) {
+      stoppedReason = "max_targets";
+      break;
+    }
+
+    const elapsed = Date.now() - startedAt;
+    const remaining = timeBudgetMs - elapsed;
+    if (remaining < minRemainingMs) {
+      stoppedReason = "time_budget";
+      break;
+    }
+
     try {
       const result = await discoverArticlesFromTarget(target);
       candidatesFound += result.candidates.length;
@@ -1273,8 +1453,10 @@ export async function runArticleDiscoveryBatch(input?: {
       inserted += persisted.inserted;
       skipped += persisted.skipped;
       failed += persisted.failed + result.failed;
+      processed += 1;
     } catch (error: any) {
       failed += 1;
+      processed += 1;
       await logAgentScan({
         sourceId: target.sourceId,
         categoryId: target.categoryId || undefined,
@@ -1285,8 +1467,55 @@ export async function runArticleDiscoveryBatch(input?: {
     }
   }
 
+  // ── Deferred targets: create audit artifacts for unprocessed targets ──
+  const deferredTargets = targets.slice(processed);
+  const deferredCount = deferredTargets.length;
+  const elapsedMs = Date.now() - startedAt;
+
+  if (deferredCount > 0) {
+    const deferredStatus = stoppedReason === "max_targets"
+      ? "DEFERRED_MAX_TARGETS"
+      : "DEFERRED_TIME_BUDGET";
+
+    await prisma.pipelineArtifact.createMany({
+      data: deferredTargets.map((target, position) => ({
+        pipelineRunId: pipelineRun.id,
+        sourceId: target.sourceId,
+        categoryId: target.categoryId || null,
+        artifactType: "article_discovery_deferred",
+        status: deferredStatus,
+        candidateCount: 0,
+        payload: {
+          schemaVersion: 1,
+          artifactKind: "agent2_deferred_target",
+          sourceId: target.sourceId,
+          categoryId: target.categoryId || null,
+          targetType: target.targetType,
+          targetUrl: target.targetUrl,
+          reason: stoppedReason,
+          runId: pipelineRun.id,
+          deferredAt: new Date().toISOString(),
+          elapsedMs,
+          timeBudgetMs,
+          minRemainingMs,
+          maxTargets,
+          position,
+          totalTargetsResolved: targets.length,
+        } satisfies Prisma.InputJsonValue,
+        errorLog: `Deferred target ${target.targetUrl}. reason=${stoppedReason}, position=${position + 1}/${deferredCount}.`,
+      })),
+    });
+    artifactCount += deferredCount;
+
+    await logAgentScan({
+      status: "A2_TARGETS_DEFERRED",
+      executionTimeMs: elapsedMs,
+      errorLog: `deferred=${deferredCount}, reason=${stoppedReason}, processed=${processed}, total=${targets.length}, elapsed=${elapsedMs}ms.`,
+    });
+  }
+
   const result: PipelineResult = {
-    sourcesScanned: targets.length,
+    sourcesScanned: processed,
     candidatesFound,
     inserted,
     skipped,
@@ -1299,15 +1528,160 @@ export async function runArticleDiscoveryBatch(input?: {
     result,
   });
 
+  // User-facing remaining count tracks the active bounded batch cycle.
+  // totalEligibleNow in getAgent2Progress still exposes global eligibility.
+  const remainingEligible = deferredCount;
+
   await logAgentScan({
-    status: "ARTICLE_DISCOVERY_BATCH_FINISHED",
-    executionTimeMs: Date.now() - startedAt,
-    errorLog: `Agent 2 discovery finished. runId=${pipelineRun.id}, targets=${targets.length}, candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}, artifacts=${artifactCount}.`,
+    status: stoppedReason === "completed"
+      ? "ARTICLE_DISCOVERY_BATCH_FINISHED"
+      : "A2_BATCH_STOPPED",
+    executionTimeMs: elapsedMs,
+    errorLog: `Agent 2 discovery ${stoppedReason === "completed" ? "finished" : "stopped"}. runId=${pipelineRun.id}, ` +
+      `targets=${targets.length}, processed=${processed}, deferred=${deferredCount}, ` +
+      `candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}, ` +
+      `stoppedReason=${stoppedReason}, remainingEligible=${remainingEligible}, elapsed=${elapsedMs}ms.`,
   });
 
   return {
     pipelineRunId: pipelineRun.id,
     targets,
     result,
+    stoppedReason,
+    processed,
+    deferred: deferredCount,
+    remainingEligible,
+  };
+}
+
+/**
+ * Get compact Agent 2 progress state for admin UI.
+ * Queries the latest A2 PipelineRun and recent deferred artifacts.
+ */
+export async function getAgent2Progress(): Promise<{
+  totalEligibleNow: number;
+  latestRunId: string | null;
+  latestRunStartedAt: string | null;
+  latestRunFinishedAt: string | null;
+  lastDurationMs: number | null;
+  processedLastRun: number;
+  deferredLastRun: number;
+  remainingEligible: number;
+  stoppedReason: string | null;
+  recentDeferredTargets: Array<{
+    sourceId: string | null;
+    categoryId: string | null;
+    targetUrl: string;
+    reason: string;
+    position: number;
+    totalTargetsResolved: number;
+  }>;
+}> {
+  // Get current eligible count
+  const { targets: currentTargets } = await resolveAgent2Targets();
+
+  // Get latest Agent 2 PipelineRun
+  const latestRun = await prisma.pipelineRun.findFirst({
+    where: {
+      status: { in: ["COMPLETED", "COMPLETED_WITH_ERRORS"] },
+      artifacts: {
+        some: {
+          artifactType: { in: ["article_discovery_candidates", "article_discovery_deferred"] },
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      startedAt: true,
+      finishedAt: true,
+      targetCount: true,
+      candidatesFound: true,
+      inserted: true,
+      skipped: true,
+      failed: true,
+      artifactCount: true,
+    },
+  });
+
+  // Get recent deferred artifacts from the latest run
+  let recentDeferredTargets: Array<{
+    sourceId: string | null;
+    categoryId: string | null;
+    targetUrl: string;
+    reason: string;
+    position: number;
+    totalTargetsResolved: number;
+  }> = [];
+
+  let processedLastRun = 0;
+  let deferredLastRun = 0;
+  let stoppedReason: string | null = null;
+
+  if (latestRun) {
+    const deferredArtifacts = await prisma.pipelineArtifact.findMany({
+      where: {
+        pipelineRunId: latestRun.id,
+        artifactType: "article_discovery_deferred",
+      },
+      take: 10,
+      select: {
+        sourceId: true,
+        categoryId: true,
+        payload: true,
+      },
+    });
+
+    deferredLastRun = await prisma.pipelineArtifact.count({
+      where: {
+        pipelineRunId: latestRun.id,
+        artifactType: "article_discovery_deferred",
+      },
+    });
+
+    // Count non-deferred discovery artifacts for this run to get actual processed count.
+    // latestRun.targetCount may be bounded (min(targets, maxTargets)), so we count
+    // actual discovery artifacts rather than relying on targetCount - deferred.
+    const discoveryArtifactCount = await prisma.pipelineArtifact.count({
+      where: {
+        pipelineRunId: latestRun.id,
+        artifactType: { in: ["article_discovery_candidates", "article_discovery_headless_required"] },
+      },
+    });
+    processedLastRun = discoveryArtifactCount;
+
+    if (deferredLastRun > 0 && deferredArtifacts.length > 0) {
+      const firstPayload = deferredArtifacts[0]!.payload as Record<string, unknown> | null;
+      stoppedReason = typeof firstPayload?.reason === "string" ? firstPayload.reason : null;
+    }
+
+    recentDeferredTargets = deferredArtifacts.map((a) => {
+      const payload = a.payload as Record<string, unknown> | null;
+      return {
+        sourceId: a.sourceId,
+        categoryId: a.categoryId,
+        targetUrl: typeof payload?.targetUrl === "string" ? payload.targetUrl : "",
+        reason: typeof payload?.reason === "string" ? payload.reason : "unknown",
+        position: typeof payload?.position === "number" ? payload.position : 0,
+        totalTargetsResolved: typeof payload?.totalTargetsResolved === "number" ? payload.totalTargetsResolved : 0,
+      };
+    });
+  }
+
+  const lastDurationMs = latestRun?.finishedAt && latestRun?.startedAt
+    ? new Date(latestRun.finishedAt).getTime() - new Date(latestRun.startedAt).getTime()
+    : null;
+
+  return {
+    totalEligibleNow: currentTargets.length,
+    latestRunId: latestRun?.id ?? null,
+    latestRunStartedAt: latestRun?.startedAt?.toISOString() ?? null,
+    latestRunFinishedAt: latestRun?.finishedAt?.toISOString() ?? null,
+    lastDurationMs,
+    processedLastRun,
+    deferredLastRun,
+    remainingEligible: deferredLastRun,
+    stoppedReason,
+    recentDeferredTargets,
   };
 }

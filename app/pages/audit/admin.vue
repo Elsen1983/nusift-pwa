@@ -47,6 +47,69 @@
         v-else
         class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4 space-y-5"
       >
+        <div v-if="showFullDevTools">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Agent logs
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Recent backend pipeline activity.
+              </p>
+              <p class="mt-1 text-[11px] text-on-surface-variant">
+                {{ agentSourceCount }} subscribed source(s) currently eligible for pipeline runs.
+              </p>
+              <p v-if="rssReimportProgressText" class="mt-1 text-[11px] font-medium text-sky-200">
+                {{ rssReimportProgressText }}
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                @click="loadAgentLogs"
+                class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface"
+              >
+                Refresh logs
+              </button>
+              <button
+                v-if="canRunDestructiveActions"
+                @click="clearAgentLogs"
+                :disabled="isClearingLogs"
+                class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {{ isClearingLogs ? "Clearing..." : "Clear pipeline" }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="agentLogs.length === 0" class="mt-3 text-xs text-on-surface-variant">
+            No agent logs yet.
+          </div>
+
+          <div v-else class="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+            <div
+              v-for="log in agentLogs"
+              :key="log.id"
+              class="rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-2"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-xs font-bold text-on-surface">{{ log.displayStatus || log.status }}</span>
+                    <span v-if="log.sourceId" class="text-[10px] text-on-surface-variant">source: {{ log.sourceId }}</span>
+                  </div>
+                  <p class="mt-1 line-clamp-2 text-xs text-on-surface-variant">
+                    {{ log.errorLog || "No details." }}
+                  </p>
+                </div>
+                <div class="shrink-0 text-right text-[10px] text-on-surface-variant">
+                  <div>{{ formatLogTime(log.createdAt) }}</div>
+                  <div>{{ log.executionTimeMs }}ms</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="flex flex-col gap-3 rounded-xl border border-outline-variant/20 bg-surface-container px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
@@ -66,6 +129,22 @@
           <div class="flex flex-wrap items-center gap-2">
             <button
               v-if="canRunManualPipeline"
+              @click="runManualPipeline"
+              :disabled="isPipelineRunning || !canRunManualPipeline"
+              class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ isPipelineRunning ? "Running..." : "Run Agent 1" }}
+            </button>
+            <button
+              v-if="canRunArticleDiscovery"
+              @click="runArticleDiscovery"
+              :disabled="isArticleDiscoveryRunning || (agent2Progress != null && agent2Progress.totalEligibleNow === 0)"
+              class="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm font-bold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ isArticleDiscoveryRunning ? "Discovering..." : "Run Agent 2 batch" }}
+            </button>
+            <button
+              v-if="canRunManualPipeline"
               @click="runHardCaseQueue"
               :disabled="isHardCaseQueueRunning"
               class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-2 text-sm font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -80,22 +159,147 @@
             >
               {{ isEnrichingExistingArticles ? "Enriching..." : "Enrich existing articles" }}
             </button>
+          </div>
+        </div>
+
+        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Agent 1 RSS ingest summary
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Latest Agent 1 run outcome and reviewed source/category results.
+              </p>
+            </div>
             <button
-              v-if="canRunArticleDiscovery"
-              @click="runArticleDiscovery"
-              :disabled="isArticleDiscoveryRunning"
-              class="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm font-bold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              @click="loadAgent1RunSummary"
+              class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface"
             >
-              {{ isArticleDiscoveryRunning ? "Discovering..." : "Run article discovery" }}
+              Refresh
             </button>
+          </div>
+
+          <div v-if="agent1Summary.latestRun" class="mt-3 rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span
+                class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                :class="agent1Summary.latestRun.failed > 0 ? 'bg-amber-500/15 text-amber-200' : 'bg-emerald-500/15 text-emerald-200'"
+              >
+                {{ agent1Summary.latestRun.failed > 0 ? "completed with failures" : "completed" }}
+              </span>
+              <span class="text-[10px] text-on-surface-variant">{{ formatLogTime(agent1Summary.latestRun.createdAt) }}</span>
+              <span v-if="agent1Summary.latestRun.durationMs != null" class="text-[10px] text-on-surface-variant">
+                duration: {{ Math.round(agent1Summary.latestRun.durationMs / 1000) }}s
+              </span>
+            </div>
+            <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-on-surface-variant">
+              <span>targets: <strong>{{ agent1Summary.latestRun.targets }}</strong></span>
+              <span>candidates: <strong>{{ agent1Summary.latestRun.candidates }}</strong></span>
+              <span>inserted: <strong class="text-emerald-300">{{ agent1Summary.latestRun.inserted }}</strong></span>
+              <span>skipped: <strong>{{ agent1Summary.latestRun.skipped }}</strong></span>
+              <span>failed: <strong :class="agent1Summary.latestRun.failed > 0 ? 'text-rose-300' : 'text-emerald-300'">{{ agent1Summary.latestRun.failed }}</strong></span>
+              <span>artifacts: <strong>{{ agent1Summary.latestRun.artifacts }}</strong></span>
+            </div>
+          </div>
+          <p v-else class="mt-3 text-xs text-on-surface-variant">
+            No recent Agent 1 pipeline finish log found.
+          </p>
+
+          <div v-if="agent1Summary.recentSourceOutcomes.length > 0" class="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+            <div
+              v-for="item in agent1Summary.recentSourceOutcomes"
+              :key="`${item.status}-${item.sourceId || item.createdAt}`"
+              class="rounded-xl border px-3 py-2"
+              :class="item.passed ? 'border-emerald-500/10 bg-emerald-500/5' : 'border-rose-500/10 bg-rose-500/5'"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span
+                      class="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+                      :class="item.passed ? 'bg-emerald-500/15 text-emerald-200' : 'bg-rose-500/15 text-rose-200'"
+                    >
+                      {{ item.passed ? "pass" : "failed" }}
+                    </span>
+                    <span class="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">{{ item.targetType }}</span>
+                    <span v-if="item.sourceId" class="text-[10px] text-on-surface-variant">src: {{ item.sourceId.slice(0, 8) }}...</span>
+                    <span class="text-[10px] text-on-surface-variant">{{ formatLogTime(item.createdAt) }}</span>
+                  </div>
+                  <div class="mt-1 space-y-0.5 text-[11px] text-on-surface">
+                    <p class="truncate">
+                      <span class="font-semibold text-on-surface-variant">Source Url:</span>
+                      {{ item.sourceUrl || item.sourceId || "unknown target" }}
+                    </p>
+                    <p v-if="item.passed && item.feedUrl" class="truncate">
+                      <span class="font-semibold text-on-surface-variant">RSS Url:</span>
+                      {{ item.feedUrl }}
+                    </p>
+                  </div>
+                  <div v-if="item.passed" class="mt-1 flex flex-wrap gap-2 text-[10px] text-on-surface-variant">
+                    <span>loaded articles: <strong class="text-emerald-300">{{ item.inserted }}</strong></span>
+                    <span>candidates: <strong>{{ item.candidates }}</strong></span>
+                    <span>skipped: <strong>{{ item.skipped }}</strong></span>
+                  </div>
+                  <p v-else class="mt-1 line-clamp-2 text-[10px] text-rose-100/80">
+                    {{ item.failureReason }}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p v-else class="mt-3 text-xs text-on-surface-variant">
+            No source-level Agent 1 outcomes found in recent logs.
+          </p>
+        </div>
+
+        <!-- Agent 2 progress panel (page-load state) -->
+        <div
+          v-if="showFullDevTools && (agent2Progress != null || agent2ProgressLoading)"
+          class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Agent 2 Progress
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Current Agent 2 eligibility and latest batch run state.
+              </p>
+            </div>
             <button
-              v-if="canRunManualPipeline"
-              @click="runManualPipeline"
-              :disabled="isPipelineRunning || !canRunManualPipeline"
-              class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              @click="loadAgent2Progress"
+              class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface"
             >
-              {{ isPipelineRunning ? "Running..." : "Run A1 -> A2 pipeline" }}
+              {{ agent2ProgressLoading ? 'Loading...' : 'Refresh' }}
             </button>
+          </div>
+          <div v-if="agent2Progress" class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px] text-on-surface-variant">
+            <span>Eligible now: <strong class="text-cyan-200">{{ agent2Progress.totalEligibleNow }}</strong></span>
+            <span v-if="agent2Progress.processedLastRun > 0">Last run processed: <strong>{{ agent2Progress.processedLastRun }}</strong></span>
+            <span v-if="agent2Progress.deferredLastRun > 0">Deferred: <strong class="text-amber-200">{{ agent2Progress.deferredLastRun }}</strong></span>
+            <span>Remaining: <strong :class="agent2Progress.remainingEligible > 0 ? 'text-cyan-200' : 'text-emerald-300'">{{ agent2Progress.remainingEligible }}</strong></span>
+            <span v-if="agent2Progress.stoppedReason" class="font-medium text-amber-200">stopped: {{ agent2Progress.stoppedReason }}</span>
+            <span v-if="agent2Progress.lastDurationMs != null">Duration: <strong>{{ Math.round(agent2Progress.lastDurationMs / 1000) }}s</strong></span>
+          </div>
+          <p v-if="agent2Progress && agent2Progress.totalEligibleNow === 0" class="mt-2 text-xs text-emerald-300">
+            No Agent 2 targets currently eligible.
+          </p>
+          <p v-else-if="agent2Progress && agent2Progress.remainingEligible > 0 && agent2Progress.stoppedReason" class="mt-2 text-xs text-amber-200">
+            More eligible targets remain. Run Agent 2 again or wait for the next scheduled batch.
+          </p>
+          <div v-if="agent2Progress && agent2Progress.recentDeferredTargets.length > 0" class="mt-3">
+            <p class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant/70">
+              Recent deferred targets ({{ agent2Progress.recentDeferredTargets.length }})
+            </p>
+            <div
+              v-for="(dt, di) in agent2Progress.recentDeferredTargets.slice(0, 5)"
+              :key="di"
+              class="mt-1 flex flex-wrap gap-2 text-[10px] text-on-surface-variant"
+            >
+              <span class="truncate max-w-[200px]">{{ dt.targetUrl }}</span>
+              <span class="text-amber-200">{{ dt.reason }}</span>
+            </div>
           </div>
         </div>
 
@@ -586,68 +790,6 @@
           </div>
         </div>
 
-        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <h3 class="font-headline text-sm font-bold text-on-surface">
-                Agent logs
-              </h3>
-              <p class="mt-1 text-xs text-on-surface-variant">
-                Recent backend pipeline activity.
-              </p>
-              <p class="mt-1 text-[11px] text-on-surface-variant">
-                {{ agentSourceCount }} subscribed source(s) currently eligible for pipeline runs.
-              </p>
-              <p v-if="rssReimportProgressText" class="mt-1 text-[11px] font-medium text-sky-200">
-                {{ rssReimportProgressText }}
-              </p>
-            </div>
-            <div class="flex items-center gap-2">
-              <button
-                @click="loadAgentLogs"
-                class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface"
-              >
-                Refresh logs
-              </button>
-              <button
-                v-if="canRunDestructiveActions"
-                @click="clearAgentLogs"
-                :disabled="isClearingLogs"
-                class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {{ isClearingLogs ? "Clearing..." : "Clear pipeline" }}
-              </button>
-            </div>
-          </div>
-
-          <div v-if="agentLogs.length === 0" class="mt-3 text-xs text-on-surface-variant">
-            No agent logs yet.
-          </div>
-
-          <div v-else class="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
-            <div
-              v-for="log in agentLogs"
-              :key="log.id"
-              class="rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-2"
-            >
-              <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <span class="text-xs font-bold text-on-surface">{{ log.displayStatus || log.status }}</span>
-                    <span v-if="log.sourceId" class="text-[10px] text-on-surface-variant">source: {{ log.sourceId }}</span>
-                  </div>
-                  <p class="mt-1 line-clamp-2 text-xs text-on-surface-variant">
-                    {{ log.errorLog || "No details." }}
-                  </p>
-                </div>
-                <div class="shrink-0 text-right text-[10px] text-on-surface-variant">
-                  <div>{{ formatLogTime(log.createdAt) }}</div>
-                  <div>{{ log.executionTimeMs }}ms</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </section>
     </main>
   </div>
@@ -796,6 +938,60 @@ const headlessQueueSummary = ref<{ total: number; byStatus: Record<string, numbe
 const headlessBrowserEnvDisabled = ref(false);
 const agentLogs = ref<Array<{ id: string; status: string; displayStatus?: string; agentPrefix?: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
 const agentSourceCount = ref(0);
+const agent1RunSummary = ref<{
+  run: {
+    id: string;
+    startedAt: string;
+    finishedAt: string | null;
+    targetCount: number;
+    candidatesFound: number;
+    inserted: number;
+    skipped: number;
+    failed: number;
+    artifactCount: number;
+  } | null;
+  items: Array<{
+    id: string;
+    createdAt: string;
+    sourceId: string | null;
+    categoryId: string | null;
+    status: string;
+    passed: boolean;
+    handedToAgent2: boolean;
+    sourceUrl: string | null;
+    candidates: number;
+    inserted: number;
+    skipped: number;
+    failed: number;
+    enriched: number;
+    feedUrl: string | null;
+    feedFormat: string | null;
+    failureReason: string | null;
+  }>;
+}>({ run: null, items: [] });
+
+type Agent2Progress = {
+  totalEligibleNow: number;
+  latestRunId: string | null;
+  latestRunStartedAt: string | null;
+  latestRunFinishedAt: string | null;
+  lastDurationMs: number | null;
+  processedLastRun: number;
+  deferredLastRun: number;
+  remainingEligible: number;
+  stoppedReason: string | null;
+  recentDeferredTargets: Array<{
+    sourceId: string | null;
+    categoryId: string | null;
+    targetUrl: string;
+    reason: string;
+    position: number;
+    totalTargetsResolved: number;
+  }>;
+};
+
+const agent2Progress = ref<Agent2Progress | null>(null);
+const agent2ProgressLoading = ref(false);
 
 const toastClass = computed(() =>
   toast.value.type === "success"
@@ -812,6 +1008,31 @@ const DEV_PANEL_POLL_MS = 10000;
 
 const formatLogTime = (value: string) =>
   new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+const agent1Summary = computed(() => {
+  const run = agent1RunSummary.value.run;
+
+  return {
+    latestRun: run
+      ? {
+          createdAt: run.finishedAt || run.startedAt,
+          durationMs: run.finishedAt ? new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime() : null,
+          targets: run.targetCount,
+          candidates: run.candidatesFound,
+          inserted: run.inserted,
+          skipped: run.skipped,
+          failed: run.failed,
+          artifacts: run.artifactCount,
+        }
+      : null,
+    recentSourceOutcomes: agent1RunSummary.value.items.map((item) => ({
+      ...item,
+      targetType: item.categoryId ? "category" : "source",
+      failedDisplay: item.handedToAgent2 ? "handoff" : "failed",
+      failureReason: item.failureReason || "Agent 1 did not load articles for this target.",
+    })),
+  };
+});
 
 const showToast = (message: string, type: "success" | "error" = "success", timeout = 5000) => {
   toast.value = { show: true, message, type };
@@ -914,6 +1135,15 @@ const loadAgentLogs = async () => {
   agentLogs.value = response.logs || [];
 };
 
+const loadAgent1RunSummary = async () => {
+  if (!showFullDevTools.value) return;
+  const response = await $api<{ ok: boolean; run: typeof agent1RunSummary.value.run; items: typeof agent1RunSummary.value.items }>("/api/dev/agent1-run-summary");
+  agent1RunSummary.value = {
+    run: response.run || null,
+    items: response.items || [],
+  };
+};
+
 const loadEligibleSourceCount = async () => {
   if (!showFullDevTools.value) return;
   const response = await $api<{ ok: boolean; count: number }>("/api/dev/agent-source-count");
@@ -924,6 +1154,19 @@ const loadDiscoveryQuality = async () => {
   if (!showFullDevTools.value) return;
   const response = await $api<{ ok: boolean; items: typeof discoveryQualityItems.value }>("/api/dev/article-discovery-quality");
   discoveryQualityItems.value = response.items || [];
+};
+
+const loadAgent2Progress = async () => {
+  if (!showFullDevTools.value) return;
+  agent2ProgressLoading.value = true;
+  try {
+    const response = await $api<{ ok: boolean; progress: Agent2Progress }>("/api/dev/agent2-progress");
+    agent2Progress.value = response.progress || null;
+  } catch {
+    agent2Progress.value = null;
+  } finally {
+    agent2ProgressLoading.value = false;
+  }
 };
 
 const loadHeadlessQueue = async () => {
@@ -971,10 +1214,12 @@ const refreshDevPanel = async () => {
   try {
     await Promise.all([
       loadAgentLogs(),
+      loadAgent1RunSummary(),
       loadEligibleSourceCount(),
       loadDiscoveryQuality(),
       loadHeadlessQueue(),
       loadHardSources(),
+      loadAgent2Progress(),
     ]);
   } catch (error) {
     console.error("Failed to refresh admin panel:", error);
@@ -1022,13 +1267,29 @@ const runArticleDiscovery = async () => {
   try {
     const response = await $api<{
       ok: boolean;
-      targets?: number;
-      sourcesScanned?: number;
+      agent?: string;
+      targetsResolved?: number;
+      processed?: number;
+      deferred?: number;
+      remainingEligible?: number;
+      stoppedReason?: string;
       inserted?: number;
       skipped?: number;
       failed?: number;
+      candidates?: number;
     }>("/api/dev/run-article-discovery", { method: "POST" });
-    showToast(`Article discovery finished: ${response.inserted ?? 0} inserted, ${response.skipped ?? 0} skipped, ${response.failed ?? 0} failed from ${response.sourcesScanned ?? response.targets ?? 0} target(s).`);
+    const processed = response.processed ?? response.targetsResolved ?? 0;
+    const deferred = response.deferred ?? 0;
+    const remaining = response.remainingEligible ?? 0;
+    const stoppedReason = response.stoppedReason ?? "completed";
+    let msg = `Agent 2 batch: ${processed} processed, ${response.inserted ?? 0} inserted, ${response.skipped ?? 0} skipped, ${response.failed ?? 0} failed.`;
+    if (stoppedReason !== "completed") {
+      msg += ` Stopped: ${stoppedReason}.`;
+    }
+    if (deferred > 0 || remaining > 0) {
+      msg += ` ${deferred} deferred, ${remaining} remaining — run Agent 2 again or wait for next cron.`;
+    }
+    showToast(msg);
     await feedStore.fetchFeed({ force: true });
   } catch (error: any) {
     showToast(error?.statusMessage || error?.message || "Article discovery failed.", "error");

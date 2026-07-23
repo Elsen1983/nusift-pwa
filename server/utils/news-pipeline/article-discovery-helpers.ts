@@ -848,15 +848,24 @@ export function extractDateFromHtml(html: string, pageUrl?: string): DateExtract
 export function extractDateFromUrl(url: string): string | null {
   try {
     const pathname = new URL(url).pathname;
+    const buildValidDate = (year: string, month: string, day: string) => {
+      const y = Number(year);
+      const m = Number(month);
+      const d = Number(day);
+      if (y < 1900 || y > 2099 || m < 1 || m > 12 || d < 1 || d > 31) return null;
+      return `${year}-${month}-${day}`;
+    };
+
     // YYYY/MM/DD pattern
     const ymd = pathname.match(/\/(\d{4})\/(\d{2})\/(\d{2})\b/);
-    if (ymd) return `${ymd[1]}-${ymd[2]}-${ymd[3]}`;
-    // YYYYMMDD in slug
-    const compact = pathname.match(/(\d{4})(\d{2})(\d{2})/);
-    if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+    if (ymd) return buildValidDate(ymd[1]!, ymd[2]!, ymd[3]!);
+    // YYYYMMDD as its own path segment or slug prefix. Reject arbitrary
+    // numeric article IDs such as /news/279204889/... .
+    const compact = pathname.match(/\/((?:19|20)\d{2})(\d{2})(\d{2})(?:\b|[-_/])/);
+    if (compact) return buildValidDate(compact[1]!, compact[2]!, compact[3]!);
     // YYYY/MM pattern
     const ym = pathname.match(/\/(\d{4})\/(\d{2})\b/);
-    if (ym) return `${ym[1]}-${ym[2]}-01`;
+    if (ym) return buildValidDate(ym[1]!, ym[2]!, "01");
     return null;
   } catch {
     return null;
@@ -1081,6 +1090,12 @@ type EvaluateArticleLinkCandidateFromMetadataInput = {
   freshnessMs?: number;
   extraRawSignals?: string[];
   /**
+   * Browser fallback-only escape hatch for rendered listing pages that expose
+   * strong article links and titles but no usable publish date metadata.
+   * Static/RSS discovery must keep strict date freshness behavior.
+   */
+  allowWeakPublishedAt?: boolean;
+  /**
    * Optional canonical URL override extracted from the rendered page
    * (e.g. <link rel="canonical"> or JSON-LD). When provided and valid,
    * this is used instead of normalizeUrl(articleUrl) for candidate identity
@@ -1120,6 +1135,7 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
     html,
     freshnessMs: customFreshnessMs,
     extraRawSignals = [],
+    allowWeakPublishedAt = false,
   } = input;
   const categoryId = input.categoryId || undefined;
 
@@ -1239,8 +1255,18 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
     dateExtraction,
     normalizedPublishedAt,
   );
+  const acceptedWithWeakPublishedAt = Boolean(
+    allowWeakPublishedAt &&
+    !dateExtraction.rawDate &&
+    score.score >= 60,
+  );
+  const effectivePublishedAt = normalizedPublishedAt ?? (acceptedWithWeakPublishedAt ? new Date() : null);
 
-  if (!isWithinFreshnessWindow(normalizedPublishedAt, new Date()) && !acceptedWithListingFutureTolerance) {
+  if (
+    !acceptedWithWeakPublishedAt &&
+    !isWithinFreshnessWindow(normalizedPublishedAt, new Date()) &&
+    !acceptedWithListingFutureTolerance
+  ) {
     const staleAudit = buildStaleAuditMeta(dateExtraction, normalizedPublishedAt, freshnessMs);
     return {
       accepted: false,
@@ -1285,7 +1311,7 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
     rssGuid: null,
     rawTitle,
     title: finalTitle,
-    publishedAt: normalizedPublishedAt,
+    publishedAt: effectivePublishedAt,
     rawBodyText,
     bodyText: bodyText || null,
     contentHash,
@@ -1295,6 +1321,7 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
       "agent2-web-discovery",
       ...extraRawSignals,
       ...(acceptedWithListingFutureTolerance ? ["accepted_with_listing_future_tolerance"] : []),
+      ...(acceptedWithWeakPublishedAt ? ["accepted_with_browser_weak_published_at"] : []),
       sourcePageUrl,
       `score:${score.score}`,
       ...(keywords.length > 0 ? [`keywords:${keywords.slice(0, 5).join(",")}`] : []),
@@ -1322,7 +1349,7 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
     outcome: makeOutcome(articleUrl, sourcePageUrl, "accepted", {
       canonicalUrl,
       title: finalTitle,
-      publishedAt: normalizedPublishedAt?.toISOString(),
+      publishedAt: effectivePublishedAt?.toISOString(),
       score: score.score,
       scoreReasons: [
         ...score.reasons,

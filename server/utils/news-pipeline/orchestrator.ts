@@ -2,6 +2,7 @@ import { prisma } from "../prisma";
 import {
   createPipelineRun,
   finalizePipelineRun,
+  persistAgent1TargetOutcomeArtifact,
   persistHardCaseDiscoveryArtifacts,
   persistPipelineArtifact,
 } from "./artifacts";
@@ -15,9 +16,20 @@ import {
 } from "./targets";
 import type { PipelineResult } from "./types";
 
+export type RunNewsPipelineOptions = {
+  /**
+   * When true, run Agent 2 article discovery batch after Agent 1 completes.
+   * Default: false. Admin/cron endpoints run Agent 1 only by default.
+   * User-facing flows also run A1 only; Agent 2 picks up eligible targets
+   * on the next scheduled batch.
+   */
+  runAgent2Afterwards?: boolean;
+};
+
 export async function runNewsPipeline(
   sourceIds?: string[],
   categoryIds?: string[],
+  options?: RunNewsPipelineOptions,
 ): Promise<PipelineResult> {
   const startedAt = Date.now();
   const hasTargetFilters =
@@ -66,6 +78,12 @@ export async function runNewsPipeline(
       inserted += persisted.inserted;
       skipped += persisted.skipped;
       failed += persisted.failed + result.failed;
+      await persistAgent1TargetOutcomeArtifact({
+        pipelineRunId: pipelineRun.id,
+        result,
+        persisted,
+      });
+      artifactCount += 1;
       await markFeedRunOutcome({
         sourceId: target.sourceId,
         categoryId: target.categoryId || undefined,
@@ -100,22 +118,22 @@ export async function runNewsPipeline(
   });
 
   // ── Agent 2: web discovery for eligible no-RSS / not-productive targets ──
-  // Runs after Agent 1 completes. Failures are isolated so they never
-  // break the Agent 1 pipeline result.
-  // Target-aware: a targeted Agent 1 rerun only triggers Agent 2 for the
-  // same scope, preventing a broad global scan.
-  try {
-    await runArticleDiscoveryBatch(
-      hasTargetFilters ? { sourceIds: sourceIds || [], categoryIds: categoryIds || [] } : undefined,
-    );
-  } catch (error: any) {
-    await logAgentScan({
-      status: "ARTICLE_DISCOVERY_FAILED",
-      executionTimeMs: 0,
-      errorLog: `Agent 2 orchestration skipped: ${error?.message || String(error)}`,
-    }).catch(() => {});
+  // Only runs when explicitly requested via runAgent2Afterwards option.
+  // No user-facing flow currently passes true. Agent 2 picks up eligible
+  // targets on the next scheduled cron batch.
+  if (options?.runAgent2Afterwards) {
+    try {
+      await runArticleDiscoveryBatch(
+        hasTargetFilters ? { sourceIds: sourceIds || [], categoryIds: categoryIds || [] } : undefined,
+      );
+    } catch (error: any) {
+      await logAgentScan({
+        status: "ARTICLE_DISCOVERY_FAILED",
+        executionTimeMs: 0,
+        errorLog: `Agent 2 orchestration skipped: ${error?.message || String(error)}`,
+      }).catch(() => {});
+    }
   }
 
   return result;
 }
-

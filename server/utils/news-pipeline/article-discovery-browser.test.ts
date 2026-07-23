@@ -303,6 +303,97 @@ describe("discoverArticleLinksWithBrowser", () => {
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
 
+  it("falls back to basic raw-link extraction when rich DOM extraction fails", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    mockPageEvaluate
+      .mockResolvedValueOnce(2) // allAnchors count
+      .mockRejectedValueOnce(new Error("rich extraction failed"))
+      .mockResolvedValueOnce([
+        { url: "https://example.com/news/2026/07/20/browser-fallback-story", text: "Browser fallback story", dateText: null },
+        { url: "https://example.com/about", text: "About", dateText: null },
+      ]);
+    mockPageGoto.mockResolvedValue({ ok: () => true, status: () => 200 });
+    mockPageTitle.mockResolvedValue("News Site");
+    mockPageUrl.mockReturnValue("https://example.com/news");
+    mockPageRoute.mockImplementation(async () => {});
+
+    const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
+    const mockCtx = { newPage: mockContextNewPage, close: mockContextClose };
+    const mockPg = {
+      goto: mockPageGoto,
+      evaluate: mockPageEvaluate,
+      title: mockPageTitle,
+      url: mockPageUrl,
+      route: mockPageRoute,
+    };
+    mockContextNewPage.mockResolvedValue(mockPg);
+    mockBrowserNewContext.mockResolvedValue(mockCtx);
+    mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+    const fn = await loadFn();
+    const result = await fn({
+      targetUrl: "https://example.com/news",
+      sourceId: "src-1",
+      targetType: "source",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.rawLinkCount).toBe(2);
+    expect(result.links.length).toBe(1);
+    expect(result.diagnostics.rawExtractionFallbackUsed).toBe(true);
+    expect(result.diagnostics.rawExtractionError).toBe("rich extraction failed");
+    expect(mockPageEvaluate).toHaveBeenCalledTimes(3);
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("falls back to basic raw-link extraction when rich extraction returns empty despite anchors", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    mockPageEvaluate
+      .mockResolvedValueOnce(2) // allAnchors count
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { url: "https://example.com/news/2026/07/20/basic-fallback-story", text: "Basic fallback story", dateText: null },
+      ]);
+    mockPageGoto.mockResolvedValue({ ok: () => true, status: () => 200 });
+    mockPageTitle.mockResolvedValue("News Site");
+    mockPageUrl.mockReturnValue("https://example.com/news");
+    mockPageRoute.mockImplementation(async () => {});
+
+    const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
+    const mockCtx = { newPage: mockContextNewPage, close: mockContextClose };
+    const mockPg = {
+      goto: mockPageGoto,
+      evaluate: mockPageEvaluate,
+      title: mockPageTitle,
+      url: mockPageUrl,
+      route: mockPageRoute,
+    };
+    mockContextNewPage.mockResolvedValue(mockPg);
+    mockBrowserNewContext.mockResolvedValue(mockCtx);
+    mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+    const fn = await loadFn();
+    const result = await fn({
+      targetUrl: "https://example.com/news",
+      sourceId: "src-1",
+      targetType: "source",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.rawLinkCount).toBe(1);
+    expect(result.links.length).toBe(1);
+    expect(result.diagnostics.rawExtractionFallbackUsed).toBe(true);
+    expect(result.diagnostics.rawExtractionError).toBeUndefined();
+    expect(mockPageEvaluate).toHaveBeenCalledTimes(3);
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
   it("produces correct rejection buckets for mixed raw links", async () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
@@ -673,6 +764,52 @@ describe("discoverArticleLinksWithBrowser", () => {
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
 
+  it("rejects pagination variants of the rendered listing page", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    mockPageEvaluate
+      .mockResolvedValueOnce(4)
+      .mockResolvedValueOnce([
+        { url: "https://telex.hu/rovat/eletmod?oldal=1", text: "1", dateText: null },
+        { url: "https://telex.hu/rovat/eletmod?oldal=2", text: "2", dateText: null },
+        { url: "https://telex.hu/rovat/eletmod?oldal=3", text: "3", dateText: null },
+        { url: "https://telex.hu/rovat/eletmod?oldal=94", text: ">>", dateText: null },
+      ]);
+    mockPageGoto.mockResolvedValue({ ok: () => true, status: () => 200 });
+    mockPageTitle.mockResolvedValue("Eletmod");
+    mockPageUrl.mockReturnValue("https://telex.hu/rovat/eletmod");
+    mockPageRoute.mockImplementation(async () => {});
+
+    const mockBrowser = { newContext: mockBrowserNewContext, close: mockBrowserClose };
+    const mockCtx = { newPage: mockContextNewPage, close: mockContextClose };
+    const mockPg = {
+      goto: mockPageGoto,
+      evaluate: mockPageEvaluate,
+      title: mockPageTitle,
+      url: mockPageUrl,
+      route: mockPageRoute,
+    };
+    mockContextNewPage.mockResolvedValue(mockPg);
+    mockBrowserNewContext.mockResolvedValue(mockCtx);
+    mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+    const fn = await loadFn();
+    const result = await fn({
+      targetUrl: "https://telex.hu/rovat/eletmod",
+      sourceId: "src-1",
+      targetType: "category",
+      categoryPathUrl: "https://telex.hu/rovat/eletmod",
+    });
+
+    expect(result.rawLinkCount).toBe(4);
+    expect(result.shortlistedLinkCount).toBe(0);
+    expect(result.links).toEqual([]);
+    expect(result.topRejectionReasons).toEqual([{ reason: "listing_page", count: 4 }]);
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
   it("audits all raw links even after 25 accepted shortlist links are collected", async () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
@@ -906,6 +1043,41 @@ describe("evaluateArticleLinkCandidateWithBrowser", () => {
     expect(candidate.bodyText).toBe("A detailed description of the article.");
     expect(candidate.publishedAt).not.toBeNull();
     expect(mockBrowserClose).toHaveBeenCalled();
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("accepts a strong browser-rendered article with weak publishedAt when date metadata is missing", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    makePlaywrightPage();
+    mockPageEvaluate.mockReset();
+    mockPageEvaluate.mockResolvedValueOnce(
+      makeRawDetailData({
+        jsonLdScripts: [],
+        articlePublishedTime: null,
+        ogPublishedTime: null,
+        pubdate: null,
+        publishdate: null,
+        timeDatetime: null,
+        metaDate: null,
+      }),
+    );
+
+    const fn = await loadFn();
+    const result = await fn({
+      articleUrl: "https://example.com/news/279204889/strong-browser-story-without-date",
+      sourcePageUrl: "browser:https://example.com/news",
+      targetUrl: "https://example.com",
+      sourceId: "src-1",
+    });
+
+    expect(result.accepted).toBe(true);
+    const candidate = result.candidate!;
+    expect(candidate.publishedAt).not.toBeNull();
+    expect(candidate.rawSignals).toContain("accepted_with_browser_weak_published_at");
+    expect(candidate.rawSignals).toContain("agent2-browser-detail-recovery");
 
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
@@ -1628,12 +1800,12 @@ describe("page.evaluate and extractArticleDetailFromDocument equivalence", () =>
     // Verify the standard Playwright contract: page.evaluate(pageFn, singleArg)
     expect(mockPageEvaluate).toHaveBeenCalledTimes(1);
     const evaluateArgs = mockPageEvaluate.mock.calls[0]!;
-    expect(typeof evaluateArgs[0]).toBe("function");
+    expect(typeof evaluateArgs[0]).toBe("string");
     // Second arg must be a plain serializable object, not a function
-    expect(typeof evaluateArgs[1]).toBe("object");
-    expect(evaluateArgs[1]).toEqual({ pageUrl: "https://example.com/news/2026/07/20/equiv-article" });
+    expect(evaluateArgs[0]).toContain("https://example.com/news/2026/07/20/equiv-article");
+    expect(evaluateArgs[0]).not.toContain("__name");
     // No third argument — Playwright only supports one serializable arg
-    expect(evaluateArgs.length).toBe(2);
+    expect(evaluateArgs.length).toBe(1);
 
     // Verify the candidate uses the same data as the pure helper
     expect(result.accepted).toBe(true);

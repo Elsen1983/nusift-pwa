@@ -1,0 +1,44 @@
+# Dependencies (installed fresh in container)
+node_modules/
+
+# Nuxt build artifacts
+.nuxt/
+.output/
+dist/
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile*
+docker-compose*
+
+# Database dumps and backups
+*.dump
+*.sql
+
+# Temporary exports, data artifacts, and XML
+data/
+tmp-*.xml
+*.csv
+
+# VS Code / editor config
+.vscode/
+.codex/
+
+# Documentation (not needed at runtime)
+docs/
+README.md
+
+# Environment files (passed via env vars instead)
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+Thumbs.db
+.DS_Store

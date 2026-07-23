@@ -694,6 +694,29 @@ describe("article-discovery-helpers", () => {
       expect(result.source).toBe("url_date");
     });
 
+    it("falls back to compact URL date only for plausible 19xx/20xx dates", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head><title>No date here</title></head></html>`;
+
+      const result = extractDateFromHtml(html, "https://example.com/news/20260710-some-story");
+      expect(result.rawDate).toBe("2026-07-10");
+      expect(result.source).toBe("url_date");
+    });
+
+    it("does not treat numeric article IDs as URL dates", async () => {
+      const { extractDateFromHtml } = await import("./article-discovery-helpers");
+
+      const html = `<html><head><title>No date here</title></head></html>`;
+
+      const result = extractDateFromHtml(
+        html,
+        "https://www.bignewsnetwork.com/news/279204889/struggling-blue-jays-look-to-salvage-series-finale-vs-rays",
+      );
+      expect(result.rawDate).toBeNull();
+      expect(result.source).toBe("unknown");
+    });
+
     it("returns unknown source when no date found anywhere", async () => {
       const { extractDateFromHtml } = await import("./article-discovery-helpers");
 
