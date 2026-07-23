@@ -204,6 +204,41 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     }));
   });
 
+  it("does not over-fetch when runBrowser=true but browser fallback is disabled", async () => {
+    // When env flag is off, the queue should fetch only `limit` items, not
+    // limit * 3. There are no cooldown checks to scan past.
+    isBrowserFallbackEnabledMock.mockReturnValue(false);
+
+    const artifacts = Array.from({ length: 6 }, (_, i) =>
+      makeArtifact({ id: `art-${i}`, payload: { targetUrl: `https://example.com/news/${i}`, sourceId: `src-${i}` } }),
+    );
+    // Return all 6 artifacts — but the query should have used take: limit (2),
+    // not take: 6. We verify this indirectly: only 2 should be marked
+    // BROWSER_FALLBACK_DISABLED.
+    findManyMock.mockResolvedValue(artifacts.slice(0, 2));
+    updateManyMock.mockResolvedValue({ count: 1 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true, limit: 2 });
+
+    // Verify the query used take: 2 (the limit), not take: 6 (limit*3)
+    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({
+      take: 2,
+    }));
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserSkippedDisabled).toBe(2);
+      expect(result.browserResolved).toBe(0);
+    }
+    expect(discoverArticleLinksWithBrowserMock).not.toHaveBeenCalled();
+    // Exactly 2 artifacts marked BROWSER_FALLBACK_DISABLED
+    expect(updateManyMock).toHaveBeenCalledTimes(2);
+    for (const call of updateManyMock.mock.calls) {
+      expect(call[0].data.status).toBe("BROWSER_FALLBACK_DISABLED");
+    }
+  });
+
   // ── runtime unavailable → BROWSER_RUNTIME_UNAVAILABLE ─────────────────
 
   it("marks artifact as BROWSER_RUNTIME_UNAVAILABLE when browser runtime cannot launch", async () => {
@@ -797,11 +832,403 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const finalCall = updateManyMock.mock.calls[1]![0];
     expect(finalCall.data.status).toBe("BROWSER_NO_CANDIDATES");
     expect(finalCall.data.payload.browserBlockedReason).toBe("http_429");
+    expect(finalCall.data.payload.browserRateLimited).toBe(true);
+    expect(finalCall.data.payload.browserRateLimitReason).toBe("http_429");
+    expect(finalCall.data.payload.browserDetailEvaluationStoppedReason).toBe("rate_limited");
     expect(finalCall.data.payload.browserRateLimitedAt).toEqual(expect.any(String));
     expect(finalCall.data.payload.browserRetryAfterAt).toEqual(expect.any(String));
     expect(finalCall.data.payload.browserRateLimitedCount).toBe(2);
     expect(finalCall.data.payload.browserError).toContain("rate-limited");
     expect(finalCall.data.payload.browserEvaluated).toBe(2);
+  });
+
+  // ── Browser cooldown (Approach A) ───────────────────────────────────
+
+  it("skips browser work when cooldown is active and keeps artifact as PENDING_HEADLESS", async () => {
+    const targetUrl = "https://example.com/news";
+    const now = new Date();
+    const futureRetryAfter = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+
+    // First findMany = queue fetch (returns PENDING_HEADLESS artifacts)
+    // Second findMany = cooldown check (returns rate-limited artifact for same target)
+    findManyMock
+      .mockResolvedValueOnce([makeArtifact({ payload: { targetUrl, sourceId: "src-1" } })])
+      .mockResolvedValueOnce([{
+        id: "art-rate-limited",
+        payload: {
+          targetUrl,
+          browserRateLimited: true,
+          browserRetryAfterAt: futureRetryAfter,
+        },
+      }]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserCooldownSkipped).toBe(1);
+      expect(result.browserProcessed).toBe(0);
+      expect(result.browserResolved).toBe(0);
+    }
+    // Should NOT have launched browser work
+    expect(discoverArticleLinksWithBrowserMock).not.toHaveBeenCalled();
+    // Should update payload with cooldown metadata but keep PENDING_HEADLESS
+    expect(updateManyMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ status: "PENDING_HEADLESS" }),
+      data: expect.objectContaining({
+        payload: expect.objectContaining({
+          skippedDueToBrowserCooldown: true,
+          browserCooldownUntil: futureRetryAfter,
+          lastBrowserCooldownSkipAt: expect.any(String),
+        }),
+      }),
+    }));
+    // Should NOT change status away from PENDING_HEADLESS
+    expect(updateManyMock).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "BROWSER_COOLDOWN_DEFERRED" }),
+    }));
+  });
+
+  it("does NOT trigger cooldown for same sourceId/categoryId but different targetUrl", async () => {
+    const differentTarget = "https://example.com/different-section";
+    const now = new Date();
+    const futureRetryAfter = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+
+    // First findMany = queue fetch, second = cooldown check with different targetUrl
+    findManyMock
+      .mockResolvedValueOnce([makeArtifact()])
+      .mockResolvedValueOnce([{
+        id: "art-other-target",
+        payload: {
+          targetUrl: differentTarget,
+          browserRateLimited: true,
+          browserRetryAfterAt: futureRetryAfter,
+        },
+      }]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: false,
+      reason: "browser_runtime_unavailable",
+      links: [],
+      diagnostics: {
+        pageTitle: null,
+        linkCount: 0,
+        articleLikeLinkCount: 0,
+        blockedReason: "not installed",
+        browserRuntimeAvailable: false,
+        elapsedMs: 5,
+      },
+    });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserCooldownSkipped).toBe(0);
+      // Should have proceeded to browser work (and failed because runtime unavailable)
+      expect(result.browserSkippedUnavailable).toBe(1);
+    }
+    expect(discoverArticleLinksWithBrowserMock).toHaveBeenCalled();
+  });
+
+  it("allows retry when cooldown has expired (browserRetryAfterAt in the past)", async () => {
+    const targetUrl = "https://example.com/news";
+    const pastRetryAfter = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+    // First = queue fetch, second = cooldown check with expired cooldown
+    findManyMock
+      .mockResolvedValueOnce([makeArtifact({ payload: { targetUrl, sourceId: "src-1" } })])
+      .mockResolvedValueOnce([{
+        id: "art-expired-cooldown",
+        payload: {
+          targetUrl,
+          browserRateLimited: true,
+          browserRetryAfterAt: pastRetryAfter,
+        },
+      }]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: false,
+      reason: "browser_runtime_unavailable",
+      links: [],
+      diagnostics: {
+        pageTitle: null,
+        linkCount: 0,
+        articleLikeLinkCount: 0,
+        blockedReason: "not installed",
+        browserRuntimeAvailable: false,
+        elapsedMs: 5,
+      },
+    });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserCooldownSkipped).toBe(0);
+      // Should have proceeded to browser work
+      expect(result.browserSkippedUnavailable).toBe(1);
+    }
+    expect(discoverArticleLinksWithBrowserMock).toHaveBeenCalled();
+  });
+
+  it("ignores artifacts with missing/malformed payload targetUrl in cooldown check", async () => {
+    const now = new Date();
+    const futureRetryAfter = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+
+    // First = queue fetch, second = cooldown check with missing targetUrl
+    findManyMock
+      .mockResolvedValueOnce([makeArtifact()])
+      .mockResolvedValueOnce([{
+        id: "art-no-target",
+        payload: {
+          browserRateLimited: true,
+          browserRetryAfterAt: futureRetryAfter,
+          // targetUrl is missing
+        },
+      }]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: false,
+      reason: "browser_runtime_unavailable",
+      links: [],
+      diagnostics: {
+        pageTitle: null,
+        linkCount: 0,
+        articleLikeLinkCount: 0,
+        blockedReason: "not installed",
+        browserRuntimeAvailable: false,
+        elapsedMs: 5,
+      },
+    });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserCooldownSkipped).toBe(0);
+      // Should have proceeded (malformed targetUrl in cooldown artifact is ignored)
+      expect(result.browserSkippedUnavailable).toBe(1);
+    }
+    expect(discoverArticleLinksWithBrowserMock).toHaveBeenCalled();
+  });
+
+  it("cooldown item does not block later queue items from processing", async () => {
+    const cooldownUrl = "https://example.com/news";
+    const laterUrl = "https://example.com/tech";
+    const now = new Date();
+    const futureRetryAfter = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+
+    // First = queue fetch (both artifacts), second = cooldown check for art-1
+    // Third = cooldown check for art-2 (different target, no cooldown)
+    findManyMock
+      .mockResolvedValueOnce([
+        makeArtifact({ id: "art-1", payload: { targetUrl: cooldownUrl, sourceId: "src-1" } }),
+        makeArtifact({ id: "art-2", payload: { targetUrl: laterUrl, sourceId: "src-1" } }),
+      ])
+      .mockResolvedValueOnce([{
+        id: "art-cooldown",
+        payload: { targetUrl: cooldownUrl, browserRateLimited: true, browserRetryAfterAt: futureRetryAfter },
+      }])
+      .mockResolvedValueOnce([]); // art-2 has different targetUrl, no cooldown match
+
+    // First updateMany = cooldown payload update (art-1)
+    // Second updateMany = claim (art-2)
+    // Third updateMany = final status (art-2)
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: false,
+      reason: "browser_runtime_unavailable",
+      links: [],
+      diagnostics: {
+        pageTitle: null,
+        linkCount: 0,
+        articleLikeLinkCount: 0,
+        blockedReason: "not installed",
+        browserRuntimeAvailable: false,
+        elapsedMs: 5,
+      },
+    });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserCooldownSkipped).toBe(1);
+      // Second artifact should have been processed (runtime unavailable)
+      expect(result.browserSkippedUnavailable).toBe(1);
+    }
+    // Browser work should have been attempted for the second artifact
+    expect(discoverArticleLinksWithBrowserMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Browser work cap enforcement ────────────────────────────────────
+
+  it("caps real browser work to limit even when fetchLimit returns more items", async () => {
+    // limit=2, findMany returns 6 valid non-cooldown artifacts
+    // Only 2 should get browser claims/work; the rest are skipped by the cap.
+    const links = Array.from({ length: 6 }, (_, i) =>
+      makeBrowserLink(`https://example.com/news/2026/07/2${i}/story`),
+    );
+    const artifacts = links.map((l, i) =>
+      makeArtifact({ id: `art-${i}`, payload: { targetUrl: l.url, sourceId: "src-1" } }),
+    );
+
+    // Each artifact needs a cooldown check (findMany) before the cap is evaluated.
+    // Items 0 and 1: cooldown check (no match) → claim → browser work
+    // Item 2: cooldown check (no match) → cap hit (browserAttemptedTargets >= limit) → break
+    findManyMock
+      .mockResolvedValueOnce(artifacts)  // queue fetch
+      .mockResolvedValueOnce([])         // cooldown check art-0
+      .mockResolvedValueOnce([])         // cooldown check art-1
+      .mockResolvedValueOnce([]);        // cooldown check art-2 (cap hit, break)
+
+    updateManyMock.mockResolvedValue({ count: 1 });
+    // Use a successful-but-empty browser result so browserProcessed increments.
+    // (browser_runtime_unavailable goes to the failure path which doesn't
+    // increment browserProcessed — that counter is for completed browser runs.)
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([], {
+        diagnostics: { pageTitle: "Empty", linkCount: 0, articleLikeLinkCount: 0, browserRuntimeAvailable: true, elapsedMs: 50 },
+      }),
+    );
+    persistCandidatesMock.mockResolvedValue({ inserted: 0, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true, limit: 2 });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      // Only 2 browser targets should have been attempted (the limit)
+      expect(result.browserAttemptedTargets).toBe(2);
+      expect(result.browserProcessed).toBe(2);
+      expect(result.browserNoCandidates).toBe(2);
+    }
+    // Browser work should have been called exactly twice
+    expect(discoverArticleLinksWithBrowserMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("cooldown-skipped items do not consume the browser work cap", async () => {
+    // limit=2. First 2 items are cooldown-skipped, next 2 are valid.
+    // All 4 are fetched (fetchLimit >= 4), but only 2 valid ones run browser work.
+    const cooldownUrl = "https://example.com/news";
+    const validUrl1 = "https://example.com/tech";
+    const validUrl2 = "https://example.com/sports";
+    const now = new Date();
+    const futureRetryAfter = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+
+    const artifacts = [
+      makeArtifact({ id: "art-cool-1", payload: { targetUrl: cooldownUrl, sourceId: "src-1" } }),
+      makeArtifact({ id: "art-cool-2", payload: { targetUrl: cooldownUrl, sourceId: "src-1" } }),
+      makeArtifact({ id: "art-valid-1", payload: { targetUrl: validUrl1, sourceId: "src-1" } }),
+      makeArtifact({ id: "art-valid-2", payload: { targetUrl: validUrl2, sourceId: "src-1" } }),
+    ];
+
+    const cooldownArtifact = {
+      id: "art-rate-limited",
+      payload: { targetUrl: cooldownUrl, browserRateLimited: true, browserRetryAfterAt: futureRetryAfter },
+    };
+
+    // Each artifact needs a cooldown check (findMany) before the cap is evaluated.
+    // art-cool-1: cooldown match → skip (no cap consumed)
+    // art-cool-2: cooldown match → skip (no cap consumed)
+    // art-valid-1: no cooldown → claim → browser work (attempted=1)
+    // art-valid-2: no cooldown → claim → browser work (attempted=2)
+    findManyMock
+      .mockResolvedValueOnce(artifacts)          // queue fetch
+      .mockResolvedValueOnce([cooldownArtifact]) // cooldown check art-cool-1
+      .mockResolvedValueOnce([cooldownArtifact]) // cooldown check art-cool-2
+      .mockResolvedValueOnce([])                 // cooldown check art-valid-1
+      .mockResolvedValueOnce([]);                // cooldown check art-valid-2
+
+    updateManyMock.mockResolvedValue({ count: 1 });
+    // Use a successful-but-empty browser result so browserProcessed increments.
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([], {
+        diagnostics: { pageTitle: "Empty", linkCount: 0, articleLikeLinkCount: 0, browserRuntimeAvailable: true, elapsedMs: 50 },
+      }),
+    );
+    persistCandidatesMock.mockResolvedValue({ inserted: 0, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true, limit: 2 });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserCooldownSkipped).toBe(2);
+      // The 2 valid items should have run browser work despite 2 cooldown skips
+      expect(result.browserAttemptedTargets).toBe(2);
+      expect(result.browserProcessed).toBe(2);
+    }
+    expect(discoverArticleLinksWithBrowserMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts cooldown updateMany count=0 as race-skipped, not cooldown-skipped", async () => {
+    const targetUrl = "https://example.com/news";
+    const now = new Date();
+    const futureRetryAfter = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+
+    findManyMock
+      .mockResolvedValueOnce([makeArtifact({ payload: { targetUrl, sourceId: "src-1" } })])
+      .mockResolvedValueOnce([{
+        id: "art-rate-limited",
+        payload: { targetUrl, browserRateLimited: true, browserRetryAfterAt: futureRetryAfter },
+      }]);
+
+    // Cooldown updateMany returns count=0 (another worker claimed it)
+    updateManyMock.mockResolvedValueOnce({ count: 0 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      // Should be counted as race-skipped, NOT cooldown-skipped
+      expect(result.browserCooldownSkipped).toBe(0);
+      expect(result.skippedAlreadyClaimed).toBe(1);
+      expect(result.browserAttemptedTargets).toBe(0);
+    }
+    expect(discoverArticleLinksWithBrowserMock).not.toHaveBeenCalled();
+  });
+
+  it("clears cooldown metadata on successful browser run", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/after-cooldown";
+    // First = queue fetch, second = cooldown check (no active cooldown)
+    findManyMock
+      .mockResolvedValueOnce([makeArtifact({
+        payload: {
+          targetUrl: "https://example.com/news",
+          sourceId: "src-1",
+          skippedDueToBrowserCooldown: true,
+          browserCooldownUntil: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        },
+      })])
+      .mockResolvedValueOnce([]); // no cooldown artifacts
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserResolved).toBe(1);
+    }
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("RESOLVED");
+    // Cooldown metadata should be cleared on success
+    expect(finalCall.data.payload.skippedDueToBrowserCooldown).toBe(false);
+    expect(finalCall.data.payload.browserCooldownUntil).toBeNull();
   });
 
   it("stops evaluating after MAX_BROWSER_ACCEPTED_CANDIDATES accepted", async () => {

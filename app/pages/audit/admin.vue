@@ -643,14 +643,25 @@
                     <p v-else-if="item.browserQualityAssessment?.explanation" class="mt-1 line-clamp-2 text-[10px] text-on-surface-variant/60">
                       {{ item.browserQualityAssessment.explanation }}
                     </p>
-                    <div v-if="item.browserBlockedReason === 'http_429'" class="mt-2 rounded-lg border border-rose-400/20 bg-rose-500/5 px-2.5 py-1.5 text-[10px] text-rose-100/90">
+                    <div v-if="item.browserRateLimited || item.browserBlockedReason === 'http_429'" class="mt-2 rounded-lg border border-rose-400/20 bg-rose-500/5 px-2.5 py-1.5 text-[10px] text-rose-100/90">
                       <div class="font-bold uppercase tracking-wider text-rose-200">Rate limited</div>
                       <div class="mt-0.5">
                         Browser detail fetches hit HTTP 429.
                         <span v-if="item.browserRetryAfterAt">Retry after {{ formatLogTime(item.browserRetryAfterAt) }}.</span>
                       </div>
-                      <div v-if="item.browserRateLimitedCount != null" class="mt-0.5 text-on-surface-variant/60">
+                      <div v-if="item.browserRateLimitedCount != null && item.browserRateLimitedCount > 0" class="mt-0.5 text-on-surface-variant/60">
                         Consecutive 429 responses: {{ item.browserRateLimitedCount }}
+                      </div>
+                      <div v-if="item.browserDetailEvaluationStoppedReason" class="mt-0.5 text-on-surface-variant/60">
+                        Detail evaluation stopped: {{ item.browserDetailEvaluationStoppedReason }}
+                      </div>
+                    </div>
+                    <!-- Browser cooldown state (Approach A: stays PENDING_HEADLESS) -->
+                    <div v-if="item.status === 'BROWSER_COOLDOWN_DEFERRED'" class="mt-2 rounded-lg border border-amber-400/20 bg-amber-500/5 px-2.5 py-1.5 text-[10px] text-amber-100/90">
+                      <div class="font-bold uppercase tracking-wider text-amber-200">Cooldown deferred (legacy)</div>
+                      <div class="mt-0.5">
+                        Browser fallback skipped — previous run was rate-limited.
+                        Retry manually or wait for stale recovery.
                       </div>
                     </div>
                   </div>
@@ -910,9 +921,15 @@ const headlessQueueItems = ref<Array<{
   browserTopRejectionReasons: BrowserTopRejectionReason[];
   browserError: string | null;
   browserBlockedReason: string | null;
+  browserRateLimited: boolean;
+  browserRateLimitReason: string | null;
   browserRateLimitedAt: string | null;
   browserRetryAfterAt: string | null;
   browserRateLimitedCount: number | null;
+  browserDetailEvaluationStoppedReason: string | null;
+  skippedDueToBrowserCooldown: boolean;
+  browserCooldownUntil: string | null;
+  lastBrowserCooldownSkipAt: string | null;
   browserQualityAssessment: BrowserQualityAssessment | null;
   renderedUrl: string | null;
   browserShortlistedLinks: number | null;
@@ -1445,6 +1462,7 @@ const isRetryableHeadlessStatus = (status: string): boolean => {
     "BROWSER_NO_CANDIDATES",
     "BROWSER_RUNTIME_UNAVAILABLE",
     "BROWSER_FALLBACK_DISABLED",
+    "BROWSER_COOLDOWN_DEFERRED",
     "HEADLESS_PROCESSING_STALE",
     "SKIPPED_UNIMPLEMENTED",
     "INVALID",
@@ -1527,6 +1545,8 @@ const headlessStatusBadgeClass = (status: string) => {
       return "bg-red-500/15 text-red-300 border-red-500/30";
     case "INVALID":
       return "bg-red-500/15 text-red-400 border-red-500/30";
+    case "BROWSER_COOLDOWN_DEFERRED":
+      return "bg-amber-500/15 text-amber-400 border-amber-500/20";
     case "SKIPPED_UNIMPLEMENTED":
       return "bg-slate-500/15 text-slate-400 border-slate-500/20";
     case "RESOLVED_BY_STATIC_DISCOVERY":

@@ -557,6 +557,72 @@ describe("article-discovery-helpers", () => {
       expect(result.shouldEscalateToHeadless).toBe(false);
       expect(result.confidence).toBe("medium");
     });
+
+    it("uses 'Static discovery' as default sourceLabel in explanation", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 5,
+        totalEvaluated: 20,
+        pagesVisited: 2,
+        failed: 0,
+        byStatus: { accepted: 5, rejected_low_score: 10, rejected_stale: 3, rejected_missing_title: 2 },
+      });
+
+      expect(result.explanation).toContain("Static discovery is effective");
+      expect(result.explanation).not.toContain("Browser fallback");
+    });
+
+    it("uses 'Browser fallback' as sourceLabel when passed explicitly", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 3,
+        totalEvaluated: 10,
+        pagesVisited: 1,
+        failed: 0,
+        byStatus: { accepted: 3, rejected_low_score: 5, rejected_stale: 2 },
+        sourceLabel: "Browser fallback",
+      });
+
+      expect(result.quality).toBe("productive");
+      expect(result.explanation).toContain("Browser fallback is effective");
+      expect(result.explanation).not.toContain("Static discovery");
+    });
+
+    it("uses browser sourceLabel in failed quality explanation", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 0,
+        totalEvaluated: 10,
+        pagesVisited: 1,
+        failed: 1,
+        byStatus: { rejected_low_score: 6, rejected_stale: 3, rejected_missing_title: 1 },
+        sourceLabel: "Browser fallback",
+      });
+
+      expect(result.quality).toBe("failed");
+      expect(result.explanation).toContain("Browser fallback is insufficient for this target");
+      expect(result.explanation).not.toContain("Static discovery");
+    });
+
+    it("uses browser sourceLabel in weak quality explanation", async () => {
+      const { assessArticleDiscoveryQuality } = await import("./article-discovery-helpers");
+
+      const result = assessArticleDiscoveryQuality({
+        acceptedCount: 1,
+        totalEvaluated: 30,
+        pagesVisited: 3,
+        failed: 0,
+        byStatus: { accepted: 1, rejected_low_score: 20, rejected_stale: 5, rejected_missing_title: 4 },
+        sourceLabel: "Browser fallback",
+      });
+
+      expect(result.quality).toBe("weak");
+      expect(result.explanation).toContain("Browser fallback coverage may be incomplete");
+      expect(result.explanation).not.toContain("Static discovery");
+    });
   });
 
   // ── Date Extraction Provenance ─────────────────────────────────────────

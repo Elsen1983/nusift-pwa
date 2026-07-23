@@ -511,6 +511,12 @@ export type ArticleDiscoveryQualityInput = {
   pagesVisited: number;
   failed: number;
   byStatus: Record<string, number>;
+  /**
+   * Label used in the explanation string. Defaults to "Static discovery".
+   * Pass "Browser fallback" when the quality assessment is for a browser
+   * fallback run so the admin panel wording is accurate.
+   */
+  sourceLabel?: string;
 };
 
 /**
@@ -538,7 +544,7 @@ const QUALITY_LOW_SCORE_DOMINANCE = 0.80;        // ≥80% low-score rejections 
 export function assessArticleDiscoveryQuality(
   input: ArticleDiscoveryQualityInput,
 ): ArticleDiscoveryQualityAssessment {
-  const { acceptedCount, totalEvaluated, pagesVisited, byStatus } = input;
+  const { acceptedCount, totalEvaluated, pagesVisited, byStatus, sourceLabel = "Static discovery" } = input;
 
   const fetchFailed = byStatus["fetch_failed"] || 0;
   const lowScore = byStatus["rejected_low_score"] || 0;
@@ -557,8 +563,7 @@ export function assessArticleDiscoveryQuality(
       quality: "failed",
       shouldEscalateToHeadless: true,
       escalationReasons: ["dynamic_or_empty_html"],
-      confidence: "medium",
-      explanation: "No listing pages were successfully fetched. The target may be JS-rendered or blocking requests.",
+      confidence: "medium",        explanation: `No listing pages were successfully fetched. The target may be JS-rendered or blocking requests.`,
     };
   }
 
@@ -611,7 +616,7 @@ export function assessArticleDiscoveryQuality(
         (lowScore > 0 ? `${lowScore} had low content scores. ` : "") +
         (stale > 0 ? `${stale} were stale. ` : "") +
         (missingTitle > 0 ? `${missingTitle} lacked titles. ` : "") +
-        `Static discovery is insufficient for this target.`,
+        `${sourceLabel} is insufficient for this target.`,
     };
   }
 
@@ -624,7 +629,7 @@ export function assessArticleDiscoveryQuality(
         shouldEscalateToHeadless: true,
         escalationReasons: ["mostly_fetch_failed", "insufficient_static_signals"],
         confidence: "medium",
-        explanation: `Static discovery found ${acceptedCount} article(s) but ${fetchFailed}/${totalEvaluated} fetches failed. Coverage may be incomplete because the site blocks some automated requests.`,
+        explanation: `${sourceLabel} found ${acceptedCount} article(s) but ${fetchFailed}/${totalEvaluated} fetches failed. Coverage may be incomplete because the site blocks some automated requests.`,
       };
     }
   }
@@ -653,8 +658,8 @@ export function assessArticleDiscoveryQuality(
   }
 
   const explanation = quality === "productive"
-    ? `Discovered ${acceptedCount} article(s) from ${totalEvaluated} evaluated URL(s) (${(acceptanceRate * 100).toFixed(0)}% acceptance rate). Static discovery is effective.`
-    : `Discovered ${acceptedCount} article(s) from ${totalEvaluated} evaluated URL(s) (${(acceptanceRate * 100).toFixed(0)}% acceptance rate). Static coverage may be incomplete.`;
+    ? `Discovered ${acceptedCount} article(s) from ${totalEvaluated} evaluated URL(s) (${(acceptanceRate * 100).toFixed(0)}% acceptance rate). ${sourceLabel} is effective.`
+    : `Discovered ${acceptedCount} article(s) from ${totalEvaluated} evaluated URL(s) (${(acceptanceRate * 100).toFixed(0)}% acceptance rate). ${sourceLabel} coverage may be incomplete.`;
 
   return {
     quality,

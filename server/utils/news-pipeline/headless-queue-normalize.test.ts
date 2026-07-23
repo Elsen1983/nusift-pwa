@@ -927,16 +927,80 @@ describe("normalizeHeadlessQueueArtifact — browser fallback fields", () => {
       ...baseArtifact,
       payload: {
         browserBlockedReason: "http_429",
+        browserRateLimited: true,
+        browserRateLimitReason: "http_429",
         browserRateLimitedAt: "2026-07-21T20:00:00.000Z",
         browserRetryAfterAt: "2026-07-21T21:00:00.000Z",
         browserRateLimitedCount: 2,
+        browserDetailEvaluationStoppedReason: "rate_limited",
       },
     });
 
     expect(result.browserBlockedReason).toBe("http_429");
+    expect(result.browserRateLimited).toBe(true);
+    expect(result.browserRateLimitReason).toBe("http_429");
     expect(result.browserRateLimitedAt).toBe("2026-07-21T20:00:00.000Z");
     expect(result.browserRetryAfterAt).toBe("2026-07-21T21:00:00.000Z");
     expect(result.browserRateLimitedCount).toBe(2);
+    expect(result.browserDetailEvaluationStoppedReason).toBe("rate_limited");
+  });
+
+  it("defaults browserRateLimited to false and browserRateLimitReason to null when absent", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {},
+    });
+
+    expect(result.browserRateLimited).toBe(false);
+    expect(result.browserRateLimitReason).toBeNull();
+    expect(result.browserDetailEvaluationStoppedReason).toBeNull();
+  });
+
+  it("normalizes browserRateLimited non-boolean to false", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        browserRateLimited: "true" as any,
+      },
+    });
+    expect(result.browserRateLimited).toBe(false);
+  });
+
+  it("normalizes browser cooldown metadata fields", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      status: "PENDING_HEADLESS",
+      payload: {
+        skippedDueToBrowserCooldown: true,
+        browserCooldownUntil: "2026-07-21T21:00:00.000Z",
+        lastBrowserCooldownSkipAt: "2026-07-21T20:00:00.000Z",
+      },
+    });
+
+    expect(result.skippedDueToBrowserCooldown).toBe(true);
+    expect(result.browserCooldownUntil).toBe("2026-07-21T21:00:00.000Z");
+    expect(result.lastBrowserCooldownSkipAt).toBe("2026-07-21T20:00:00.000Z");
+  });
+
+  it("defaults cooldown metadata to false/null when absent", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {},
+    });
+
+    expect(result.skippedDueToBrowserCooldown).toBe(false);
+    expect(result.browserCooldownUntil).toBeNull();
+    expect(result.lastBrowserCooldownSkipAt).toBeNull();
+  });
+
+  it("normalizes skippedDueToBrowserCooldown non-boolean to false", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {
+        skippedDueToBrowserCooldown: "true" as any,
+      },
+    });
+    expect(result.skippedDueToBrowserCooldown).toBe(false);
   });
 
   it("normalizes browserFallbackRan string 'true' to false", () => {
@@ -1169,9 +1233,15 @@ describe("buildHeadlessQueueSummary", () => {
     browserTopRejectionReasons: [] as Array<{ reason: string; count: number }>,
     browserError: null,
     browserBlockedReason: null,
+    browserRateLimited: false,
+    browserRateLimitReason: null,
     browserRateLimitedAt: null,
     browserRetryAfterAt: null,
     browserRateLimitedCount: null,
+    browserDetailEvaluationStoppedReason: null,
+    skippedDueToBrowserCooldown: false,
+    browserCooldownUntil: null,
+    lastBrowserCooldownSkipAt: null,
     browserQualityAssessment: null,
     renderedUrl: null,
     browserShortlistedLinks: null as number | null,

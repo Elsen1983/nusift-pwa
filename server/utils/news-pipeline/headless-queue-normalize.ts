@@ -105,9 +105,16 @@ export type NormalizedHeadlessQueueItem = {
   browserTopRejectionReasons: NormalizedBrowserTopRejectionReason[];
   browserError: string | null;
   browserBlockedReason: string | null;
+  browserRateLimited: boolean;
+  browserRateLimitReason: string | null;
   browserRateLimitedAt: string | null;
   browserRetryAfterAt: string | null;
   browserRateLimitedCount: number | null;
+  browserDetailEvaluationStoppedReason: string | null;
+  // ── Browser cooldown metadata (Approach A: stays PENDING_HEADLESS) ────
+  skippedDueToBrowserCooldown: boolean;
+  browserCooldownUntil: string | null;
+  lastBrowserCooldownSkipAt: string | null;
   browserQualityAssessment: NormalizedBrowserQualityAssessment | null;
   renderedUrl: string | null;
   // ── Browser link audit fields ─────────────────────────────────────────
@@ -310,9 +317,15 @@ export function normalizeHeadlessQueueArtifact(artifact: {
     browserTopRejectionReasons: extractBrowserTopRejectionReasons(payload.browserTopRejectionReasons),
     browserError: readString(payload.browserError),
     browserBlockedReason: readString(payload.browserBlockedReason),
+    browserRateLimited: readBoolean(payload.browserRateLimited),
+    browserRateLimitReason: readString(payload.browserRateLimitReason),
     browserRateLimitedAt: readString(payload.browserRateLimitedAt),
     browserRetryAfterAt: readString(payload.browserRetryAfterAt),
     browserRateLimitedCount: readNumber(payload.browserRateLimitedCount),
+    browserDetailEvaluationStoppedReason: readString(payload.browserDetailEvaluationStoppedReason),
+    skippedDueToBrowserCooldown: readBoolean(payload.skippedDueToBrowserCooldown),
+    browserCooldownUntil: readString(payload.browserCooldownUntil),
+    lastBrowserCooldownSkipAt: readString(payload.lastBrowserCooldownSkipAt),
     browserQualityAssessment: browserQa,
     renderedUrl: readString(payload.renderedUrl),
     // ── Browser link audit fields ─────────────────────────────────────
