@@ -136,13 +136,16 @@
               {{ isPipelineRunning ? "Running..." : "Run Agent 1" }}
             </button>
             <button
-              v-if="canRunArticleDiscovery"
               @click="runArticleDiscovery"
-              :disabled="isArticleDiscoveryRunning || (agent2Progress != null && agent2Progress.totalEligibleNow === 0)"
+              :disabled="isAgent2BatchDisabled"
+              :title="agent2BatchDisabledReason || 'Run the next bounded Agent 2 discovery batch.'"
               class="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm font-bold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {{ isArticleDiscoveryRunning ? "Discovering..." : "Run Agent 2 batch" }}
             </button>
+            <p v-if="agent2BatchDisabledReason" class="basis-full text-[11px] font-medium text-amber-200">
+              Agent 2 batch unavailable: {{ agent2BatchDisabledReason }}
+            </p>
             <button
               v-if="canRunManualPipeline"
               @click="runHardCaseQueue"
@@ -1002,6 +1005,17 @@ const toastIcon = computed(() => (toast.value.type === "success" ? "check_circle
 const isAdminUser = computed(() => authStore.user?.isAdmin === true || authStore.user?.role === "ADMIN");
 const showAdminPipelinePanel = computed(() => canAccessDevPanel.value);
 const showFullDevTools = computed(() => canAccessDevPanel.value && canUseFullDevTools.value);
+const agent2BatchDisabledReason = computed(() => {
+  if (isArticleDiscoveryRunning.value) return null;
+  if (!canRunArticleDiscovery.value) return "manual Agent 2 runs are disabled by server policy";
+  if (agent2Progress.value != null && agent2Progress.value.totalEligibleNow === 0) return "no eligible Agent 2 targets";
+  return null;
+});
+const isAgent2BatchDisabled = computed(() =>
+  isArticleDiscoveryRunning.value ||
+  !canRunArticleDiscovery.value ||
+  (agent2Progress.value != null && agent2Progress.value.totalEligibleNow === 0),
+);
 
 let devPanelPollTimer: number | null = null;
 const DEV_PANEL_POLL_MS = 10000;
@@ -1261,7 +1275,7 @@ const runManualPipeline = async () => {
 };
 
 const runArticleDiscovery = async () => {
-  if (!showFullDevTools.value || !canRunArticleDiscovery.value || isArticleDiscoveryRunning.value) return;
+  if (!showFullDevTools.value || isAgent2BatchDisabled.value) return;
   isArticleDiscoveryRunning.value = true;
   startDevPanelPolling();
   try {
