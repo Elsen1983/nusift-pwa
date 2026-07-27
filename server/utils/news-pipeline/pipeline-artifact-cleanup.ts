@@ -25,6 +25,17 @@
  *      - BROWSER_RUNTIME_UNAVAILABLE
  *      - article_discovery_candidates (when superseded)
  *
+ *   E. Diagnostic history artifacts (Agent 1 RSS / hard-case):
+ *      - Artifact types `rss_candidates` and `hard_case_discovery_candidate`
+ *        with terminal diagnostic statuses CAPTURED, FAILED, FAILED_FINAL are
+ *        eligible for deletion after the retention window.
+ *      - These are purely diagnostic/audit payloads; no production code
+ *        depends on old rows as source-of-truth. Agent 3 provenance recovery
+ *        only uses the most recent CAPTURED artifact per sourceId, which
+ *        will always be within the retention window.
+ *      - `hard_case_discovery_candidate` with PENDING_HEADLESS remains
+ *        handled by rule A (active/in-flight).
+ *
  *   D. Hard-source profiles:
  *      - article_discovery_hard_source_profile is protected if it still
  *        represents an unresolved hard source (status !== RESOLVED_BY_AGENT1_RSS
@@ -130,6 +141,26 @@ const RETRYABLE_FAILURE_STATUSES = new Set([
 const TARGET_BASED_ARTIFACT_TYPES = new Set([
   "article_discovery_headless_required",
   "article_discovery_candidates",
+]);
+
+/**
+ * Diagnostic artifact types whose historical rows are purely audit/diagnostic
+ * and safe to delete after the retention window. No production code depends
+ * on old rows from these types as source-of-truth.
+ */
+const DIAGNOSTIC_ARTIFACT_TYPES = new Set([
+  "rss_candidates",
+  "hard_case_discovery_candidate",
+]);
+
+/**
+ * Terminal statuses for diagnostic artifacts. These statuses indicate the
+ * artifact's pipeline work is finished and the row exists only as history.
+ */
+const DIAGNOSTIC_HISTORY_STATUSES = new Set([
+  "CAPTURED",
+  "FAILED",
+  "FAILED_FINAL",
 ]);
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -530,6 +561,19 @@ function classifyArtifact(
       targetKey,
       reason: "active_inflight_status",
       decision: "protected",
+    };
+  }
+
+  // ── E. Diagnostic history artifacts (Agent 1 RSS / hard-case) ──────────
+  // These artifact types with diagnostic history statuses are purely
+  // audit/history. Eligible after the retention window (age enforced by query).
+  if (DIAGNOSTIC_ARTIFACT_TYPES.has(row.artifactType) && DIAGNOSTIC_HISTORY_STATUSES.has(row.status)) {
+    return {
+      ...row,
+      targetUrl,
+      targetKey,
+      reason: "diagnostic_artifact_aged",
+      decision: "eligible",
     };
   }
 

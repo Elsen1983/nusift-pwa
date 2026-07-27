@@ -543,6 +543,114 @@ describe("processPipelineArtifactCleanup", () => {
     expect(result.byStatus["PROFILE"]).toBe(1);
   });
 
+  // -- diagnostic artifact types (rss_candidates, hard_case_discovery_candidate) ----
+
+  it("marks old rss_candidates CAPTURED as eligible with reason diagnostic_artifact_aged", async () => {
+    setupFindMany([makeArtifact({ id: "rss-1", artifactType: "rss_candidates", status: "CAPTURED" })]);
+    const fn = await loadFn();
+    const result = await fn({ dryRun: true, olderThanDays: 14, now: NOW });
+
+    expect(result.inspected).toBe(1);
+    expect(result.eligibleForDeletion).toBe(1);
+    expect(result.sampleDeletedOrWouldDelete[0]!.reason).toBe("diagnostic_artifact_aged");
+    expect(result.sampleDeletedOrWouldDelete[0]!.artifactType).toBe("rss_candidates");
+  });
+
+  it("marks old rss_candidates FAILED as eligible", async () => {
+    setupFindMany([makeArtifact({ id: "rss-2", artifactType: "rss_candidates", status: "FAILED" })]);
+    const fn = await loadFn();
+    const result = await fn({ dryRun: true, olderThanDays: 14, now: NOW });
+
+    expect(result.eligibleForDeletion).toBe(1);
+    expect(result.sampleDeletedOrWouldDelete[0]!.reason).toBe("diagnostic_artifact_aged");
+  });
+
+  it("marks old rss_candidates FAILED_FINAL as eligible", async () => {
+    setupFindMany([makeArtifact({ id: "rss-3", artifactType: "rss_candidates", status: "FAILED_FINAL" })]);
+    const fn = await loadFn();
+    const result = await fn({ dryRun: true, olderThanDays: 14, now: NOW });
+
+    expect(result.eligibleForDeletion).toBe(1);
+    expect(result.sampleDeletedOrWouldDelete[0]!.reason).toBe("diagnostic_artifact_aged");
+  });
+
+  it("marks old hard_case_discovery_candidate CAPTURED as eligible", async () => {
+    setupFindMany([makeArtifact({ id: "hc-1", artifactType: "hard_case_discovery_candidate", status: "CAPTURED" })]);
+    const fn = await loadFn();
+    const result = await fn({ dryRun: true, olderThanDays: 14, now: NOW });
+
+    expect(result.eligibleForDeletion).toBe(1);
+    expect(result.sampleDeletedOrWouldDelete[0]!.reason).toBe("diagnostic_artifact_aged");
+  });
+
+  it("marks old hard_case_discovery_candidate FAILED as eligible", async () => {
+    setupFindMany([makeArtifact({ id: "hc-2", artifactType: "hard_case_discovery_candidate", status: "FAILED" })]);
+    const fn = await loadFn();
+    const result = await fn({ dryRun: true, olderThanDays: 14, now: NOW });
+
+    expect(result.eligibleForDeletion).toBe(1);
+  });
+
+  it("marks old hard_case_discovery_candidate FAILED_FINAL as eligible", async () => {
+    setupFindMany([makeArtifact({ id: "hc-3", artifactType: "hard_case_discovery_candidate", status: "FAILED_FINAL" })]);
+    const fn = await loadFn();
+    const result = await fn({ dryRun: true, olderThanDays: 14, now: NOW });
+
+    expect(result.eligibleForDeletion).toBe(1);
+  });
+
+  it("does not inspect recent rss_candidates CAPTURED (within cutoff)", async () => {
+    // Simulate that the DB query returns nothing because the artifact is within
+    // the retention window (updatedAt >= cutoff). The cleanup function never
+    // sees it.
+    setupFindMany([]);
+    const fn = await loadFn();
+    const result = await fn({ dryRun: true, olderThanDays: 14, now: NOW });
+
+    expect(result.inspected).toBe(0);
+    expect(result.eligibleForDeletion).toBe(0);
+  });
+
+  it("conservatively skips unknown artifact type with FAILED status", async () => {
+    setupFindMany([makeArtifact({ id: "unk-1", artifactType: "some_other_type", status: "FAILED" })]);
+    const fn = await loadFn();
+    const result = await fn({ dryRun: true, olderThanDays: 14, now: NOW });
+
+    expect(result.eligibleForDeletion).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedReasons.unhandled_status_conservative_skip).toBe(1);
+  });
+
+  it("conservatively skips known diagnostic artifact type with unknown status", async () => {
+    setupFindMany([makeArtifact({ id: "unk-2", artifactType: "rss_candidates", status: "UNKNOWN_STATUS" })]);
+    const fn = await loadFn();
+    const result = await fn({ dryRun: true, olderThanDays: 14, now: NOW });
+
+    expect(result.eligibleForDeletion).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedReasons.unhandled_status_conservative_skip).toBe(1);
+  });
+
+  it("dryRun=false deletes only selected diagnostic artifact ids", async () => {
+    setupFindMany([
+      makeArtifact({ id: "rss-old", artifactType: "rss_candidates", status: "CAPTURED" }),
+      makeArtifact({ id: "hc-old", artifactType: "hard_case_discovery_candidate", status: "FAILED_FINAL" }),
+      makeArtifact({ id: "proc-1", status: "HEADLESS_PROCESSING" }),
+    ]);
+    artifactDeleteMany.mockResolvedValue({ count: 2 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, olderThanDays: 14, now: NOW });
+
+    expect(result.dryRun).toBe(false);
+    expect(result.eligibleForDeletion).toBe(2);
+    expect(result.deleted).toBe(2);
+    expect(result.protected).toBe(1);
+    expect(artifactDeleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: ["rss-old", "hc-old"] } } }),
+    );
+  });
+
   // -- unhandled status conservative skip -----------------------------------
 
   it("conservatively skips unknown statuses (e.g. SKIPPED_UNIMPLEMENTED)", async () => {
