@@ -108,6 +108,7 @@ const emptySkipSummary = (): IngestSkipSummary => ({
   alreadySeenFeedItem: 0,
   htmlFallbackNonArticle: 0,
   htmlFallbackStale: 0,
+  rssStaleSkipped: 0,
 });
 
 const pushRejectedItem = (

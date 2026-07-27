@@ -37,6 +37,8 @@ type ParsedFeedEntry = {
   rssGuid: string | null;
 };
 
+const INGEST_HTTP_TIMEOUT_MS = 15_000;
+
 const parseRssItems = (xml: string) => {
   const items: ParsedFeedItem[] = [];
   const itemRegex = /<item\b[\s\S]*?<\/item>/gi;
@@ -150,6 +152,7 @@ const emptySkipSummary = (): IngestSkipSummary => ({
   alreadySeenFeedItem: 0,
   htmlFallbackNonArticle: 0,
   htmlFallbackStale: 0,
+  rssStaleSkipped: 0,
 });
 
 const pushRejectedItem = (
@@ -446,6 +449,7 @@ const resolvePublishedAtForFeedItem = async (rawPubDate: string, canonicalUrl: s
 
   try {
     const response = await safeFetch(canonicalUrl, {
+      signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
       headers: {
         "User-Agent": "NuSift/1.0 Ingest-Agent",
         Accept: "text/html,application/xhtml+xml",
@@ -464,13 +468,37 @@ const resolvePublishedAtForFeedItem = async (rawPubDate: string, canonicalUrl: s
   }
 };
 
-const MAX_ARTICLE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/**
+ * Agent 1 article freshness window: 7 days.
+ *
+ * Unified freshness constant used by both RSS/Atom/JSON feed ingest and
+ * HTML fallback ingest. Matches the article retention cleanup window so
+ * that articles deleted by maintenance cleanup are not immediately
+ * reimported by Agent 1 if the publisher feed still contains old items.
+ */
+export const AGENT1_ARTICLE_FRESHNESS_DAYS = 7;
+const AGENT1_ARTICLE_FRESHNESS_MS = AGENT1_ARTICLE_FRESHNESS_DAYS * 24 * 60 * 60 * 1000;
 
-export const isRssIngestWithinFreshnessWindow = (publishedAt: Date | null, now = new Date()) => {
+/**
+ * Check whether an article candidate is within the Agent 1 freshness
+ * window (7 days). Returns false for null/missing dates and future dates.
+ * Used by both the RSS/Atom/JSON feed path and the HTML fallback path.
+ */
+export const isAgent1ArticleFresh = (publishedAt: Date | null, now = new Date()): boolean => {
   if (!publishedAt) return false;
   const diff = now.getTime() - publishedAt.getTime();
-  return diff >= 0 && diff <= MAX_ARTICLE_AGE_MS;
+  return diff >= 0 && diff <= AGENT1_ARTICLE_FRESHNESS_MS;
 };
+
+// ── Deprecated aliases (backward compat for tests/imports) ──────────────
+export const AGENT1_RSS_FRESHNESS_DAYS = AGENT1_ARTICLE_FRESHNESS_DAYS;
+export const isAgent1RssItemFresh = isAgent1ArticleFresh;
+
+/**
+ * @deprecated Use `isAgent1ArticleFresh` instead. Now uses the unified
+ * 7-day Agent 1 freshness window (was 14 days).
+ */
+export const isRssIngestWithinFreshnessWindow = isAgent1ArticleFresh;
 
 const extractHtmlCandidates = async (
   html: string,
@@ -516,6 +544,7 @@ const extractHtmlCandidates = async (
 
   for (const link of links) {
     const detailResponse = await safeFetch(link, {
+      signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
       headers: {
         "User-Agent": "NuSift/1.0 Ingest-Agent",
         Accept: "text/html,application/xhtml+xml",
@@ -561,7 +590,7 @@ const extractHtmlCandidates = async (
       });
       continue;
     }
-    if (!isRssIngestWithinFreshnessWindow(meta.publishedAt, now)) {
+    if (!isAgent1ArticleFresh(meta.publishedAt, now)) {
       skipSummary.htmlFallbackStale += 1;
       pushRejectedItem(rejectedItems, {
         reason: "html_fallback_stale",
@@ -1438,6 +1467,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       try {
         const candidateResponse = await safeFetch(candidateFeedUrl, {
           allowCrossDomainRedirects: true,
+          signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
           headers: {
             "User-Agent": "NuSift/1.0 Ingest-Agent",
             Accept: "application/rss+xml, application/xml, text/xml, text/html",
@@ -1607,14 +1637,27 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       }
 
       const publishedAt = await resolvePublishedAtForFeedItem(item.pubDate, canonicalUrl);
-      if (!isRssIngestWithinFreshnessWindow(publishedAt, now)) {
+      if (!publishedAt) {
+        // Missing or invalid date — preserve existing behavior: skip.
         skipSummary.staleOrMissingPublishedAt += 1;
         pushRejectedItem(rejectedItems, {
           reason: "stale_or_missing_published_at",
           rawLink,
           canonicalUrl,
           title: item.title || null,
-          publishedAt: publishedAt ? publishedAt.toISOString() : null,
+          publishedAt: null,
+        });
+        continue;
+      }
+      if (!isAgent1RssItemFresh(publishedAt, now)) {
+        // Parseable date older than the 7-day Agent 1 freshness window.
+        skipSummary.rssStaleSkipped += 1;
+        pushRejectedItem(rejectedItems, {
+          reason: "stale_or_missing_published_at",
+          rawLink,
+          canonicalUrl,
+          title: item.title || null,
+          publishedAt: publishedAt.toISOString(),
         });
         continue;
       }
@@ -1672,6 +1715,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         const htmlResponse = feedUrl === preferredFrontPageUrl
           ? response
           : await safeFetch(preferredFrontPageUrl, {
+              signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
               headers: {
                 "User-Agent": "NuSift/1.0 Ingest-Agent",
                 Accept: "text/html,application/xhtml+xml",
@@ -1774,7 +1818,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       categoryId,
       status: "SOURCE_FETCH_COMPLETED",
       executionTimeMs: Date.now() - startedAt,
-      errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skipSummary.emptyLink}, skippedOutOfScope=${skipSummary.outOfScope}, skippedAlreadySeen=${skipSummary.alreadySeenFeedItem}, skippedStale=${skipSummary.staleOrMissingPublishedAt}, skippedHtmlNonArticle=${skipSummary.htmlFallbackNonArticle}, skippedHtmlStale=${skipSummary.htmlFallbackStale}.`,
+      errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skipSummary.emptyLink}, skippedOutOfScope=${skipSummary.outOfScope}, skippedAlreadySeen=${skipSummary.alreadySeenFeedItem}, skippedStale=${skipSummary.staleOrMissingPublishedAt}, rssStaleSkipped=${skipSummary.rssStaleSkipped}, skippedHtmlNonArticle=${skipSummary.htmlFallbackNonArticle}, skippedHtmlStale=${skipSummary.htmlFallbackStale}.`,
     });
 
     return {
@@ -1801,6 +1845,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
     if (sourceFeedUrl && source.frontPageUrl) {
       try {
         const htmlResponse = await safeFetch(source.frontPageUrl, {
+          signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
           headers: {
             "User-Agent": "NuSift/1.0 Ingest-Agent",
             Accept: "text/html,application/xhtml+xml",

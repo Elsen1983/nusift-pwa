@@ -123,7 +123,7 @@
               </span>
             </div>
             <p class="mt-1 text-xs text-on-surface-variant">
-              Manually run Agent 1 RSS ingest, Agent 2 web discovery, Agent 3 enrichment, and queue maintenance.
+              Manually trigger pipeline batches and queue maintenance. Agent 1 RSS ingest and Agent 2 web discovery run independently.
             </p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
@@ -133,7 +133,7 @@
               :disabled="isPipelineRunning || !canRunManualPipeline"
               class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {{ isPipelineRunning ? "Running..." : "Run Agent 1" }}
+              {{ isPipelineRunning ? "Running..." : "Run Agent 1 batch" }}
             </button>
             <button
               @click="runArticleDiscovery"
@@ -256,6 +256,56 @@
           </p>
         </div>
 
+        <!-- Agent 1 Progress panel -->
+        <div
+          v-if="showFullDevTools && (agent1Progress != null || agent1ProgressLoading)"
+          class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Agent 1 Progress
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Current Agent 1 eligibility and latest batch run state.
+              </p>
+            </div>
+            <button
+              @click="loadAgent1Progress"
+              class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface"
+            >
+              {{ agent1ProgressLoading ? 'Loading...' : 'Refresh' }}
+            </button>
+          </div>
+          <div v-if="agent1Progress" class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px] text-on-surface-variant">
+            <span>Eligible now: <strong class="text-cyan-200">{{ agent1Progress.totalEligibleNow }}</strong></span>
+            <span v-if="agent1Progress.processedLastRun > 0">Last run processed: <strong>{{ agent1Progress.processedLastRun }}</strong></span>
+            <span v-if="agent1Progress.deferredLastRun > 0">Deferred: <strong class="text-amber-200">{{ agent1Progress.deferredLastRun }}</strong></span>
+            <span>Remaining: <strong :class="agent1Progress.remainingEligible > 0 ? 'text-cyan-200' : 'text-emerald-300'">{{ agent1Progress.remainingEligible }}</strong></span>
+            <span v-if="agent1Progress.stoppedReason" class="font-medium text-amber-200">stopped: {{ agent1Progress.stoppedReason }}</span>
+            <span v-if="agent1Progress.lastDurationMs != null">Duration: <strong>{{ Math.round(agent1Progress.lastDurationMs / 1000) }}s</strong></span>
+          </div>
+          <p v-if="agent1Progress && agent1Progress.remainingEligible === 0 && agent1Progress.lastRunAt" class="mt-2 text-xs text-emerald-300">
+            All Agent 1 targets processed in the latest batch.
+          </p>
+          <p v-else-if="agent1Progress && agent1Progress.remainingEligible > 0" class="mt-2 text-xs text-amber-200">
+            More Agent 1 targets remain. Run Agent 1 again or wait for the next scheduled batch.
+          </p>
+          <div v-if="agent1Progress && agent1Progress.recentDeferredTargets.length > 0" class="mt-3">
+            <p class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant/70">
+              Recent deferred targets ({{ agent1Progress.recentDeferredTargets.length }})
+            </p>
+            <div
+              v-for="(dt, di) in agent1Progress.recentDeferredTargets.slice(0, 5)"
+              :key="di"
+              class="mt-1 flex flex-wrap gap-2 text-[10px] text-on-surface-variant"
+            >
+              <span class="truncate max-w-[200px]">{{ dt.sourceId }}{{ dt.categoryId ? '/' + dt.categoryId : '' }}</span>
+              <span class="text-amber-200">{{ dt.reason }}</span>
+            </div>
+          </div>
+        </div>
+
         <!-- Agent 2 progress panel (page-load state) -->
         <div
           v-if="showFullDevTools && (agent2Progress != null || agent2ProgressLoading)"
@@ -285,7 +335,10 @@
             <span v-if="agent2Progress.stoppedReason" class="font-medium text-amber-200">stopped: {{ agent2Progress.stoppedReason }}</span>
             <span v-if="agent2Progress.lastDurationMs != null">Duration: <strong>{{ Math.round(agent2Progress.lastDurationMs / 1000) }}s</strong></span>
           </div>
-          <p v-if="agent2Progress && agent2Progress.totalEligibleNow === 0" class="mt-2 text-xs text-emerald-300">
+          <p v-if="agent1Progress && agent1Progress.remainingEligible > 0" class="mt-2 text-xs text-amber-200">
+            Blocked by Agent 1: {{ agent1Progress.remainingEligible }} remaining. Finish Agent 1 batches before running Agent 2.
+          </p>
+          <p v-else-if="agent2Progress && agent2Progress.totalEligibleNow === 0" class="mt-2 text-xs text-emerald-300">
             No Agent 2 targets currently eligible.
           </p>
           <p v-else-if="agent2Progress && agent2Progress.remainingEligible > 0 && agent2Progress.stoppedReason" class="mt-2 text-xs text-amber-200">
@@ -1400,8 +1453,30 @@ type Agent2Progress = {
   }>;
 };
 
+type Agent1Progress = {
+  totalEligibleNow: number;
+  latestRunId: string | null;
+  latestRunStartedAt: string | null;
+  latestRunFinishedAt: string | null;
+  lastDurationMs: number | null;
+  processedLastRun: number;
+  deferredLastRun: number;
+  remainingEligible: number;
+  stoppedReason: string | null;
+  recentDeferredTargets: Array<{
+    sourceId: string | null;
+    categoryId: string | null;
+    reason: string;
+    position: number;
+    totalTargetsResolved: number;
+  }>;
+  lastRunAt: string | null;
+};
+
 const agent2Progress = ref<Agent2Progress | null>(null);
 const agent2ProgressLoading = ref(false);
+const agent1Progress = ref<Agent1Progress | null>(null);
+const agent1ProgressLoading = ref(false);
 
 const toastClass = computed(() =>
   toast.value.type === "success"
@@ -1414,14 +1489,18 @@ const showAdminPipelinePanel = computed(() => canAccessDevPanel.value);
 const showFullDevTools = computed(() => canAccessDevPanel.value && canUseFullDevTools.value);
 const agent2BatchDisabledReason = computed(() => {
   if (isArticleDiscoveryRunning.value) return null;
+  if (agent1Progress.value != null && agent1Progress.value.remainingEligible > 0) {
+    return `Finish Agent 1 batches first. ${agent1Progress.value.remainingEligible} Agent 1 target(s) remain.`;
+  }
   if (!canRunArticleDiscovery.value) return "manual Agent 2 runs are disabled by server policy";
   if (agent2Progress.value != null && agent2Progress.value.totalEligibleNow === 0) return "no eligible Agent 2 targets";
   return null;
 });
 const isAgent2BatchDisabled = computed(() =>
   isArticleDiscoveryRunning.value ||
+  (agent1Progress.value != null && agent1Progress.value.remainingEligible > 0) ||
   !canRunArticleDiscovery.value ||
-  (agent2Progress.value != null && agent2Progress.value.totalEligibleNow === 0),
+  (agent2Progress.value != null && agent2Progress.value.totalEligibleNow === 0)
 );
 
 let devPanelPollTimer: number | null = null;
@@ -1601,6 +1680,19 @@ const loadAgent2Progress = async () => {
   }
 };
 
+const loadAgent1Progress = async () => {
+  if (!showFullDevTools.value) return;
+  agent1ProgressLoading.value = true;
+  try {
+    const response = await $api<{ ok: boolean; progress: Agent1Progress }>("/api/dev/agent1-progress");
+    agent1Progress.value = response.progress || null;
+  } catch {
+    agent1Progress.value = null;
+  } finally {
+    agent1ProgressLoading.value = false;
+  }
+};
+
 const loadHeadlessQueue = async () => {
   if (!showFullDevTools.value) return;
   headlessQueueLoading.value = true;
@@ -1673,6 +1765,7 @@ const refreshDevPanel = async () => {
       loadHardSources(),
       loadHardSourceProfiles(),
       loadAgent2Progress(),
+      loadAgent1Progress(),
     ]);
   } catch (error) {
     console.error("Failed to refresh admin panel:", error);
@@ -1701,11 +1794,32 @@ const runManualPipeline = async () => {
   isPipelineRunning.value = true;
   startDevPanelPolling();
   try {
-    const response = await $api<{ ok: boolean; result?: any }>("/api/dev/run-news-pipeline", { method: "POST" });
-    showToast(`Pipeline finished: ${response.result?.inserted ?? 0} inserted, ${response.result?.skipped ?? 0} skipped, ${response.result?.failed ?? 0} failed.`, "success", 3500);
+    const response = await $api<{
+      ok: boolean;
+      processed?: number;
+      deferred?: number;
+      remainingEligible?: number;
+      stoppedReason?: string;
+      inserted?: number;
+      skipped?: number;
+      failed?: number;
+      durationMs?: number;
+    }>("/api/dev/run-news-pipeline", { method: "POST" });
+    const processed = response.processed ?? 0;
+    const deferred = response.deferred ?? 0;
+    const remaining = response.remainingEligible ?? 0;
+    const stoppedReason = response.stoppedReason ?? "completed";
+    let msg = `Agent 1 batch: ${processed} processed, ${response.inserted ?? 0} inserted, ${response.skipped ?? 0} skipped, ${response.failed ?? 0} failed.`;
+    if (stoppedReason !== "completed") {
+      msg += ` stopped: ${stoppedReason}`;
+    }
+    if (deferred > 0) {
+      msg += ` (${remaining} remaining)`;
+    }
+    showToast(msg, "success", 4000);
     await feedStore.fetchFeed({ force: true });
   } catch (error: any) {
-    showToast(error?.statusMessage || error?.message || "Pipeline run failed.", "error");
+    showToast(error?.statusMessage || error?.message || "Agent 1 batch run failed.", "error");
   } finally {
     isPipelineRunning.value = false;
     await refreshDevPanel();

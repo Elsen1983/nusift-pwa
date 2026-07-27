@@ -58,7 +58,7 @@ const makeResponse = (body: string, ok = true) => ({
   headers: { get: () => "application/rss+xml" },
 });
 
-const freshDate = () => new Date("2026-07-19T12:00:00Z");
+const freshDate = () => new Date(Date.now() - 24 * 60 * 60 * 1000);
 const staleDate = () => new Date("2020-01-01T00:00:00Z");
 
 const rssXml = (items: Array<{ title: string; link: string; pubDate: string; category?: string }>) => {
@@ -711,6 +711,67 @@ describe("generic RSS fallback integration", () => {
   });
 
   // ── 14. Double-increment prevention ──
+  it("HTML fallback skips stale article details using the 7-day Agent 1 freshness window", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: null,
+      discoveryEvidence: null,
+      lastRssCheckAt: null,
+    });
+
+    discoverFeedForUrlMock.mockResolvedValue({
+      feedUrl: null,
+      scopeMatch: "unrelated",
+      detection: "none",
+      score: 0,
+      scopeConfidence: "low",
+    });
+
+    const articleUrl = "https://example.com/politics/2026/07/stale-article-123";
+    const listingHtml = `<a href="${articleUrl}">Stale politics article long enough title</a>`;
+    const detailHtml = `
+      <html>
+        <head>
+          <title>Stale politics article long enough title</title>
+          <meta property="article:published_time" content="2026-07-19T12:00:00.000Z">
+          <meta name="description" content="This article is outside the unified seven-day freshness window.">
+        </head>
+        <body>Article body</body>
+      </html>
+    `;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") {
+        return makeResponse(rssXml([
+          {
+            title: "Sports item keeps feed parseable but out of category",
+            link: "https://example.com/sports/out-of-scope",
+            pubDate: freshDate().toISOString(),
+            category: "Sports",
+          },
+        ]));
+      }
+      if (url === "https://example.com/politics") return makeResponse(listingHtml);
+      if (url === articleUrl) return makeResponse(detailHtml);
+      return makeResponse("", false);
+    });
+
+    const result = await ingestSource("src-1", "cat-politics");
+
+    expect(result.candidates).toHaveLength(0);
+    expect(result.skipSummary.htmlFallbackStale).toBe(1);
+    expect(result.rejectedItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: "html_fallback_stale",
+          canonicalUrl: articleUrl,
+        }),
+      ]),
+    );
+  });
+
   it("does not double-increment consecutiveNonProductiveRuns when discovery and fetch both fail", async () => {
     const { ingestSource } = await import("./ingest");
 

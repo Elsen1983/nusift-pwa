@@ -316,6 +316,8 @@ export interface IngestSkipSummary {
   alreadySeenFeedItem: number;
   htmlFallbackNonArticle: number;
   htmlFallbackStale: number;
+  /** RSS/Atom/JSON feed items with a parseable publishedAt older than the Agent 1 freshness window (7 days). */
+  rssStaleSkipped: number;
 }
 
 export type ScopeMatch = "exact" | "probable" | "generic" | "unrelated";

@@ -4,6 +4,12 @@ const prismaMock = vi.hoisted(() => ({
   userSourceSubscription: { findMany: vi.fn() },
   userCategorySubscription: { findMany: vi.fn() },
   sourceCategory: { findMany: vi.fn().mockResolvedValue([]) },
+  pipelineRun: { findFirst: vi.fn(), findUnique: vi.fn() },
+  pipelineArtifact: {
+    createMany: vi.fn().mockResolvedValue({ count: 0 }),
+    findMany: vi.fn().mockResolvedValue([]),
+    count: vi.fn().mockResolvedValue(0),
+  },
 }));
 
 vi.mock("../prisma", () => ({ prisma: prismaMock }));
@@ -18,6 +24,7 @@ vi.mock("./artifacts", () => ({
   finalizePipelineRun: finalizePipelineRunMock,
   persistPipelineArtifact: persistPipelineArtifactMock,
   persistHardCaseDiscoveryArtifacts: persistHardCaseDiscoveryArtifactsMock,
+  persistAgent1TargetOutcomeArtifact: persistAgent1TargetOutcomeArtifactMock,
 }));
 
 vi.mock("./log", () => ({
@@ -26,6 +33,7 @@ vi.mock("./log", () => ({
 
 const ingestSourceMock = vi.fn();
 const persistCandidatesMock = vi.fn();
+const persistAgent1TargetOutcomeArtifactMock = vi.fn();
 
 vi.mock("./ingest", () => ({
   ingestSource: ingestSourceMock,
@@ -68,13 +76,31 @@ describe("orchestrator – Agent 1 / Agent 2 split", () => {
     // Default: no active subscriptions → empty pipeline
     prismaMock.userSourceSubscription.findMany.mockResolvedValue([]);
     prismaMock.userCategorySubscription.findMany.mockResolvedValue([]);
+    prismaMock.pipelineRun.findFirst.mockResolvedValue(null);
+    prismaMock.pipelineArtifact.findMany.mockResolvedValue([]);
+    prismaMock.pipelineArtifact.count.mockResolvedValue(0);
 
     createPipelineRunMock.mockResolvedValue({ id: "run-1" });
     finalizePipelineRunMock.mockResolvedValue(undefined);
     persistPipelineArtifactMock.mockResolvedValue(undefined);
     persistHardCaseDiscoveryArtifactsMock.mockResolvedValue(0);
     markFeedRunOutcomeMock.mockResolvedValue(undefined);
+    persistAgent1TargetOutcomeArtifactMock.mockResolvedValue(undefined);
     runArticleDiscoveryBatchMock.mockResolvedValue(makeA2Result());
+
+    // Default ingest mock
+    ingestSourceMock.mockResolvedValue({
+      sourceId: "src-1",
+      categoryId: null,
+      candidates: [],
+      failed: 0,
+      feedUrl: "https://example.com/feed",
+      feedFormat: "rss",
+      skipSummary: { emptyLink: 0, outOfScope: 0, staleOrMissingPublishedAt: 0, alreadySeenFeedItem: 0, htmlFallbackNonArticle: 0, htmlFallbackStale: 0 },
+      rejectedItems: [],
+      hardCaseQueueCandidates: [],
+    });
+    persistCandidatesMock.mockResolvedValue({ inserted: 0, skipped: 0, failed: 0, enriched: 0 });
   });
 
   // ── Default behavior: A1 only, no A2 hook ─────────────────────────────
@@ -205,5 +231,222 @@ describe("orchestrator – Agent 1 / Agent 2 split", () => {
 
     // Agent 2 NOT called (default)
     expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("orchestrator – runAgent1Batch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([]);
+    prismaMock.userCategorySubscription.findMany.mockResolvedValue([]);
+    createPipelineRunMock.mockResolvedValue({ id: "run-batch-1" });
+    finalizePipelineRunMock.mockResolvedValue(undefined);
+    persistPipelineArtifactMock.mockResolvedValue(undefined);
+    persistHardCaseDiscoveryArtifactsMock.mockResolvedValue(0);
+    persistAgent1TargetOutcomeArtifactMock.mockResolvedValue(undefined);
+    markFeedRunOutcomeMock.mockResolvedValue(undefined);
+    ingestSourceMock.mockResolvedValue({
+      sourceId: "src-1",
+      categoryId: null,
+      candidates: [],
+      failed: 0,
+      feedUrl: "https://example.com/feed",
+      feedFormat: "rss",
+      skipSummary: { emptyLink: 0, outOfScope: 0, staleOrMissingPublishedAt: 0, alreadySeenFeedItem: 0, htmlFallbackNonArticle: 0, htmlFallbackStale: 0 },
+      rejectedItems: [],
+      hardCaseQueueCandidates: [],
+    });
+    persistCandidatesMock.mockResolvedValue({ inserted: 0, skipped: 0, failed: 0, enriched: 0 });
+    prismaMock.pipelineArtifact.createMany.mockResolvedValue({ count: 0 });
+  });
+
+  it("returns no_targets when no active targets exist", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([]);
+    prismaMock.userCategorySubscription.findMany.mockResolvedValue([]);
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    const result = await runAgent1Batch();
+
+    expect(result.stoppedReason).toBe("no_targets");
+    expect(result.processed).toBe(0);
+    expect(result.pipelineRunId).toBeNull();
+  });
+
+  it("processes maxTargets only and stops with max_targets", async () => {
+    const targets = Array.from({ length: 8 }, (_, i) => ({ sourceId: `src-${i}` }));
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue(
+      targets.map((t) => ({ sourceId: t.sourceId })),
+    );
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    const result = await runAgent1Batch({ maxTargets: 3 });
+
+    expect(result.stoppedReason).toBe("max_targets");
+    expect(result.processed).toBe(3);
+    expect(result.deferred).toBe(5);
+    expect(result.remainingEligible).toBe(5);
+    expect(ingestSourceMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops on time_budget", async () => {
+    const targets = Array.from({ length: 10 }, (_, i) => ({ sourceId: `src-${i}` }));
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue(
+      targets.map((t) => ({ sourceId: t.sourceId })),
+    );
+
+    // Use vi.spyOn for deterministic Date.now mocking
+    let fakeTime = 0;
+    const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
+    ingestSourceMock.mockImplementation(async () => {
+      fakeTime += 3000; // Simulate 3s per target
+      return {
+        sourceId: "src-1",
+        categoryId: null,
+        candidates: [],
+        failed: 0,
+        feedUrl: "https://example.com/feed",
+        feedFormat: "rss",
+        skipSummary: { emptyLink: 0, outOfScope: 0, staleOrMissingPublishedAt: 0, alreadySeenFeedItem: 0, htmlFallbackNonArticle: 0, htmlFallbackStale: 0 },
+        rejectedItems: [],
+        hardCaseQueueCandidates: [],
+      };
+    });
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    // budget=200ms, minRemaining=80ms, each target=100ms
+    // Guard before target 1: elapsed=0, remaining=200 > 80 → process. fakeTime=100
+    // Guard before target 2: elapsed=100, remaining=100 > 80 → process. fakeTime=200
+    // Guard before target 3: elapsed=200, remaining=0 < 80 → time_budget
+    const result = await runAgent1Batch({
+      maxTargets: 10,
+      timeBudgetMs: 10000,
+      minRemainingMs: 5000,
+    });
+
+    dateSpy.mockRestore();
+
+    expect(result.processed).toBe(2);
+    expect(result.stoppedReason).toBe("time_budget");
+  });
+
+  it("computes deferred and remainingEligible correctly", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([
+      { sourceId: "src-1" },
+      { sourceId: "src-2" },
+      { sourceId: "src-3" },
+    ]);
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    const result = await runAgent1Batch({ maxTargets: 2 });
+
+    expect(result.processed).toBe(2);
+    expect(result.deferred).toBe(1);
+    expect(result.remainingEligible).toBe(1);
+    expect(result.stoppedReason).toBe("max_targets");
+  });
+
+  it("prioritizes latest deferred Agent 1 targets on the next bounded run", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([
+      { sourceId: "src-1" },
+      { sourceId: "src-2" },
+      { sourceId: "src-3" },
+      { sourceId: "src-4" },
+    ]);
+    prismaMock.pipelineRun.findFirst.mockResolvedValueOnce({ id: "previous-run" });
+    prismaMock.pipelineArtifact.findMany.mockResolvedValueOnce([
+      {
+        sourceId: "src-3",
+        categoryId: null,
+        payload: { position: 0 },
+        createdAt: new Date("2026-07-27T12:00:00Z"),
+      },
+      {
+        sourceId: "src-4",
+        categoryId: null,
+        payload: { position: 1 },
+        createdAt: new Date("2026-07-27T12:00:00Z"),
+      },
+    ]);
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    const result = await runAgent1Batch({ maxTargets: 2 });
+
+    expect(result.processed).toBe(2);
+    expect(result.deferred).toBe(0);
+    expect(result.remainingEligible).toBe(0);
+    expect(result.stoppedReason).toBe("completed");
+    expect(ingestSourceMock).toHaveBeenNthCalledWith(1, "src-3", undefined);
+    expect(ingestSourceMock).toHaveBeenNthCalledWith(2, "src-4", undefined);
+  });
+
+  it("failures count as processed and do not abort the batch", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([
+      { sourceId: "src-1" },
+      { sourceId: "src-2" },
+      { sourceId: "src-3" },
+    ]);
+
+    let callCount = 0;
+    ingestSourceMock.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 2) throw new Error("ingest exploded");
+      return {
+        sourceId: "src-1",
+        categoryId: null,
+        candidates: [],
+        failed: 0,
+        feedUrl: "https://example.com/feed",
+        feedFormat: "rss",
+        skipSummary: { emptyLink: 0, outOfScope: 0, staleOrMissingPublishedAt: 0, alreadySeenFeedItem: 0, htmlFallbackNonArticle: 0, htmlFallbackStale: 0 },
+        rejectedItems: [],
+        hardCaseQueueCandidates: [],
+      };
+    });
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    const result = await runAgent1Batch({ maxTargets: 5 });
+
+    expect(result.processed).toBe(3);
+    expect(result.result.failed).toBe(1);
+    expect(result.stoppedReason).toBe("completed");
+  });
+
+  it("does NOT call runArticleDiscoveryBatch", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([
+      { sourceId: "src-1" },
+    ]);
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    await runAgent1Batch();
+
+    expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("uses targeted sourceIds when provided", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([
+      { sourceId: "src-1" },
+      { sourceId: "src-2" },
+    ]);
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    const result = await runAgent1Batch({ sourceIds: ["src-1"], maxTargets: 5 });
+
+    // Should use hydratePipelineTargets path (calls sourceCategory.findMany)
+    expect(result.processed).toBeGreaterThanOrEqual(1);
+    expect(ingestSourceMock).toHaveBeenCalledWith("src-1", undefined);
+  });
+
+  it("clamps maxTargets to [1, 50] range", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([
+      { sourceId: "src-1" },
+    ]);
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    const result = await runAgent1Batch({ maxTargets: 999 });
+
+    // Should have processed 1 (only 1 target), not 999
+    expect(result.processed).toBe(1);
+    expect(result.stoppedReason).toBe("completed");
   });
 });

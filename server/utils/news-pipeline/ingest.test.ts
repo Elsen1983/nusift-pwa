@@ -4,6 +4,10 @@ import {
   isFallbackFeedItemRelevantToCategory,
   isScopedCategoryFeed,
   isRssIngestWithinFreshnessWindow,
+  isAgent1ArticleFresh,
+  isAgent1RssItemFresh,
+  AGENT1_ARTICLE_FRESHNESS_DAYS,
+  AGENT1_RSS_FRESHNESS_DAYS,
   matchCategoryIdForUrl,
   shouldQueueHardCaseDiscovery,
   hasFreshGenericEvidence,
@@ -117,22 +121,56 @@ describe("isScopedCategoryFeed", () => {
   });
 });
 
-describe("isRssIngestWithinFreshnessWindow", () => {
-  const now = new Date("2026-07-03T12:00:00.000Z");
+describe("isAgent1ArticleFresh", () => {
+  const now = new Date("2026-07-27T12:00:00.000Z");
 
-  it("accepts articles published within the last 14 days", () => {
-    expect(isRssIngestWithinFreshnessWindow(new Date("2026-06-20T12:00:00.000Z"), now)).toBe(true);
+  it("exports the expected freshness constant", () => {
+    expect(AGENT1_ARTICLE_FRESHNESS_DAYS).toBe(7);
   });
 
-  it("rejects articles older than 14 days or missing dates", () => {
-    expect(isRssIngestWithinFreshnessWindow(new Date("2026-06-19T11:59:59.000Z"), now)).toBe(false);
-    expect(isRssIngestWithinFreshnessWindow(null, now)).toBe(false);
+  it("AGENT1_RSS_FRESHNESS_DAYS is an alias for AGENT1_ARTICLE_FRESHNESS_DAYS", () => {
+    expect(AGENT1_RSS_FRESHNESS_DAYS).toBe(AGENT1_ARTICLE_FRESHNESS_DAYS);
   });
-});
 
-describe("publish date fallback behavior", () => {
-  it("still treats missing dates as stale before fallback resolution", () => {
-    expect(isRssIngestWithinFreshnessWindow(null, new Date("2026-07-06T12:00:00.000Z"))).toBe(false);
+  it("isAgent1RssItemFresh is an alias for isAgent1ArticleFresh", () => {
+    expect(isAgent1RssItemFresh).toBe(isAgent1ArticleFresh);
+  });
+
+  it("isRssIngestWithinFreshnessWindow is an alias for isAgent1ArticleFresh", () => {
+    expect(isRssIngestWithinFreshnessWindow).toBe(isAgent1ArticleFresh);
+  });
+
+  it("accepts an article published 1 second ago", () => {
+    expect(isAgent1ArticleFresh(new Date("2026-07-27T11:59:59.000Z"), now)).toBe(true);
+  });
+
+  it("accepts an article published exactly 7 days ago", () => {
+    expect(isAgent1ArticleFresh(new Date("2026-07-20T12:00:00.000Z"), now)).toBe(true);
+  });
+
+  it("rejects an article published 7 days + 1 second ago", () => {
+    expect(isAgent1ArticleFresh(new Date("2026-07-20T11:59:59.000Z"), now)).toBe(false);
+  });
+
+  it("rejects an article published 8 days ago", () => {
+    expect(isAgent1ArticleFresh(new Date("2026-07-19T12:00:00.000Z"), now)).toBe(false);
+  });
+
+  it("rejects an article published 30 days ago", () => {
+    expect(isAgent1ArticleFresh(new Date("2026-06-27T12:00:00.000Z"), now)).toBe(false);
+  });
+
+  it("rejects null publishedAt (missing/invalid dates)", () => {
+    expect(isAgent1ArticleFresh(null, now)).toBe(false);
+  });
+
+  it("rejects future dates (negative diff)", () => {
+    expect(isAgent1ArticleFresh(new Date("2026-07-28T12:00:00.000Z"), now)).toBe(false);
+  });
+
+  it("rejects articles at 14-day boundary (old window is gone)", () => {
+    // 14 days ago should be rejected — the old 14-day window no longer applies
+    expect(isAgent1ArticleFresh(new Date("2026-07-13T12:00:00.000Z"), now)).toBe(false);
   });
 });
 

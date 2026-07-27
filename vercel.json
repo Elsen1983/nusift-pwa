@@ -2,20 +2,32 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
-      "path": "/api/internal/run-agent1",
+      "path": "/api/internal/run-agent1?maxTargets=5&timeBudgetMs=240000&minRemainingMs=30000",
       "schedule": "0 3 * * *"
     },
     {
-      "path": "/api/internal/run-agent2?maxTargets=5&timeBudgetMs=240000&minRemainingMs=30000",
+      "path": "/api/internal/run-agent1?maxTargets=5&timeBudgetMs=240000&minRemainingMs=30000",
+      "schedule": "5 3 * * *"
+    },
+    {
+      "path": "/api/internal/run-agent1?maxTargets=5&timeBudgetMs=240000&minRemainingMs=30000",
       "schedule": "10 3 * * *"
     },
     {
-      "path": "/api/internal/run-agent2?maxTargets=5&timeBudgetMs=240000&minRemainingMs=30000",
-      "schedule": "20 3 * * *"
+      "path": "/api/internal/run-agent1?maxTargets=5&timeBudgetMs=240000&minRemainingMs=30000",
+      "schedule": "15 3 * * *"
     },
     {
       "path": "/api/internal/run-agent2?maxTargets=5&timeBudgetMs=240000&minRemainingMs=30000",
-      "schedule": "30 3 * * *"
+      "schedule": "25 3 * * *"
+    },
+    {
+      "path": "/api/internal/run-agent2?maxTargets=5&timeBudgetMs=240000&minRemainingMs=30000",
+      "schedule": "35 3 * * *"
+    },
+    {
+      "path": "/api/internal/run-agent2?maxTargets=5&timeBudgetMs=240000&minRemainingMs=30000",
+      "schedule": "45 3 * * *"
     },
     {
       "path": "/api/internal/run-hard-case-discovery?limit=10",

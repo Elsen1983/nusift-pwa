@@ -1,8 +1,8 @@
-import { createError } from "h3";
+import { createError, readBody } from "h3";
 import { requireAdminId } from "../../utils/require-admin";
 import { assertRateLimit } from "../../utils/rate-limit";
-import { runNewsPipeline } from "../../utils/news-pipeline/orchestrator";
-import { resolveActivePipelineTargets } from "../../utils/news-pipeline/targets";
+import { readBoundedNumber } from "../../utils/news-pipeline/parse-bounded-number";
+import { runAgent1Batch } from "../../utils/news-pipeline/orchestrator";
 import { resolveAgent2Targets } from "../../utils/news-pipeline/article-discovery";
 
 export default defineEventHandler(async (event) => {
@@ -12,36 +12,32 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 403, statusMessage: "Manual trigger disabled." });
   }
 
-  await assertRateLimit(event, "run-news-pipeline", 3, 10 * 60 * 1000);
+  // Agent 1 is now intentionally batched, so admins may need several
+  // consecutive runs to drain the queue after a large source refresh.
+  await assertRateLimit(event, "run-news-pipeline", 20, 10 * 60 * 1000);
 
   const body = await readBody(event).catch(() => ({}));
-  const activeTargets = await resolveActivePipelineTargets();
-  const activeSourceIds = [...new Set(activeTargets.map((target) => target.sourceId))];
-  const activeCategoryIds = [
-    ...new Set(
-      activeTargets
-        .map((target) => target.categoryId)
-        .filter((categoryId): categoryId is string => Boolean(categoryId)),
-    ),
-  ];
+  const maxTargets = readBoundedNumber(body?.maxTargets, 5, 1, 50);
+  const timeBudgetMs = readBoundedNumber(body?.timeBudgetMs, 240_000, 10_000, 600_000);
+  const minRemainingMs = readBoundedNumber(body?.minRemainingMs, 30_000, 5_000, 120_000);
 
   const sourceIds = Array.isArray(body?.sourceIds)
-    ? body.sourceIds.map(String).filter((id: string) => activeSourceIds.includes(id))
+    ? body.sourceIds.map(String)
     : undefined;
-
   const categoryIds = Array.isArray(body?.categoryIds)
-    ? body.categoryIds
-        .map(String)
-        .filter((id: string) => activeCategoryIds.includes(id))
+    ? body.categoryIds.map(String)
     : undefined;
 
   // Agent 1 only — does NOT trigger Agent 2
-  const startedAt = Date.now();
-  const result = await runNewsPipeline(sourceIds, categoryIds);
-  const durationMs = Date.now() - startedAt;
+  const batchResult = await runAgent1Batch({
+    sourceIds,
+    categoryIds,
+    maxTargets,
+    timeBudgetMs,
+    minRemainingMs,
+  });
 
   // Compute Agent 2 eligible count after A1 run.
-  // Scoped to same target filters when provided.
   let agent2EligibleAfterRun: number | null = null;
   let agent2EligibleAfterRunError: string | null = null;
   try {
@@ -55,15 +51,19 @@ export default defineEventHandler(async (event) => {
   return {
     ok: true,
     agent: "A1",
-    durationMs,
-    targets: result.sourcesScanned,
-    candidates: result.candidatesFound,
-    inserted: result.inserted,
-    skipped: result.skipped,
-    failed: result.failed,
-    artifacts: result.artifactCount,
+    pipelineRunId: batchResult.pipelineRunId,
+    targetsResolved: batchResult.targetsResolved,
+    processed: batchResult.processed,
+    deferred: batchResult.deferred,
+    remainingEligible: batchResult.remainingEligible,
+    stoppedReason: batchResult.stoppedReason,
+    durationMs: batchResult.durationMs,
+    candidates: batchResult.result.candidates,
+    inserted: batchResult.result.inserted,
+    skipped: batchResult.result.skipped,
+    failed: batchResult.result.failed,
+    artifacts: batchResult.result.artifactCount,
     agent2EligibleAfterRun,
     agent2EligibleAfterRunError,
-    result,
   };
 });

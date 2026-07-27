@@ -62,6 +62,11 @@ const ESSENTIAL_AGENT_LOG_STATUSES = new Set([
   "MAINTENANCE_CLEANUP_STARTED",
   "MAINTENANCE_CLEANUP_FINISHED",
   "MAINTENANCE_CLEANUP_FAILED",
+  // ── Agent 1 batch logging ─────────────────────────────────────────────
+  "A1_BATCH_STARTED",
+  "A1_BATCH_FINISHED",
+  "A1_BATCH_STOPPED",
+  "A1_TARGETS_DEFERRED",
 ]);
 
 const isPersistedAgentLogStatus = (status: string) =>
@@ -151,6 +156,10 @@ export const getAgentLogPrefix = (status: string) => {
     ].includes(status)
   ) {
     return "MT";
+  }
+
+  if (["A1_BATCH_STARTED", "A1_BATCH_FINISHED", "A1_BATCH_STOPPED", "A1_TARGETS_DEFERRED"].includes(status)) {
+    return "A1";
   }
 
   return "A?";
