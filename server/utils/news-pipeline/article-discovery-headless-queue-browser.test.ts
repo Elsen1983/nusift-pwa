@@ -10,6 +10,7 @@ const discoverArticleLinksWithBrowserMock = vi.fn();
 const evaluateArticleLinkCandidateMock = vi.fn();
 const evaluateArticleLinkCandidateWithBrowserMock = vi.fn();
 const persistCandidatesMock = vi.fn();
+const createOrUpdateHardSourceProfileMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -74,12 +75,17 @@ vi.mock("./ingest", () => ({
   persistCandidates: (...args: any[]) => persistCandidatesMock(...args),
 }));
 
+vi.mock("./hard-source-profile", () => ({
+  createOrUpdateHardSourceProfile: (...args: any[]) => createOrUpdateHardSourceProfileMock(...args),
+}));
+
 vi.mock("./types", () => ({}));
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 const makeArtifact = (overrides: Record<string, unknown> = {}) => ({
   id: (overrides.id as string) ?? "art-1",
+  pipelineRunId: (overrides.pipelineRunId as string) ?? "run-default",
   sourceId: (overrides.sourceId as string | null) ?? "src-1",
   categoryId: (overrides.categoryId as string | null) ?? null,
   createdAt: (overrides.createdAt as Date) ?? new Date("2026-07-16T10:00:00Z"),
@@ -173,9 +179,11 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     evaluateArticleLinkCandidateMock.mockReset();
     evaluateArticleLinkCandidateWithBrowserMock.mockReset();
     persistCandidatesMock.mockReset();
+    createOrUpdateHardSourceProfileMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
     isBrowserFallbackEnabledMock.mockReturnValue(true);
     persistCandidatesMock.mockResolvedValue({ inserted: 0, skipped: 0, failed: 0 });
+    createOrUpdateHardSourceProfileMock.mockResolvedValue("profile-1");
   });
 
   async function loadFn() {
@@ -427,6 +435,106 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
   });
 
   // ── already-claimed artifact → no browser work ─────────────────────────
+
+  it("creates a hard-source profile when rendered browser fallback finds zero candidates for weak static quality", async () => {
+    const categoryUrl = "https://example.com/section";
+    const link = "https://example.com/story";
+    findManyMock.mockResolvedValue([
+      makeArtifact({
+        id: "artifact-1",
+        pipelineRunId: "run-1",
+        categoryId: "cat-1",
+        payload: {
+          targetUrl: categoryUrl,
+          sourceId: "src-1",
+          quality: "weak",
+          escalationReasons: ["low_acceptance_rate"],
+        },
+      }),
+    ]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(link)], {
+        shortlistedLinkCount: 1,
+        topRejectionReasons: [
+          { reason: "out_of_category_scope", count: 45 },
+          { reason: "listing_page", count: 5 },
+          { reason: "utility_path", count: 2 },
+        ],
+      }),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
+      makeRejectedEvaluation(link, "rejected_out_of_scope", "out_of_category_scope"),
+    );
+
+    const fn = await loadFn();
+    await fn({ dryRun: false, runBrowser: true });
+
+    expect(createOrUpdateHardSourceProfileMock).toHaveBeenCalledTimes(1);
+    expect(createOrUpdateHardSourceProfileMock).toHaveBeenCalledWith({
+      pipelineRunId: "run-1",
+      sourceId: "src-1",
+      categoryId: "cat-1",
+      targetUrl: categoryUrl,
+      fromArtifactId: "artifact-1",
+      staticQuality: "weak",
+      browserStatus: "BROWSER_NO_CANDIDATES",
+      dominantReasons: [
+        "out_of_category_scope",
+        "out_of_category_scope",
+        "listing_page",
+        "utility_path",
+      ],
+      linkFilterReasons: {
+        out_of_category_scope: 45,
+        listing_page: 5,
+        utility_path: 2,
+      },
+      detailRejectionReasons: {
+        rejected_out_of_scope: 1,
+      },
+      notes: ["Browser fallback rendered but produced zero accepted candidates."],
+    });
+  });
+
+  it("does not create a hard-source profile when browser fallback resolves with candidates", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/breaking";
+    findManyMock.mockResolvedValue([makeArtifact({ pipelineRunId: "run-1" })]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(makeBrowserResultOk([makeBrowserLink(articleUrl)]));
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    await fn({ dryRun: false, runBrowser: true });
+
+    expect(createOrUpdateHardSourceProfileMock).not.toHaveBeenCalled();
+  });
+
+  it("does not create a hard-source profile when static quality is productive", async () => {
+    const link = "https://example.com/news/old-story";
+    findManyMock.mockResolvedValue([
+      makeArtifact({
+        pipelineRunId: "run-1",
+        payload: {
+          targetUrl: "https://example.com/news",
+          sourceId: "src-1",
+          quality: "productive",
+          escalationReasons: [],
+        },
+      }),
+    ]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(makeBrowserResultOk([makeBrowserLink(link)]));
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
+      makeRejectedEvaluation(link, "rejected_stale", "stale"),
+    );
+
+    const fn = await loadFn();
+    await fn({ dryRun: false, runBrowser: true });
+
+    expect(createOrUpdateHardSourceProfileMock).not.toHaveBeenCalled();
+  });
 
   it("skips browser work when claim returns count 0 (already claimed)", async () => {
     findManyMock.mockResolvedValue([makeArtifact()]);

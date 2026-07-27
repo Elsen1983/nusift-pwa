@@ -156,6 +156,12 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
         ? "Agent 1 failed while fetching or parsing this target."
         : "Agent 1 produced no newly inserted articles for this target.";
 
+  // Determine RSS-active state: a category target with a scoped RSS feed that
+  // parsed successfully but produced zero new inserts is RSS-active, not failed.
+  // Must also check failed === 0 so real fetch/parse failures aren't masked as RSS-active.
+  const rssActive = !passed && !handedToAgent2 && input.result.failed === 0 && input.result.feedUrl != null && input.persisted.inserted === 0;
+  const rssUrl = input.result.feedUrl || null;
+
   const payload: Prisma.InputJsonObject = {
     schemaVersion: 1,
     artifactKind: "agent1_target_outcome",
@@ -164,14 +170,16 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
     sourceUrl,
     passed,
     handedToAgent2,
+    rssActive,
     candidates: input.result.candidates.length,
     inserted: input.persisted.inserted,
     skipped: input.persisted.skipped,
     failed: input.persisted.failed + input.result.failed,
     enriched,
     feedUrl: input.result.feedUrl || null,
+    rssUrl,
     feedFormat: input.result.feedFormat || null,
-    failureReason,
+    failureReason: rssActive ? "RSS feed active but no new articles inserted." : failureReason,
     skipSummary: serializeSkipSummary(input.result.skipSummary),
     capturedAt: new Date().toISOString(),
   };
@@ -182,10 +190,14 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
       sourceId: input.result.sourceId,
       categoryId: input.result.categoryId || null,
       artifactType: "agent1_target_outcome",
-      status: passed ? "PASS" : handedToAgent2 ? "HANDOFF_TO_AGENT2" : "FAILED",
+      status: passed ? "PASS" : handedToAgent2 ? "HANDOFF_TO_AGENT2" : rssActive ? "RSS_ACTIVE" : "FAILED",
       candidateCount: input.result.candidates.length,
       payload,
-      errorLog: failureReason,
+      errorLog: passed
+        ? null
+        : rssActive
+          ? "RSS feed active but no new articles inserted."
+          : failureReason,
     },
   });
 }

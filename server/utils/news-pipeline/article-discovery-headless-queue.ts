@@ -20,6 +20,7 @@ import {
 import { persistCandidates } from "./ingest";
 import type { IngestCandidate } from "./types";
 import { normalizeUrl } from "./text";
+import { createOrUpdateHardSourceProfile } from "./hard-source-profile";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 25;
@@ -37,6 +38,7 @@ type HeadlessQueueInput = {
 
 type HeadlessQueueArtifact = {
   id: string;
+  pipelineRunId: string;
   sourceId: string | null;
   categoryId: string | null;
   createdAt: Date;
@@ -251,6 +253,7 @@ export async function processArticleDiscoveryHeadlessQueue(
     take: fetchLimit,
     select: {
       id: true,
+      pipelineRunId: true,
       sourceId: true,
       categoryId: true,
       createdAt: true,
@@ -260,6 +263,7 @@ export async function processArticleDiscoveryHeadlessQueue(
 
   const items: HeadlessQueueArtifact[] = artifacts.map((a) => ({
     id: a.id,
+    pipelineRunId: a.pipelineRunId,
     sourceId: a.sourceId,
     categoryId: a.categoryId,
     createdAt: a.createdAt,
@@ -372,6 +376,19 @@ export async function processArticleDiscoveryHeadlessQueue(
           skippedAlreadyClaimed += 1;
         } else {
           updatedArtifactIds.push(item.id);
+          // Persist a hard-source profile for disabled-browser targets.
+          if (sourceId) {
+            await createOrUpdateHardSourceProfile({
+              pipelineRunId: item.pipelineRunId,
+              sourceId,
+              categoryId: item.categoryId ?? null,
+              targetUrl,
+              fromArtifactId: item.id,
+              staticQuality: (fields.quality as "failed" | "weak" | "blocked" | null) ?? null,
+              browserStatus: "BROWSER_FALLBACK_DISABLED",
+              notes: ["Browser fallback is disabled by environment variable."],
+            });
+          }
         }
         continue;
       }
@@ -613,6 +630,29 @@ export async function processArticleDiscoveryHeadlessQueue(
           executionTimeMs: browserResult.diagnostics.elapsedMs,
           errorLog: `Browser fallback failed for ${targetUrl}: ${browserResult.reason}. links=${browserResult.diagnostics.articleLikeLinkCount}, runtime=${browserResult.diagnostics.browserRuntimeAvailable}.`,
         });
+
+        // Persist a hard-source profile for failed browser targets so
+        // future AI inspection or custom adapter generation can work
+        // from structured evidence.
+        if (sourceId) {
+          const topReasons = (browserResult.topRejectionReasons ?? []).map((r) => r.reason);
+          const linkFilterReasons: Record<string, number> = {};
+          for (const r of browserResult.topRejectionReasons ?? []) {
+            linkFilterReasons[r.reason] = r.count;
+          }
+          await createOrUpdateHardSourceProfile({
+            pipelineRunId: item.pipelineRunId,
+            sourceId,
+            categoryId: item.categoryId ?? null,
+            targetUrl,
+            fromArtifactId: item.id,
+            staticQuality: (fields.quality as "failed" | "weak" | "blocked" | null) ?? null,
+            browserStatus: status as "BROWSER_NO_CANDIDATES" | "BROWSER_RUNTIME_UNAVAILABLE",
+            dominantReasons: topReasons,
+            linkFilterReasons,
+            notes: [`Browser fallback failed: ${browserResult.reason}`],
+          });
+        }
         continue;
       }
 
@@ -969,6 +1009,38 @@ export async function processArticleDiscoveryHeadlessQueue(
         browserResolved += 1;
       } else {
         browserNoCandidates += 1;
+      }
+
+      if (
+        finalStatus === "BROWSER_NO_CANDIDATES" &&
+        (fields.quality === "failed" || fields.quality === "weak" || fields.quality === "blocked") &&
+        sourceId
+      ) {
+        const linkFilterReasons: Record<string, number> = {};
+        for (const reason of browserResult.topRejectionReasons ?? []) {
+          linkFilterReasons[reason.reason] = reason.count;
+        }
+
+        const detailRejectionReasons = Object.fromEntries(
+          Object.entries(browserOutcomeSummaryCompact.byStatus).filter(([status]) => status !== "accepted"),
+        );
+
+        await createOrUpdateHardSourceProfile({
+          pipelineRunId: item.pipelineRunId,
+          sourceId,
+          categoryId: item.categoryId ?? null,
+          targetUrl,
+          fromArtifactId: item.id,
+          staticQuality: fields.quality,
+          browserStatus: "BROWSER_NO_CANDIDATES",
+          dominantReasons: [
+            ...browserOutcomeSummaryCompact.topRejectionReasons.map((reason) => reason.reason),
+            ...(browserResult.topRejectionReasons ?? []).map((reason) => reason.reason),
+          ],
+          linkFilterReasons,
+          detailRejectionReasons,
+          notes: ["Browser fallback rendered but produced zero accepted candidates."],
+        });
       }
 
       await logAgentScan({

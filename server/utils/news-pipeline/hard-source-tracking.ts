@@ -41,6 +41,8 @@ export type HardSourceEntry = {
   targetUrl: string;
   sourceId: string;
   categoryId: string | null;
+  /** Whether Agent 1 has already resolved this target with an active scoped RSS feed. */
+  resolvedByAgent1ScopedRss: boolean;
   /** Most recent static discovery quality (productive / weak / failed / blocked). */
   lastStaticQuality: string | null;
   /** Most recent browser fallback artifact status (e.g. RESOLVED, BROWSER_NO_CANDIDATES). */
@@ -115,6 +117,7 @@ type AggregatedTarget = {
   targetUrl: string;
   sourceId: string;
   categoryId: string | null;
+  resolvedByAgent1ScopedRss: boolean;
   lastStaticQuality: string | null;
   /** Whether the most recent static discovery quality assessment had shouldEscalateToHeadless=true. */
   lastStaticEscalated: boolean;
@@ -144,6 +147,20 @@ function readBoolean(value: unknown): boolean {
 
 function targetKey(sourceId: string, categoryId: string | null, targetUrl: string): string {
   return `${sourceId}|${categoryId ?? ""}|${targetUrl}`;
+}
+
+function isActiveScopedRssResolution(input: {
+  categoryId: string | null;
+  sourceFeedUrl: string | null;
+  sourceRssStatus: string | null;
+  categoryFeedUrl: string | null;
+  categoryRssStatus: string | null;
+}): boolean {
+  if (input.categoryId) {
+    return input.categoryRssStatus === "ACTIVE" && input.categoryFeedUrl !== null;
+  }
+
+  return input.sourceRssStatus === "ACTIVE" && input.sourceFeedUrl !== null;
 }
 
 /**
@@ -197,6 +214,7 @@ function aggregateArtifact(
         targetUrl,
         sourceId,
         categoryId: artifact.categoryId,
+        resolvedByAgent1ScopedRss: false,
         lastStaticQuality: quality,
         lastStaticEscalated: escalated,
         lastBrowserStatus: null,
@@ -234,6 +252,7 @@ function aggregateArtifact(
         targetUrl,
         sourceId,
         categoryId: artifact.categoryId,
+        resolvedByAgent1ScopedRss: false,
         lastStaticQuality: null,
         lastStaticEscalated: false,
         lastBrowserStatus: artifact.status,
@@ -351,8 +370,56 @@ export async function buildHardSourceReport(input?: {
     aggregateArtifact(byTarget, artifact);
   }
 
+  const [activeSources, activeCategories] = await Promise.all([
+    prisma.newsSource.findMany({
+      where: {
+        rssStatus: "ACTIVE",
+        rssFeedUrl: { not: null },
+      },
+      select: {
+        id: true,
+        rssFeedUrl: true,
+        rssStatus: true,
+      },
+    }),
+    prisma.sourceCategory.findMany({
+      where: {
+        rssStatus: "ACTIVE",
+        rssFeedUrl: { not: null },
+      },
+      select: {
+        newsSourceId: true,
+        id: true,
+        rssFeedUrl: true,
+        rssStatus: true,
+      },
+    }),
+  ]);
+
+  const activeSourceById = new Map(
+    activeSources.map((source) => [source.id, source]),
+  );
+  const activeCategoryByKey = new Map(
+    activeCategories.map((category) => [`${category.newsSourceId}|${category.id}`, category]),
+  );
+
   const hardSources: HardSourceEntry[] = [];
   for (const target of byTarget.values()) {
+    const activeSource = activeSourceById.get(target.sourceId) || null;
+    const activeCategory =
+      target.categoryId !== null
+        ? activeCategoryByKey.get(`${target.sourceId}|${target.categoryId}`) || null
+        : null;
+    target.resolvedByAgent1ScopedRss = isActiveScopedRssResolution({
+      categoryId: target.categoryId,
+      sourceFeedUrl: activeSource?.rssFeedUrl || null,
+      sourceRssStatus: activeSource?.rssStatus || null,
+      categoryFeedUrl: activeCategory?.rssFeedUrl || null,
+      categoryRssStatus: activeCategory?.rssStatus || null,
+    });
+
+    if (target.resolvedByAgent1ScopedRss) continue;
+
     // Filter out productive static targets — never hard sources.
     if (target.lastStaticQuality === "productive") continue;
 
@@ -381,6 +448,7 @@ export async function buildHardSourceReport(input?: {
       targetUrl: target.targetUrl,
       sourceId: target.sourceId,
       categoryId: target.categoryId,
+      resolvedByAgent1ScopedRss: target.resolvedByAgent1ScopedRss,
       lastStaticQuality: target.lastStaticQuality,
       lastBrowserStatus: target.lastBrowserStatus,
       lastAcceptedCount: target.lastAcceptedCount,
@@ -426,6 +494,7 @@ export function classifyRecommendedNextAction(input: {
     targetUrl: "",
     sourceId: "",
     categoryId: null,
+    resolvedByAgent1ScopedRss: false,
     lastStaticEscalated: true,
     lastInsertedCount: null,
     lastSeenAt: new Date(0),
@@ -441,7 +510,9 @@ export function isProductiveOrResolved(input: {
   lastStaticQuality: string | null;
   lastBrowserStatus: string | null;
   lastAcceptedCount: number | null;
+  resolvedByAgent1ScopedRss?: boolean;
 }): boolean {
+  if (input.resolvedByAgent1ScopedRss === true) return true;
   if (input.lastStaticQuality === "productive") return true;
   if (
     input.lastBrowserStatus === "RESOLVED" ||

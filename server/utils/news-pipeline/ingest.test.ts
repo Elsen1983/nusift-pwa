@@ -440,6 +440,14 @@ describe("hasFreshGenericEvidence", () => {
     };
     expect(hasFreshGenericEvidence(evidence, now)).toBe(true);
   });
+
+  it("returns false for fresh generic evidence when its feedUrl is actually query-scoped to the category", () => {
+    const evidence = {
+      scopeMatch: "generic" as const,
+      feedUrl: "https://telex.hu/rss/archivum?filters=%7B%22superTagSlugs%22%3A%5B%22eletmod%22%5D%2C%22parentId%22%3A%5B%22null%22%5D%7D&perPage=10",
+    };
+    expect(hasFreshGenericEvidence(evidence, now, "https://telex.hu/rovat/eletmod")).toBe(false);
+  });
 });
 
 describe("isScopedCategoryFeed – generic fallback edge cases", () => {
@@ -479,6 +487,16 @@ describe("isScopedCategoryFeed – generic fallback edge cases", () => {
     ).toBe(false);
   });
 
+  it("allows query-scoped feed URLs to override stale generic evidence", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://telex.hu/rovat/eletmod",
+        "https://telex.hu/rss/archivum?filters=%7B%22superTagSlugs%22%3A%5B%22eletmod%22%5D%2C%22parentId%22%3A%5B%22null%22%5D%7D&perPage=10",
+        { scopeMatch: "generic" },
+      ),
+    ).toBe(true);
+  });
+
   it("returns false when no feedUrl provided", () => {
     expect(
       isScopedCategoryFeed(
@@ -497,5 +515,75 @@ describe("isScopedCategoryFeed – generic fallback edge cases", () => {
         {},
       ),
     ).toBe(true);
+  });
+});
+
+describe("isScopedCategoryFeed — query-scoped JSON payloads", () => {
+  it("returns true for Telex-style filters query with category token in JSON", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://telex.hu/rovat/eletmod",
+        "https://telex.hu/rss/archivum?filters=%7B%22superTagSlugs%22%3A%5B%22eletmod%22%5D%7D",
+        {},
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true for non-URL-encoded JSON query with category token", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://example.com/category/sports",
+        "https://example.com/rss?filters={\"category\":\"sports\"}",
+        {},
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false for generic root feed without category tokens in query", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://example.com/category/sports",
+        "https://example.com/rss",
+        {},
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false for unrelated category token in query", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://example.com/category/sports",
+        "https://example.com/rss?filters={\"category\":\"politics\"}",
+        {},
+      ),
+    ).toBe(false);
+  });
+
+  it("returns true for plain query param with matching category token", () => {
+    expect(
+      isScopedCategoryFeed(
+        "https://example.com/section/tech",
+        "https://example.com/feed?tag=tech",
+        {},
+      ),
+    ).toBe(true);
+  });
+
+  it("does not throw for malformed JSON in query", () => {
+    expect(() => {
+      isScopedCategoryFeed(
+        "https://example.com/category/sports",
+        "https://example.com/rss?filters={bad-json",
+        {},
+      );
+    }).not.toThrow();
+    // Malformed JSON falls back to plain string — "sports" won't match
+    expect(
+      isScopedCategoryFeed(
+        "https://example.com/category/sports",
+        "https://example.com/rss?filters={bad-json",
+        {},
+      ),
+    ).toBe(false);
   });
 });

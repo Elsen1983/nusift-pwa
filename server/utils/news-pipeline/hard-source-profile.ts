@@ -1,0 +1,449 @@
+/**
+ * Hard-source profile persistence.
+ *
+ * Persists a compact "hard-source profile" artifact when both static discovery
+ * and browser fallback fail for a target. This provides structured evidence
+ * for future AI inspection or custom adapter generation, without storing
+ * full HTML, DOM, screenshots, or raw page text.
+ *
+ * Profile creation rules:
+ * - Created when static quality is failed/weak/blocked AND browser fallback
+ *   is BROWSER_NO_CANDIDATES, BROWSER_RUNTIME_UNAVAILABLE, or BROWSER_FALLBACK_DISABLED.
+ * - NOT created for productive static discovery.
+ * - NOT created for RESOLVED browser fallback with accepted candidates.
+ * - Deduplication: updates the latest profile for same sourceId/categoryId/targetUrl
+ *   if it is older than 1 hour; otherwise creates a new profile.
+ * - Arrays/maps are capped to keep payloads compact.
+ *
+ * No Prisma schema changes — uses existing PipelineArtifact model.
+ */
+
+import { prisma } from "../prisma";
+import { logAgentScan } from "./log";
+
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+export type HardSourceProfileSuggestedNextAction =
+  | "ai_profile_inspection"
+  | "relax_category_scope"
+  | "weak_date_policy_review"
+  | "browser_runtime_fix"
+  | "manual_review";
+
+export type HardSourceProfileConfidence = "low" | "medium" | "high";
+
+export type HardSourceProfilePayload = {
+  schemaVersion: 1;
+  artifactKind: "article_discovery_hard_source_profile";
+  sourceId: string;
+  categoryId: string | null;
+  targetUrl: string;
+  createdFromArtifactIds: string[];
+  staticQuality: "failed" | "weak" | "blocked" | null;
+  browserStatus: "BROWSER_NO_CANDIDATES" | "BROWSER_RUNTIME_UNAVAILABLE" | "BROWSER_FALLBACK_DISABLED" | null;
+  failureCount: number;
+  lastFailureAt: string;
+  dominantReasons: string[];
+  linkFilterReasons: Record<string, number>;
+  detailRejectionReasons: Record<string, number>;
+  suggestedNextAction: HardSourceProfileSuggestedNextAction;
+  profileConfidence: HardSourceProfileConfidence;
+  notes: string[];
+};
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+const MAX_DOMINANT_REASONS = 10;
+const MAX_NOTES = 10;
+const MAX_ARTIFACT_IDS = 10;
+const MAX_REASON_MAP_KEYS = 20;
+const DEDUP_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function capArray<T>(arr: T[], max: number): T[] {
+  return arr.slice(0, max);
+}
+
+function capReasonMap(map: Record<string, number>, maxKeys: number): Record<string, number> {
+  const entries = Object.entries(map);
+  if (entries.length <= maxKeys) return map;
+  // Sort by count descending, keep top N
+  entries.sort((a, b) => b[1] - a[1]);
+  return Object.fromEntries(entries.slice(0, maxKeys));
+}
+
+function readReasonMap(value: unknown): Record<string, number> {
+  if (!isPlainObject(value)) return {};
+  const result: Record<string, number> = {};
+  for (const [key, val] of Object.entries(value)) {
+    if (typeof key === "string" && typeof val === "number" && Number.isFinite(val)) {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+// ─── Suggested next action logic ────────────────────────────────────────────
+
+/**
+ * Determine the suggested next action for a hard-source profile based on
+ * the failure evidence.
+ */
+export function determineSuggestedNextAction(input: {
+  staticQuality: "failed" | "weak" | "blocked" | null;
+  browserStatus: "BROWSER_NO_CANDIDATES" | "BROWSER_RUNTIME_UNAVAILABLE" | "BROWSER_FALLBACK_DISABLED" | null;
+  dominantReasons: string[];
+  linkFilterReasons: Record<string, number>;
+  detailRejectionReasons: Record<string, number>;
+  failureCount: number;
+}): HardSourceProfileSuggestedNextAction {
+  const { staticQuality, browserStatus, dominantReasons, linkFilterReasons, detailRejectionReasons } = input;
+
+  // Browser runtime unavailable → browser fix
+  if (browserStatus === "BROWSER_RUNTIME_UNAVAILABLE") {
+    return "browser_runtime_fix";
+  }
+
+  // Browser fallback disabled → browser fix (enable it)
+  if (browserStatus === "BROWSER_FALLBACK_DISABLED") {
+    return "browser_runtime_fix";
+  }
+
+  // Check if mostly out_of_category_scope rejections
+  const outOfScopeCount =
+    (linkFilterReasons["out_of_category_scope"] || 0) +
+    (linkFilterReasons["different_domain"] || 0) +
+    (detailRejectionReasons["rejected_out_of_scope"] || 0);
+  const totalReasons = Object.values(linkFilterReasons).reduce((a, b) => a + b, 0) +
+    Object.values(detailRejectionReasons).reduce((a, b) => a + b, 0);
+  if (totalReasons > 0 && outOfScopeCount / totalReasons > 0.5) {
+    return "relax_category_scope";
+  }
+
+  // Check for date-related issues with good titles
+  const dateIssues =
+    (detailRejectionReasons["missing_published_at"] || 0) +
+    (detailRejectionReasons["invalid_published_at"] || 0) +
+    (detailRejectionReasons["future_published_at"] || 0);
+  const hasGoodTitles = dominantReasons.some(
+    (r) => r.includes("title") || r.includes("wouldAcceptWithWeakDate"),
+  );
+  if (totalReasons > 0 && dateIssues / totalReasons > 0.4 && hasGoodTitles) {
+    return "weak_date_policy_review";
+  }
+
+  // Static dynamic_or_empty_html + browser no candidates → AI inspection
+  const hasDynamicHtml = dominantReasons.some(
+    (r) => r.includes("dynamic_or_empty_html") || r.includes("blocked_by_robots"),
+  );
+  if (hasDynamicHtml && browserStatus === "BROWSER_NO_CANDIDATES") {
+    return "ai_profile_inspection";
+  }
+
+  // Multiple failures suggest AI inspection
+  if (input.failureCount >= 3 && browserStatus === "BROWSER_NO_CANDIDATES") {
+    return "ai_profile_inspection";
+  }
+
+  return "manual_review";
+}
+
+/**
+ * Determine profile confidence based on the evidence quality.
+ */
+export function determineProfileConfidence(input: {
+  failureCount: number;
+  staticQuality: "failed" | "weak" | "blocked" | null;
+  browserStatus: "BROWSER_NO_CANDIDATES" | "BROWSER_RUNTIME_UNAVAILABLE" | "BROWSER_FALLBACK_DISABLED" | null;
+  dominantReasons: string[];
+}): HardSourceProfileConfidence {
+  const { failureCount, staticQuality, browserStatus, dominantReasons } = input;
+
+  // High confidence: multiple failures with clear reasons
+  if (failureCount >= 3 && dominantReasons.length >= 2 && browserStatus !== null) {
+    return "high";
+  }
+
+  // Medium: at least one failure with some evidence
+  if (failureCount >= 2 && (staticQuality !== null || browserStatus !== null)) {
+    return "medium";
+  }
+
+  return "low";
+}
+
+// ─── Profile creation ───────────────────────────────────────────────────────
+
+export type CreateHardSourceProfileInput = {
+  pipelineRunId: string;
+  sourceId: string;
+  categoryId: string | null;
+  targetUrl: string;
+  fromArtifactId: string;
+  staticQuality: "failed" | "weak" | "blocked" | null;
+  browserStatus: "BROWSER_NO_CANDIDATES" | "BROWSER_RUNTIME_UNAVAILABLE" | "BROWSER_FALLBACK_DISABLED" | null;
+  dominantReasons?: string[];
+  linkFilterReasons?: Record<string, number>;
+  detailRejectionReasons?: Record<string, number>;
+  notes?: string[];
+};
+
+/**
+ * Create or update a hard-source profile artifact.
+ *
+ * Deduplication: finds the latest profile for the same sourceId/categoryId/targetUrl.
+ * If found and older than 1 hour, updates it (incrementing failureCount and merging data).
+ * If found and newer than 1 hour, creates a new profile anyway to preserve history.
+ * If not found, creates a new profile.
+ *
+ * @returns The created or updated artifact id, or null if a non-blocking error occurred.
+ */
+export async function createOrUpdateHardSourceProfile(
+  input: CreateHardSourceProfileInput,
+): Promise<string | null> {
+  try {
+    const now = new Date();
+    const dedupCutoff = new Date(now.getTime() - DEDUP_TTL_MS);
+
+    // Find latest profile for this target
+    const existingProfile = await prisma.pipelineArtifact.findFirst({
+      where: {
+        artifactType: "article_discovery_hard_source_profile",
+        sourceId: input.sourceId,
+        categoryId: input.categoryId ?? null,
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        createdAt: true,
+        payload: true,
+        candidateCount: true,
+      },
+    });
+
+    // Check if the existing profile matches the targetUrl and is within TTL
+    const existingPayload = isPlainObject(existingProfile?.payload)
+      ? (existingProfile.payload as Record<string, unknown>)
+      : {};
+    const existingTargetUrl = readString(existingPayload.targetUrl);
+    const isSameTarget = existingTargetUrl === input.targetUrl;
+    const isWithinTtl = existingProfile && existingProfile.createdAt >= dedupCutoff;
+
+    if (existingProfile && isSameTarget && isWithinTtl) {
+      // Update existing profile: increment failureCount, merge reasons, update timestamps
+      const prevReasons = readStringArray(existingPayload.dominantReasons);
+      const prevArtifactIds = readStringArray(existingPayload.createdFromArtifactIds);
+      const prevLinkFilterReasons = readReasonMap(existingPayload.linkFilterReasons);
+      const prevDetailRejectionReasons = readReasonMap(existingPayload.detailRejectionReasons);
+      const prevNotes = readStringArray(existingPayload.notes);
+      const prevFailureCount = readNumber(existingPayload.failureCount) ?? 1;
+
+      // Merge reasons: combine new + old, deduplicate, cap
+      const mergedReasons = capArray(
+        [...new Set([...input.dominantReasons ?? [], ...prevReasons])],
+        MAX_DOMINANT_REASONS,
+      );
+      const mergedArtifactIds = capArray(
+        [...new Set([input.fromArtifactId, ...prevArtifactIds])],
+        MAX_ARTIFACT_IDS,
+      );
+      const mergedLinkFilterReasons = capReasonMap(
+        mergeReasonMaps(prevLinkFilterReasons, input.linkFilterReasons ?? {}),
+        MAX_REASON_MAP_KEYS,
+      );
+      const mergedDetailRejectionReasons = capReasonMap(
+        mergeReasonMaps(prevDetailRejectionReasons, input.detailRejectionReasons ?? {}),
+        MAX_REASON_MAP_KEYS,
+      );
+      const mergedNotes = capArray(
+        [...prevNotes, ...(input.notes ?? [])],
+        MAX_NOTES,
+      );
+
+      const suggestedNextAction = determineSuggestedNextAction({
+        staticQuality: input.staticQuality,
+        browserStatus: input.browserStatus,
+        dominantReasons: mergedReasons,
+        linkFilterReasons: mergedLinkFilterReasons,
+        detailRejectionReasons: mergedDetailRejectionReasons,
+        failureCount: prevFailureCount + 1,
+      });
+      const profileConfidence = determineProfileConfidence({
+        failureCount: prevFailureCount + 1,
+        staticQuality: input.staticQuality,
+        browserStatus: input.browserStatus,
+        dominantReasons: mergedReasons,
+      });
+
+      const updatedPayload: HardSourceProfilePayload = {
+        schemaVersion: 1,
+        artifactKind: "article_discovery_hard_source_profile",
+        sourceId: input.sourceId,
+        categoryId: input.categoryId,
+        targetUrl: input.targetUrl,
+        createdFromArtifactIds: mergedArtifactIds,
+        staticQuality: input.staticQuality,
+        browserStatus: input.browserStatus,
+        failureCount: prevFailureCount + 1,
+        lastFailureAt: now.toISOString(),
+        dominantReasons: mergedReasons,
+        linkFilterReasons: mergedLinkFilterReasons,
+        detailRejectionReasons: mergedDetailRejectionReasons,
+        suggestedNextAction,
+        profileConfidence,
+        notes: mergedNotes,
+      };
+
+      await prisma.pipelineArtifact.update({
+        where: { id: existingProfile.id },
+        data: {
+          payload: updatedPayload as any,
+          updatedAt: now,
+        },
+      });
+
+      return existingProfile.id;
+    }
+
+    // Create new profile
+    const dominantReasons = capArray(input.dominantReasons ?? [], MAX_DOMINANT_REASONS);
+    const suggestedNextAction = determineSuggestedNextAction({
+      staticQuality: input.staticQuality,
+      browserStatus: input.browserStatus,
+      dominantReasons,
+      linkFilterReasons: input.linkFilterReasons ?? {},
+      detailRejectionReasons: input.detailRejectionReasons ?? {},
+      failureCount: 1,
+    });
+    const profileConfidence = determineProfileConfidence({
+      failureCount: 1,
+      staticQuality: input.staticQuality,
+      browserStatus: input.browserStatus,
+      dominantReasons,
+    });
+
+    const payload: HardSourceProfilePayload = {
+      schemaVersion: 1,
+      artifactKind: "article_discovery_hard_source_profile",
+      sourceId: input.sourceId,
+      categoryId: input.categoryId,
+      targetUrl: input.targetUrl,
+      createdFromArtifactIds: capArray([input.fromArtifactId], MAX_ARTIFACT_IDS),
+      staticQuality: input.staticQuality,
+      browserStatus: input.browserStatus,
+      failureCount: 1,
+      lastFailureAt: now.toISOString(),
+      dominantReasons,
+      linkFilterReasons: capReasonMap(input.linkFilterReasons ?? {}, MAX_REASON_MAP_KEYS),
+      detailRejectionReasons: capReasonMap(input.detailRejectionReasons ?? {}, MAX_REASON_MAP_KEYS),
+      suggestedNextAction,
+      profileConfidence,
+      notes: capArray(input.notes ?? [], MAX_NOTES),
+    };
+
+    const created = await prisma.pipelineArtifact.create({
+      data: {
+        pipelineRunId: input.pipelineRunId,
+        sourceId: input.sourceId,
+        categoryId: input.categoryId ?? null,
+        artifactType: "article_discovery_hard_source_profile",
+        status: "PROFILE",
+        candidateCount: 0,
+        payload: payload as any,
+        errorLog: `Hard-source profile created for ${input.targetUrl}. static=${input.staticQuality}, browser=${input.browserStatus}.`,
+      },
+      select: { id: true },
+    });
+
+    return created.id;
+  } catch (error: any) {
+    // Non-blocking: log and return null
+    await logAgentScan({
+      status: "HARD_SOURCE_PROFILE_ERROR",
+      executionTimeMs: 0,
+      errorLog: `Failed to create/update hard-source profile for ${input.targetUrl}: ${error?.message || String(error)}`,
+    }).catch(() => {});
+    return null;
+  }
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function mergeReasonMaps(
+  prev: Record<string, number>,
+  next: Record<string, number>,
+): Record<string, number> {
+  const merged = { ...prev };
+  for (const [key, count] of Object.entries(next)) {
+    merged[key] = (merged[key] || 0) + count;
+  }
+  return merged;
+}
+
+// ─── Normalizer for admin API ───────────────────────────────────────────────
+
+export type NormalizedHardSourceProfile = {
+  id: string;
+  sourceId: string | null;
+  categoryId: string | null;
+  targetUrl: string | null;
+  staticQuality: string | null;
+  browserStatus: string | null;
+  failureCount: number;
+  lastFailureAt: string | null;
+  dominantReasons: string[];
+  suggestedNextAction: string | null;
+  profileConfidence: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+/**
+ * Normalize a hard-source profile artifact for the admin API.
+ * Returns only compact fields needed for the admin panel — no full
+ * candidate arrays or raw payload data.
+ */
+export function normalizeHardSourceProfile(artifact: {
+  id: string;
+  sourceId: string | null;
+  categoryId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  payload: unknown;
+}): NormalizedHardSourceProfile {
+  const payload = isPlainObject(artifact.payload) ? artifact.payload : {};
+
+  return {
+    id: artifact.id,
+    sourceId: artifact.sourceId,
+    categoryId: artifact.categoryId,
+    targetUrl: readString(payload.targetUrl),
+    staticQuality: readString(payload.staticQuality),
+    browserStatus: readString(payload.browserStatus),
+    failureCount: readNumber(payload.failureCount) ?? 1,
+    lastFailureAt: readString(payload.lastFailureAt),
+    dominantReasons: capArray(readStringArray(payload.dominantReasons), MAX_DOMINANT_REASONS),
+    suggestedNextAction: readString(payload.suggestedNextAction),
+    profileConfidence: readString(payload.profileConfidence),
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+  };
+}

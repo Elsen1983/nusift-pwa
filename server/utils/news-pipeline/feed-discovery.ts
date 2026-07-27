@@ -13,7 +13,7 @@ type SupportedFeedType =
 type FeedCandidate = {
   feedUrl: string;
   discoveredVia: string;
-  detection: "direct-feed" | "html-link" | "html-raw-url" | "http-link" | "robots-sitemap" | "cms-fingerprint" | "taxonomy-extraction" | "directory-traversal" | "edition-locale";
+  detection: "direct-feed" | "html-link" | "html-raw-url" | "anchor-rss-link" | "http-link" | "robots-sitemap" | "cms-fingerprint" | "taxonomy-extraction" | "directory-traversal" | "edition-locale";
   contentType?: SupportedFeedType | null;
   score: number;
   scopeMatch: ScopeMatch;
@@ -277,6 +277,143 @@ const resolveHtmlDeclaredFeeds = (body: string, pageUrl: string) => {
   }
 
   return feeds;
+};
+
+/**
+ * Feed-related keywords that appear in anchor text, title, or aria-label
+ * to indicate an RSS/Atom feed link.
+ */
+const ANCHOR_FEED_TEXT_PATTERNS = /\b(?:rss|atom|feed|xml|syndication)\b/i;
+
+/**
+ * Non-utility anchor link patterns that should be excluded from feed
+ * discovery even if their text matches feed keywords.
+ */
+const ANCHOR_UTILITY_HREF_PATTERNS = /\/(?:feedback|contact|about|privacy|terms|login|signup|register|search|mailto|tel:|javascript:)/i;
+
+/**
+ * Maximum number of anchor-based feed candidates to extract per page.
+ */
+const MAX_ANCHOR_FEED_CANDIDATES = 20;
+
+/**
+ * Extract candidate feed URLs from normal <a> anchor links in HTML.
+ *
+ * Recognizes anchor candidates when:
+ * - href path or query indicates RSS/Atom/feed
+ * - href is same-origin or absolute same-domain
+ * - anchor text/title/aria-label contains RSS, Atom, feed, XML
+ *
+ * This supplements `<link rel="alternate">` discovery which only finds
+ * formally declared feeds. Many publishers use simple <a> links to their
+ * RSS feeds instead of (or in addition to) proper autodiscovery tags.
+ */
+export const extractAnchorFeedLinksFromHtml = (body: string, pageUrl: string): string[] => {
+  const results: string[] = [];
+  const seen = new Set<string>();
+  const anchorPattern = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null;
+
+  try {
+    const pageHost = new URL(pageUrl).hostname.replace(/^www\./, "").toLowerCase();
+
+    while ((match = anchorPattern.exec(body)) !== null) {
+      if (results.length >= MAX_ANCHOR_FEED_CANDIDATES) break;
+
+      const attrs = match[1] || "";
+      const innerHtml = match[2] || "";
+      const text = innerHtml.replace(/<[^>]+>/g, "").trim();
+
+      // Extract href
+      const hrefMatch = attrs.match(/\bhref=["']([^"']+)["']/i);
+      if (!hrefMatch?.[1]) continue;
+      const href = hrefMatch[1];
+
+      // Skip utility/non-feed links
+      if (ANCHOR_UTILITY_HREF_PATTERNS.test(href)) continue;
+      if (/^\s*(?:#|javascript:|mailto:|tel:)/i.test(href)) continue;
+
+      // Skip anchors that look like article/blog links rather than feed links
+      if (/\/story|\/article|\/post|\/blog\b|\/\d{4}\/\d{2}\//i.test(href)) continue;
+
+      // Resolve relative URL
+      const resolved = resolveRelativeUrl(href, pageUrl);
+      if (!resolved) continue;
+
+      // Skip if already seen
+      const canonicalKey = canonicalFeedKey(resolved);
+      if (seen.has(canonicalKey)) continue;
+
+      // Check if same-origin
+      try {
+        const resolvedHost = new URL(resolved).hostname.replace(/^www\./, "").toLowerCase();
+        if (resolvedHost !== pageHost) continue;
+      } catch {
+        continue;
+      }
+
+      // Check if anchor text/title/aria-label contains feed keywords
+      const ariaLabel = attrs.match(/\baria-label=["']([^"']+)["']/i)?.[1] || "";
+      const title = attrs.match(/\btitle=["']([^"']+)["']/i)?.[1] || "";
+      const combinedText = `${text} ${ariaLabel} ${title}`;
+      const hasFeedText = ANCHOR_FEED_TEXT_PATTERNS.test(combinedText);
+
+      // Accept if:
+      // (a) URL has a feed-specific extension (.xml, .rss, .json, .atom)
+      //     — strong signal, filters out directory pages like /feed-index
+      // (b) URL has a feed path segment AND text confirms it's a feed
+      //     — catches publisher-specific paths like /rss/archivum?filters=...
+      // (c) URL has query-based feed indicators (service=rss, format=feed, etc.)
+      //     — catches feeds served via query parameters
+      try {
+        const resolvedUrl = new URL(resolved);
+        const feedPath = resolvedUrl.pathname.toLowerCase();
+        const feedSearch = resolvedUrl.search.toLowerCase();
+        const hasFeedExtension = /\.(?:xml|rss|json|atom|feed)$/i.test(feedPath);
+        const hasFeedPathSegment = /\/(?:rss|feed|feeds|atom)(?:\/|$|\?)/i.test(feedPath);
+        const hasFeedQueryParam =
+          /[?&]feed=(?:rss|atom|json)/i.test(feedSearch) ||
+          /[?&]format=(?:rss|atom|xml|json)/i.test(feedSearch) ||
+          /[?&]output=(?:rss|atom|xml|json)/i.test(feedSearch) ||
+          /[?&]service=rss(?:&|$)/i.test(feedSearch) ||
+          /[?&]type=(?:rss|atom|feed)/i.test(feedSearch) ||
+          /[?&]rss=true(?:&|$)/i.test(feedSearch);
+
+        // Strong signal: URL has a direct feed extension
+        if (hasFeedExtension) {
+          seen.add(canonicalKey);
+          results.push(resolved);
+          continue;
+        }
+
+        // Medium signal: URL has a feed path segment AND text confirms it's a feed
+        if (hasFeedPathSegment && hasFeedText) {
+          seen.add(canonicalKey);
+          results.push(resolved);
+          continue;
+        }
+
+        // Query-based feed indicator: URL has feed-indicating query parameters
+        if (hasFeedQueryParam) {
+          seen.add(canonicalKey);
+          results.push(resolved);
+          continue;
+        }
+
+        // Query-scoped feed: text says RSS/Atom and URL has query parameters
+        // (e.g., /rss/archivum?filters={"superTagSlugs":["eletmod"]})
+        if (hasFeedText && hasFeedPathSegment) {
+          seen.add(canonicalKey);
+          results.push(resolved);
+          continue;
+        }
+      } catch {}
+
+      // Skip: URL doesn't meet feed criteria
+    }
+  } catch {}
+
+  return results;
 };
 
 const extractFeedLikeUrlsFromHtml = (body: string, pageUrl: string) => {
@@ -721,15 +858,23 @@ export const buildScopedFeedCandidates = (pageUrl: string, existingFeedUrl?: str
         ? `${normalizedPath}/`
         : "/";
 
-    candidates.add(`${base}/rss/`);
-    candidates.add(`${base}/rss`);
-    candidates.add(`${base}/rss.xml`);
-    candidates.add(`${base}/feed.xml`);
-    candidates.add(`${base}/atom.xml`);
-    candidates.add(`${base}/index.xml`);
-    candidates.add(`${base}/index.rss`);
-    candidates.add(`${base}/feed/`);
-    candidates.add(`${base}/feed`);
+    // Skip adding feed suffixes if the base path already looks like a feed
+    // endpoint (e.g., ends with .xml, .rss, /feed, /rss). This prevents
+    // stacked suffixes like /feed.xml/rss.xml.
+    const baseHasFeedExtension = /\.(?:xml|rss|json|atom)$/i.test(normalizedPath);
+    const baseHasFeedPath = /\/(?:rss|feed|feeds|atom)(?:\/|$)/i.test(normalizedPath);
+
+    if (!baseHasFeedExtension && !baseHasFeedPath) {
+      candidates.add(`${base}/rss/`);
+      candidates.add(`${base}/rss`);
+      candidates.add(`${base}/rss.xml`);
+      candidates.add(`${base}/feed.xml`);
+      candidates.add(`${base}/atom.xml`);
+      candidates.add(`${base}/index.xml`);
+      candidates.add(`${base}/index.rss`);
+      candidates.add(`${base}/feed/`);
+      candidates.add(`${base}/feed`);
+    }
     candidates.add(`${root}/rss.xml`);
     candidates.add(`${root}/feed.xml`);
     candidates.add(`${root}/atom.xml`);
@@ -742,7 +887,25 @@ export const buildScopedFeedCandidates = (pageUrl: string, existingFeedUrl?: str
     candidates.add(pageUrl);
   }
 
-  return [...candidates].filter(Boolean);
+  return [...candidates].filter((candidate) => candidate && !hasStackedFeedSuffix(candidate));
+};
+
+const hasStackedFeedSuffix = (candidateUrl: string) => {
+  try {
+    const segments = new URL(candidateUrl).pathname
+      .toLowerCase()
+      .split("/")
+      .filter(Boolean);
+    return segments.some((segment, index) => {
+      const next = segments[index + 1];
+      if (!next) return false;
+      const segmentIsFeedFile = /^(?:rss|feed|atom|index)\.(?:xml|rss|atom|json)$/.test(segment);
+      const nextIsFeedSuffix = /^(?:rss|feed|atom|index)(?:\.(?:xml|rss|atom|json))?$/.test(next);
+      return segmentIsFeedFile && nextIsFeedSuffix;
+    });
+  } catch {
+    return false;
+  }
 };
 
 // ─── Feed Directory Traversal ───────────────────────────────────────────────
@@ -1734,6 +1897,14 @@ const classifyScopeMatch = (
     return "probable";
   }
 
+  // Candidate has query-scoped category tokens matching the target path.
+  // This handles cases like Telex where the RSS URL uses a generic path
+  // (/rss/archivum) with category tokens in a JSON query payload:
+  // /rss/archivum?filters={"superTagSlugs":["eletmod"]}
+  if (hasQueryScopedCategoryTokens(targetUrl, candidateUrl)) {
+    return "probable";
+  }
+
   // Generic root-level feed paths (including common feed file extensions)
   if (
     candidatePath === "/rss" ||
@@ -1792,6 +1963,187 @@ const hasTaxonomyQueryParams = (
         }
       }
     }
+    return false;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Generic query parameter keys that may hold category scope information.
+ * Supports both simple key=value and JSON-encoded payloads.
+ */
+const CATEGORY_SCOPE_QUERY_KEYS = new Set([
+  "filters",
+  "filter",
+  "tags",
+  "tag",
+  "category",
+  "categoryslug",
+  "categoryslugs",
+  "section",
+  "sectionid",
+  "sectionslug",
+  "supertagslug",
+  "supertagslugs",
+  "topic",
+  "topics",
+]);
+
+/**
+ * Common structural path segment names that should NOT be treated as
+ * meaningful category tokens. These appear in URL paths like /category/sports
+ * but are navigation prefixes, not actual category identifiers.
+ */
+const STRUCTURAL_PATH_SEGMENTS = new Set([
+  "category",
+  "categories",
+  "section",
+  "sections",
+  "topic",
+  "topics",
+  "tag",
+  "tags",
+  "interest",
+  "interests",
+  "all-about",
+  "news",
+  "feed",
+  "feeds",
+  "rss",
+  "atom",
+  "page",
+  "p",
+]);
+
+/**
+ * Extract category scope tokens from a target URL's path segments.
+ *
+ * Examples:
+ * - https://example.com/rovat/eletmod -> ["eletmod", "rovat"]
+ * - https://example.com/category/arizona-news -> ["arizona-news", "arizona", "news"]
+ * - https://example.com/world/europe -> ["world", "europe"]
+ *
+ * Structural path segments like "category", "section", "tag" are excluded
+ * to prevent false positives (e.g., matching the word "category" in a
+ * JSON query parameter value).
+ */
+const extractCategoryScopeTokens = (targetUrl: string): string[] => {
+  try {
+    const pathname = new URL(targetUrl).pathname.toLowerCase();
+    const segments = pathname
+      .split("/")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const tokens = new Set<string>();
+    for (const seg of segments) {
+      // Skip structural path segments that aren't meaningful category identifiers
+      if (STRUCTURAL_PATH_SEGMENTS.has(seg)) continue;
+      tokens.add(seg.toLowerCase());
+      // Also add word-level tokens from hyphenated/underscored slugs
+      const words = seg.toLowerCase().split(/[-_]+/).filter((w) => w.length >= 2 && !STRUCTURAL_PATH_SEGMENTS.has(w));
+      for (const w of words) tokens.add(w);
+    }
+    return [...tokens];
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Extract all string values from a query parameter that may contain JSON.
+ * Safely handles URL-encoded JSON, plain strings, and malformed payloads.
+ */
+const extractQueryParamValues = (rawValue: string): string[] => {
+  const values: string[] = [];
+  if (!rawValue) return values;
+
+  // Try URL-decoding first
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawValue);
+  } catch {
+    decoded = rawValue;
+  }
+
+  // Try parsing as JSON (e.g., {"superTagSlugs":["eletmod"]})
+  try {
+    const parsed = JSON.parse(decoded);
+    if (parsed && typeof parsed === "object") {
+      const collect = (obj: unknown): void => {
+        if (typeof obj === "string") {
+          values.push(obj.toLowerCase());
+        } else if (typeof obj === "number") {
+          values.push(String(obj));
+        } else if (Array.isArray(obj)) {
+          for (const item of obj) collect(item);
+        } else if (obj && typeof obj === "object") {
+          for (const v of Object.values(obj as Record<string, unknown>)) collect(v);
+        }
+      };
+      collect(parsed);
+      return values;
+    }
+  } catch {
+    // Not JSON — fall through to treat as plain string
+  }
+
+  // Plain string value
+  values.push(decoded.toLowerCase());
+  return values;
+};
+
+/**
+ * Check if a candidate URL has query-scoped category tokens matching the target.
+ *
+ * Inspects the candidate URL's query string for:
+ * 1. Known category-scope parameter keys (filters, tags, category, superTagSlugs, etc.)
+ * 2. JSON payloads within those parameters
+ * 3. Any parameter value that contains a category token from the target path
+ *
+ * Exported for reuse by ingest.ts's isScopedCategoryFeed.
+ */
+export const hasQueryScopedCategoryTokens = (
+  targetUrl: string,
+  candidateUrl: string,
+): boolean => {
+  try {
+    const targetTokens = extractCategoryScopeTokens(targetUrl);
+    if (targetTokens.length === 0) return false;
+
+    const candidate = new URL(candidateUrl);
+
+    // Check each query parameter
+    for (const [key, value] of candidate.searchParams.entries()) {
+      const lowerKey = key.toLowerCase();
+
+      // Priority 1: Known category-scope parameter keys
+      if (CATEGORY_SCOPE_QUERY_KEYS.has(lowerKey)) {
+        const paramValues = extractQueryParamValues(value);
+        for (const pv of paramValues) {
+          if (targetTokens.some((token) => token === pv || pv.includes(token))) {
+            return true;
+          }
+        }
+      }
+    }
+
+    // Priority 2: Check the full search string for category tokens
+    // (catches opaque or publisher-specific parameter formats)
+    const fullSearch = candidate.search.toLowerCase();
+    for (const token of targetTokens) {
+      if (token.length >= 3 && fullSearch.includes(token)) {
+        // Require at least one known scope key to be present to avoid
+        // false positives from random query parameters.
+        for (const key of candidate.searchParams.keys()) {
+          if (CATEGORY_SCOPE_QUERY_KEYS.has(key.toLowerCase())) {
+            return true;
+          }
+        }
+      }
+    }
+
     return false;
   } catch {
     return false;
@@ -1932,6 +2284,7 @@ const computeCandidateScore = (
   if (candidate.detection === "http-link") score += 35;
   if (candidate.detection === "html-link") score += 25;
   if (candidate.detection === "html-raw-url") score += 20;
+  if (candidate.detection === "anchor-rss-link") score += 23;
   if (candidate.detection === "robots-sitemap") score += 18;
   if (candidate.detection === "cms-fingerprint") score += 22;
   if (candidate.detection === "taxonomy-extraction") score += 28;
@@ -2234,6 +2587,24 @@ export async function discoverFeedForUrl(input: {
         const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
         acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
         seenAcceptedCanonicalKeys.add(efKey);
+      }
+
+      // ── Anchor RSS link candidates ──────────────────────────────────
+      // Extract feed URLs from <a> tags with RSS/feed keywords in text,
+      // title, or aria-label. This catches publishers that use simple
+      // anchor links instead of <link rel="alternate"> autodiscovery.
+      for (const anchorFeedUrl of extractAnchorFeedLinksFromHtml(body, resolvedUrl)) {
+        const afKey = canonicalFeedKey(anchorFeedUrl);
+        if (seenAcceptedCanonicalKeys.has(afKey)) continue;
+        const candidateBase = {
+          feedUrl: anchorFeedUrl,
+          discoveredVia: candidateUrl,
+          detection: "anchor-rss-link" as const,
+          contentType: null,
+        };
+        const { score, scopeMatch } = computeCandidateScore(input, candidateBase, taxonomyEvidence);
+        acceptedCandidates.push({ ...candidateBase, score, scopeMatch });
+        seenAcceptedCanonicalKeys.add(afKey);
       }
 
       for (const fingerprintCandidate of buildCmsFingerprintCandidates(resolvedUrl, fingerprints)) {

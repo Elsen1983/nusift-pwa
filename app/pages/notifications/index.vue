@@ -14,13 +14,24 @@
 
     <section class="space-y-3">
       <div class="rounded-3xl border border-outline-variant/10 bg-surface-container-low shadow-lg overflow-hidden">
-        <button class="w-full flex items-center justify-between p-4 text-left" @click="open.new = !open.new">
-          <div>
+        <div class="flex w-full items-center justify-between gap-3 p-4">
+          <button class="min-w-0 flex-1 text-left" @click="open.new = !open.new">
             <div class="font-body text-[15px] font-medium text-on-surface">{{ $t("notificationsPage.sections.new") }}</div>
             <div class="text-xs text-on-surface-variant">{{ newNotifications.length }} {{ $t("notificationsPage.items") }}</div>
+          </button>
+          <div class="flex items-center gap-3">
+            <button
+              class="rounded-full border border-primary-container/30 px-3 py-1.5 text-xs font-semibold text-primary-container transition hover:bg-primary-container/10 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="!newNotifications.length || bulkAction === 'mark-all-read'"
+              @click="markAllAsRead"
+            >
+              Mark all as read
+            </button>
+            <button class="rounded-full p-1 text-on-surface-variant transition hover:bg-surface-container" @click="open.new = !open.new">
+              <span class="material-symbols-outlined transition-transform" :class="open.new ? 'rotate-180' : ''">expand_more</span>
+            </button>
           </div>
-          <span class="material-symbols-outlined transition-transform" :class="open.new ? 'rotate-180' : ''">expand_more</span>
-        </button>
+        </div>
         <div v-show="open.new" class="px-4 pb-4 space-y-3">
           <div
             v-for="item in newNotifications"
@@ -56,13 +67,24 @@
       </div>
 
       <div class="rounded-3xl border border-outline-variant/10 bg-surface-container-low shadow-lg overflow-hidden">
-        <button class="w-full flex items-center justify-between p-4 text-left" @click="open.read = !open.read">
-          <div>
+        <div class="flex w-full items-center justify-between gap-3 p-4">
+          <button class="min-w-0 flex-1 text-left" @click="open.read = !open.read">
             <div class="font-body text-[15px] font-medium text-on-surface">{{ $t("notificationsPage.sections.read") }}</div>
             <div class="text-xs text-on-surface-variant">{{ readNotifications.length }} {{ $t("notificationsPage.items") }}</div>
+          </button>
+          <div class="flex items-center gap-3">
+            <button
+              class="rounded-full border border-error/30 px-3 py-1.5 text-xs font-semibold text-error transition hover:bg-error/10 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="!readNotifications.length || bulkAction === 'delete-read'"
+              @click="deleteAllRead"
+            >
+              Delete all
+            </button>
+            <button class="rounded-full p-1 text-on-surface-variant transition hover:bg-surface-container" @click="open.read = !open.read">
+              <span class="material-symbols-outlined transition-transform" :class="open.read ? 'rotate-180' : ''">expand_more</span>
+            </button>
           </div>
-          <span class="material-symbols-outlined transition-transform" :class="open.read ? 'rotate-180' : ''">expand_more</span>
-        </button>
+        </div>
         <div v-show="open.read" class="px-4 pb-4 space-y-3">
           <div
             v-for="item in readNotifications"
@@ -109,6 +131,7 @@ type NotificationItem = {
 };
 
 const open = reactive({ new: true, read: false });
+const bulkAction = ref<"mark-all-read" | "delete-read" | null>(null);
 const unreadNotificationCount = useState<number>("unreadNotificationCount", () => 0);
 const { data, refresh } = await useAsyncData(
   "notifications",
@@ -175,6 +198,32 @@ async function deleteNotification(id: string) {
   await refresh();
   await syncUnreadCount();
   if (import.meta.client) window.dispatchEvent(new Event("nusift:notifications:update"));
+}
+
+async function markAllAsRead() {
+  if (!newNotifications.value.length || bulkAction.value) return;
+  bulkAction.value = "mark-all-read";
+  try {
+    const res = await $fetch<{ unreadCount: number }>("/api/notifications/mark-all-read", { method: "PATCH" });
+    unreadNotificationCount.value = res.unreadCount || 0;
+    await refresh();
+    if (import.meta.client) window.dispatchEvent(new Event("nusift:notifications:update"));
+  } finally {
+    bulkAction.value = null;
+  }
+}
+
+async function deleteAllRead() {
+  if (!readNotifications.value.length || bulkAction.value) return;
+  bulkAction.value = "delete-read";
+  try {
+    const res = await $fetch<{ unreadCount: number }>("/api/notifications/read", { method: "DELETE" });
+    unreadNotificationCount.value = res.unreadCount || 0;
+    await refresh();
+    if (import.meta.client) window.dispatchEvent(new Event("nusift:notifications:update"));
+  } finally {
+    bulkAction.value = null;
+  }
 }
 
 onMounted(() => {

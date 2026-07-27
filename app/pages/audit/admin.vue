@@ -214,16 +214,16 @@
               v-for="item in agent1Summary.recentSourceOutcomes"
               :key="`${item.status}-${item.sourceId || item.createdAt}`"
               class="rounded-xl border px-3 py-2"
-              :class="item.passed ? 'border-emerald-500/10 bg-emerald-500/5' : 'border-rose-500/10 bg-rose-500/5'"
+              :class="item.resultType === 'failed' ? 'border-rose-500/10 bg-rose-500/5' : 'border-emerald-500/10 bg-emerald-500/5'"
             >
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-2">
                     <span
                       class="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider"
-                      :class="item.passed ? 'bg-emerald-500/15 text-emerald-200' : 'bg-rose-500/15 text-rose-200'"
+                      :class="item.resultType === 'failed' ? 'bg-rose-500/15 text-rose-200' : 'bg-emerald-500/15 text-emerald-200'"
                     >
-                      {{ item.passed ? "pass" : "failed" }}
+                      {{ item.resultType === 'pass' ? 'pass' : item.resultType === 'rss_active_no_new_articles' ? 'rss active / no new articles' : item.resultType === 'handoff' ? 'handoff' : 'failed' }}
                     </span>
                     <span class="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">{{ item.targetType }}</span>
                     <span v-if="item.sourceId" class="text-[10px] text-on-surface-variant">src: {{ item.sourceId.slice(0, 8) }}...</span>
@@ -234,9 +234,9 @@
                       <span class="font-semibold text-on-surface-variant">Source Url:</span>
                       {{ item.sourceUrl || item.sourceId || "unknown target" }}
                     </p>
-                    <p v-if="item.passed && item.feedUrl" class="truncate">
+                    <p v-if="(item.passed || item.rssActive) && item.feedUrl" class="truncate">
                       <span class="font-semibold text-on-surface-variant">RSS Url:</span>
-                      {{ item.feedUrl }}
+                      {{ item.rssUrl || item.feedUrl }}
                     </p>
                   </div>
                   <div v-if="item.passed" class="mt-1 flex flex-wrap gap-2 text-[10px] text-on-surface-variant">
@@ -439,7 +439,36 @@
             </button>
           </div>
 
-          <div v-if="headlessQueueSummary" class="mt-3 flex flex-wrap gap-1.5">
+          <!-- View filter controls -->
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <div class="flex rounded-lg border border-outline-variant/20 overflow-hidden">
+              <button
+                v-for="viewOption in headlessQueueViewOptions"
+                :key="viewOption"
+                @click="headlessQueueView = viewOption; loadHeadlessQueue()"
+                class="px-3 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors"
+                :class="headlessQueueView === viewOption
+                  ? 'bg-primary-container text-on-primary-container'
+                  : 'bg-surface-container text-on-surface-variant hover:text-on-surface'"
+              >
+                {{ viewOption }}
+              </button>
+            </div>
+            <span v-if="headlessQueueSummary" class="text-[10px] text-on-surface-variant">
+              {{ headlessQueueSummary.activeTotal }} active
+              <span v-if="headlessQueueSummary.historyTotal > 0" class="text-on-surface-variant/50">
+                · {{ headlessQueueSummary.historyTotal }} history
+              </span>
+              <span v-if="headlessQueueSummary.retryableTotal > 0" class="text-amber-300">
+                · {{ headlessQueueSummary.retryableTotal }} retryable
+              </span>
+              <span v-if="headlessQueueSummary.cooldownPendingTotal > 0" class="text-cyan-300">
+                · {{ headlessQueueSummary.cooldownPendingTotal }} cooldown
+              </span>
+            </span>
+          </div>
+
+          <div v-if="headlessQueueSummary" class="mt-2 flex flex-wrap gap-1.5">
             <span
               v-for="(count, status) in headlessQueueSummary.byStatus"
               :key="status"
@@ -447,6 +476,10 @@
               :class="headlessStatusBadgeClass(status as string)"
             >
               {{ status }}: {{ count }}
+              <span
+                v-if="isLegacyHeadlessStatus(status as string)"
+                class="ml-0.5 opacity-60"
+              >legacy</span>
             </span>
             <span class="ml-1 self-center text-[10px] text-on-surface-variant">
               {{ headlessQueueSummary.total }} total
@@ -506,6 +539,7 @@
                       :class="headlessStatusBadgeClass(item.status)"
                     >
                       {{ item.status }}
+                      <span v-if="isLegacyHeadlessStatus(item.status)" class="ml-0.5 opacity-60">legacy</span>
                     </span>
                     <span v-if="item.quality" class="text-[10px] text-on-surface-variant">q: {{ item.quality }}</span>
                     <span v-if="item.confidence" class="text-[10px] text-on-surface-variant">c: {{ item.confidence }}</span>
@@ -804,6 +838,89 @@
           </div>
         </div>
 
+        <!-- Hard-source profiles panel -->
+        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Hard-source profiles
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Persisted compact profiles for targets where static + browser discovery failed. Structured evidence for future AI inspection.
+              </p>
+            </div>
+            <button
+              @click="loadHardSourceProfiles"
+              :disabled="hardSourceProfilesLoading"
+              class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ hardSourceProfilesLoading ? "Loading..." : "Refresh" }}
+            </button>
+          </div>
+
+          <div v-if="hardSourceProfiles.length === 0 && !hardSourceProfilesLoading" class="mt-3 text-xs text-on-surface-variant">
+            No hard-source profiles persisted yet. Profiles are created when both static and browser discovery fail.
+          </div>
+          <div v-else-if="hardSourceProfilesLoading" class="mt-3 text-xs text-on-surface-variant">
+            Loading profiles...
+          </div>
+          <div v-else class="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
+            <div
+              v-for="profile in hardSourceProfiles"
+              :key="profile.id"
+              class="rounded-xl border px-3 py-2"
+              :class="profile.suggestedNextAction === 'ai_profile_inspection'
+                ? 'border-fuchsia-500/20 bg-fuchsia-500/5'
+                : profile.profileConfidence === 'high'
+                  ? 'border-rose-500/15 bg-rose-500/5'
+                  : 'border-outline-variant/20 bg-surface-container'"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span
+                      class="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                      :class="hardSourceActionBadgeClass(profile.suggestedNextAction || 'manual_review')"
+                    >
+                      {{ hardSourceActionLabel(profile.suggestedNextAction || 'manual_review') }}
+                    </span>
+                    <span v-if="profile.profileConfidence" class="text-[10px] font-medium" :class="profile.profileConfidence === 'high' ? 'text-rose-300' : profile.profileConfidence === 'medium' ? 'text-amber-300' : 'text-on-surface-variant/60'">
+                      {{ profile.profileConfidence }} confidence
+                    </span>
+                    <span v-if="profile.failureCount > 1" class="text-[10px] font-medium text-rose-300">
+                      {{ profile.failureCount }}x failed
+                    </span>
+                  </div>
+                  <p class="mt-1 truncate text-[11px] text-on-surface-variant">
+                    {{ profile.targetUrl || "no target url" }}
+                  </p>
+                  <div class="mt-0.5 flex flex-wrap gap-2 text-[10px] text-on-surface-variant/60">
+                    <span v-if="profile.staticQuality">static: {{ profile.staticQuality }}</span>
+                    <span v-if="profile.browserStatus">browser: {{ profile.browserStatus }}</span>
+                    <span v-if="profile.sourceId">src: {{ profile.sourceId.slice(0, 8) }}...</span>
+                    <span v-if="profile.categoryId">cat: {{ profile.categoryId.slice(0, 8) }}...</span>
+                  </div>
+                  <div v-if="profile.dominantReasons.length > 0" class="mt-1 flex flex-wrap gap-1">
+                    <span
+                      v-for="reason in profile.dominantReasons.slice(0, 4)"
+                      :key="reason"
+                      class="rounded bg-surface-container-highest px-1.5 py-0.5 text-[9px] font-medium text-on-surface-variant"
+                    >
+                      {{ reason }}
+                    </span>
+                  </div>
+                  <div v-if="profile.lastFailureAt" class="mt-0.5 text-[10px] text-on-surface-variant/50">
+                    last failure: {{ formatLogTime(profile.lastFailureAt) }}
+                  </div>
+                </div>
+                <div class="shrink-0 text-right text-[10px] text-on-surface-variant">
+                  <div>{{ formatLogTime(profile.updatedAt) }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
       </section>
     </main>
   </div>
@@ -837,6 +954,8 @@ const isRunningHeadlessBrowser = ref(false);
 const isRecoveringHeadless = ref(false);
 const retryingHeadlessArtifactId = ref<string | null>(null);
 const headlessQueueLoading = ref(false);
+const headlessQueueView = ref<"active" | "history" | "all">("active");
+const headlessQueueViewOptions = ["active", "history", "all"] as const;
 
 const toast = ref({ show: false, message: "", type: "success" as "success" | "error" });
 
@@ -954,7 +1073,26 @@ type HardSourceEntry = {
 const hardSources = ref<HardSourceEntry[]>([]);
 const hardSourcesLoading = ref(false);
 
-const headlessQueueSummary = ref<{ total: number; byStatus: Record<string, number> } | null>(null);
+type HardSourceProfileEntry = {
+  id: string;
+  sourceId: string | null;
+  categoryId: string | null;
+  targetUrl: string | null;
+  staticQuality: string | null;
+  browserStatus: string | null;
+  failureCount: number;
+  lastFailureAt: string | null;
+  dominantReasons: string[];
+  suggestedNextAction: string | null;
+  profileConfidence: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const hardSourceProfiles = ref<HardSourceProfileEntry[]>([]);
+const hardSourceProfilesLoading = ref(false);
+
+const headlessQueueSummary = ref<{ total: number; byStatus: Record<string, number>; activeTotal: number; historyTotal: number; retryableTotal: number; cooldownPendingTotal: number; resolvedRecentTotal: number } | null>(null);
 const headlessBrowserEnvDisabled = ref(false);
 const agentLogs = ref<Array<{ id: string; status: string; displayStatus?: string; agentPrefix?: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
 const agentSourceCount = ref(0);
@@ -978,6 +1116,7 @@ const agent1RunSummary = ref<{
     status: string;
     passed: boolean;
     handedToAgent2: boolean;
+    rssActive: boolean;
     sourceUrl: string | null;
     candidates: number;
     inserted: number;
@@ -985,6 +1124,7 @@ const agent1RunSummary = ref<{
     failed: number;
     enriched: number;
     feedUrl: string | null;
+    rssUrl: string | null;
     feedFormat: string | null;
     failureReason: string | null;
   }>;
@@ -1059,7 +1199,13 @@ const agent1Summary = computed(() => {
     recentSourceOutcomes: agent1RunSummary.value.items.map((item) => ({
       ...item,
       targetType: item.categoryId ? "category" : "source",
-      failedDisplay: item.handedToAgent2 ? "handoff" : "failed",
+      resultType: item.rssActive
+        ? "rss_active_no_new_articles"
+        : item.passed
+          ? "pass"
+          : item.handedToAgent2
+            ? "handoff"
+            : "failed",
       failureReason: item.failureReason || "Agent 1 did not load articles for this target.",
     })),
   };
@@ -1204,12 +1350,14 @@ const loadHeadlessQueue = async () => {
   if (!showFullDevTools.value) return;
   headlessQueueLoading.value = true;
   try {
+    const viewParam = `?view=${headlessQueueView.value}`;
     const response = await $api<{
       ok: boolean;
       items: typeof headlessQueueItems.value;
-      summary: { total: number; byStatus: Record<string, number> };
+      summary: { total: number; byStatus: Record<string, number>; activeTotal: number; historyTotal: number; retryableTotal: number; cooldownPendingTotal: number; resolvedRecentTotal: number };
+      view: string;
       browserFallbackEnabled: boolean;
-    }>("/api/dev/article-discovery-headless-queue");
+    }>(`/api/dev/article-discovery-headless-queue${viewParam}`);
     headlessQueueItems.value = response.items || [];
     headlessQueueSummary.value = response.summary || null;
     headlessBrowserEnvDisabled.value = !response.browserFallbackEnabled;
@@ -1240,6 +1388,24 @@ const loadHardSources = async () => {
   }
 };
 
+const loadHardSourceProfiles = async () => {
+  if (!showFullDevTools.value) return;
+  hardSourceProfilesLoading.value = true;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      profiles: HardSourceProfileEntry[];
+      total: number;
+    }>("/api/dev/article-discovery-hard-source-profiles");
+    hardSourceProfiles.value = response.profiles || [];
+  } catch (error) {
+    console.error("Failed to load hard source profiles:", error);
+    hardSourceProfiles.value = [];
+  } finally {
+    hardSourceProfilesLoading.value = false;
+  }
+};
+
 const refreshDevPanel = async () => {
   if (!showFullDevTools.value) return;
   try {
@@ -1250,6 +1416,7 @@ const refreshDevPanel = async () => {
       loadDiscoveryQuality(),
       loadHeadlessQueue(),
       loadHardSources(),
+      loadHardSourceProfiles(),
       loadAgent2Progress(),
     ]);
   } catch (error) {
@@ -1469,6 +1636,10 @@ const isRetryableHeadlessStatus = (status: string): boolean => {
   ].includes(status);
 };
 
+const isLegacyHeadlessStatus = (status: string): boolean => {
+  return ["BROWSER_FALLBACK_DISABLED", "BROWSER_COOLDOWN_DEFERRED"].includes(status);
+};
+
 const retryHeadlessQueueItem = async (item: { id: string; targetUrl: string | null; status: string }) => {
   if (!showFullDevTools.value || !canRunManualPipeline.value || retryingHeadlessArtifactId.value) return;
   retryingHeadlessArtifactId.value = item.id;
@@ -1562,6 +1733,10 @@ const hardSourceActionLabel = (action: string): string => {
     run_browser: "run browser",
     manual_review: "manual review",
     ai_inspection_candidate: "AI inspection",
+    ai_profile_inspection: "AI profile",
+    relax_category_scope: "relax scope",
+    weak_date_policy_review: "date policy",
+    browser_runtime_fix: "fix runtime",
   };
   return labels[action] || action;
 };
@@ -1569,11 +1744,16 @@ const hardSourceActionLabel = (action: string): string => {
 const hardSourceActionBadgeClass = (action: string): string => {
   switch (action) {
     case "ai_inspection_candidate":
+    case "ai_profile_inspection":
       return "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/20";
     case "run_browser":
+    case "browser_runtime_fix":
       return "bg-sky-500/15 text-sky-300 border-sky-500/20";
     case "retry_static":
+    case "relax_category_scope":
       return "bg-amber-500/15 text-amber-300 border-amber-500/20";
+    case "weak_date_policy_review":
+      return "bg-orange-500/15 text-orange-300 border-orange-500/20";
     case "manual_review":
       return "bg-gray-500/15 text-gray-400 border-gray-500/20";
     default:

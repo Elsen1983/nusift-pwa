@@ -129,6 +129,89 @@ export type HeadlessQueueSummary = {
   byStatus: Record<string, number>;
 };
 
+// ─── View classification ────────────────────────────────────────────────────
+
+/**
+ * Statuses that are always considered "active" regardless of age.
+ * These represent work-in-progress or items needing immediate attention.
+ */
+const ALWAYS_ACTIVE_STATUSES = new Set([
+  "PENDING_HEADLESS",
+  "HEADLESS_PROCESSING",
+  "HEADLESS_PROCESSING_STALE",
+]);
+
+/**
+ * Statuses that are terminal/historical. These are excluded from the
+ * active view unless they have been recently updated (e.g. via manual retry).
+ */
+const TERMINAL_STATUSES = new Set([
+  "RESOLVED",
+  "RESOLVED_BY_STATIC_DISCOVERY",
+  "RESOLVED_BY_AGENT1_RSS",
+  "BROWSER_FALLBACK_DISABLED",
+]);
+
+/**
+ * Recency threshold for including non-always-active statuses in the
+ * active view. Items with updatedAt older than this are considered
+ * historical artifacts.
+ */
+const ACTIVE_RECENCY_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+export type HeadlessQueueView = "active" | "history" | "all";
+
+/**
+ * Classify a normalized headless queue item into "active" or "history".
+ * Used for in-memory summary counting after DB fetch.
+ */
+export function classifyHeadlessQueueItem(item: NormalizedHeadlessQueueItem): "active" | "history" {
+  if (ALWAYS_ACTIVE_STATUSES.has(item.status)) return "active";
+
+  // Terminal statuses are always history.
+  if (TERMINAL_STATUSES.has(item.status)) return "history";
+
+  // Other statuses (BROWSER_NO_CANDIDATES, BROWSER_RUNTIME_UNAVAILABLE,
+  // SKIPPED_UNIMPLEMENTED, etc.) are active if recently updated.
+  const ageMs = Date.now() - new Date(item.updatedAt).getTime();
+  return ageMs <= ACTIVE_RECENCY_THRESHOLD_MS ? "active" : "history";
+}
+
+/**
+ * Build Prisma `where` conditions for a headless queue view.
+ * Returns an object to spread into the existing `where` clause.
+ * When `status` is explicitly provided, view filtering is bypassed.
+ */
+export function buildHeadlessQueueViewFilter(view: HeadlessQueueView): Record<string, unknown> | null {
+  if (view === "all") return null; // No additional filter needed
+
+  const recencyCutoff = new Date(Date.now() - ACTIVE_RECENCY_THRESHOLD_MS);
+
+  if (view === "active") {
+    return {
+      OR: [
+        { status: { in: [...ALWAYS_ACTIVE_STATUSES] } },
+        {
+          status: { notIn: [...TERMINAL_STATUSES, "RESOLVED_BY_STATIC_DISCOVERY"] },
+          updatedAt: { gte: recencyCutoff },
+        },
+      ],
+    };
+  }
+
+  // view === "history": everything NOT in the active view
+  // i.e. terminal statuses OR (non-always-active AND old)
+  return {
+    OR: [
+      { status: { in: [...TERMINAL_STATUSES] } },
+      {
+        status: { notIn: [...ALWAYS_ACTIVE_STATUSES] },
+        updatedAt: { lt: recencyCutoff },
+      },
+    ],
+  };
+}
+
 // ─── Normalizer ─────────────────────────────────────────────────────────────
 
 /**
@@ -346,12 +429,65 @@ export function normalizeHeadlessQueueArtifact(artifact: {
 
 // ─── Summary builder ────────────────────────────────────────────────────────
 
+export type ExtendedHeadlessQueueSummary = HeadlessQueueSummary & {
+  activeTotal: number;
+  historyTotal: number;
+  retryableTotal: number;
+  cooldownPendingTotal: number;
+  resolvedRecentTotal: number;
+};
+
+/**
+ * Statuses that are retryable (admin can trigger a manual retry).
+ */
+const RETRYABLE_STATUSES = new Set([
+  "BROWSER_NO_CANDIDATES",
+  "BROWSER_RUNTIME_UNAVAILABLE",
+  "BROWSER_FALLBACK_DISABLED",
+  "HEADLESS_PROCESSING_STALE",
+  "SKIPPED_UNIMPLEMENTED",
+  "INVALID",
+]);
+
+/**
+ * Recency threshold for counting resolved items as "recent".
+ */
+const RECENT_RESOLVED_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 export function buildHeadlessQueueSummary(
   items: NormalizedHeadlessQueueItem[],
-): HeadlessQueueSummary {
+): ExtendedHeadlessQueueSummary {
   const byStatus: Record<string, number> = {};
+  let activeTotal = 0;
+  let historyTotal = 0;
+  let retryableTotal = 0;
+  let cooldownPendingTotal = 0;
+  let resolvedRecentTotal = 0;
+
   for (const item of items) {
     byStatus[item.status] = (byStatus[item.status] || 0) + 1;
+
+    if (classifyHeadlessQueueItem(item) === "active") {
+      activeTotal++;
+    } else {
+      historyTotal++;
+    }
+
+    if (RETRYABLE_STATUSES.has(item.status)) {
+      retryableTotal++;
+    }
+
+    if (item.skippedDueToBrowserCooldown) {
+      cooldownPendingTotal++;
+    }
+
+    if (
+      item.status === "RESOLVED" &&
+      Date.now() - new Date(item.updatedAt).getTime() <= RECENT_RESOLVED_THRESHOLD_MS
+    ) {
+      resolvedRecentTotal++;
+    }
   }
-  return { total: items.length, byStatus };
+
+  return { total: items.length, byStatus, activeTotal, historyTotal, retryableTotal, cooldownPendingTotal, resolvedRecentTotal };
 }

@@ -7,6 +7,8 @@ import {
   readBoolean,
   normalizeHeadlessQueueArtifact,
   buildHeadlessQueueSummary,
+  classifyHeadlessQueueItem,
+  buildHeadlessQueueViewFilter,
 } from "./headless-queue-normalize";
 
 // ─── Helper unit tests ──────────────────────────────────────────────────────
@@ -1272,5 +1274,264 @@ describe("buildHeadlessQueueSummary", () => {
     const summary = buildHeadlessQueueSummary([]);
     expect(summary.total).toBe(0);
     expect(summary.byStatus).toEqual({});
+    expect(summary.activeTotal).toBe(0);
+    expect(summary.historyTotal).toBe(0);
+    expect(summary.retryableTotal).toBe(0);
+    expect(summary.cooldownPendingTotal).toBe(0);
+    expect(summary.resolvedRecentTotal).toBe(0);
+  });
+
+  it("computes active/history totals from item classification", () => {
+    const now = new Date();
+    const oldDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days ago
+    const items = [
+      { ...makeItem("PENDING_HEADLESS"), updatedAt: now },
+      { ...makeItem("HEADLESS_PROCESSING"), updatedAt: now },
+      { ...makeItem("RESOLVED"), updatedAt: oldDate },
+      { ...makeItem("BROWSER_FALLBACK_DISABLED"), updatedAt: oldDate },
+    ];
+    const summary = buildHeadlessQueueSummary(items as any);
+    expect(summary.activeTotal).toBe(2);
+    expect(summary.historyTotal).toBe(2);
+  });
+
+  it("computes retryableTotal for retryable statuses", () => {
+    const items = [
+      makeItem("PENDING_HEADLESS"),
+      makeItem("BROWSER_NO_CANDIDATES"),
+      makeItem("BROWSER_FALLBACK_DISABLED"),
+      makeItem("HEADLESS_PROCESSING_STALE"),
+      makeItem("RESOLVED"),
+    ];
+    const summary = buildHeadlessQueueSummary(items as any);
+    expect(summary.retryableTotal).toBe(3);
+  });
+
+  it("computes cooldownPendingTotal for cooldown items", () => {
+    const items = [
+      { ...makeItem("PENDING_HEADLESS"), skippedDueToBrowserCooldown: true },
+      { ...makeItem("PENDING_HEADLESS"), skippedDueToBrowserCooldown: false },
+      makeItem("RESOLVED"),
+    ];
+    const summary = buildHeadlessQueueSummary(items as any);
+    expect(summary.cooldownPendingTotal).toBe(1);
+  });
+});
+
+// ─── classifyHeadlessQueueItem tests ────────────────────────────────────────
+
+describe("classifyHeadlessQueueItem", () => {
+  const makeClassifiable = (status: string, updatedAt?: Date) => ({
+    id: `art-${status}`,
+    status,
+    artifactType: "article_discovery_headless_required",
+    sourceId: null as string | null,
+    categoryId: null as string | null,
+    targetUrl: null,
+    createdAt: new Date(),
+    updatedAt: updatedAt ?? new Date(),
+    quality: null,
+    confidence: null,
+    escalationReasons: [],
+    headlessProcessingStartedAt: null,
+    headlessRecoveryCount: null,
+    lastHeadlessRecoveryAt: null,
+    browserFallbackRan: false,
+    candidateCount: 0,
+    staleSamples: [] as any[],
+    dateAnomalySamples: [] as any[],
+    browserFallbackStartedAt: null,
+    browserFallbackFinishedAt: null,
+    browserRawLinks: null,
+    browserEvaluated: null,
+    browserAccepted: null,
+    browserRejected: null,
+    browserInserted: null,
+    browserSkipped: null,
+    browserFailed: null,
+    browserTopRejectionReasons: [] as any[],
+    browserError: null,
+    browserBlockedReason: null,
+    browserRateLimited: false,
+    browserRateLimitReason: null,
+    browserRateLimitedAt: null,
+    browserRetryAfterAt: null,
+    browserRateLimitedCount: null,
+    browserDetailEvaluationStoppedReason: null,
+    skippedDueToBrowserCooldown: false,
+    browserCooldownUntil: null,
+    lastBrowserCooldownSkipAt: null,
+    browserQualityAssessment: null,
+    renderedUrl: null,
+    browserShortlistedLinks: null as number | null,
+    browserTopRejectedLinks: [] as any[],
+    browserShortlistedLinkSamples: [] as any[],
+    browserTopLinkRejectionReasons: [] as any[],
+  });
+
+  it("classifies PENDING_HEADLESS as active", () => {
+    expect(classifyHeadlessQueueItem(makeClassifiable("PENDING_HEADLESS"))).toBe("active");
+  });
+
+  it("classifies HEADLESS_PROCESSING as active", () => {
+    expect(classifyHeadlessQueueItem(makeClassifiable("HEADLESS_PROCESSING"))).toBe("active");
+  });
+
+  it("classifies HEADLESS_PROCESSING_STALE as active", () => {
+    expect(classifyHeadlessQueueItem(makeClassifiable("HEADLESS_PROCESSING_STALE"))).toBe("active");
+  });
+
+  it("classifies RESOLVED as history", () => {
+    expect(classifyHeadlessQueueItem(makeClassifiable("RESOLVED"))).toBe("history");
+  });
+
+  it("classifies RESOLVED_BY_STATIC_DISCOVERY as history", () => {
+    expect(classifyHeadlessQueueItem(makeClassifiable("RESOLVED_BY_STATIC_DISCOVERY"))).toBe("history");
+  });
+
+  it("classifies old BROWSER_FALLBACK_DISABLED as history", () => {
+    const oldDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    expect(classifyHeadlessQueueItem(makeClassifiable("BROWSER_FALLBACK_DISABLED", oldDate))).toBe("history");
+  });
+
+  it("classifies recent BROWSER_NO_CANDIDATES as active", () => {
+    const recentDate = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
+    expect(classifyHeadlessQueueItem(makeClassifiable("BROWSER_NO_CANDIDATES", recentDate))).toBe("active");
+  });
+
+  it("classifies old BROWSER_NO_CANDIDATES as history", () => {
+    const oldDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    expect(classifyHeadlessQueueItem(makeClassifiable("BROWSER_NO_CANDIDATES", oldDate))).toBe("history");
+  });
+
+  it("classifies recent BROWSER_RUNTIME_UNAVAILABLE as active", () => {
+    const recentDate = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
+    expect(classifyHeadlessQueueItem(makeClassifiable("BROWSER_RUNTIME_UNAVAILABLE", recentDate))).toBe("active");
+  });
+
+  it("classifies old BROWSER_RUNTIME_UNAVAILABLE as history", () => {
+    const oldDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    expect(classifyHeadlessQueueItem(makeClassifiable("BROWSER_RUNTIME_UNAVAILABLE", oldDate))).toBe("history");
+  });
+});
+
+// ─── buildHeadlessQueueViewFilter tests ─────────────────────────────────────
+
+describe("buildHeadlessQueueViewFilter", () => {
+  it("returns null for view=all", () => {
+    expect(buildHeadlessQueueViewFilter("all")).toBeNull();
+  });
+
+  it("returns OR filter for view=active", () => {
+    const filter = buildHeadlessQueueViewFilter("active");
+    expect(filter).not.toBeNull();
+    expect(filter!.OR).toBeDefined();
+    expect(Array.isArray(filter!.OR)).toBe(true);
+    // Should have 2 OR branches: always-active statuses + recent non-terminal
+    expect((filter!.OR as any[]).length).toBe(2);
+  });
+
+  it("returns OR filter for view=history", () => {
+    const filter = buildHeadlessQueueViewFilter("history");
+    expect(filter).not.toBeNull();
+    expect(filter!.OR).toBeDefined();
+    expect(Array.isArray(filter!.OR)).toBe(true);
+    expect((filter!.OR as any[]).length).toBe(2);
+  });
+
+  it("active view includes always-active statuses", () => {
+    const filter = buildHeadlessQueueViewFilter("active");
+    const firstBranch = (filter!.OR as any[])[0];
+    expect(firstBranch.status.in).toContain("PENDING_HEADLESS");
+    expect(firstBranch.status.in).toContain("HEADLESS_PROCESSING");
+    expect(firstBranch.status.in).toContain("HEADLESS_PROCESSING_STALE");
+  });
+
+  it("active view excludes terminal statuses from recency branch", () => {
+    const filter = buildHeadlessQueueViewFilter("active");
+    const secondBranch = (filter!.OR as any[])[1];
+    expect(secondBranch.status.notIn).toContain("RESOLVED");
+    expect(secondBranch.status.notIn).toContain("RESOLVED_BY_STATIC_DISCOVERY");
+    expect(secondBranch.status.notIn).toContain("BROWSER_FALLBACK_DISABLED");
+  });
+
+  it("history view includes terminal statuses", () => {
+    const filter = buildHeadlessQueueViewFilter("history");
+    const firstBranch = (filter!.OR as any[])[0];
+    expect(firstBranch.status.in).toContain("RESOLVED");
+    expect(firstBranch.status.in).toContain("BROWSER_FALLBACK_DISABLED");
+  });
+});
+
+describe("classifyHeadlessQueueItem — RESOLVED_BY_AGENT1_RSS", () => {
+  it("classifies RESOLVED_BY_AGENT1_RSS as history", async () => {
+    const mod = await import("./headless-queue-normalize");
+    expect(
+      mod.classifyHeadlessQueueItem({
+        id: "test",
+        status: "RESOLVED_BY_AGENT1_RSS",
+        artifactType: "article_discovery_headless_required",
+        sourceId: null,
+        categoryId: null,
+        targetUrl: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        quality: null,
+        confidence: null,
+        escalationReasons: [],
+        headlessProcessingStartedAt: null,
+        headlessRecoveryCount: null,
+        lastHeadlessRecoveryAt: null,
+        browserFallbackRan: false,
+        candidateCount: null,
+        staleSamples: [],
+        dateAnomalySamples: [],
+        browserFallbackStartedAt: null,
+        browserFallbackFinishedAt: null,
+        browserRawLinks: null,
+        browserEvaluated: null,
+        browserAccepted: null,
+        browserRejected: null,
+        browserInserted: null,
+        browserSkipped: null,
+        browserFailed: null,
+        browserTopRejectionReasons: [],
+        browserError: null,
+        browserBlockedReason: null,
+        browserRateLimited: false,
+        browserRateLimitReason: null,
+        browserRateLimitedAt: null,
+        browserRetryAfterAt: null,
+        browserRateLimitedCount: null,
+        browserDetailEvaluationStoppedReason: null,
+        skippedDueToBrowserCooldown: false,
+        browserCooldownUntil: null,
+        lastBrowserCooldownSkipAt: null,
+        browserQualityAssessment: null,
+        renderedUrl: null,
+        browserShortlistedLinks: null,
+        browserTopRejectedLinks: [],
+        browserShortlistedLinkSamples: [],
+        browserTopLinkRejectionReasons: [],
+      }),
+    ).toBe("history");
+  });
+});
+
+describe("buildHeadlessQueueViewFilter — RESOLVED_BY_AGENT1_RSS in terminal statuses", () => {
+  it("excludes RESOLVED_BY_AGENT1_RSS from active view", async () => {
+    const mod = await import("./headless-queue-normalize");
+    const filter = mod.buildHeadlessQueueViewFilter("active");
+    expect(filter).not.toBeNull();
+    const secondBranch = (filter!.OR as any[])[1];
+    expect(secondBranch.status.notIn).toContain("RESOLVED_BY_AGENT1_RSS");
+  });
+
+  it("includes RESOLVED_BY_AGENT1_RSS in history view terminal statuses", async () => {
+    const mod = await import("./headless-queue-normalize");
+    const filter = mod.buildHeadlessQueueViewFilter("history");
+    expect(filter).not.toBeNull();
+    const firstBranch = (filter!.OR as any[])[0];
+    expect(firstBranch.status.in).toContain("RESOLVED_BY_AGENT1_RSS");
   });
 });

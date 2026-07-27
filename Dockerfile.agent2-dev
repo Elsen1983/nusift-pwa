@@ -59,6 +59,8 @@ COPY server/ ./server/
 ENV NODE_ENV=development
 ENV VERCEL=1
 ENV NUXT_ENABLE_AGENT2_BROWSER_FALLBACK=true
-
-ENTRYPOINT ["npx", "tsx"]
+# Avoid rare V8 Turboshaft optimizer crashes in long-running local Docker
+# batch runs without disabling WebAssembly required by Node's fetch/undici.
+# This is dev-runner only and does not affect production.
+ENTRYPOINT ["node", "--no-opt", "node_modules/tsx/dist/cli.mjs"]
 CMD ["scripts/dev/run-agent2-target.ts"]

@@ -1,11 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { IngestResult } from "./types";
 
 const prismaCreateManyMock = vi.fn();
+const prismaCreateMock = vi.fn();
+const prismaFindUniqueMock = vi.fn();
+const prismaUpdateMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
     pipelineArtifact: {
       createMany: (...args: any[]) => prismaCreateManyMock(...args),
+      create: (...args: any[]) => prismaCreateMock(...args),
+    },
+    pipelineRun: {
+      create: (...args: any[]) => prismaCreateMock(...args),
+      update: (...args: any[]) => prismaUpdateMock(...args),
+    },
+    newsSource: {
+      findUnique: (...args: any[]) => prismaFindUniqueMock(...args),
+    },
+    sourceCategory: {
+      findUnique: (...args: any[]) => prismaFindUniqueMock(...args),
     },
   },
 }));
@@ -217,5 +232,136 @@ describe("serializeHardCaseDiscoveryCandidate", () => {
 
     expect(result).toBe(0);
     expect(prismaCreateManyMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("persistAgent1TargetOutcomeArtifact – errorLog consistency", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    prismaCreateMock.mockResolvedValue({ id: "artifact-1" });
+    // Default: no category/source lookup
+    prismaFindUniqueMock.mockResolvedValue(null);
+  });
+
+  const makeResult = (overrides: Partial<IngestResult> = {}): IngestResult => ({
+    sourceId: "src-1",
+    categoryId: "cat-1",
+    candidates: [],
+    failed: 0,
+    feedUrl: "https://example.com/rss",
+    feedFormat: "rss",
+    skipSummary: {
+      emptyLink: 0,
+      outOfScope: 0,
+      staleOrMissingPublishedAt: 0,
+      alreadySeenFeedItem: 0,
+      htmlFallbackNonArticle: 0,
+      htmlFallbackStale: 0,
+    },
+    rejectedItems: [],
+    ...overrides,
+  });
+
+  const makePersisted = (overrides: Partial<{ inserted: number; skipped: number; failed: number; enriched: number }> = {}) => ({
+    inserted: 1,
+    skipped: 0,
+    failed: 0,
+    ...overrides,
+  });
+
+  it("sets errorLog to null for PASS status", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-1",
+      result: makeResult(),
+      persisted: makePersisted(),
+    });
+
+    expect(prismaCreateMock).toHaveBeenCalledTimes(1);
+    const data = prismaCreateMock.mock.calls[0]![0].data;
+    expect(data.status).toBe("PASS");
+    expect(data.errorLog).toBeNull();
+  });
+
+  it("sets errorLog to handoff reason for HANDOFF_TO_AGENT2 status", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-1",
+      result: makeResult({ feedUrl: null, candidates: [] }),
+      persisted: makePersisted({ inserted: 0 }),
+    });
+
+    const data = prismaCreateMock.mock.calls[0]![0].data;
+    expect(data.status).toBe("HANDOFF_TO_AGENT2");
+    expect(data.errorLog).toBe(
+      "No usable RSS/feed candidates were produced; target is eligible for Agent 2.",
+    );
+  });
+
+  it("sets errorLog to RSS-active message for RSS_ACTIVE status", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-1",
+      // feedUrl present, failed=0, inserted=0, candidates present → RSS_ACTIVE
+      result: makeResult({ candidates: [{ fake: true }] as unknown as IngestResult["candidates"] }),
+      persisted: makePersisted({ inserted: 0 }),
+    });
+
+    const data = prismaCreateMock.mock.calls[0]![0].data;
+    expect(data.status).toBe("RSS_ACTIVE");
+    expect(data.errorLog).toBe(
+      "RSS feed active but no new articles inserted.",
+    );
+    // Payload failureReason must also be the RSS-active message
+    expect(data.payload.failureReason).toBe(
+      "RSS feed active but no new articles inserted.",
+    );
+  });
+
+  it("sets errorLog to fetch/parse failure reason for FAILED status", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-1",
+      result: makeResult({ failed: 1 }),
+      persisted: makePersisted({ inserted: 0, failed: 1 }),
+    });
+
+    const data = prismaCreateMock.mock.calls[0]![0].data;
+    expect(data.status).toBe("FAILED");
+    expect(data.errorLog).toBe(
+      "Agent 1 failed while fetching or parsing this target.",
+    );
+  });
+
+  it("sets errorLog to no-inserts reason for FAILED status (feed discovered, candidates found, but none inserted)", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-1",
+      // feedUrl=null but candidates present → not handedToAgent2, not rssActive
+      result: makeResult({ feedUrl: null, candidates: [{ fake: true }] as unknown as IngestResult["candidates"] }),
+      persisted: makePersisted({ inserted: 0 }),
+    });
+
+    const data = prismaCreateMock.mock.calls[0]![0].data;
+    expect(data.status).toBe("FAILED");
+    expect(data.errorLog).toBe(
+      "Agent 1 produced no newly inserted articles for this target.",
+    );
+  });
+
+  it("does not mask real fetch failures as RSS_ACTIVE (rssActive requires failed === 0)", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-1",
+      result: makeResult({ failed: 1, candidates: [{ fake: true }] as unknown as IngestResult["candidates"] }),
+      persisted: makePersisted({ inserted: 0, failed: 1 }),
+    });
+
+    const data = prismaCreateMock.mock.calls[0]![0].data;
+    // Must be FAILED, not RSS_ACTIVE
+    expect(data.status).toBe("FAILED");
+    expect(data.errorLog).toBe(
+      "Agent 1 failed while fetching or parsing this target.",
+    );
   });
 });

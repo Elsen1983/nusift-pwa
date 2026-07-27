@@ -81,6 +81,7 @@ export default defineEventHandler(async (event) => {
         status: artifact.status,
         passed: readBoolean(payload.passed),
         handedToAgent2: readBoolean(payload.handedToAgent2),
+        rssActive: readBoolean(payload.rssActive),
         sourceUrl: readString(payload.sourceUrl),
         candidates: readNumber(payload.candidates),
         inserted: readNumber(payload.inserted),
@@ -88,6 +89,7 @@ export default defineEventHandler(async (event) => {
         failed: readNumber(payload.failed),
         enriched: readNumber(payload.enriched),
         feedUrl: readString(payload.feedUrl),
+        rssUrl: readString(payload.rssUrl),
         feedFormat: readString(payload.feedFormat),
         failureReason: readString(payload.failureReason) || artifact.errorLog,
       };

@@ -45,7 +45,11 @@ vi.mock("./log", () => ({ logAgentScan: logAgentScanMock }));
 
 // ── Discovery mock ────────────────────────────────────────────────────
 const discoverFeedForUrlMock = vi.hoisted(() => vi.fn());
-vi.mock("./feed-discovery", () => ({ discoverFeedForUrl: discoverFeedForUrlMock }));
+const hasQueryScopedCategoryTokensMock = vi.hoisted(() => vi.fn().mockReturnValue(false));
+vi.mock("./feed-discovery", () => ({
+  discoverFeedForUrl: discoverFeedForUrlMock,
+  hasQueryScopedCategoryTokens: hasQueryScopedCategoryTokensMock,
+}));
 
 // ── Helpers ───────────────────────────────────────────────────────────
 const makeResponse = (body: string, ok = true) => ({

@@ -805,6 +805,79 @@ describe("buildScopedFeedCandidates", () => {
     expect(candidates).toContain("https://www.rte.ie/feeds/rss/?index=/news/world/");
     expect(candidates).toContain("https://www.rte.ie/feeds/rss?index=/news/world/");
   });
+
+  it("does not return stacked feed suffix candidates for feed-like target URLs", async () => {
+    const { buildScopedFeedCandidates } = await import("./feed-discovery");
+
+    const candidates = buildScopedFeedCandidates("https://example.com/section/feed.xml");
+
+    expect(candidates).not.toContain("https://example.com/section/feed.xml/rss.xml");
+    expect(candidates).not.toContain("https://example.com/section/feed.xml/feed.xml");
+    expect(candidates.every((candidate) => !candidate.includes("/feed.xml/rss"))).toBe(true);
+  });
+});
+
+describe("extractAnchorFeedLinksFromHtml", () => {
+  it("extracts same-origin RSS anchor links with query-scoped feed URLs", async () => {
+    const { extractAnchorFeedLinksFromHtml } = await import("./feed-discovery");
+    const feedUrl = `https://telex.hu/rss/archivum?filters=${encodeURIComponent(JSON.stringify({
+      superTagSlugs: ["eletmod"],
+      parentId: ["null"],
+    }))}&perPage=10`;
+
+    const links = extractAnchorFeedLinksFromHtml(
+      `<html><body><a href="${feedUrl}" aria-label="RSS">RSS</a></body></html>`,
+      "https://telex.hu/rovat/eletmod",
+    );
+
+    expect(links).toEqual([feedUrl]);
+  });
+
+  it("resolves relative RSS anchor URLs and skips unsafe or unrelated anchors", async () => {
+    const { extractAnchorFeedLinksFromHtml } = await import("./feed-discovery");
+
+    const links = extractAnchorFeedLinksFromHtml(
+      `<html><body>
+        <a href="/rss/archivum?filters=%7B%22superTagSlugs%22%3A%5B%22eletmod%22%5D%7D" title="RSS">RSS</a>
+        <a href="https://social.example/rss.xml">RSS</a>
+        <a href="javascript:void(0)">RSS</a>
+        <a href="/contact/rss.xml">RSS</a>
+      </body></html>`,
+      "https://telex.hu/rovat/eletmod",
+    );
+
+    expect(links).toEqual([
+      "https://telex.hu/rss/archivum?filters=%7B%22superTagSlugs%22%3A%5B%22eletmod%22%5D%7D",
+    ]);
+  });
+});
+
+describe("hasQueryScopedCategoryTokens", () => {
+  it("recognizes URL-encoded JSON category tokens in query-scoped feed URLs", async () => {
+    const { hasQueryScopedCategoryTokens } = await import("./feed-discovery");
+    const filters = encodeURIComponent(JSON.stringify({ superTagSlugs: ["eletmod"], parentId: ["null"] }));
+
+    expect(
+      hasQueryScopedCategoryTokens(
+        "https://telex.hu/rovat/eletmod",
+        `https://telex.hu/rss/archivum?filters=${filters}&perPage=10`,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not classify generic or unrelated query feed URLs as scoped", async () => {
+    const { hasQueryScopedCategoryTokens } = await import("./feed-discovery");
+
+    expect(
+      hasQueryScopedCategoryTokens("https://telex.hu/rovat/eletmod", "https://telex.hu/rss"),
+    ).toBe(false);
+    expect(
+      hasQueryScopedCategoryTokens(
+        "https://telex.hu/rovat/eletmod",
+        `https://telex.hu/rss/archivum?filters=${encodeURIComponent(JSON.stringify({ superTagSlugs: ["belfold"] }))}`,
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("query-parameter scoped feed discovery", () => {

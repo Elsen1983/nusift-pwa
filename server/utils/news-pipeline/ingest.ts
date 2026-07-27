@@ -18,7 +18,8 @@ import type {
 import { emptyTaxonomyEvidence, nonNullish, serializeDiscoveryPayload, validateDiscoveryEvidence } from "./types";
 
 import { buildFeedUrlCandidates } from "./import-rss";
-import { discoverFeedForUrl } from "./feed-discovery";
+import { discoverFeedForUrl, hasQueryScopedCategoryTokens } from "./feed-discovery";
+import { resolveHeadlessMarkersByAgent1Rss } from "./agent1-rss-cleanup";
 
 type ParsedFeedItem = {
   title: string;
@@ -739,6 +740,8 @@ export const isFallbackFeedItemRelevantToCategory = (
   return categoryHasDirectMatch;
 };
 
+
+
 export const isScopedCategoryFeed = (
   categoryPathUrl: string,
   feedUrl: string | null,
@@ -748,6 +751,10 @@ export const isScopedCategoryFeed = (
 
   // Prefer canonical outcome scopeMatch when present
   const explicitScopeMatch = discoveryEvidence?.outcome?.scopeMatch ?? discoveryEvidence?.scopeMatch;
+  if (feedUrl && hasQueryScopedCategoryTokens(categoryPathUrl, feedUrl)) {
+    return true;
+  }
+
   if (explicitScopeMatch === "exact" || explicitScopeMatch === "probable") {
     return true;
   }
@@ -768,6 +775,14 @@ export const isScopedCategoryFeed = (
     const scopeTokens = extractCategoryScopeTokens(categoryPathUrl).tokens;
     const queryAndPath = `${parsedFeedUrl.pathname} ${parsedFeedUrl.search}`.toLowerCase();
     if (scopeTokens.some((token) => textContainsToken(queryAndPath, token))) {
+      return true;
+    }
+
+    // Check for query-scoped category tokens in JSON payloads and known
+    // scope keys (e.g., filters={"superTagSlugs":["eletmod"]}).
+    // This handles publishers that use generic feed paths with category
+    // tokens encoded in JSON query parameters.
+    if (hasQueryScopedCategoryTokens(categoryPathUrl, feedUrl)) {
       return true;
     }
 
@@ -877,12 +892,35 @@ export const GENERIC_EVIDENCE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 export const hasFreshGenericEvidence = (
   discoveryEvidence: unknown,
   lastRssCheckAt?: Date | null,
+  categoryPathUrl?: string | null,
 ): boolean => {
   const evidence = readCategoryDiscoveryEvidence(discoveryEvidence);
   if (!evidence || evidence.scopeMatch !== "generic") return false;
+  if (categoryPathUrl && hasEvidenceQueryScopedFeed(discoveryEvidence, categoryPathUrl)) {
+    return false;
+  }
   if (!lastRssCheckAt) return true;
   return Date.now() - lastRssCheckAt.getTime() < GENERIC_EVIDENCE_TTL_MS;
 };
+
+const hasEvidenceQueryScopedFeed = (discoveryEvidence: unknown, categoryPathUrl: string) => {
+  if (!discoveryEvidence || typeof discoveryEvidence !== "object") return false;
+
+  const topLevelFeedUrl = (discoveryEvidence as { feedUrl?: unknown }).feedUrl;
+  if (typeof topLevelFeedUrl === "string" && hasQueryScopedCategoryTokens(categoryPathUrl, topLevelFeedUrl)) {
+    return true;
+  }
+
+  const outcome = (discoveryEvidence as { outcome?: unknown }).outcome;
+  if (outcome && typeof outcome === "object") {
+    const outcomeFeedUrl = (outcome as { feedUrl?: unknown }).feedUrl;
+    return typeof outcomeFeedUrl === "string" && hasQueryScopedCategoryTokens(categoryPathUrl, outcomeFeedUrl);
+  }
+
+  return false;
+};
+
+// resolveHeadlessMarkersByAgent1Rss is now in ./agent1-rss-cleanup.ts
 
 const resolveCategoryFeedUrl = async (
   sourceId: string,
@@ -893,6 +931,10 @@ const resolveCategoryFeedUrl = async (
     discoveryEvidence?: unknown;
     lastRssCheckAt?: Date | null;
   } | null,
+  // pipelineRunId is passed through to resolveHeadlessMarkersByAgent1Rss when available.
+  // Currently not available in ingestSource's scope (pipelineRunId is created at pipeline
+  // level, not passed into ingestSource). Left as undefined for forward-compatibility.
+  pipelineRunId?: string | null,
 ) => {
   // When the category already has a feed URL, check if it's genuinely scoped.
   // If evidence says "generic", re-run discovery to allow re-evaluation (self-healing
@@ -914,7 +956,7 @@ const resolveCategoryFeedUrl = async (
   // If discovery evidence already indicates a generic root feed was found
   // and the TTL hasn't expired, skip re-discovery. The parent source's feed
   // will be used dynamically by ingestSource.
-  if (!category.rssFeedUrl && hasFreshGenericEvidence(category.discoveryEvidence, category.lastRssCheckAt)) {
+  if (!category.rssFeedUrl && hasFreshGenericEvidence(category.discoveryEvidence, category.lastRssCheckAt, category.pathUrl)) {
     return {
       feedUrl: null,
       isScopedFeed: false,
@@ -980,6 +1022,20 @@ const resolveCategoryFeedUrl = async (
           : `Resolved scoped category feed ${discoveredFeedUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}`
         : `No category feed found for ${category.pathUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}${discovery.lastError ? `, lastError=${discovery.lastError}` : ""}`,
     });
+
+    // When Agent 1 successfully discovers and saves a scoped RSS feed,
+    // resolve any stale Agent 2 headless queue artifacts for that target
+    // so they stop cluttering the active queue. Non-fatal — cleanup
+    // failure must not block the ingest result.
+    if (discoveredFeedUrl && isScoped) {
+      await resolveHeadlessMarkersByAgent1Rss({
+        sourceId,
+        categoryId: category.id,
+        targetUrl: category.pathUrl,
+        rssFeedUrl: discoveredFeedUrl,
+        pipelineRunId: pipelineRunId || null,
+      }).catch(() => {});
+    }
 
     return {
       feedUrl: isGeneric ? null : discoveredFeedUrl,

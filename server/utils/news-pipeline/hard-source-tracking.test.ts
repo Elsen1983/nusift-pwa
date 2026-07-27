@@ -1,11 +1,19 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const findManyMock = vi.fn();
+const findManySourceMock = vi.fn();
+const findManyCategoryMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
     pipelineArtifact: {
       findMany: (...args: any[]) => findManyMock(...args),
+    },
+    newsSource: {
+      findMany: (...args: any[]) => findManySourceMock(...args),
+    },
+    sourceCategory: {
+      findMany: (...args: any[]) => findManyCategoryMock(...args),
     },
   },
 }));
@@ -170,6 +178,10 @@ describe("hard-source-tracking — pure classification helpers", () => {
 describe("hard-source-tracking — buildHardSourceReport", () => {
   beforeEach(() => {
     findManyMock.mockReset();
+    findManySourceMock.mockReset();
+    findManyCategoryMock.mockReset();
+    findManySourceMock.mockResolvedValue([]);
+    findManyCategoryMock.mockResolvedValue([]);
   });
 
   async function loadFn() {
@@ -298,6 +310,38 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
     const report = await fn();
 
     expect(report.total).toBe(0);
+  });
+
+  it("active scoped RSS resolution hides stale Agent 2 hard-source markers", async () => {
+    findManyMock.mockResolvedValue([
+      makeStaticArtifact({
+        sourceId: "src-rss",
+        targetUrl: "https://example.com/category",
+        quality: "failed",
+        categoryId: "cat-rss",
+      }),
+      makeBrowserArtifact({
+        sourceId: "src-rss",
+        targetUrl: "https://example.com/category",
+        status: "BROWSER_NO_CANDIDATES",
+        categoryId: "cat-rss",
+      }),
+    ]);
+    findManySourceMock.mockResolvedValue([]);
+    findManyCategoryMock.mockResolvedValue([
+      {
+        newsSourceId: "src-rss",
+        id: "cat-rss",
+        rssFeedUrl: "https://example.com/rss",
+        rssStatus: "ACTIVE",
+      },
+    ]);
+
+    const fn = await loadFn();
+    const report = await fn();
+
+    expect(report.total).toBe(0);
+    expect(report.hardSources).toEqual([]);
   });
 
   it("runtime unavailable → recommended action is run_browser, not AI inspection", async () => {

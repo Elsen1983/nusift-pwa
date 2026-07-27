@@ -117,7 +117,7 @@ describe("GET /api/dev/article-discovery-headless-queue", () => {
     );
   });
 
-  it("excludes RESOLVED_BY_STATIC_DISCOVERY by default when no status filter is provided", async () => {
+  it("applies active view filter by default when no view param is provided", async () => {
     mockGetQuery.mockReturnValue({});
     mockFindMany.mockResolvedValue([]);
 
@@ -125,7 +125,106 @@ describe("GET /api/dev/article-discovery-headless-queue", () => {
     await handler({} as any);
 
     const where = mockFindMany.mock.calls[0]![0]!.where;
+    // Active view uses OR filter
+    expect(where.OR).toBeDefined();
+    expect(Array.isArray(where.OR)).toBe(true);
+  });
+
+  it("applies explicit status filter overriding view when status is provided", async () => {
+    mockGetQuery.mockReturnValue({ status: "BROWSER_FALLBACK_DISABLED" });
+    mockFindMany.mockResolvedValue([]);
+
+    const handler = await loadHandler();
+    await handler({} as any);
+
+    const where = mockFindMany.mock.calls[0]![0]!.where;
+    expect(where.status).toBe("BROWSER_FALLBACK_DISABLED");
+    // Should NOT have OR filter since status overrides view
+    expect(where.OR).toBeUndefined();
+  });
+
+  it("applies all view filter when view=all", async () => {
+    mockGetQuery.mockReturnValue({ view: "all" });
+    mockFindMany.mockResolvedValue([]);
+
+    const handler = await loadHandler();
+    await handler({} as any);
+
+    const where = mockFindMany.mock.calls[0]![0]!.where;
     expect(where.status).toEqual({ notIn: ["RESOLVED_BY_STATIC_DISCOVERY"] });
+    expect(where.OR).toBeUndefined();
+  });
+
+  it("applies history view filter when view=history", async () => {
+    mockGetQuery.mockReturnValue({ view: "history" });
+    mockFindMany.mockResolvedValue([]);
+
+    const handler = await loadHandler();
+    await handler({} as any);
+
+    const where = mockFindMany.mock.calls[0]![0]!.where;
+    expect(where.OR).toBeDefined();
+    expect(Array.isArray(where.OR)).toBe(true);
+  });
+
+  it("defaults to active view for invalid view param", async () => {
+    mockGetQuery.mockReturnValue({ view: "invalid" });
+    mockFindMany.mockResolvedValue([]);
+
+    const handler = await loadHandler();
+    await handler({} as any);
+
+    const where = mockFindMany.mock.calls[0]![0]!.where;
+    // Should still have OR filter (active view)
+    expect(where.OR).toBeDefined();
+  });
+
+  it("returns view field in response", async () => {
+    mockGetQuery.mockReturnValue({ view: "history" });
+    mockFindMany.mockResolvedValue([]);
+
+    const handler = await loadHandler();
+    const result = await handler({} as any);
+
+    expect(result.view).toBe("history");
+  });
+
+  it("returns view=active as default in response", async () => {
+    mockGetQuery.mockReturnValue({});
+    mockFindMany.mockResolvedValue([]);
+
+    const handler = await loadHandler();
+    const result = await handler({} as any);
+
+    expect(result.view).toBe("active");
+  });
+
+  it("returns extended summary with active/history counts", async () => {
+    const now = new Date();
+    mockFindMany.mockResolvedValue([
+      {
+        id: "art-1",
+        status: "PENDING_HEADLESS",
+        artifactType: "article_discovery_headless_required",
+        sourceId: "src-1",
+        categoryId: null,
+        createdAt: now,
+        updatedAt: now,
+        candidateCount: 0,
+        payload: { targetUrl: "https://example.com", skippedDueToBrowserCooldown: true },
+      },
+    ]);
+
+    const handler = await loadHandler();
+    const result = await handler({} as any);
+
+    expect(result.summary).toHaveProperty("activeTotal");
+    expect(result.summary).toHaveProperty("historyTotal");
+    expect(result.summary).toHaveProperty("retryableTotal");
+    expect(result.summary).toHaveProperty("cooldownPendingTotal");
+    expect(result.summary).toHaveProperty("resolvedRecentTotal");
+    expect(result.summary.activeTotal).toBe(1);
+    expect(result.summary.cooldownPendingTotal).toBe(1);
   });
 
   it("respects limit query param", async () => {
