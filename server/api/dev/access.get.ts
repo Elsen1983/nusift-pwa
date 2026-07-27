@@ -9,6 +9,8 @@ export default defineEventHandler(async (event) => {
   const manualArticleDiscoveryEnabled =
     !isProduction || process.env.NUXT_ALLOW_MANUAL_ARTICLE_DISCOVERY_RUN === "true";
   const destructiveActionsEnabled = !isProduction;
+  const cleanupDeletionEnabled =
+    !isProduction || process.env.NUXT_ALLOW_PRODUCTION_CLEANUP_RUN === "true";
 
   return {
     ok: true,
@@ -17,5 +19,6 @@ export default defineEventHandler(async (event) => {
     manualPipelineEnabled,
     manualArticleDiscoveryEnabled,
     destructiveActionsEnabled,
+    cleanupDeletionEnabled,
   };
 });

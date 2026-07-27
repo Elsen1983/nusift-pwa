@@ -921,6 +921,255 @@
           </div>
         </div>
 
+        <!-- Maintenance cleanup panel -->
+        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Maintenance
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Safe, bounded cleanup of old unowned articles and stale pipeline artifacts. Dry-run by default; deletion requires explicit confirmation.
+              </p>
+            </div>
+          </div>
+
+          <!-- A. Old unowned articles -->
+          <div class="mt-4 rounded-xl border border-outline-variant/20 bg-surface-container px-4 py-3">
+            <h4 class="font-headline text-xs font-bold text-on-surface">
+              Old unowned articles
+            </h4>
+            <p class="mt-1 text-[11px] text-on-surface-variant">
+              Remove articles older than the retention window when no user has saved, favorited, read-latered, or shared them.
+            </p>
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                @click="inspectOldArticles"
+                :disabled="isInspectingOldArticles"
+                class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-1.5 text-xs font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {{ isInspectingOldArticles ? "Inspecting..." : "Inspect old articles" }}
+              </button>
+              <button
+                v-if="cleanupDeletionEnabled"
+                @click="deleteOldArticles"
+                :disabled="isDeletingOldArticles"
+                class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {{ isDeletingOldArticles ? "Deleting..." : "Delete old unowned articles" }}
+              </button>
+            </div>
+
+            <div v-if="oldArticlesResult" class="mt-3 rounded-lg border border-outline-variant/15 bg-surface-container-highest/50 px-3 py-2.5">
+              <div class="flex flex-wrap items-center gap-2">
+                <span
+                  class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                  :class="oldArticlesResult.dryRun ? 'bg-sky-500/15 text-sky-300' : 'bg-rose-500/15 text-rose-300'"
+                >
+                  {{ oldArticlesResult.dryRun ? "dry-run" : "deleted" }}
+                </span>
+                <span class="text-[10px] text-on-surface-variant">cutoff: {{ oldArticlesResult.cutoff.slice(0, 10) }}</span>
+                <span class="text-[10px] text-on-surface-variant">{{ Math.round(oldArticlesResult.durationMs) }}ms</span>
+                <span class="text-[10px] text-on-surface-variant">limit: {{ oldArticlesResult.limit }}</span>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-on-surface-variant">
+                <span>inspected: <strong>{{ oldArticlesResult.inspected }}</strong></span>
+                <span>eligible: <strong class="text-amber-300">{{ oldArticlesResult.eligibleForDeletion }}</strong></span>
+                <span>deleted: <strong :class="oldArticlesResult.deleted > 0 ? 'text-rose-300' : 'text-on-surface-variant'">{{ oldArticlesResult.deleted }}</strong></span>
+                <span>protected: <strong class="text-emerald-300">{{ oldArticlesResult.protected }}</strong></span>
+                <span>skipped: <strong>{{ oldArticlesResult.skipped }}</strong></span>
+              </div>
+              <div v-if="Object.keys(oldArticlesResult.protectedReasons).length > 0" class="mt-2">
+                <span class="text-[9px] font-bold uppercase tracking-wider text-emerald-300/70">Protected by relation:</span>
+                <div class="mt-0.5 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="(count, reason) in oldArticlesResult.protectedReasons"
+                    :key="`ar-prot-${reason}`"
+                    class="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-200"
+                  >
+                    {{ reason }}: {{ count }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="Object.keys(oldArticlesResult.skippedReasons).length > 0" class="mt-1.5">
+                <span class="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant/60">Skipped reasons:</span>
+                <div class="mt-0.5 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="(count, reason) in oldArticlesResult.skippedReasons"
+                    :key="`ar-skip-${reason}`"
+                    class="rounded bg-surface-container-highest px-1.5 py-0.5 text-[9px] font-medium text-on-surface-variant"
+                  >
+                    {{ reason }}: {{ count }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="oldArticlesResult.bySource.length > 0" class="mt-1.5">
+                <span class="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant/60">By source (top 10):</span>
+                <div class="mt-0.5 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="entry in oldArticlesResult.bySource.slice(0, 10)"
+                    :key="`ar-src-${entry.sourceId}`"
+                    class="rounded bg-surface-container-highest px-1.5 py-0.5 text-[9px] font-medium text-on-surface-variant"
+                  >
+                    {{ entry.sourceId ? entry.sourceId.slice(0, 8) + '...' : 'null' }}: {{ entry.count }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="oldArticlesResult.sampleDeletedOrWouldDelete.length > 0" class="mt-2">
+                <p class="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant/60">
+                  Samples ({{ oldArticlesResult.sampleDeletedOrWouldDelete.length }})
+                </p>
+                <div class="mt-1 max-h-48 space-y-1 overflow-y-auto pr-1">
+                  <div
+                    v-for="sample in oldArticlesResult.sampleDeletedOrWouldDelete"
+                    :key="sample.id"
+                    class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] text-on-surface-variant"
+                  >
+                    <span class="font-mono text-[9px] text-on-surface-variant/50">#{{ sample.id }}</span>
+                    <span v-if="sample.title" class="truncate max-w-[200px] text-on-surface">{{ sample.title }}</span>
+                    <span class="text-on-surface-variant/50">{{ sample.effectiveDate.slice(0, 10) }}</span>
+                    <a
+                      v-if="sample.url"
+                      :href="sample.url"
+                      target="_blank"
+                      rel="noopener"
+                      class="truncate max-w-[180px] text-cyan-400/60 hover:text-cyan-300 hover:underline"
+                    >
+                      {{ truncateStaleUrl(sample.url) }}
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- B. Pipeline artifacts -->
+          <div class="mt-3 rounded-xl border border-outline-variant/20 bg-surface-container px-4 py-3">
+            <h4 class="font-headline text-xs font-bold text-on-surface">
+              Pipeline artifacts
+            </h4>
+            <p class="mt-1 text-[11px] text-on-surface-variant">
+              Clean old pipeline diagnostic artifacts that are resolved, superseded, or safe history.
+            </p>
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                @click="inspectPipelineArtifacts"
+                :disabled="isInspectingArtifacts"
+                class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-1.5 text-xs font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {{ isInspectingArtifacts ? "Inspecting..." : "Inspect pipeline artifacts" }}
+              </button>
+              <button
+                v-if="cleanupDeletionEnabled"
+                @click="deletePipelineArtifacts"
+                :disabled="isDeletingArtifacts"
+                class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {{ isDeletingArtifacts ? "Deleting..." : "Delete pipeline artifacts" }}
+              </button>
+            </div>
+
+            <div v-if="pipelineArtifactsResult" class="mt-3 rounded-lg border border-outline-variant/15 bg-surface-container-highest/50 px-3 py-2.5">
+              <div class="flex flex-wrap items-center gap-2">
+                <span
+                  class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                  :class="pipelineArtifactsResult.dryRun ? 'bg-sky-500/15 text-sky-300' : 'bg-rose-500/15 text-rose-300'"
+                >
+                  {{ pipelineArtifactsResult.dryRun ? "dry-run" : "deleted" }}
+                </span>
+                <span class="text-[10px] text-on-surface-variant">cutoff: {{ pipelineArtifactsResult.cutoff.slice(0, 10) }}</span>
+                <span class="text-[10px] text-on-surface-variant">{{ Math.round(pipelineArtifactsResult.durationMs) }}ms</span>
+                <span class="text-[10px] text-on-surface-variant">limit: {{ pipelineArtifactsResult.limit }}</span>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-on-surface-variant">
+                <span>inspected: <strong>{{ pipelineArtifactsResult.inspected }}</strong></span>
+                <span>eligible: <strong class="text-amber-300">{{ pipelineArtifactsResult.eligibleForDeletion }}</strong></span>
+                <span>deleted: <strong :class="pipelineArtifactsResult.deleted > 0 ? 'text-rose-300' : 'text-on-surface-variant'">{{ pipelineArtifactsResult.deleted }}</strong></span>
+                <span>protected: <strong class="text-emerald-300">{{ pipelineArtifactsResult.protected }}</strong></span>
+                <span>skipped: <strong>{{ pipelineArtifactsResult.skipped }}</strong></span>
+              </div>
+              <div v-if="Object.keys(pipelineArtifactsResult.byStatus).length > 0" class="mt-2">
+                <span class="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant/60">By status:</span>
+                <div class="mt-0.5 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="(count, status) in pipelineArtifactsResult.byStatus"
+                    :key="`pa-status-${status}`"
+                    class="rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+                    :class="headlessStatusBadgeClass(status as string)"
+                  >
+                    {{ status }}: {{ count }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="Object.keys(pipelineArtifactsResult.byArtifactType).length > 0" class="mt-1.5">
+                <span class="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant/60">By artifact type:</span>
+                <div class="mt-0.5 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="(count, type) in pipelineArtifactsResult.byArtifactType"
+                    :key="`pa-type-${type}`"
+                    class="rounded bg-surface-container-highest px-1.5 py-0.5 text-[9px] font-medium text-on-surface-variant"
+                  >
+                    {{ type }}: {{ count }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="Object.keys(pipelineArtifactsResult.protectedReasons).length > 0" class="mt-1.5">
+                <span class="text-[9px] font-bold uppercase tracking-wider text-emerald-300/70">Protected reasons:</span>
+                <div class="mt-0.5 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="(count, reason) in pipelineArtifactsResult.protectedReasons"
+                    :key="`pa-prot-${reason}`"
+                    class="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-200"
+                  >
+                    {{ reason }}: {{ count }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="Object.keys(pipelineArtifactsResult.skippedReasons).length > 0" class="mt-1.5">
+                <span class="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant/60">Skipped reasons:</span>
+                <div class="mt-0.5 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="(count, reason) in pipelineArtifactsResult.skippedReasons"
+                    :key="`pa-skip-${reason}`"
+                    class="rounded bg-surface-container-highest px-1.5 py-0.5 text-[9px] font-medium text-on-surface-variant"
+                  >
+                    {{ reason }}: {{ count }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="pipelineArtifactsResult.sampleDeletedOrWouldDelete.length > 0" class="mt-2">
+                <p class="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant/60">
+                  Samples ({{ pipelineArtifactsResult.sampleDeletedOrWouldDelete.length }})
+                </p>
+                <div class="mt-1 max-h-48 space-y-1 overflow-y-auto pr-1">
+                  <div
+                    v-for="sample in pipelineArtifactsResult.sampleDeletedOrWouldDelete"
+                    :key="sample.id"
+                    class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] text-on-surface-variant"
+                  >
+                    <span
+                      class="rounded-full border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider"
+                      :class="headlessStatusBadgeClass(sample.status)"
+                    >
+                      {{ sample.status }}
+                    </span>
+                    <span class="text-[9px] font-medium text-amber-300/70">{{ sample.reason }}</span>
+                    <a
+                      v-if="sample.targetUrl"
+                      :href="sample.targetUrl"
+                      target="_blank"
+                      rel="noopener"
+                      class="truncate max-w-[180px] text-cyan-400/60 hover:text-cyan-300 hover:underline"
+                    >
+                      {{ truncateStaleUrl(sample.targetUrl) }}
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
       </section>
     </main>
   </div>
@@ -943,6 +1192,7 @@ const canAccessDevPanel = ref(false);
 const canRunManualPipeline = ref(false);
 const canRunArticleDiscovery = ref(false);
 const canRunDestructiveActions = ref(false);
+const cleanupDeletionEnabled = ref(false);
 const canUseFullDevTools = ref(false);
 const isPipelineRunning = ref(false);
 const isEnrichingExistingArticles = ref(false);
@@ -1251,6 +1501,7 @@ const checkDevPanelAccess = async () => {
     canRunManualPipeline.value = false;
     canRunArticleDiscovery.value = false;
     canRunDestructiveActions.value = false;
+    cleanupDeletionEnabled.value = false;
     canUseFullDevTools.value = false;
     stopDevPanelPolling();
     return false;
@@ -1268,6 +1519,7 @@ const checkDevPanelAccess = async () => {
       canRunManualPipeline.value = false;
       canRunArticleDiscovery.value = false;
       canRunDestructiveActions.value = false;
+      cleanupDeletionEnabled.value = false;
       canUseFullDevTools.value = false;
       stopDevPanelPolling();
       return false;
@@ -1279,12 +1531,14 @@ const checkDevPanelAccess = async () => {
       manualPipelineEnabled?: boolean;
       manualArticleDiscoveryEnabled?: boolean;
       destructiveActionsEnabled?: boolean;
+      cleanupDeletionEnabled?: boolean;
       diagnosticsEnabled?: boolean;
     };
     canAccessDevPanel.value = payload.canAccess === true;
     canRunManualPipeline.value = payload.manualPipelineEnabled !== false;
     canRunArticleDiscovery.value = payload.manualArticleDiscoveryEnabled === true;
     canRunDestructiveActions.value = payload.destructiveActionsEnabled === true;
+    cleanupDeletionEnabled.value = payload.cleanupDeletionEnabled === true;
     canUseFullDevTools.value = payload.diagnosticsEnabled === true;
     return canAccessDevPanel.value;
   } catch {
@@ -1292,6 +1546,7 @@ const checkDevPanelAccess = async () => {
     canRunManualPipeline.value = false;
     canRunArticleDiscovery.value = false;
     canRunDestructiveActions.value = false;
+    cleanupDeletionEnabled.value = false;
     canUseFullDevTools.value = false;
     stopDevPanelPolling();
     return false;
@@ -1761,6 +2016,172 @@ const hardSourceActionBadgeClass = (action: string): string => {
   }
 };
 
+// ── Maintenance cleanup state + actions ─────────────────────────────────────
+
+const isInspectingOldArticles = ref(false);
+const isDeletingOldArticles = ref(false);
+const isInspectingArtifacts = ref(false);
+const isDeletingArtifacts = ref(false);
+
+type ArticleCleanupResult = {
+  ok: true;
+  dryRun: boolean;
+  olderThanDays: number;
+  cutoff: string;
+  inspected: number;
+  eligibleForDeletion: number;
+  deleted: number;
+  protected: number;
+  skipped: number;
+  limit: number;
+  durationMs: number;
+  bySource: Array<{ sourceId: string | null; count: number }>;
+  protectedReasons: Record<string, number>;
+  skippedReasons: Record<string, number>;
+  sampleDeletedOrWouldDelete: Array<{
+    id: string;
+    url: string | null;
+    title: string | null;
+    sourceId: string | null;
+    publishedAt: string | null;
+    createdAt: string;
+    effectiveDate: string;
+  }>;
+};
+
+type PipelineArtifactCleanupResult = {
+  ok: true;
+  dryRun: boolean;
+  olderThanDays: number;
+  cutoff: string;
+  inspected: number;
+  eligibleForDeletion: number;
+  deleted: number;
+  protected: number;
+  skipped: number;
+  limit: number;
+  durationMs: number;
+  byArtifactType: Record<string, number>;
+  byStatus: Record<string, number>;
+  protectedReasons: Record<string, number>;
+  skippedReasons: Record<string, number>;
+  sampleDeletedOrWouldDelete: Array<{
+    id: string;
+    artifactType: string;
+    status: string;
+    sourceId: string | null;
+    categoryId: string | null;
+    targetUrl: string | null;
+    createdAt: string;
+    updatedAt: string;
+    reason: string;
+  }>;
+};
+
+const oldArticlesResult = ref<ArticleCleanupResult | null>(null);
+const pipelineArtifactsResult = ref<PipelineArtifactCleanupResult | null>(null);
+
+const inspectOldArticles = async () => {
+  if (!showFullDevTools.value || isInspectingOldArticles.value) return;
+  isInspectingOldArticles.value = true;
+  try {
+    // Match the existing admin.vue convention (loadHeadlessQueue et al.) of
+    // appending query params to the URL string rather than using the `query:`
+    // option, even though ofetch supports both.
+    const result = await $api<ArticleCleanupResult>(
+      "/api/dev/cleanup/articles?olderThanDays=7&limit=100",
+    );
+    oldArticlesResult.value = result;
+    showToast(
+      `Inspected: ${result.inspected} found, ${result.eligibleForDeletion} eligible, ${result.protected} protected.`,
+      "success",
+      4000,
+    );
+  } catch (error: any) {
+    showToast(error?.statusMessage || error?.message || "Article inspection failed.", "error");
+  } finally {
+    isInspectingOldArticles.value = false;
+  }
+};
+
+const deleteOldArticles = async () => {
+  if (!showFullDevTools.value || !cleanupDeletionEnabled.value || isDeletingOldArticles.value) return;
+  const confirmed = window.confirm(
+    "Delete eligible old unowned articles? User-saved/favorited/shared articles will be protected.",
+  );
+  if (!confirmed) return;
+  isDeletingOldArticles.value = true;
+  try {
+    const result = await $api<ArticleCleanupResult>("/api/dev/cleanup/articles", {
+      method: "POST",
+      body: { dryRun: false, olderThanDays: 7, limit: 100 },
+    });
+    oldArticlesResult.value = result;
+    showToast(
+      `Deleted ${result.deleted} old unowned articles. ${result.protected} protected, ${result.skipped} skipped.`,
+      "success",
+      5000,
+    );
+    // Refresh agent logs so the cleanup FINISHED log is visible.
+    await loadAgentLogs();
+  } catch (error: any) {
+    showToast(error?.statusMessage || error?.message || "Article deletion failed.", "error");
+  } finally {
+    isDeletingOldArticles.value = false;
+  }
+};
+
+const inspectPipelineArtifacts = async () => {
+  if (!showFullDevTools.value || isInspectingArtifacts.value) return;
+  isInspectingArtifacts.value = true;
+  try {
+    const result = await $api<PipelineArtifactCleanupResult>(
+      "/api/dev/cleanup/pipeline-artifacts?olderThanDays=14&limit=200",
+    );
+    pipelineArtifactsResult.value = result;
+    showToast(
+      `Inspected: ${result.inspected} found, ${result.eligibleForDeletion} eligible, ${result.protected} protected.`,
+      "success",
+      4000,
+    );
+  } catch (error: any) {
+    showToast(error?.statusMessage || error?.message || "Pipeline artifact inspection failed.", "error");
+  } finally {
+    isInspectingArtifacts.value = false;
+  }
+};
+
+const deletePipelineArtifacts = async () => {
+  if (!showFullDevTools.value || !cleanupDeletionEnabled.value || isDeletingArtifacts.value) return;
+  const confirmed = window.confirm(
+    "Delete eligible old pipeline artifacts? Active/in-flight and unresolved hard-source profiles will be protected.",
+  );
+  if (!confirmed) return;
+  isDeletingArtifacts.value = true;
+  try {
+    const result = await $api<PipelineArtifactCleanupResult>("/api/dev/cleanup/pipeline-artifacts", {
+      method: "POST",
+      body: { dryRun: false, olderThanDays: 14, limit: 200 },
+    });
+    pipelineArtifactsResult.value = result;
+    showToast(
+      `Deleted ${result.deleted} pipeline artifacts. ${result.protected} protected, ${result.skipped} skipped.`,
+      "success",
+      5000,
+    );
+    // Refresh relevant admin panels after artifact cleanup.
+    await Promise.all([
+      loadHeadlessQueue(),
+      loadHardSourceProfiles(),
+      loadAgentLogs(),
+    ]);
+  } catch (error: any) {
+    showToast(error?.statusMessage || error?.message || "Pipeline artifact deletion failed.", "error");
+  } finally {
+    isDeletingArtifacts.value = false;
+  }
+};
+
 onMounted(() => {
   void initializeDevPanel();
 });
@@ -1777,6 +2198,7 @@ watch(
       canRunManualPipeline.value = false;
       canRunArticleDiscovery.value = false;
       canRunDestructiveActions.value = false;
+      cleanupDeletionEnabled.value = false;
       canUseFullDevTools.value = false;
       stopDevPanelPolling();
       return;
@@ -1793,6 +2215,7 @@ watch(
       canRunManualPipeline.value = false;
       canRunArticleDiscovery.value = false;
       canRunDestructiveActions.value = false;
+      cleanupDeletionEnabled.value = false;
       canUseFullDevTools.value = false;
       stopDevPanelPolling();
       return;

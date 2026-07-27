@@ -51,6 +51,13 @@ const ESSENTIAL_AGENT_LOG_STATUSES = new Set([
   "HARD_CASE_CHAIN_PIPELINE_SKIPPED",
   "A2_BATCH_STOPPED",
   "A2_TARGETS_DEFERRED",
+  // ── Maintenance cleanup logging ───────────────────────────────────────
+  "ARTICLE_RETENTION_CLEANUP_STARTED",
+  "ARTICLE_RETENTION_CLEANUP_FINISHED",
+  "ARTICLE_RETENTION_CLEANUP_FAILED",
+  "PIPELINE_ARTIFACT_CLEANUP_STARTED",
+  "PIPELINE_ARTIFACT_CLEANUP_FINISHED",
+  "PIPELINE_ARTIFACT_CLEANUP_FAILED",
 ]);
 
 const isPersistedAgentLogStatus = (status: string) =>
@@ -124,6 +131,19 @@ export const getAgentLogPrefix = (status: string) => {
     ].includes(status)
   ) {
     return "A3";
+  }
+
+  if (
+    [
+      "ARTICLE_RETENTION_CLEANUP_STARTED",
+      "ARTICLE_RETENTION_CLEANUP_FINISHED",
+      "ARTICLE_RETENTION_CLEANUP_FAILED",
+      "PIPELINE_ARTIFACT_CLEANUP_STARTED",
+      "PIPELINE_ARTIFACT_CLEANUP_FINISHED",
+      "PIPELINE_ARTIFACT_CLEANUP_FAILED",
+    ].includes(status)
+  ) {
+    return "MT";
   }
 
   return "A?";
