@@ -20,7 +20,8 @@ import {
 import { persistCandidates } from "./ingest";
 import type { IngestCandidate } from "./types";
 import { normalizeUrl } from "./text";
-import { createOrUpdateHardSourceProfile } from "./hard-source-profile";
+import { createOrUpdateHardSourceProfile, resolveHardSourceProfilesForTarget } from "./hard-source-profile";
+import { lookupActiveDiscoveryProfile } from "./agent2-discovery-profile";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 25;
@@ -682,7 +683,29 @@ export async function processArticleDiscoveryHeadlessQueue(
       // static detail fetch fails (fetch_failed / detail_validation_failed or
       // HTTP 401/403/429). Normal quality rejections (stale, low score,
       // missing title, duplicate, out of scope) are not retried.
-      const MAX_DETAIL_RECOVERY_PAGES = MAX_BROWSER_DETAIL_EVALUATED_LINKS;
+      // If an active discovery profile overrides maxBrowserDetailEvaluations,
+      // use that instead of the default cap. Clamped to 1..25 for safety.
+      // Also extract deniedPathPrefixes for browser link filtering.
+      let effectiveDetailCap = MAX_BROWSER_DETAIL_EVALUATED_LINKS;
+      let effectiveDeniedPrefixes: string[] | null = null;
+      try {
+        const profile = await lookupActiveDiscoveryProfile({
+          sourceId: sourceId!,
+          categoryId: item.categoryId ?? null,
+          targetUrl,
+        });
+        if (profile?.rules.maxBrowserDetailEvaluations != null) {
+          const raw = profile.rules.maxBrowserDetailEvaluations;
+          if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) {
+            effectiveDetailCap = Math.min(Math.max(Math.round(raw), 1), 25);
+          }
+        }
+        if (profile?.rules.deniedPathPrefixes && profile.rules.deniedPathPrefixes.length > 0) {
+          effectiveDeniedPrefixes = profile.rules.deniedPathPrefixes;
+        }
+      } catch { /* non-fatal — use defaults */ }
+
+      const MAX_DETAIL_RECOVERY_PAGES = effectiveDetailCap;
       let detailRecoveryAttempts = 0;
       let browserDetailEvaluated = 0;
       let browserDetailAccepted = 0;
@@ -709,7 +732,24 @@ export async function processArticleDiscoveryHeadlessQueue(
         // Stop early if we have enough accepted candidates
         if (candidates.length >= MAX_BROWSER_ACCEPTED_CANDIDATES) break;
         // Stop early if we've evaluated enough detail pages
-        if (totalDetailEvaluations >= MAX_BROWSER_DETAIL_EVALUATED_LINKS) break;
+        if (totalDetailEvaluations >= effectiveDetailCap) break;
+
+        // Skip links matching deniedPathPrefixes from active discovery profile
+        if (effectiveDeniedPrefixes && effectiveDeniedPrefixes.length > 0) {
+          try {
+            const linkPath = new URL(link.url).pathname;
+            if (effectiveDeniedPrefixes.some((prefix) => linkPath.startsWith(prefix))) {
+              tracker.record({
+                url: link.url,
+                sourceKind: "browser",
+                status: "rejected_utility_path",
+                reason: "discovery_profile_denied_path",
+              } as ArticleDiscoveryCandidateOutcome);
+              browserRejected += 1;
+              continue;
+            }
+          } catch { /* invalid URL — let normal evaluation handle it */ }
+        }
 
         try {
           totalDetailEvaluations += 1;
@@ -1007,6 +1047,16 @@ export async function processArticleDiscoveryHeadlessQueue(
       browserProcessed += 1;
       if (candidates.length > 0) {
         browserResolved += 1;
+        if (sourceId) {
+          await resolveHardSourceProfilesForTarget({
+            sourceId,
+            categoryId: item.categoryId ?? null,
+            targetUrl,
+            resolvedBy: "agent2_browser",
+            resolvedReason: "Agent 2 browser fallback became productive",
+            resolvedPipelineRunId: item.pipelineRunId,
+          });
+        }
       } else {
         browserNoCandidates += 1;
       }

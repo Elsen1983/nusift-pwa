@@ -101,22 +101,22 @@ describe("GET /api/dev/article-discovery-hard-source-profiles", () => {
 
   // -- view filtering -----------------------------------------------------
 
-  it("applies active view filter by default (excludes RESOLVED_BY_AGENT1_RSS)", async () => {
+  it("applies active view filter by default (excludes resolved profile statuses)", async () => {
     const handler = await loadHandler();
     await handler({} as any);
 
     const where = mockFindMany.mock.calls[0]![0]!.where;
-    expect(where.status).toEqual({ notIn: ["RESOLVED_BY_AGENT1_RSS"] });
+    expect(where.status).toEqual({ notIn: ["RESOLVED", "RESOLVED_BY_AGENT1_RSS"] });
   });
 
-  it("applies history view filter (only RESOLVED_BY_AGENT1_RSS)", async () => {
+  it("applies history view filter (only resolved profile statuses)", async () => {
     mockGetQuery.mockReturnValue({ view: "history" });
 
     const handler = await loadHandler();
     await handler({} as any);
 
     const where = mockFindMany.mock.calls[0]![0]!.where;
-    expect(where.status).toBe("RESOLVED_BY_AGENT1_RSS");
+    expect(where.status).toEqual({ in: ["RESOLVED", "RESOLVED_BY_AGENT1_RSS"] });
   });
 
   it("applies all view filter (no status filter)", async () => {
@@ -136,7 +136,7 @@ describe("GET /api/dev/article-discovery-hard-source-profiles", () => {
     await handler({} as any);
 
     const where = mockFindMany.mock.calls[0]![0]!.where;
-    expect(where.status).toEqual({ notIn: ["RESOLVED_BY_AGENT1_RSS"] });
+    expect(where.status).toEqual({ notIn: ["RESOLVED", "RESOLVED_BY_AGENT1_RSS"] });
   });
 
   it("returns view field in response", async () => {

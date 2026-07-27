@@ -943,6 +943,12 @@
                     <span v-if="profile.failureCount > 1" class="text-[10px] font-medium text-rose-300">
                       {{ profile.failureCount }}x failed
                     </span>
+                    <span
+                      class="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                      :class="hardSourceLifecycleBadgeClass(profile.lifecycleState || 'open')"
+                    >
+                      {{ profile.lifecycleState || "open" }}
+                    </span>
                   </div>
                   <p class="mt-1 truncate text-[11px] text-on-surface-variant">
                     {{ profile.targetUrl || "no target url" }}
@@ -950,6 +956,8 @@
                   <div class="mt-0.5 flex flex-wrap gap-2 text-[10px] text-on-surface-variant/60">
                     <span v-if="profile.staticQuality">static: {{ profile.staticQuality }}</span>
                     <span v-if="profile.browserStatus">browser: {{ profile.browserStatus }}</span>
+                    <span v-if="profile.lastAcceptedCount != null">accepted: {{ profile.lastAcceptedCount }}</span>
+                    <span v-if="profile.lastInsertedCount != null">inserted: {{ profile.lastInsertedCount }}</span>
                     <span v-if="profile.sourceId">src: {{ profile.sourceId.slice(0, 8) }}...</span>
                     <span v-if="profile.categoryId">cat: {{ profile.categoryId.slice(0, 8) }}...</span>
                   </div>
@@ -962,12 +970,134 @@
                       {{ reason }}
                     </span>
                   </div>
+                  <div v-if="profile.recoverySuggestion" class="mt-1 text-[10px] font-medium text-cyan-200">
+                    recovery: {{ hardSourceActionLabel(profile.recoverySuggestion) }}
+                  </div>
+                  <!-- Applied profile metadata -->
+                  <div v-if="profile.lifecycleState === 'applied'" class="mt-1 rounded border border-blue-500/15 bg-blue-500/5 px-2 py-1 text-[10px] text-blue-200">
+                    <span>profile applied</span>
+                    <span v-if="profile.updatedAt"> · {{ formatLogTime(profile.updatedAt) }}</span>
+                  </div>
+                  <!-- Resolved metadata -->
+                  <div v-if="profile.resolvedAt || profile.resolvedReason" class="mt-1 rounded border border-emerald-500/15 bg-emerald-500/5 px-2 py-1 text-[10px] text-emerald-200">
+                    <span v-if="profile.resolvedBy">resolved by {{ profile.resolvedBy }}</span>
+                    <span v-if="profile.resolvedReason"> · {{ profile.resolvedReason }}</span>
+                    <span v-if="profile.resolvedAt"> · {{ formatLogTime(profile.resolvedAt) }}</span>
+                  </div>
+                  <!-- Activation buttons for open/suggested profiles -->
+                  <div v-if="profile.lifecycleState === 'open' || profile.lifecycleState === 'suggested'" class="mt-2 flex flex-wrap gap-1.5">
+                    <button
+                      @click="activateDiscoveryProfile(profile.id, 'draft')"
+                      :disabled="activatingProfileId === profile.id"
+                      class="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-2.5 py-1 text-[10px] font-bold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {{ activatingProfileId === profile.id ? 'Creating...' : 'Create draft profile' }}
+                    </button>
+                    <button
+                      @click="activateDiscoveryProfile(profile.id, 'active')"
+                      :disabled="activatingProfileId === profile.id"
+                      class="rounded-lg border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] font-bold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {{ activatingProfileId === profile.id ? 'Activating...' : 'Activate profile' }}
+                    </button>
+                  </div>
+                  <div v-if="activatingProfileError && activatingProfileTargetId === profile.id" class="mt-1 text-[10px] font-medium text-rose-300">
+                    {{ activatingProfileError }}
+                  </div>
                   <div v-if="profile.lastFailureAt" class="mt-0.5 text-[10px] text-on-surface-variant/50">
                     last failure: {{ formatLogTime(profile.lastFailureAt) }}
                   </div>
                 </div>
                 <div class="shrink-0 text-right text-[10px] text-on-surface-variant">
                   <div>{{ formatLogTime(profile.updatedAt) }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Agent 2 Health panel -->
+        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Agent 2 Health
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Per-target health scores sorted by worst first. Identifies sources needing attention without reading every log.
+              </p>
+            </div>
+            <button
+              @click="loadAgent2Health"
+              :disabled="agent2HealthLoading"
+              class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ agent2HealthLoading ? "Loading..." : "Refresh" }}
+            </button>
+          </div>
+
+          <div v-if="agent2HealthTargets.length === 0 && !agent2HealthLoading" class="mt-3 text-xs text-on-surface-variant">
+            No Agent 2 health data yet. Health scores are computed from recent discovery artifacts.
+          </div>
+          <div v-else-if="agent2HealthLoading" class="mt-3 text-xs text-on-surface-variant">
+            Loading health scores...
+          </div>
+          <div v-else class="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
+            <div
+              v-for="target in agent2HealthTargets"
+              :key="`${target.sourceId}-${target.categoryId ?? ''}-${target.targetUrl}`"
+              class="rounded-xl border px-3 py-2"
+              :class="target.health === 'healthy'
+                ? 'border-emerald-500/15 bg-emerald-500/5'
+                : target.health === 'weak'
+                  ? 'border-amber-500/15 bg-amber-500/5'
+                  : target.health === 'blocked'
+                    ? 'border-rose-500/15 bg-rose-500/5'
+                    : target.health === 'unsupported'
+                      ? 'border-rose-500/25 bg-rose-500/10'
+                      : 'border-outline-variant/20 bg-surface-container'"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span
+                      class="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                      :class="target.health === 'healthy'
+                        ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300'
+                        : target.health === 'weak'
+                          ? 'border-amber-500/30 bg-amber-500/15 text-amber-300'
+                          : target.health === 'blocked'
+                            ? 'border-rose-500/30 bg-rose-500/15 text-rose-300'
+                            : target.health === 'unsupported'
+                              ? 'border-rose-500/40 bg-rose-500/20 text-rose-200'
+                              : 'border-outline-variant/30 bg-surface-container-highest text-on-surface-variant'"
+                    >
+                      {{ target.health }}
+                    </span>
+                    <span class="text-[10px] font-mono" :class="target.score >= 70 ? 'text-emerald-300' : target.score >= 40 ? 'text-amber-300' : 'text-rose-300'">
+                      {{ target.score }}
+                    </span>
+                    <span class="rounded bg-surface-container-highest px-1.5 py-0.5 text-[9px] font-medium text-on-surface-variant">
+                      {{ target.currentLifecycleState }}
+                    </span>
+                    <span v-if="target.consecutiveFailures > 0" class="text-[10px] font-medium text-rose-300">
+                      {{ target.consecutiveFailures }}x failed
+                    </span>
+                  </div>
+                  <p class="mt-1 truncate text-[11px] text-on-surface-variant">
+                    {{ target.targetUrl }}
+                  </p>
+                  <div class="mt-0.5 flex flex-wrap gap-2 text-[10px] text-on-surface-variant/60">
+                    <span v-if="target.sourceId">src: {{ target.sourceId.slice(0, 8) }}...</span>
+                    <span v-if="target.categoryId">cat: {{ target.categoryId.slice(0, 8) }}...</span>
+                    <span v-if="target.lastStaticStatus">static: {{ target.lastStaticStatus }}</span>
+                    <span v-if="target.lastBrowserStatus">browser: {{ target.lastBrowserStatus }}</span>
+                    <span v-if="target.lastProductiveAt">last good: {{ formatLogTime(target.lastProductiveAt) }}</span>
+                    <span v-if="target.lastFailureAt">last fail: {{ formatLogTime(target.lastFailureAt) }}</span>
+                  </div>
+                  <p v-if="target.recommendedAction" class="mt-1 text-[10px] font-medium text-amber-200">
+                    {{ target.recommendedAction }}
+                  </p>
                 </div>
               </div>
             </div>
@@ -1384,16 +1514,43 @@ type HardSourceProfileEntry = {
   staticQuality: string | null;
   browserStatus: string | null;
   failureCount: number;
+  firstFailureAt: string | null;
   lastFailureAt: string | null;
+  lastStaticStatus: string | null;
+  lastBrowserStatus: string | null;
+  lastAcceptedCount: number | null;
+  lastInsertedCount: number | null;
   dominantReasons: string[];
   suggestedNextAction: string | null;
   profileConfidence: string | null;
+  lifecycleState: string | null;
+  recoverySuggestion: string | null;
+  resolvedBy: string | null;
+  resolvedAt: string | null;
+  resolvedReason: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
 const hardSourceProfiles = ref<HardSourceProfileEntry[]>([]);
 const hardSourceProfilesLoading = ref(false);
+
+// Agent 2 health state
+const agent2HealthTargets = ref<Array<{
+  sourceId: string;
+  categoryId: string | null;
+  targetUrl: string;
+  health: string;
+  score: number;
+  lastProductiveAt: string | null;
+  lastFailureAt: string | null;
+  consecutiveFailures: number;
+  lastStaticStatus: string | null;
+  lastBrowserStatus: string | null;
+  currentLifecycleState: string;
+  recommendedAction: string | null;
+}>>([]);
+const agent2HealthLoading = ref(false);
 
 const headlessQueueSummary = ref<{ total: number; byStatus: Record<string, number>; activeTotal: number; historyTotal: number; retryableTotal: number; cooldownPendingTotal: number; resolvedRecentTotal: number } | null>(null);
 const headlessBrowserEnvDisabled = ref(false);
@@ -1753,6 +1910,24 @@ const loadHardSourceProfiles = async () => {
   }
 };
 
+const loadAgent2Health = async () => {
+  if (!showFullDevTools.value) return;
+  agent2HealthLoading.value = true;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      targets: typeof agent2HealthTargets.value;
+      total: number;
+    }>("/api/dev/agent2-health");
+    agent2HealthTargets.value = response.targets || [];
+  } catch (error) {
+    console.error("Failed to load Agent 2 health:", error);
+    agent2HealthTargets.value = [];
+  } finally {
+    agent2HealthLoading.value = false;
+  }
+};
+
 const refreshDevPanel = async () => {
   if (!showFullDevTools.value) return;
   try {
@@ -1766,6 +1941,7 @@ const refreshDevPanel = async () => {
       loadHardSourceProfiles(),
       loadAgent2Progress(),
       loadAgent1Progress(),
+      loadAgent2Health(),
     ]);
   } catch (error) {
     console.error("Failed to refresh admin panel:", error);
@@ -2106,6 +2282,12 @@ const hardSourceActionLabel = (action: string): string => {
     relax_category_scope: "relax scope",
     weak_date_policy_review: "date policy",
     browser_runtime_fix: "fix runtime",
+    prefer_listing_links: "prefer listing links",
+    use_browser_detail_dates: "use detail dates",
+    increase_browser_detail_limit: "increase detail limit",
+    respect_cooldown: "respect cooldown",
+    mark_unsupported: "mark unsupported",
+    needs_ai_inspection: "needs AI inspection",
   };
   return labels[action] || action;
 };
@@ -2117,12 +2299,19 @@ const hardSourceActionBadgeClass = (action: string): string => {
       return "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/20";
     case "run_browser":
     case "browser_runtime_fix":
+    case "use_browser_detail_dates":
+    case "increase_browser_detail_limit":
       return "bg-sky-500/15 text-sky-300 border-sky-500/20";
     case "retry_static":
     case "relax_category_scope":
+    case "prefer_listing_links":
       return "bg-amber-500/15 text-amber-300 border-amber-500/20";
     case "weak_date_policy_review":
       return "bg-orange-500/15 text-orange-300 border-orange-500/20";
+    case "respect_cooldown":
+      return "bg-cyan-500/15 text-cyan-300 border-cyan-500/20";
+    case "mark_unsupported":
+      return "bg-rose-500/15 text-rose-300 border-rose-500/20";
     case "manual_review":
       return "bg-gray-500/15 text-gray-400 border-gray-500/20";
     default:
@@ -2132,10 +2321,33 @@ const hardSourceActionBadgeClass = (action: string): string => {
 
 // ── Maintenance cleanup state + actions ─────────────────────────────────────
 
+const hardSourceLifecycleBadgeClass = (state: string): string => {
+  switch (state) {
+    case "resolved":
+      return "bg-emerald-500/15 text-emerald-300 border-emerald-500/20";
+    case "suggested":
+      return "bg-cyan-500/15 text-cyan-300 border-cyan-500/20";
+    case "applied":
+      return "bg-blue-500/15 text-blue-300 border-blue-500/20";
+    case "ignored":
+      return "bg-gray-500/15 text-gray-400 border-gray-500/20";
+    case "stale":
+      return "bg-amber-500/15 text-amber-300 border-amber-500/20";
+    case "open":
+    default:
+      return "bg-surface-container-highest text-on-surface-variant border-outline-variant/20";
+  }
+};
+
 const isInspectingOldArticles = ref(false);
 const isDeletingOldArticles = ref(false);
 const isInspectingArtifacts = ref(false);
 const isDeletingArtifacts = ref(false);
+
+// ── Discovery profile activation state ───────────────────────────────────
+const activatingProfileId = ref<string | null>(null);
+const activatingProfileTargetId = ref<string | null>(null);
+const activatingProfileError = ref<string | null>(null);
 
 type ArticleCleanupResult = {
   ok: true;
@@ -2262,6 +2474,46 @@ const inspectPipelineArtifacts = async () => {
     showToast(error?.statusMessage || error?.message || "Pipeline artifact inspection failed.", "error");
   } finally {
     isInspectingArtifacts.value = false;
+  }
+};
+
+// ── Discovery profile activation ────────────────────────────────────────
+
+const activateDiscoveryProfile = async (profileId: string, mode: "draft" | "active") => {
+  if (activatingProfileId.value) return;
+  activatingProfileId.value = profileId;
+  activatingProfileTargetId.value = profileId;
+  activatingProfileError.value = null;
+  try {
+    const result = await $api<{
+      ok: boolean;
+      profileArtifactId: string;
+      status: string;
+      hardSourceProfileId: string;
+    }>("/api/dev/agent2-discovery-profiles/activate", {
+      method: "POST",
+      body: {
+        profileArtifactId: profileId,
+        mode,
+      },
+    });
+    showToast(
+      `Discovery profile ${result.status} created for hard-source profile.`,
+      "success",
+      4000,
+    );
+    await Promise.all([
+      loadHardSourceProfiles(),
+      loadAgent2Health(),
+      loadAgentLogs(),
+    ]);
+  } catch (error: any) {
+    const msg = error?.statusMessage || error?.message || "Profile activation failed.";
+    activatingProfileError.value = msg;
+    showToast(msg, "error", 5000);
+  } finally {
+    activatingProfileId.value = null;
+    activatingProfileTargetId.value = null;
   }
 };
 

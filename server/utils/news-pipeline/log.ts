@@ -67,6 +67,8 @@ const ESSENTIAL_AGENT_LOG_STATUSES = new Set([
   "A1_BATCH_FINISHED",
   "A1_BATCH_STOPPED",
   "A1_TARGETS_DEFERRED",
+  // ── Discovery profile logging ────────────────────────────────────────
+  "DISCOVERY_PROFILE_ACTIVATED",
 ]);
 
 const isPersistedAgentLogStatus = (status: string) =>
@@ -160,6 +162,10 @@ export const getAgentLogPrefix = (status: string) => {
 
   if (["A1_BATCH_STARTED", "A1_BATCH_FINISHED", "A1_BATCH_STOPPED", "A1_TARGETS_DEFERRED"].includes(status)) {
     return "A1";
+  }
+
+  if (["DISCOVERY_PROFILE_ACTIVATED"].includes(status)) {
+    return "A2";
   }
 
   return "A?";

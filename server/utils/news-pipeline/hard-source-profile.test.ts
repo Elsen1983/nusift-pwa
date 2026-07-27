@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const findFirstMock = vi.fn();
+const findUniqueMock = vi.fn();
+const findManyMock = vi.fn();
 const createMock = vi.fn();
 const updateMock = vi.fn();
 const logAgentScanMock = vi.fn();
@@ -9,6 +11,8 @@ vi.mock("../prisma", () => ({
   prisma: {
     pipelineArtifact: {
       findFirst: (...args: any[]) => findFirstMock(...args),
+      findUnique: (...args: any[]) => findUniqueMock(...args),
+      findMany: (...args: any[]) => findManyMock(...args),
       create: (...args: any[]) => createMock(...args),
       update: (...args: any[]) => updateMock(...args),
     },
@@ -221,6 +225,8 @@ describe("hard-source-profile — pure helpers", () => {
 describe("hard-source-profile — createOrUpdateHardSourceProfile", () => {
   beforeEach(() => {
     findFirstMock.mockReset();
+    findUniqueMock.mockReset();
+    findManyMock.mockReset();
     createMock.mockReset();
     updateMock.mockReset();
     logAgentScanMock.mockReset();
@@ -468,5 +474,168 @@ describe("hard-source-profile — createOrUpdateHardSourceProfile", () => {
       browserStatus: "BROWSER_NO_CANDIDATES",
     });
     expect(result).toBe("new-prof-7");
+  });
+});
+
+describe("hard-source-profile — resolution helpers", () => {
+  beforeEach(() => {
+    findFirstMock.mockReset();
+    findUniqueMock.mockReset();
+    findManyMock.mockReset();
+    createMock.mockReset();
+    updateMock.mockReset();
+    logAgentScanMock.mockReset();
+    logAgentScanMock.mockResolvedValue(undefined);
+  });
+
+  it("marks an active profile as resolved and preserves previous lifecycle state", async () => {
+    findUniqueMock.mockResolvedValue({
+      id: "prof-1",
+      status: "PROFILE",
+      payload: {
+        targetUrl: "https://example.com/news",
+        lifecycleState: "suggested",
+        failureCount: 3,
+      },
+    });
+    updateMock.mockResolvedValue({ id: "prof-1" });
+
+    const { resolveHardSourceProfile } = await import("./hard-source-profile");
+    const result = await resolveHardSourceProfile({
+      profileArtifactId: "prof-1",
+      resolvedBy: "agent2_static",
+      resolvedReason: "Agent 2 became productive",
+      resolvedPipelineRunId: "run-1",
+    });
+
+    expect(result).toBe(true);
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const updateArg = updateMock.mock.calls[0]![0];
+    expect(updateArg.where.id).toBe("prof-1");
+    expect(updateArg.data.status).toBe("RESOLVED");
+    expect(updateArg.data.payload.lifecycleState).toBe("resolved");
+    expect(updateArg.data.payload.previousLifecycleState).toBe("suggested");
+    expect(updateArg.data.payload.resolvedBy).toBe("agent2_static");
+    expect(updateArg.data.payload.resolvedReason).toBe("Agent 2 became productive");
+    expect(updateArg.data.payload.resolvedPipelineRunId).toBe("run-1");
+    expect(updateArg.data.payload.failureCount).toBe(3);
+  });
+
+  it("uses RESOLVED_BY_AGENT1_RSS status for Agent 1 RSS resolution", async () => {
+    findUniqueMock.mockResolvedValue({
+      id: "prof-rss",
+      status: "PROFILE",
+      payload: {
+        targetUrl: "https://example.com/politics",
+        lifecycleState: "open",
+      },
+    });
+    updateMock.mockResolvedValue({ id: "prof-rss" });
+
+    const { resolveHardSourceProfile } = await import("./hard-source-profile");
+    const result = await resolveHardSourceProfile({
+      profileArtifactId: "prof-rss",
+      resolvedBy: "agent1_rss",
+      resolvedReason: "Agent 1 RSS resolved target",
+      resolvedPipelineRunId: "run-rss",
+    });
+
+    expect(result).toBe(true);
+    expect(updateMock.mock.calls[0]![0].data.status).toBe("RESOLVED_BY_AGENT1_RSS");
+  });
+
+  it("does not re-resolve terminal lifecycle states", async () => {
+    findUniqueMock.mockResolvedValue({
+      id: "prof-terminal",
+      status: "RESOLVED",
+      payload: {
+        lifecycleState: "resolved",
+      },
+    });
+
+    const { resolveHardSourceProfile } = await import("./hard-source-profile");
+    const result = await resolveHardSourceProfile({
+      profileArtifactId: "prof-terminal",
+      resolvedBy: "agent2_static",
+      resolvedReason: "already fixed",
+    });
+
+    expect(result).toBe(false);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves only exact matching active profiles for a target", async () => {
+    findManyMock.mockResolvedValue([
+      {
+        id: "prof-match",
+        payload: {
+          targetUrl: "https://example.com/politics",
+          lifecycleState: "open",
+        },
+      },
+      {
+        id: "prof-other-target",
+        payload: {
+          targetUrl: "https://example.com/sports",
+          lifecycleState: "open",
+        },
+      },
+      {
+        id: "prof-terminal",
+        payload: {
+          targetUrl: "https://example.com/politics",
+          lifecycleState: "ignored",
+        },
+      },
+    ]);
+    findUniqueMock.mockResolvedValue({
+      id: "prof-match",
+      status: "PROFILE",
+      payload: {
+        targetUrl: "https://example.com/politics",
+        lifecycleState: "open",
+      },
+    });
+    updateMock.mockResolvedValue({ id: "prof-match" });
+
+    const { resolveHardSourceProfilesForTarget } = await import("./hard-source-profile");
+    const resolved = await resolveHardSourceProfilesForTarget({
+      sourceId: "src-1",
+      categoryId: "cat-1",
+      targetUrl: "https://example.com/politics",
+      resolvedBy: "agent2_static",
+      resolvedReason: "Agent 2 static productive",
+      resolvedPipelineRunId: "run-2",
+    });
+
+    expect(resolved).toBe(1);
+    expect(findManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          artifactType: "article_discovery_hard_source_profile",
+          sourceId: "src-1",
+          categoryId: "cat-1",
+          status: { notIn: ["RESOLVED", "RESOLVED_BY_AGENT1_RSS"] },
+        }),
+      }),
+    );
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(updateMock.mock.calls[0]![0].where.id).toBe("prof-match");
+  });
+
+  it("returns false and logs when resolving a profile fails", async () => {
+    findUniqueMock.mockRejectedValue(new Error("DB timeout"));
+
+    const { resolveHardSourceProfile } = await import("./hard-source-profile");
+    const result = await resolveHardSourceProfile({
+      profileArtifactId: "prof-error",
+      resolvedBy: "agent2_static",
+      resolvedReason: "test",
+    });
+
+    expect(result).toBe(false);
+    expect(logAgentScanMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "HARD_SOURCE_PROFILE_ERROR" }),
+    );
   });
 });

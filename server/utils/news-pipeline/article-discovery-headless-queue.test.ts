@@ -14,6 +14,12 @@ vi.mock("../prisma", () => ({
   },
 }));
 
+// Mock lookupActiveDiscoveryProfile to prevent it from consuming findMany mock
+// return values intended for queue fetch and limit tests.
+vi.mock("./agent2-discovery-profile", () => ({
+  lookupActiveDiscoveryProfile: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("./log", () => ({
   logAgentScan: (...args: any[]) => logAgentScanMock(...args),
 }));

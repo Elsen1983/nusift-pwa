@@ -293,3 +293,52 @@ export const AI_INSPECTION_PROFILE_ARTIFACT_TYPE =
   "article_discovery_ai_inspection_profile" as const;
 
 export const AI_INSPECTION_PROFILE_PENDING_STATUS = "PENDING_REVIEW" as const;
+
+// ─── AI Inspection Service Boundary (stub) ─────────────────────────────────
+
+/**
+ * Input for AI-assisted hard-source inspection.
+ * Compact evidence bundle — no raw HTML/screenshots.
+ */
+export type HardSourceAiInspectionInput = {
+  targetUrl: string;
+  sourceId: string;
+  categoryId: string | null;
+  compactEvidence: Record<string, unknown>;
+};
+
+/**
+ * Output from AI-assisted inspection.
+ * Returns a proposed discovery profile or diagnostic notes.
+ */
+export type HardSourceAiInspectionOutput = {
+  suggestedAction: string;
+  confidence: "low" | "medium" | "high";
+  proposedDiscoveryProfile?: Agent2AiInspectionProfile;
+  notes: string[];
+};
+
+/**
+ * AI-assisted hard-source inspection service.
+ *
+ * ## Current status
+ * This is a STUB. It returns `null` — no LLM/API call is made.
+ * The deterministic recovery engine (hard-source-recovery.ts) remains
+ * the default path for all Agent 2 self-healing.
+ *
+ * ## Future integration
+ * When an AI inspection provider is configured, this function should:
+ * 1. Accept compact evidence (no raw HTML)
+ * 2. Return a proposed extraction profile
+ * 3. Be admin-only (never called from cron)
+ * 4. Be rate-limited and bounded
+ *
+ * @returns null when AI inspection is not configured.
+ */
+export async function inspectHardSourceWithAi(
+  _input: HardSourceAiInspectionInput,
+): Promise<HardSourceAiInspectionOutput | null> {
+  // No AI provider configured — deterministic recovery is the default path.
+  // Future: check for NUXT_AI_INSPECTION_API_KEY or similar.
+  return null;
+}

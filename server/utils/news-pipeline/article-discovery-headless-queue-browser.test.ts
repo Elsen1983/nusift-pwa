@@ -11,6 +11,7 @@ const evaluateArticleLinkCandidateMock = vi.fn();
 const evaluateArticleLinkCandidateWithBrowserMock = vi.fn();
 const persistCandidatesMock = vi.fn();
 const createOrUpdateHardSourceProfileMock = vi.fn();
+const resolveHardSourceProfilesForTargetMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -77,6 +78,13 @@ vi.mock("./ingest", () => ({
 
 vi.mock("./hard-source-profile", () => ({
   createOrUpdateHardSourceProfile: (...args: any[]) => createOrUpdateHardSourceProfileMock(...args),
+  resolveHardSourceProfilesForTarget: (...args: any[]) => resolveHardSourceProfilesForTargetMock(...args),
+}));
+
+// Mock lookupActiveDiscoveryProfile to prevent it from consuming findMany mock
+// return values intended for cooldown checks and queue fetch tests.
+vi.mock("./agent2-discovery-profile", () => ({
+  lookupActiveDiscoveryProfile: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("./types", () => ({}));
@@ -180,10 +188,12 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     evaluateArticleLinkCandidateWithBrowserMock.mockReset();
     persistCandidatesMock.mockReset();
     createOrUpdateHardSourceProfileMock.mockReset();
+    resolveHardSourceProfilesForTargetMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
     isBrowserFallbackEnabledMock.mockReturnValue(true);
     persistCandidatesMock.mockResolvedValue({ inserted: 0, skipped: 0, failed: 0 });
     createOrUpdateHardSourceProfileMock.mockResolvedValue("profile-1");
+    resolveHardSourceProfilesForTargetMock.mockResolvedValue(0);
   });
 
   async function loadFn() {
@@ -509,6 +519,14 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     await fn({ dryRun: false, runBrowser: true });
 
     expect(createOrUpdateHardSourceProfileMock).not.toHaveBeenCalled();
+    expect(resolveHardSourceProfilesForTargetMock).toHaveBeenCalledWith({
+      sourceId: "src-1",
+      categoryId: null,
+      targetUrl: "https://example.com/news",
+      resolvedBy: "agent2_browser",
+      resolvedReason: "Agent 2 browser fallback became productive",
+      resolvedPipelineRunId: "run-1",
+    });
   });
 
   it("does not create a hard-source profile when static quality is productive", async () => {

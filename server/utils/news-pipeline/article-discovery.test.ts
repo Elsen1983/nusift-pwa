@@ -8,6 +8,7 @@ const prismaArtifactUpdateMock = vi.hoisted(() => vi.fn());
 const prismaPipelineRunFindFirstMock = vi.hoisted(() => vi.fn());
 const prismaNewsSourceFindManyMock = vi.hoisted(() => vi.fn());
 const prismaSourceCategoryFindManyMock = vi.hoisted(() => vi.fn());
+const resolveHardSourceProfilesForTargetMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../ssrf-guard", () => ({
   safeFetch: safeFetchMock,
@@ -29,6 +30,16 @@ vi.mock("./ingest", () => ({
 
 vi.mock("./targets", () => ({
   resolveActivePipelineTargets: vi.fn(),
+}));
+
+vi.mock("./hard-source-profile", () => ({
+  resolveHardSourceProfilesForTarget: (...args: any[]) => resolveHardSourceProfilesForTargetMock(...args),
+}));
+
+// Mock lookupActiveDiscoveryProfile to prevent it from consuming findMany mock
+// return values intended for other tests (marker resolution, cooldown, etc.).
+vi.mock("./agent2-discovery-profile", () => ({
+  lookupActiveDiscoveryProfile: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../prisma", () => ({
@@ -66,12 +77,14 @@ describe("article-discovery", () => {
     prismaPipelineRunFindFirstMock.mockReset();
     prismaNewsSourceFindManyMock.mockReset();
     prismaSourceCategoryFindManyMock.mockReset();
+    resolveHardSourceProfilesForTargetMock.mockReset();
     prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
     prismaArtifactFindManyMock.mockResolvedValue([]);
     prismaArtifactUpdateMock.mockResolvedValue({ id: "updated" });
     prismaPipelineRunFindFirstMock.mockResolvedValue(null);
     prismaNewsSourceFindManyMock.mockResolvedValue([]);
     prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    resolveHardSourceProfilesForTargetMock.mockResolvedValue(0);
     logAgentScanMock.mockClear();
   });
 
@@ -1414,6 +1427,14 @@ describe("article-discovery", () => {
     expect(updatePayload.resolvedByStaticDiscoveryArtifactId).toBe("artifact-1");
     expect(updatePayload.resolvedByStaticDiscoveryQuality).toBe("productive");
     expect(updatePayload.resolvedByStaticDiscoveryAcceptedCount).toBe(2);
+    expect(resolveHardSourceProfilesForTargetMock).toHaveBeenCalledWith({
+      sourceId: "src-1",
+      categoryId: null,
+      targetUrl: "https://example.com/",
+      resolvedBy: "agent2_static",
+      resolvedReason: "Agent 2 static discovery became productive",
+      resolvedPipelineRunId: "run-1",
+    });
   });
 
   it("does not resolve markers when static discovery is not productive", async () => {

@@ -5,6 +5,8 @@ import { createPipelineRun, finalizePipelineRun } from "./artifacts";
 import { normalizeUrl } from "./text";
 import { persistCandidates } from "./ingest";
 import { resolveActivePipelineTargets } from "./targets";
+import { resolveHardSourceProfilesForTarget } from "./hard-source-profile";
+import { lookupActiveDiscoveryProfile, type Agent2DiscoveryProfile } from "./agent2-discovery-profile";
 import {
   BLOCKED_UTILITY_PATTERNS,
   DISCOVERY_FRESHNESS_MS,
@@ -72,6 +74,15 @@ export type ArticleDiscoveryResult = {
   acceptedOutcomes: ArticleDiscoveryCandidateOutcome[];
   rejectedOutcomes: ArticleDiscoveryCandidateOutcome[];
   qualityAssessment: ArticleDiscoveryQualityAssessment;
+  /** Compact discovery profile metadata when an active profile was applied. */
+  appliedProfileAudit?: {
+    appliedDiscoveryProfileId: string | null;
+    appliedDiscoveryProfileAction: string | null;
+    appliedDiscoveryProfileVersion: number;
+    appliedDiscoveryProfileRules: string[];
+    appliedDiscoveryProfileSource: string;
+    appliedDiscoveryProfileAt: string;
+  } | null;
 };
 
 type ListingArticleLink = {
@@ -223,6 +234,7 @@ const extractListingArticleLinks = (
   html: string,
   pageUrl: string,
   categoryPathUrl?: string | null,
+  deniedPathPrefixes?: string[] | null,
 ) => {
   const links = new Map<string, { url: string; score: number; order: number }>();
   const htmlLinks = extractHtmlLinkTags(html).filter((link) => link.tagName === "a");
@@ -237,6 +249,13 @@ const extractListingArticleLinks = (
       if (links.has(resolved)) continue;
       if (isBlockedDiscoveryPath(resolved)) continue;
       if (!isLikelyArticleLink(resolved, pageUrl)) continue;
+      // Check deniedPathPrefixes from active discovery profile
+      if (deniedPathPrefixes && deniedPathPrefixes.length > 0) {
+        try {
+          const linkPath = new URL(resolved).pathname;
+          if (deniedPathPrefixes.some((prefix) => linkPath.startsWith(prefix))) continue;
+        } catch { /* invalid URL already filtered */ }
+      }
       const score = scoreCandidateUrl(resolved, pageUrl, {
         title: link.text || link.title || link.ariaLabel,
         categoryPathUrl,
@@ -334,6 +353,7 @@ const formatListingDiagnosticsForLog = (diagnostics: ListingFetchDiagnostic[]) =
 const crawlListingPages = async (
   targetUrl: string,
   categoryPathUrl?: string | null,
+  deniedPathPrefixes?: string[] | null,
 ) => {
   const visitedPages: string[] = [];
   const diagnostics: ListingFetchDiagnostic[] = [];
@@ -401,7 +421,7 @@ const crawlListingPages = async (
     try {
       const htmlLinks = extractHtmlLinkTags(html);
       rawLinkCount = htmlLinks.filter((link) => link.tagName === "a").length;
-      articleLikeLinks = extractListingArticleLinks(html, pageUrl, categoryPathUrl);
+      articleLikeLinks = extractListingArticleLinks(html, pageUrl, categoryPathUrl, deniedPathPrefixes);
       paginationLinks = extractPaginationLinks(html, pageUrl);
       title = extractTitleFromHtml(html);
     } catch (error: any) {
@@ -496,8 +516,30 @@ const discoverArticleCandidatesForPage = async (
   target: ArticleDiscoveryTarget,
   skipSummary: IngestSkipSummary,
   rejectedItems: IngestRejectedItem[],
+  overrides?: { freshnessMs?: number; deniedPathPrefixes?: string[] | null },
 ): Promise<CandidateEvaluationResult> => {
   const { url: articleUrl, sourcePageUrl } = articleLink;
+
+  // Early denied-path check — avoids an expensive HTTP fetch for denied paths
+  if (overrides?.deniedPathPrefixes && overrides.deniedPathPrefixes.length > 0) {
+    try {
+      const linkPath = new URL(articleUrl).pathname;
+      if (overrides.deniedPathPrefixes.some((prefix) => linkPath.startsWith(prefix))) {
+        const outcome = makeOutcome(articleUrl, sourcePageUrl, "rejected_utility_path", {
+          reason: "discovery_profile_denied_path",
+        });
+        skipSummary.outOfScope += 1;
+        pushRejectedItem(rejectedItems, {
+          reason: "discovery_profile_denied_path",
+          rawLink: articleUrl,
+          canonicalUrl: null,
+          title: null,
+          publishedAt: null,
+        });
+        return { candidate: null, outcome };
+      }
+    } catch { /* invalid URL — let normal evaluation handle it */ }
+  }
 
   const result = await evaluateArticleLinkCandidate({
     articleUrl,
@@ -505,6 +547,7 @@ const discoverArticleCandidatesForPage = async (
     targetUrl: target.targetUrl,
     sourceId: target.sourceId,
     categoryId: target.categoryId,
+    freshnessMs: overrides?.freshnessMs,
   });
 
   if (!result.accepted) {
@@ -892,6 +935,8 @@ export async function persistArticleDiscoveryArtifact(input: {
     topRejectionReasons: input.result.outcomeSummary.topRejectionReasons,
     // Quality assessment
     qualityAssessment: input.result.qualityAssessment,
+    // Discovery profile audit metadata (if an active profile was applied)
+    ...(input.result.appliedProfileAudit ? { appliedProfileAudit: input.result.appliedProfileAudit } : {}),
   };
 
   return prisma.pipelineArtifact.create({
@@ -921,19 +966,54 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
   const discoverySources = { listingPages: 0, sitemapUrls: 0, jsonldUrls: 0 };
   const tracker = new ArticleDiscoveryOutcomeTracker();
 
+  // ── Lookup active discovery profile (if any) ──────────────────────────
+  let activeProfile: Agent2DiscoveryProfile | null = null;
+  try {
+    activeProfile = await lookupActiveDiscoveryProfile({
+      sourceId: target.sourceId,
+      categoryId: target.categoryId ?? null,
+      targetUrl: target.targetUrl,
+    });
+  } catch {
+    // Non-fatal — continue without profile
+  }
+
+  const relaxCategoryScope = activeProfile?.rules.relaxCategoryScope === true;
+  const allowWeakDates = activeProfile?.rules.allowWeakDateFromListingContext === true;
+  const deniedPathPrefixes = activeProfile?.rules.deniedPathPrefixes ?? null;
+  const preferListingAnchors = activeProfile?.rules.preferListingAnchors === true;
+  // preferListingAnchors: documented but not yet wired — requires a scoring
+  // boost for listing-anchor links vs sitemap/jsonld links, which would need
+  // changes to the link merge/sort logic in Phase 2. Deferred to avoid a
+  // broad refactor of the candidate collection pipeline.
+  // When relaxCategoryScope is active, pass null to disable category-path filtering
+  const effectiveCategoryPathUrl = relaxCategoryScope ? null : (target.categoryId ? target.targetUrl : null);
+
+  // Compact discovery profile metadata for artifact/log audit
+  const profileAudit = activeProfile ? {
+    appliedDiscoveryProfileId: activeProfile.evidence.fromProfileArtifactId ?? null,
+    appliedDiscoveryProfileAction: activeProfile.evidence.reasonCodes[0] ?? null,
+    appliedDiscoveryProfileVersion: activeProfile.schemaVersion,
+    appliedDiscoveryProfileRules: Object.keys(activeProfile.rules),
+    appliedDiscoveryProfileSource: "agent2_discovery_profile",
+    appliedDiscoveryProfileAt: new Date().toISOString(),
+  } : null;
+
   await logAgentScan({
     sourceId: target.sourceId,
     categoryId: target.categoryId || undefined,
     status: "ARTICLE_DISCOVERY_STARTED",
     executionTimeMs: 0,
-    errorLog: `Scanning ${target.targetUrl} as Agent 2 ${target.targetType} target.`,
+    errorLog: `Scanning ${target.targetUrl} as Agent 2 ${target.targetType} target.` +
+      (activeProfile ? ` activeProfile=${activeProfile.status}, profileId=${activeProfile.evidence.fromProfileArtifactId ?? "n/a"}, relaxScope=${relaxCategoryScope}, weakDates=${allowWeakDates}, deniedPrefixes=${deniedPathPrefixes?.length ?? 0}.` : ""),
   });
 
   // ── Phase 1: Parallel source collection ────────────────────────────────
   const [listing, sitemapEntries] = await Promise.all([
     crawlListingPages(
       target.targetUrl,
-      target.categoryId ? target.targetUrl : null,
+      effectiveCategoryPathUrl,
+      deniedPathPrefixes,
     ).catch((error: any) => {
       throw new Error(`Article discovery fetch failed: ${error?.message || String(error)}`);
     }),
@@ -954,7 +1034,7 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
     allArticleLinks.set(link.url, link);
   }
 
-  const filteredSitemap = filterSitemapArticleUrls(sitemapEntries, target.targetUrl, target.categoryId ? target.targetUrl : null)
+  const filteredSitemap = filterSitemapArticleUrls(sitemapEntries, target.targetUrl, effectiveCategoryPathUrl)
     .map((entry) => ({
       entry,
       score: scoreCandidateUrl(entry.url, target.targetUrl, {
@@ -986,6 +1066,10 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
         target,
         skipSummary,
         rejectedItems,
+        {
+          ...(allowWeakDates ? { freshnessMs: 30 * 24 * 60 * 60 * 1000 } : {}),
+          ...(deniedPathPrefixes && deniedPathPrefixes.length > 0 ? { deniedPathPrefixes } : {}),
+        },
       );
 
       // Record rejection/failure outcomes immediately.
@@ -1072,6 +1156,7 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
     acceptedOutcomes: tracker.getAccepted(),
     rejectedOutcomes: tracker.getRejected(),
     qualityAssessment,
+    appliedProfileAudit: profileAudit,
   };
 }
 
@@ -1165,6 +1250,15 @@ async function resolveStaleHeadlessMarkers(input: {
       // Category-level: no subpath match — strict categoryId already filtered.
     }
 
+    await resolveHardSourceProfilesForTarget({
+      sourceId: result.sourceId,
+      categoryId: result.categoryId || null,
+      targetUrl: result.targetUrl,
+      resolvedBy: "agent2_static",
+      resolvedReason: "Agent 2 static discovery became productive",
+      resolvedPipelineRunId: pipelineRunId,
+    });
+
     if (classified.length === 0) return;
 
     const resolvedAt = new Date().toISOString();
@@ -1208,6 +1302,7 @@ async function resolveStaleHeadlessMarkers(input: {
           `accepted=${result.candidates.length}, evaluated=${result.outcomeSummary.totalEvaluated}.`,
       });
     }
+
   } catch (error: any) {
     await logAgentScan({
       sourceId: result.sourceId,

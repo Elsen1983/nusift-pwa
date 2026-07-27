@@ -7,6 +7,7 @@ import { validateDiscoveryEvidence } from "../../utils/news-pipeline/types";
 import { readBoundedNumber } from "../../utils/news-pipeline/parse-bounded-number";
 
 const VALID_VIEWS = new Set(["active", "history", "all"]);
+const RESOLVED_PROFILE_STATUSES = ["RESOLVED", "RESOLVED_BY_AGENT1_RSS"];
 
 /**
  * GET /api/dev/article-discovery-hard-source-profiles
@@ -42,9 +43,9 @@ export default defineEventHandler(async (event) => {
 
   // View-based status filtering
   if (requestedView === "active") {
-    where.status = { notIn: ["RESOLVED_BY_AGENT1_RSS"] };
+    where.status = { notIn: RESOLVED_PROFILE_STATUSES };
   } else if (requestedView === "history") {
-    where.status = "RESOLVED_BY_AGENT1_RSS";
+    where.status = { in: RESOLVED_PROFILE_STATUSES };
   }
   // view=all: no status filter
 

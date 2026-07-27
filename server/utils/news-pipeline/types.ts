@@ -302,7 +302,8 @@ export interface IngestRejectedItem {
     | "stale_or_missing_published_at"
     | "already_seen_feed_item"
     | "html_fallback_non_article"
-    | "html_fallback_stale";
+    | "html_fallback_stale"
+    | "discovery_profile_denied_path";
   rawLink?: string | null;
   canonicalUrl?: string | null;
   title?: string | null;
