@@ -58,6 +58,10 @@ const ESSENTIAL_AGENT_LOG_STATUSES = new Set([
   "PIPELINE_ARTIFACT_CLEANUP_STARTED",
   "PIPELINE_ARTIFACT_CLEANUP_FINISHED",
   "PIPELINE_ARTIFACT_CLEANUP_FAILED",
+  // ── Maintenance cleanup runner (cron) logging ─────────────────────────
+  "MAINTENANCE_CLEANUP_STARTED",
+  "MAINTENANCE_CLEANUP_FINISHED",
+  "MAINTENANCE_CLEANUP_FAILED",
 ]);
 
 const isPersistedAgentLogStatus = (status: string) =>
@@ -141,6 +145,9 @@ export const getAgentLogPrefix = (status: string) => {
       "PIPELINE_ARTIFACT_CLEANUP_STARTED",
       "PIPELINE_ARTIFACT_CLEANUP_FINISHED",
       "PIPELINE_ARTIFACT_CLEANUP_FAILED",
+      "MAINTENANCE_CLEANUP_STARTED",
+      "MAINTENANCE_CLEANUP_FINISHED",
+      "MAINTENANCE_CLEANUP_FAILED",
     ].includes(status)
   ) {
     return "MT";
