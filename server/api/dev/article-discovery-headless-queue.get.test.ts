@@ -227,6 +227,97 @@ describe("GET /api/dev/article-discovery-headless-queue", () => {
     expect(result.summary.cooldownPendingTotal).toBe(1);
   });
 
+  it("hides retryable active failures when the same target has a newer resolved artifact", async () => {
+    const failedAt = new Date("2026-07-24T10:23:04Z");
+    const resolvedAt = new Date("2026-07-24T11:23:21Z");
+
+    mockFindMany
+      .mockResolvedValueOnce([
+        {
+          id: "failed-1",
+          status: "BROWSER_NO_CANDIDATES",
+          artifactType: "article_discovery_headless_required",
+          sourceId: "src-1",
+          categoryId: "cat-1",
+          createdAt: new Date("2026-07-24T10:17:04Z"),
+          updatedAt: failedAt,
+          candidateCount: 0,
+          payload: { targetUrl: "https://example.com/category/news" },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "resolved-1",
+          status: "RESOLVED",
+          artifactType: "article_discovery_headless_required",
+          sourceId: "src-1",
+          categoryId: "cat-1",
+          createdAt: new Date("2026-07-24T11:23:01Z"),
+          updatedAt: resolvedAt,
+          candidateCount: 3,
+          payload: { targetUrl: "https://example.com/category/news" },
+        },
+      ]);
+
+    const handler = await loadHandler();
+    const result = await handler({} as any);
+
+    expect(mockFindMany).toHaveBeenCalledTimes(2);
+    expect(mockFindMany.mock.calls[1]![0]!.where).toMatchObject({
+      artifactType: "article_discovery_headless_required",
+      status: {
+        in: ["RESOLVED", "RESOLVED_BY_STATIC_DISCOVERY", "RESOLVED_BY_AGENT1_RSS"],
+      },
+      sourceId: { in: ["src-1"] },
+    });
+    expect(result.items).toEqual([]);
+    expect(result.summary.total).toBe(0);
+    expect(result.summary.retryableTotal).toBe(0);
+  });
+
+  it("keeps retryable active failures when a resolved artifact belongs to another target", async () => {
+    const now = new Date("2026-07-24T10:23:04Z");
+
+    mockFindMany
+      .mockResolvedValueOnce([
+        {
+          id: "failed-1",
+          status: "BROWSER_NO_CANDIDATES",
+          artifactType: "article_discovery_headless_required",
+          sourceId: "src-1",
+          categoryId: "cat-1",
+          createdAt: now,
+          updatedAt: now,
+          candidateCount: 0,
+          payload: { targetUrl: "https://example.com/category/news" },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "resolved-1",
+          status: "RESOLVED",
+          artifactType: "article_discovery_headless_required",
+          sourceId: "src-1",
+          categoryId: "cat-1",
+          createdAt: now,
+          updatedAt: new Date("2026-07-24T11:23:21Z"),
+          candidateCount: 3,
+          payload: { targetUrl: "https://example.com/category/sports" },
+        },
+      ]);
+
+    const handler = await loadHandler();
+    const result = await handler({} as any);
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      id: "failed-1",
+      status: "BROWSER_NO_CANDIDATES",
+      targetUrl: "https://example.com/category/news",
+    });
+    expect(result.summary.retryableTotal).toBe(1);
+  });
+
   it("respects limit query param", async () => {
     mockGetQuery.mockReturnValue({ limit: "10" });
     mockFindMany.mockResolvedValue([]);
