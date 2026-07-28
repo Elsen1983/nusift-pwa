@@ -132,6 +132,11 @@ describe("isAgent1ArticleFresh", () => {
     expect(AGENT1_RSS_FRESHNESS_DAYS).toBe(AGENT1_ARTICLE_FRESHNESS_DAYS);
   });
 
+  it("AGENT1_ARTICLE_FRESHNESS_DAYS matches the shared article retention policy", async () => {
+    const { ARTICLE_RETENTION_DAYS } = await import("./article-retention-policy");
+    expect(AGENT1_ARTICLE_FRESHNESS_DAYS).toBe(ARTICLE_RETENTION_DAYS);
+  });
+
   it("isAgent1RssItemFresh is an alias for isAgent1ArticleFresh", () => {
     expect(isAgent1RssItemFresh).toBe(isAgent1ArticleFresh);
   });

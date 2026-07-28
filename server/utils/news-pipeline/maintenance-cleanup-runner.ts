@@ -19,6 +19,7 @@
 import { processPipelineArtifactCleanup } from "./pipeline-artifact-cleanup";
 import { processOldArticleRetentionCleanup } from "./article-retention-cleanup";
 import { logAgentScan } from "./log";
+import { ARTICLE_RETENTION_DAYS } from "./article-retention-policy";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -85,7 +86,7 @@ export type MaintenanceCleanupResult = {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const DEFAULT_ARTICLE_OLDER_THAN_DAYS = 7;
+const DEFAULT_ARTICLE_OLDER_THAN_DAYS = ARTICLE_RETENTION_DAYS;
 const DEFAULT_ARTICLE_BATCH_LIMIT = 500;
 const DEFAULT_ARTIFACT_OLDER_THAN_DAYS = 14;
 const DEFAULT_ARTIFACT_BATCH_LIMIT = 1000;

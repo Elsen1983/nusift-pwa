@@ -12,6 +12,13 @@ function _resolveAvatarUrl(stored: string | undefined | null) {
   return resolveAvatarUrlFromMap(stored, _avatarByBasename);
 }
 
+const SUPPORTED_LOCALES = new Set(["en", "hu", "fr", "de", "pl", "es"]);
+
+const normalizePreferredLanguage = (language?: string | null): string | null => {
+  if (!language || !SUPPORTED_LOCALES.has(language)) return null;
+  return language;
+};
+
 /** ANCHOR TYPE-DEFINITIONS
  * Ensures strict type-safety for user data flowing from the
  * verified backend handshake to the frontend state.
@@ -118,6 +125,7 @@ export const useAuthStore = defineStore("auth", () => {
   const loginIdentity = async (
     emailPayload: string,
     passwordPayload: string,
+    language?: string,
   ) => {
     isLoading.value = true;
     authError.value = null;
@@ -127,12 +135,23 @@ export const useAuthStore = defineStore("auth", () => {
         body: { email: emailPayload, password: passwordPayload },
       });
 
-      user.value = response.user;
+      const selectedLanguage = normalizePreferredLanguage(
+        import.meta.client
+          ? localStorage.getItem("nusift_preferred_language") || language
+          : language,
+      );
+      const effectiveUser = {
+        ...response.user,
+        preferredLanguage:
+          selectedLanguage || response.user?.preferredLanguage || "en",
+      };
 
-      if (response.user) {
-        agentStore.primaryRegion = response.user.primaryRegion || null;
-        agentStore.topSources = response.user.topSources || [];
-        agentStore.topInterests = (response.user.topInterests || []) as any;
+      user.value = effectiveUser;
+
+      if (effectiveUser) {
+        agentStore.primaryRegion = effectiveUser.primaryRegion || null;
+        agentStore.topSources = effectiveUser.topSources || [];
+        agentStore.topInterests = (effectiveUser.topInterests || []) as any;
       }
 
       // // ANCHOR LANGUAGE-HYDRATION: DB -> Client synchronization immediately after login
@@ -156,10 +175,24 @@ export const useAuthStore = defineStore("auth", () => {
         localStorage.setItem("nusift_visited", "true");
         localStorage.removeItem("nusift_pending_email"); 
         
-        if (response.user.preferredLanguage) {
-          localStorage.setItem("nusift_preferred_language", response.user.preferredLanguage);
+        if (effectiveUser.preferredLanguage) {
+          localStorage.setItem("nusift_preferred_language", effectiveUser.preferredLanguage);
         }
-        localStorage.setItem("nusift_pwa_profile", JSON.stringify(response.user));
+        localStorage.setItem("nusift_pwa_profile", JSON.stringify(effectiveUser));
+      }
+
+      if (
+        selectedLanguage &&
+        selectedLanguage !== response.user?.preferredLanguage
+      ) {
+        try {
+          await $fetch("/api/user/profile/identity", {
+            method: "PUT",
+            body: { preferredLanguage: selectedLanguage },
+          });
+        } catch (error) {
+          console.warn("[auth] failed to persist preferredLanguage after login", error);
+        }
       }
 
       return true;
@@ -196,29 +229,53 @@ export const useAuthStore = defineStore("auth", () => {
         },
       });
 
-      // Synchronize state with verified response
-      user.value = response.user;
+      const selectedLanguage = normalizePreferredLanguage(
+        import.meta.client
+          ? localStorage.getItem("nusift_preferred_language") || language
+          : language,
+      );
+      const effectiveUser = {
+        ...response.user,
+        preferredLanguage:
+          selectedLanguage || response.user?.preferredLanguage || "en",
+      };
 
-      if (response.user) {
-        agentStore.primaryRegion = response.user.primaryRegion || null;
-        agentStore.topSources = response.user.topSources || [];
-        agentStore.topInterests = (response.user.topInterests || []) as any;
+      // Synchronize state with verified response, preserving the language
+      // selected on this device for the current OAuth handshake.
+      user.value = effectiveUser;
+
+      if (effectiveUser) {
+        agentStore.primaryRegion = effectiveUser.primaryRegion || null;
+        agentStore.topSources = effectiveUser.topSources || [];
+        agentStore.topInterests = (effectiveUser.topInterests || []) as any;
       }
 
-      // ANCHOR LANGUAGE-HYDRATION: DB -> Client synchronization immediately after OAuth login
-      if (response.user.preferredLanguage && import.meta.client) {
-        // 1. Overwrite localStorage with the preferred language from the backend
+      if (effectiveUser.preferredLanguage && import.meta.client) {
         localStorage.setItem(
           "nusift_preferred_language",
-          response.user.preferredLanguage,
+          effectiveUser.preferredLanguage,
         );
       }
 
       if (!import.meta.server) {
         localStorage.setItem(
           "nusift_pwa_profile",
-          JSON.stringify(response.user),
+          JSON.stringify(effectiveUser),
         );
+      }
+
+      if (
+        selectedLanguage &&
+        selectedLanguage !== response.user?.preferredLanguage
+      ) {
+        try {
+          await $fetch("/api/user/profile/identity", {
+            method: "PUT",
+            body: { preferredLanguage: selectedLanguage },
+          });
+        } catch (error) {
+          console.warn("[auth] failed to persist preferredLanguage after OAuth", error);
+        }
       }
 
       return true;

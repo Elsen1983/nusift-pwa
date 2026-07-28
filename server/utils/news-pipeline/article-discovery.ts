@@ -120,6 +120,9 @@ const emptySkipSummary = (): IngestSkipSummary => ({
   htmlFallbackNonArticle: 0,
   htmlFallbackStale: 0,
   rssStaleSkipped: 0,
+  staleOutsideRetentionWindow: 0,
+  staleMissingPublishedAt: 0,
+  staleInvalidPublishedAt: 0,
 });
 
 const pushRejectedItem = (
@@ -564,6 +567,11 @@ const discoverArticleCandidatesForPage = async (
     } else if (status === "rejected_stale") {
       skipSummary.staleOrMissingPublishedAt += 1;
       skipSummary.htmlFallbackStale += 1;
+      // Split by staleReason when available
+      const sr = result.outcome.staleReason;
+      if (sr === "published_at_before_cutoff") skipSummary.staleOutsideRetentionWindow = (skipSummary.staleOutsideRetentionWindow || 0) + 1;
+      else if (sr === "missing_published_at") skipSummary.staleMissingPublishedAt = (skipSummary.staleMissingPublishedAt || 0) + 1;
+      else if (sr === "invalid_published_at") skipSummary.staleInvalidPublishedAt = (skipSummary.staleInvalidPublishedAt || 0) + 1;
       pushRejectedItem(rejectedItems, {
         reason: "html_fallback_stale",
         rawLink: articleUrl,
@@ -900,6 +908,10 @@ const serializeSkipSummary = (skipSummary: IngestSkipSummary) => ({
   alreadySeenFeedItem: skipSummary.alreadySeenFeedItem,
   htmlFallbackNonArticle: skipSummary.htmlFallbackNonArticle,
   htmlFallbackStale: skipSummary.htmlFallbackStale,
+  // ── Granular stale rejection breakdown ─────────────────────────────
+  ...(skipSummary.staleOutsideRetentionWindow ? { staleOutsideRetentionWindow: skipSummary.staleOutsideRetentionWindow } : {}),
+  ...(skipSummary.staleMissingPublishedAt ? { staleMissingPublishedAt: skipSummary.staleMissingPublishedAt } : {}),
+  ...(skipSummary.staleInvalidPublishedAt ? { staleInvalidPublishedAt: skipSummary.staleInvalidPublishedAt } : {}),
 });
 
 const serializeRejectedItem = (item: IngestRejectedItem) => ({
@@ -1067,7 +1079,9 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
         skipSummary,
         rejectedItems,
         {
-          ...(allowWeakDates ? { freshnessMs: 30 * 24 * 60 * 60 * 1000 } : {}),
+          // Note: allowWeakDates no longer overrides freshnessMs. The shared
+          // 7-day retention window is enforced for all candidates. allowWeakPublishedAt
+          // (the browser-only flag) still handles missing-date acceptance independently.
           ...(deniedPathPrefixes && deniedPathPrefixes.length > 0 ? { deniedPathPrefixes } : {}),
         },
       );

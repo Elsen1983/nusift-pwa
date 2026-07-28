@@ -40,18 +40,22 @@ const routeLocale = computed(() => {
 if (import.meta.client) {
   const savedLang = localStorage.getItem("nusift_preferred_language");
   const preferredLang = authStore.user?.preferredLanguage;
-  const initialLang =
+  const explicitInitialLang =
     (routeLocale.value && supportedLocales.has(routeLocale.value)
       ? routeLocale.value
       : null) ||
     (savedLang && supportedLocales.has(savedLang) ? savedLang : null) ||
     (preferredLang && supportedLocales.has(preferredLang)
       ? preferredLang
-      : null) ||
-    "en";
+      : null);
+  const initialLang =
+    explicitInitialLang || "en";
 
   if (initialLang) {
     locale.value = initialLang as typeof locale.value;
+  }
+
+  if (explicitInitialLang) {
     localStorage.setItem("nusift_preferred_language", initialLang);
   }
 
@@ -62,7 +66,6 @@ if (import.meta.client) {
         localStorage.setItem("nusift_preferred_language", newLocale);
       }
     },
-    { immediate: true },
   );
 }
 

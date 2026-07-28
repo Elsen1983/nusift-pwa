@@ -619,6 +619,8 @@
                   </div>
                   <div class="mt-1 flex flex-wrap gap-2 text-[10px] text-on-surface-variant/50">
                     <span v-if="item.headlessProcessingStartedAt">started: {{ formatLogTime(item.headlessProcessingStartedAt) }}</span>
+                    <span v-if="item.lastBrowserAttemptAt">browser attempt: {{ formatLogTime(item.lastBrowserAttemptAt) }}</span>
+                    <span v-if="item.lastBrowserFinishedAt">browser finished: {{ formatLogTime(item.lastBrowserFinishedAt) }}</span>
                     <span v-if="item.headlessRecoveryCount">recovered: {{ item.headlessRecoveryCount }}x</span>
                     <span v-if="item.lastHeadlessRecoveryAt">last recovery: {{ formatLogTime(item.lastHeadlessRecoveryAt) }}</span>
                   </div>
@@ -723,6 +725,8 @@
                     <div class="mt-1 flex flex-wrap gap-2 text-[9px] text-on-surface-variant/50">
                       <span v-if="item.browserFallbackStartedAt">started: {{ formatLogTime(item.browserFallbackStartedAt) }}</span>
                       <span v-if="item.browserFallbackFinishedAt">finished: {{ formatLogTime(item.browserFallbackFinishedAt) }}</span>
+                      <span v-if="item.lastBrowserAttemptAt">last attempt: {{ formatLogTime(item.lastBrowserAttemptAt) }}</span>
+                      <span v-if="item.lastBrowserFinishedAt">last finished: {{ formatLogTime(item.lastBrowserFinishedAt) }}</span>
                     </div>
                     <p v-if="item.browserError" class="mt-1 line-clamp-2 text-[10px] text-rose-300/80">
                       {{ item.browserError }}
@@ -749,6 +753,21 @@
                       <div class="mt-0.5">
                         Browser fallback skipped — previous run was rate-limited.
                         Retry manually or wait for stale recovery.
+                      </div>
+                    </div>
+                    <!-- Active PENDING_HEADLESS cooldown (Approach A) -->
+                    <div v-if="item.skippedDueToBrowserCooldown" class="mt-2 rounded-lg border border-cyan-400/20 bg-cyan-500/5 px-2.5 py-1.5 text-[10px] text-cyan-100/90">
+                      <div class="font-bold uppercase tracking-wider text-cyan-200">In browser cooldown</div>
+                      <div class="mt-0.5">
+                        Browser skipped — previous run was rate-limited.
+                        <span v-if="item.browserCooldownUntil">Cooldown until: <strong>{{ formatLogTime(item.browserCooldownUntil) }}</strong></span>
+                        <span v-if="cooldownRemainingMinutes(item.browserRetryAfterAt || item.browserCooldownUntil) != null"> (retryable in <strong>{{ cooldownRemainingMinutes(item.browserRetryAfterAt || item.browserCooldownUntil) }} min</strong>)</span>
+                      </div>
+                      <div v-if="item.browserRateLimitReason" class="mt-0.5 text-on-surface-variant/60">
+                        Reason: {{ item.browserRateLimitReason }}
+                      </div>
+                      <div v-if="item.lastBrowserCooldownSkipAt" class="mt-0.5 text-on-surface-variant/60">
+                        Last skipped by queue: {{ formatLogTime(item.lastBrowserCooldownSkipAt) }}
                       </div>
                     </div>
                   </div>
@@ -1092,12 +1111,30 @@
                     <span v-if="target.categoryId">cat: {{ target.categoryId.slice(0, 8) }}...</span>
                     <span v-if="target.lastStaticStatus">static: {{ target.lastStaticStatus }}</span>
                     <span v-if="target.lastBrowserStatus">browser: {{ target.lastBrowserStatus }}</span>
+                    <span v-if="target.lastBrowserAttemptAt">browser attempt: {{ formatLogTime(target.lastBrowserAttemptAt) }}</span>
+                    <span v-if="target.lastBrowserFinishedAt">browser finished: {{ formatLogTime(target.lastBrowserFinishedAt) }}</span>
                     <span v-if="target.lastProductiveAt">last good: {{ formatLogTime(target.lastProductiveAt) }}</span>
                     <span v-if="target.lastFailureAt">last fail: {{ formatLogTime(target.lastFailureAt) }}</span>
                   </div>
                   <p v-if="target.recommendedAction" class="mt-1 text-[10px] font-medium text-amber-200">
                     {{ target.recommendedAction }}
                   </p>
+                  <!-- Browser cooldown observability -->
+                  <div v-if="target.browserCooldownUntil || target.browserRetryAfterAt || target.browserRateLimitedAt" class="mt-1.5 rounded-lg border border-cyan-500/15 bg-cyan-500/5 px-2.5 py-1.5">
+                    <p class="text-[9px] font-bold uppercase tracking-wider text-cyan-300/80">Browser cooldown</p>
+                    <div class="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-on-surface-variant/80">
+                      <span v-if="target.browserCooldownUntil">Cooldown until: <strong>{{ formatLogTime(target.browserCooldownUntil) }}</strong></span>
+                      <span v-if="target.browserRetryAfterAt">Retry after: <strong>{{ formatLogTime(target.browserRetryAfterAt) }}</strong></span>
+                      <span v-if="cooldownRemainingMinutes(target.browserRetryAfterAt || target.browserCooldownUntil) != null" class="text-cyan-200">
+                        Retryable in: <strong>{{ cooldownRemainingMinutes(target.browserRetryAfterAt || target.browserCooldownUntil) }} min</strong>
+                      </span>
+                    </div>
+                    <div class="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-on-surface-variant/80">
+                      <span v-if="target.browserRateLimitedAt">Rate limited at: {{ formatLogTime(target.browserRateLimitedAt) }}</span>
+                      <span v-if="target.browserRateLimitReason">Reason: <strong class="text-rose-200">{{ target.browserRateLimitReason }}</strong></span>
+                      <span v-if="target.lastBrowserCooldownSkipAt">Last skipped: {{ formatLogTime(target.lastBrowserCooldownSkipAt) }}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1454,6 +1491,8 @@ const headlessQueueItems = ref<Array<{
   confidence: string | null;
   escalationReasons: string[];
   headlessProcessingStartedAt: string | null;
+  lastBrowserAttemptAt: string | null;
+  lastBrowserFinishedAt: string | null;
   headlessRecoveryCount: number | null;
   lastHeadlessRecoveryAt: string | null;
   browserFallbackRan: boolean;
@@ -1549,6 +1588,13 @@ const agent2HealthTargets = ref<Array<{
   lastBrowserStatus: string | null;
   currentLifecycleState: string;
   recommendedAction: string | null;
+  browserCooldownUntil: string | null;
+  browserRateLimitedAt: string | null;
+  browserRetryAfterAt: string | null;
+  browserRateLimitReason: string | null;
+  lastBrowserCooldownSkipAt: string | null;
+  lastBrowserAttemptAt: string | null;
+  lastBrowserFinishedAt: string | null;
 }>>([]);
 const agent2HealthLoading = ref(false);
 
@@ -2206,6 +2252,16 @@ const retryHeadlessQueueItem = async (item: { id: string; targetUrl: string | nu
   } finally {
     retryingHeadlessArtifactId.value = null;
   }
+};
+
+/**
+ * Compute remaining minutes until a cooldown expires, or null if already expired / invalid.
+ */
+const cooldownRemainingMinutes = (isoDate: string | null): number | null => {
+  if (!isoDate) return null;
+  const ms = new Date(isoDate).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return Math.ceil(ms / 60_000);
 };
 
 const staleReasonLabel = (reason: string | null): string => {

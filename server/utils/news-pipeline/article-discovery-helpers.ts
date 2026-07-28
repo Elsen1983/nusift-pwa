@@ -10,12 +10,27 @@
 import { safeFetch } from "../ssrf-guard";
 import { normalizeFeedTextDetailed } from "./normalize-feed-text";
 import { hashText, normalizeUrl, stripHtml } from "./text";
+import {
+  ARTICLE_RETENTION_DAYS,
+  ARTICLE_RETENTION_MS,
+  isWithinArticleRetentionWindow,
+  getArticleRetentionCutoff,
+} from "./article-retention-policy";
 
 const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-export const DISCOVERY_FRESHNESS_MS = 14 * 24 * 60 * 60 * 1000;
+/**
+ * Agent 2 discovery freshness window: 7 days.
+ * Matches the shared article retention policy so Agent 2 never accepts
+ * candidates that would immediately be eligible for cleanup.
+ *
+ * Re-exported from the shared article-retention-policy module.
+ */
+export const DISCOVERY_FRESHNESS_MS = ARTICLE_RETENTION_MS;
+// DISCOVERY_FRESHNESS_DAYS was a dead alias — use ARTICLE_RETENTION_DAYS
+// from article-retention-policy directly.
 
 const MAX_SITEMAP_URLS = 40;
 const MAX_SITEMAP_INDEX_ENTRIES = 5;
@@ -679,11 +694,8 @@ type ListingMetadata = {
   keywords: string[];
 };
 
-export const isWithinFreshnessWindow = (publishedAt: Date | null, now = new Date()) => {
-  if (!publishedAt) return false;
-  const diff = now.getTime() - publishedAt.getTime();
-  return diff >= 0 && diff <= DISCOVERY_FRESHNESS_MS;
-};
+export const isWithinFreshnessWindow = (publishedAt: Date | null, now = new Date()): boolean =>
+  isWithinArticleRetentionWindow(publishedAt, now);
 
 export const normalizePublishedAt = (value: Date | null) =>
   value && !Number.isNaN(value.getTime()) ? value : null;

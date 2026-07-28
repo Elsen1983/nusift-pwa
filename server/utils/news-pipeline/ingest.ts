@@ -153,6 +153,9 @@ const emptySkipSummary = (): IngestSkipSummary => ({
   htmlFallbackNonArticle: 0,
   htmlFallbackStale: 0,
   rssStaleSkipped: 0,
+  staleOutsideRetentionWindow: 0,
+  staleMissingPublishedAt: 0,
+  staleInvalidPublishedAt: 0,
 });
 
 const pushRejectedItem = (
@@ -475,20 +478,27 @@ const resolvePublishedAtForFeedItem = async (rawPubDate: string, canonicalUrl: s
  * HTML fallback ingest. Matches the article retention cleanup window so
  * that articles deleted by maintenance cleanup are not immediately
  * reimported by Agent 1 if the publisher feed still contains old items.
+ *
+ * Re-exported from the shared article-retention-policy module.
  */
-export const AGENT1_ARTICLE_FRESHNESS_DAYS = 7;
-const AGENT1_ARTICLE_FRESHNESS_MS = AGENT1_ARTICLE_FRESHNESS_DAYS * 24 * 60 * 60 * 1000;
+import {
+  ARTICLE_RETENTION_DAYS,
+  ARTICLE_RETENTION_MS,
+  isWithinArticleRetentionWindow,
+} from "./article-retention-policy";
+
+export const AGENT1_ARTICLE_FRESHNESS_DAYS = ARTICLE_RETENTION_DAYS;
+const AGENT1_ARTICLE_FRESHNESS_MS = ARTICLE_RETENTION_MS;
 
 /**
  * Check whether an article candidate is within the Agent 1 freshness
  * window (7 days). Returns false for null/missing dates and future dates.
  * Used by both the RSS/Atom/JSON feed path and the HTML fallback path.
+ *
+ * Delegates to the shared article-retention-policy utility.
  */
-export const isAgent1ArticleFresh = (publishedAt: Date | null, now = new Date()): boolean => {
-  if (!publishedAt) return false;
-  const diff = now.getTime() - publishedAt.getTime();
-  return diff >= 0 && diff <= AGENT1_ARTICLE_FRESHNESS_MS;
-};
+export const isAgent1ArticleFresh = (publishedAt: Date | null, now = new Date()): boolean =>
+  isWithinArticleRetentionWindow(publishedAt, now);
 
 // ── Deprecated aliases (backward compat for tests/imports) ──────────────
 export const AGENT1_RSS_FRESHNESS_DAYS = AGENT1_ARTICLE_FRESHNESS_DAYS;
@@ -1640,6 +1650,10 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       if (!publishedAt) {
         // Missing or invalid date — preserve existing behavior: skip.
         skipSummary.staleOrMissingPublishedAt += 1;
+        // Both missing and invalid collapse here; classify as missing_published_at
+        // since resolvePublishedAtForFeedItem returns null for both raw parse failure
+        // and HTML meta fallback failure.
+        skipSummary.staleMissingPublishedAt = (skipSummary.staleMissingPublishedAt || 0) + 1;
         pushRejectedItem(rejectedItems, {
           reason: "stale_or_missing_published_at",
           rawLink,
@@ -1652,6 +1666,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       if (!isAgent1RssItemFresh(publishedAt, now)) {
         // Parseable date older than the 7-day Agent 1 freshness window.
         skipSummary.rssStaleSkipped += 1;
+        skipSummary.staleOutsideRetentionWindow = (skipSummary.staleOutsideRetentionWindow || 0) + 1;
         pushRejectedItem(rejectedItems, {
           reason: "stale_or_missing_published_at",
           rawLink,

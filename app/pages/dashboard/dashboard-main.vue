@@ -6,7 +6,7 @@
         class="mx-auto w-full max-w-2xl bg-surface/95 backdrop-blur-md shadow-sm border-b border-outline-variant/30"
       >
         <div class="box-border flex w-full min-w-0 flex-col gap-3 px-4 py-3 relative">
-          <div class="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-end gap-3">
+          <div class="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-end gap-2 sm:gap-3">
             <div
               class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
               v-click-outside="() => (isDateDropdownOpen = false)"
@@ -30,7 +30,7 @@
                   >
                   <span
                     class="material-symbols-outlined text-[18px] text-primary-container flex-shrink-0 ml-2"
-                    >expand_more</span
+                    translate="no">expand_more</span
                   >
                 </div>
               </div>
@@ -90,7 +90,7 @@
                   </span>
                   <span
                     class="material-symbols-outlined text-[18px] text-primary-container flex-shrink-0 ml-2"
-                    >expand_more</span
+                    translate="no">expand_more</span
                   >
                 </div>
               </div>
@@ -128,7 +128,7 @@
           </div>
           </div>
 
-          <div class="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_6rem] items-end gap-3 sm:grid-cols-[minmax(0,1fr)_7rem]">
+          <div class="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_minmax(5rem,max-content)] items-end gap-2 sm:gap-3">
             <div
               class="flex-1 flex flex-col gap-1.5 min-w-0 relative"
               v-click-outside="() => (isSourceDropdownOpen = false)"
@@ -152,7 +152,7 @@
                   </span>
                   <span
                     class="material-symbols-outlined text-[18px] text-primary-container flex-shrink-0 ml-2"
-                    >expand_more</span
+                    translate="no">expand_more</span
                   >
                 </div>
               </div>
@@ -205,6 +205,7 @@
                   'material-symbols-outlined text-[18px]',
                   { 'animate-spin': isRefreshing },
                 ]"
+                translate="no"
                 >refresh</span
               >
               <span class="font-label font-bold text-[11px] sm:text-xs">{{ $t('dashboard.header.refresh_label') }}</span>

@@ -47,6 +47,10 @@ const serializeSkipSummary = (skipSummary: IngestSkipSummary) => ({
   staleOrMissingPublishedAt: skipSummary.staleOrMissingPublishedAt,
   htmlFallbackNonArticle: skipSummary.htmlFallbackNonArticle,
   htmlFallbackStale: skipSummary.htmlFallbackStale,
+  // ── Granular stale rejection breakdown (additive) ─────────────────
+  ...(skipSummary.staleOutsideRetentionWindow ? { staleOutsideRetentionWindow: skipSummary.staleOutsideRetentionWindow } : {}),
+  ...(skipSummary.staleMissingPublishedAt ? { staleMissingPublishedAt: skipSummary.staleMissingPublishedAt } : {}),
+  ...(skipSummary.staleInvalidPublishedAt ? { staleInvalidPublishedAt: skipSummary.staleInvalidPublishedAt } : {}),
 });
 
 const serializeRejectedItem = (item: IngestRejectedItem) => ({

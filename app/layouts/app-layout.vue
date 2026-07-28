@@ -19,17 +19,20 @@
                 alt="NuSift Logo"
                 class="h-[28px] w-auto object-contain"
                 src="~/assets/images/NuSift_Transparent_Logo_Blue.png"
+                translate="no"
               />
               <img
                 v-else
                 alt="NuSift Logo"
                 class="h-[28px] w-auto object-contain"
                 src="~/assets/images/NuSift_Transparent_Logo.png"
+                translate="no"
               />
             </ClientOnly>
             <div class="ml-4 pl-4 border-l border-primary-container/30 py-1">
               <span
                 class="text-primary-container font-label text-[9px] uppercase tracking-[0.15em] leading-tight block opacity-80 group-hover:opacity-100 transition-opacity"
+                translate="no"
               >
                 {{ $t("appLayout.header.slogan_line1") }}<br />{{
                   $t("appLayout.header.slogan_line2")
@@ -75,7 +78,7 @@
                     @click="handleMenuNavigation('/profile')"
                     class="menu-item group w-full"
                   >
-                    <span class="menu-item-icon material-symbols-outlined">account_circle</span>
+                    <span class="menu-item-icon material-symbols-outlined" translate="no">account_circle</span>
                     <span class="menu-item-text">
                       <span class="block text-sm font-medium text-on-surface">
                         {{ $t("appLayout.profileMenu.my_profile") }}
@@ -91,7 +94,7 @@
                     @click="handleMenuNavigation('/audit/categories-setup')"
                     class="menu-item group w-full"
                   >
-                    <span class="menu-item-icon material-symbols-outlined">cards_stack</span>
+                    <span class="menu-item-icon material-symbols-outlined" translate="no">cards_stack</span>
                     <span class="menu-item-text">
                       <span class="block text-sm font-medium text-on-surface">
                         {{ $t("appLayout.profileMenu.agent_fine_tuning") }}
@@ -107,7 +110,7 @@
                     @click="handleMenuNavigation('/audit/source-manager')"
                     class="menu-item group w-full"
                   >
-                    <span class="menu-item-icon material-symbols-outlined">hub</span>
+                    <span class="menu-item-icon material-symbols-outlined" translate="no">hub</span>
                     <span class="menu-item-text">
                       <span class="block text-sm font-medium text-on-surface">
                         {{ $t("appLayout.profileMenu.source_manager") }}
@@ -124,7 +127,7 @@
                     @click="handleMenuNavigation('/audit/admin')"
                     class="menu-item group w-full"
                   >
-                    <span class="menu-item-icon material-symbols-outlined">admin_panel_settings</span>
+                    <span class="menu-item-icon material-symbols-outlined" translate="no">admin_panel_settings</span>
                     <span class="menu-item-text">
                       <span class="block text-sm font-medium text-on-surface">
                         {{ $t("appLayout.profileMenu.admin_console") }}
@@ -140,7 +143,7 @@
                     @click="handleMenuNavigation('/notifications')"
                     class="menu-item group w-full"
                   >
-                    <span class="menu-item-icon material-symbols-outlined">notifications</span>
+                    <span class="menu-item-icon material-symbols-outlined" translate="no">notifications</span>
                     <span class="menu-item-text">
                       <span class="flex items-center gap-2">
                         <span class="block text-sm font-medium text-on-surface">
@@ -164,7 +167,7 @@
                     @click="handleMenuNavigation('/settings')"
                     class="menu-item group w-full"
                   >
-                    <span class="menu-item-icon material-symbols-outlined">tune</span>
+                    <span class="menu-item-icon material-symbols-outlined" translate="no">tune</span>
                     <span class="menu-item-text">
                       <span class="block text-sm font-medium text-on-surface">
                         {{ $t("appLayout.profileMenu.app_settings") }}
@@ -182,7 +185,7 @@
                     @click="openLogoutModal"
                     class="menu-item menu-item-danger group w-full"
                   >
-                    <span class="menu-item-icon material-symbols-outlined">logout</span>
+                    <span class="menu-item-icon material-symbols-outlined" translate="no">logout</span>
                     <span class="menu-item-text">
                       <span class="block text-sm font-medium">
                         {{ $t("appLayout.profileMenu.logout") }}
@@ -200,19 +203,20 @@
         </header>
       </div>
 
-      <main ref="mainContentRef" class="pt-[60px] pb-28 w-full min-w-0">
+      <main ref="mainContentRef" class="pt-[60px] w-full min-w-0" :style="{ paddingBottom: 'calc(7rem + env(safe-area-inset-bottom, 0px))' }">
         <slot />
       </main>
 
       <nav
-        class="fixed bottom-0 inset-x-0 mx-auto w-full max-w-2xl bg-background/95 backdrop-blur-xl border-t border-white/5 z-[100] pb-safe"
+        class="fixed bottom-0 inset-x-0 mx-auto w-full max-w-2xl bg-background/95 backdrop-blur-xl border-t border-white/5 z-[100]"
+        :style="{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }"
       >
-        <div class="flex justify-around items-center h-16 w-full px-2">
+        <div class="flex justify-around items-center h-16 w-full px-1">
           <button
             v-for="item in navItems"
             :key="item.path"
             @click="navigate.push(item.path)"
-            class="flex flex-col items-center justify-center w-full h-full gap-1 transition-colors"
+            class="flex flex-col items-center justify-center flex-1 min-w-0 h-full gap-0.5 transition-colors overflow-hidden px-0.5"
             :class="[
               route.path.includes(item.path)
                 ? 'text-primary-container'
@@ -220,12 +224,13 @@
             ]"
           >
             <span
-              class="material-symbols-outlined text-[24px]"
-              :class="{ 'text-[28px]': route.path.includes(item.path) }"
+              class="material-symbols-outlined text-[22px] shrink-0"
+              :class="{ 'text-[26px]': route.path.includes(item.path) }"
+              translate="no"
             >
               {{ item.icon }}
             </span>
-            <span class="text-[10px] font-medium tracking-wide">
+            <span class="text-[10px] font-medium tracking-wide truncate max-w-full leading-tight">
               {{ item.label }}
             </span>
           </button>

@@ -15,6 +15,12 @@
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
   }
+
+  /* Android auto-translation + text scaling resilience:
+     The templates use Tailwind utilities (min-w-0, truncate, overflow-hidden)
+     on individual elements. No additional global CSS classes needed — the
+     Tailwind approach is more targeted and avoids breaking admin panel
+     JSON/URLs or code blocks. */
   /* ALAPÉRTELMEZETT: SÖTÉT TÉMA (A Te eredeti dizájnod) */
   :root {
     --color-background: 19 19 19;

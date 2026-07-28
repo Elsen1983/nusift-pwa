@@ -41,6 +41,28 @@ describe("vercel.json cron schedule", () => {
     expect(cleanupTime).toBeGreaterThanOrEqual(hardCaseTime);
   });
 
+  it("has enough buffer between last discovery job and cleanup", () => {
+    const a2Slots = crons.filter((c) => c.path.includes("run-agent2"));
+    const hardCase = crons.find((c) => c.path.includes("hard-case"));
+    const cleanup = crons.find((c) => c.path.includes("cleanup-maintenance"));
+
+    expect(hardCase).toBeDefined();
+    expect(cleanup).toBeDefined();
+
+    const lastDiscovery = Math.max(
+      ...a2Slots.map((c) => parseMinuteOfDay(c.schedule)),
+      parseMinuteOfDay(hardCase!.schedule),
+    );
+    const cleanupTime = parseMinuteOfDay(cleanup!.schedule);
+
+    // Cleanup must run at least 60 min after the last discovery job.
+    // This prevents Vercel Hobby flexible cron windows from causing
+    // cleanup-before-reimport loops. Intentional design: cleanup runs
+    // last in the daily cron schedule so all A1/A2/hard-case slots
+    // have finished before any articles are eligible for deletion.
+    expect(cleanupTime - lastDiscovery).toBeGreaterThanOrEqual(60);
+  });
+
   it("uses bounded params for Agent 1 cron slots", () => {
     const a1Slots = crons.filter((c) => c.path.includes("run-agent1"));
     for (const slot of a1Slots) {

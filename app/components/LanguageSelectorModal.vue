@@ -7,7 +7,7 @@
     <div class="relative bg-surface-container-low border border-outline-variant/20 w-full max-w-md rounded-3xl p-8 shadow-2xl">
       <div class="text-center mb-8">
         <div class="w-16 h-16 rounded-full bg-primary-container/10 flex items-center justify-center mx-auto mb-4 border border-primary-container/20">
-          <span class="material-symbols-outlined text-primary-container text-3xl">language</span>
+          <span class="material-symbols-outlined text-primary-container text-3xl" translate="no">language</span>
         </div>
         <!-- REFACTORED: text-white replaced with text-on-surface -->
         <h3 class="font-headline text-2xl font-bold text-on-surface mb-2 tracking-tight">

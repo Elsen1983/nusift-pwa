@@ -24,6 +24,9 @@
 
 import { prisma } from "../prisma";
 import { logAgentScan } from "./log";
+import {
+  ARTICLE_RETENTION_DAYS,
+} from "./article-retention-policy";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -62,7 +65,7 @@ export type ArticleRetentionCleanupResult = {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const DEFAULT_OLDER_THAN_DAYS = 7;
+const DEFAULT_OLDER_THAN_DAYS = ARTICLE_RETENTION_DAYS;
 const MIN_OLDER_THAN_DAYS = 1;
 const MAX_OLDER_THAN_DAYS = 365;
 

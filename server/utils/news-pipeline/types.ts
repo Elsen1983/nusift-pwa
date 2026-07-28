@@ -319,6 +319,13 @@ export interface IngestSkipSummary {
   htmlFallbackStale: number;
   /** RSS/Atom/JSON feed items with a parseable publishedAt older than the Agent 1 freshness window (7 days). */
   rssStaleSkipped: number;
+  // ── Granular stale rejection breakdown (optional, additive) ────────
+  /** Rejected because publishedAt is older than the retention window. */
+  staleOutsideRetentionWindow?: number;
+  /** Rejected because publishedAt is null/missing. */
+  staleMissingPublishedAt?: number;
+  /** Rejected because publishedAt exists but could not be parsed. */
+  staleInvalidPublishedAt?: number;
 }
 
 export type ScopeMatch = "exact" | "probable" | "generic" | "unrelated";

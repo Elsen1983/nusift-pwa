@@ -400,7 +400,7 @@ describe("article-discovery", () => {
         <head>
           <title>Alpha story one</title>
           <meta name="description" content="Alpha description" />
-          <meta property="article:published_time" content="2026-07-16T09:00:00.000Z" />
+          <meta property="article:published_time" content="2026-07-24T09:00:00.000Z" />
           <meta name="keywords" content="alpha,news" />
         </head>
         <body><p>Alpha body</p></body>
@@ -411,7 +411,7 @@ describe("article-discovery", () => {
         <head>
           <title>Bravo story two</title>
           <meta name="description" content="Bravo description" />
-          <meta property="article:published_time" content="2026-07-15T09:00:00.000Z" />
+          <meta property="article:published_time" content="2026-07-23T09:00:00.000Z" />
           <meta name="keywords" content="bravo,news" />
         </head>
         <body><p>Bravo body</p></body>
@@ -491,7 +491,7 @@ describe("article-discovery", () => {
         <head>
           <title>Real story title here</title>
           <meta name="description" content="Real description" />
-          <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+          <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
         </head>
         <body><p>Body</p></body>
       </html>
@@ -777,7 +777,7 @@ describe("article-discovery", () => {
         <head>
           <title>Same story title long enough</title>
           <meta name="description" content="Same description" />
-          <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+          <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
         </head>
         <body><p>Body</p></body>
       </html>
@@ -830,7 +830,7 @@ describe("article-discovery", () => {
     const article = `<html><head>
       <title>Safe story title long enough</title>
       <meta name="description" content="Desc" />
-      <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+      <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
     </head><body><p>Body</p></body></html>`;
 
     safeFetchMock.mockImplementation(async (url: string) => {
@@ -880,7 +880,7 @@ describe("article-discovery", () => {
               "@type": "NewsArticle",
               "url": "/tech/2026/07/16/gadget-review",
               "headline": "Gadget review title long enough",
-              "datePublished": "2026-07-16T09:00:00Z"
+              "datePublished": "2026-07-24T09:00:00Z"
             }
           </script>
         </head>
@@ -892,7 +892,7 @@ describe("article-discovery", () => {
         <head>
           <title>Gadget review title long enough</title>
           <meta name="description" content="Description" />
-          <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+          <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
         </head>
         <body><p>Body</p></body>
       </html>
@@ -941,7 +941,7 @@ describe("article-discovery", () => {
         <head>
           <title>Lifestyle story title long enough</title>
           <meta name="description" content="Description" />
-          <meta property="article:published_time" content="2026-07-20T09:00:00Z" />
+          <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
         </head>
         <body><p>Body</p></body>
       </html>
@@ -986,14 +986,14 @@ describe("article-discovery", () => {
       <html><head>
         <title>Story A title long enough</title>
         <meta name="description" content="Desc A" />
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
     const articleB = `
       <html><head>
         <title>Story B title long enough</title>
         <meta name="description" content="Desc B" />
-        <meta property="article:published_time" content="2026-07-16T10:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T10:00:00Z" />
       </head><body><p>B</p></body></html>
     `;
 
@@ -1040,7 +1040,7 @@ describe("article-discovery", () => {
         <head>
           <title>Scored article title here</title>
           <meta name="description" content="Description" />
-          <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+          <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
         </head>
         <body><p>Body</p></body>
       </html>
@@ -1069,7 +1069,7 @@ describe("article-discovery", () => {
     expect(accepted.score).toBeGreaterThanOrEqual(30);
     expect(accepted.scoreReasons).toContain("same_domain");
     expect(accepted.title).toBe("Scored article title here");
-    expect(accepted.publishedAt).toBe("2026-07-16T09:00:00.000Z");
+    expect(accepted.publishedAt).toBe("2026-07-24T09:00:00.000Z");
   });
 
   it("qualityAssessment is blocked when all article fetches fail", async () => {
@@ -1166,7 +1166,7 @@ describe("article-discovery", () => {
         <head>
           <title>Good story title long enough</title>
           <meta name="description" content="Desc" />
-          <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+          <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
         </head>
         <body><p>Body</p></body>
       </html>
@@ -1213,14 +1213,14 @@ describe("article-discovery", () => {
       <html><head>
         <title>Story A title long enough</title>
         <meta name="description" content="Desc A" />
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
     const articleB = `
       <html><head>
         <title>Story B title long enough</title>
         <meta name="description" content="Desc B" />
-        <meta property="article:published_time" content="2026-07-16T10:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T10:00:00Z" />
       </head><body><p>B</p></body></html>
     `;
 
@@ -1264,7 +1264,7 @@ describe("article-discovery", () => {
       <html><head>
         <title>Fresh story title long enough</title>
         <meta name="description" content="Desc" />
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>Body</p></body></html>
     `;
     const staleArticle = `
@@ -1385,13 +1385,13 @@ describe("article-discovery", () => {
     const articleA = `
       <html><head>
         <title>Story A title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
     const articleB = `
       <html><head>
         <title>Story B title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T10:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T10:00:00Z" />
       </head><body><p>B</p></body></html>
     `;
 
@@ -1525,7 +1525,7 @@ describe("article-discovery", () => {
     const article = `
       <html><head>
         <title>Story A title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
 
@@ -1589,7 +1589,7 @@ describe("article-discovery", () => {
     const article = `
       <html><head>
         <title>Story A title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
 
@@ -1667,13 +1667,13 @@ describe("article-discovery", () => {
     const articleA = `
       <html><head>
         <title>Story A title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
     const articleB = `
       <html><head>
         <title>Story B title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T10:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T10:00:00Z" />
       </head><body><p>B</p></body></html>
     `;
 
@@ -1741,7 +1741,7 @@ describe("article-discovery", () => {
     const article = `
       <html><head>
         <title>Story A title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
 
@@ -1798,7 +1798,7 @@ describe("article-discovery", () => {
     const article = `
       <html><head>
         <title>Story A title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
 
@@ -1872,7 +1872,7 @@ describe("article-discovery", () => {
     const article = `
       <html><head>
         <title>Story A title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
 
@@ -1946,13 +1946,13 @@ describe("article-discovery", () => {
     const articleA = `
       <html><head>
         <title>Sports story A title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
     const articleB = `
       <html><head>
         <title>Sports story B title long enough</title>
-        <meta property="article:published_time" content="2026-07-16T10:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T10:00:00Z" />
       </head><body><p>B</p></body></html>
     `;
 
@@ -2023,7 +2023,7 @@ describe("article-discovery", () => {
     const article = `
       <html><head>
         <title>News story title long enough here</title>
-        <meta property="article:published_time" content="2026-07-16T09:00:00Z" />
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
       </head><body><p>A</p></body></html>
     `;
 
@@ -2083,7 +2083,7 @@ describe("article-discovery", () => {
     prismaArtifactCreateMock.mockResolvedValue({ id: "a-1" });
 
     const listing = `<html><body><article><a href="/news/story-1">Story title long enough</a></article></body></html>`;
-    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-20T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-24T09:00:00Z" /></head><body><p>Body</p></body></html>`;
 
     safeFetchMock.mockImplementation(async (url: string) => {
       if (url.endsWith(".com/")) return makeResponse(listing);
@@ -2140,7 +2140,7 @@ describe("article-discovery", () => {
     prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-next" });
 
     const listing = `<html><body><article><a href="/world/europe/story-1">Story title long enough</a></article></body></html>`;
-    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-20T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-24T09:00:00Z" /></head><body><p>Body</p></body></html>`;
 
     safeFetchMock.mockImplementation(async (url: string) => {
       if (url === "https://times.example/world/europe") return makeResponse(listing);
@@ -2186,7 +2186,7 @@ describe("article-discovery", () => {
     prismaArtifactCreateMock.mockResolvedValue({ id: "a-1" });
 
     const listing = `<html><body><article><a href="/news/story-1">Story title long enough</a></article></body></html>`;
-    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-20T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-24T09:00:00Z" /></head><body><p>Body</p></body></html>`;
 
     safeFetchMock.mockImplementation(async (url: string) => {
       if (url.endsWith(".com/")) return makeResponse(listing);
@@ -2249,7 +2249,7 @@ describe("article-discovery", () => {
     prismaArtifactCreateMock.mockResolvedValue({ id: "a-1" });
 
     const listing = `<html><body><article><a href="/news/story-1">Story title long enough</a></article></body></html>`;
-    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-20T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-24T09:00:00Z" /></head><body><p>Body</p></body></html>`;
 
     safeFetchMock.mockImplementation(async (url: string) => {
       if (url.endsWith(".com/")) return makeResponse(listing);
@@ -2290,7 +2290,7 @@ describe("article-discovery", () => {
     prismaArtifactCreateMock.mockResolvedValue({ id: "a-1" });
 
     const listing = `<html><body><article><a href="/news/story-1">Story title long enough</a></article></body></html>`;
-    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-20T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+    const article = `<html><head><title>Story title long enough</title><meta property="article:published_time" content="2026-07-24T09:00:00Z" /></head><body><p>Body</p></body></html>`;
 
     safeFetchMock.mockImplementation(async (url: string) => {
       if (url.endsWith(".com/")) return makeResponse(listing);

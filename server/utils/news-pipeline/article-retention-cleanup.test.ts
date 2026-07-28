@@ -97,6 +97,17 @@ describe("processOldArticleRetentionCleanup", () => {
     expect(result.sampleDeletedOrWouldDelete[0]!.id).toBe("1");
   });
 
+  it("default cutoff matches the shared article retention policy", async () => {
+    const fn = await loadFn();
+    const { getArticleRetentionCutoff } = await import("./article-retention-policy");
+    const now = new Date("2026-07-28T12:00:00Z");
+
+    const result = await fn({ dryRun: true, now });
+
+    // The cleanup's reported cutoff should match the shared policy's cutoff
+    expect(result.cutoff).toBe(getArticleRetentionCutoff(now).toISOString());
+  });
+
   it("skips recent articles (within the retention window)", async () => {
     articleFindMany.mockImplementation(async () => []);
     bookmarkGroupBy.mockResolvedValue([]);

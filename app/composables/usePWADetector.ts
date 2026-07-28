@@ -13,7 +13,27 @@ const isInStandalone = ref<boolean>(false);
 // Ez a sor kényszeríti a Service Worker regisztrálását kliens oldalon.
 if (import.meta.client) {
   import('virtual:pwa-register').then(({ registerSW }) => {
-    registerSW({ immediate: true });
+    registerSW({
+      immediate: true,
+      onNeedRefresh() {
+        // Guard against reload loops: only reload once per SW update cycle.
+        // Uses a timestamp so the flag auto-expires after 10 seconds.
+        if (typeof window !== 'undefined') {
+          const lastReload = sessionStorage.getItem('nusift_pwa_reload_at');
+          const now = Date.now();
+          if (lastReload && now - parseInt(lastReload, 10) < 10000) {
+            console.log('[PWA] Skipping reload — recent reload detected.');
+            return;
+          }
+          sessionStorage.setItem('nusift_pwa_reload_at', String(now));
+          console.log('[PWA] New content available, refreshing...');
+          window.location.reload();
+        }
+      },
+      onOfflineReady() {
+        console.log('[PWA] App ready for offline use.');
+      },
+    });
   }).catch(() => {
     // Csendes fail SSR vagy build környezetben
   });

@@ -1,9 +1,9 @@
 <template>
   <div class="bg-surface-container-lowest p-2 rounded-xl border border-outline-variant/10 opacity-60 hover:opacity-100 transition-all duration-300 space-y-4 group">
     <div class="flex justify-between items-center">
-      <div class="flex items-center gap-3">
-        <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">{{ icon }}</span>
-        <h4 class="font-headline text-lg text-on-surface">{{ title }}</h4>
+      <div class="flex items-center gap-3 min-w-0">
+        <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors shrink-0" translate="no">{{ icon }}</span>
+        <h4 class="font-headline text-lg text-on-surface min-w-0 truncate">{{ title }}</h4>
       </div>
       <button @click="$emit('add')" class="bg-primary/10 text-primary border border-primary/30 hover:border-primary hover:bg-primary-container hover:text-on-primary-container px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all">
         {{ $t('inactiveCategoryCard.btn_activate') }}

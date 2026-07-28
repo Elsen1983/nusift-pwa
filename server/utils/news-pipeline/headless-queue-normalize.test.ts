@@ -995,6 +995,30 @@ describe("normalizeHeadlessQueueArtifact — browser fallback fields", () => {
     expect(result.lastBrowserCooldownSkipAt).toBeNull();
   });
 
+  it("extracts lastBrowserAttemptAt and lastBrowserFinishedAt from payload", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      status: "RESOLVED",
+      payload: {
+        headlessProcessingStartedAt: "2026-07-21T10:01:00Z",
+        browserFallbackFinishedAt: "2026-07-21T10:03:00Z",
+      },
+    });
+
+    expect(result.lastBrowserAttemptAt).toBe("2026-07-21T10:01:00Z");
+    expect(result.lastBrowserFinishedAt).toBe("2026-07-21T10:03:00Z");
+  });
+
+  it("defaults lastBrowserAttemptAt and lastBrowserFinishedAt to null when absent", () => {
+    const result = normalizeHeadlessQueueArtifact({
+      ...baseArtifact,
+      payload: {},
+    });
+
+    expect(result.lastBrowserAttemptAt).toBeNull();
+    expect(result.lastBrowserFinishedAt).toBeNull();
+  });
+
   it("normalizes skippedDueToBrowserCooldown non-boolean to false", () => {
     const result = normalizeHeadlessQueueArtifact({
       ...baseArtifact,
@@ -1250,6 +1274,8 @@ describe("buildHeadlessQueueSummary", () => {
     browserTopRejectedLinks: [] as Array<{ url: string; normalizedUrl: string | null; anchorText: string | null; score: number; rejected: boolean; reason: string | null; scoreReasons: string[]; sameDomain: boolean; utilityPath: boolean; categoryScoped: boolean | null }>,
     browserShortlistedLinkSamples: [] as Array<{ url: string; normalizedUrl: string | null; anchorText: string | null; score: number; rejected: boolean; reason: string | null; scoreReasons: string[]; sameDomain: boolean; utilityPath: boolean; categoryScoped: boolean | null }>,
     browserTopLinkRejectionReasons: [] as Array<{ reason: string; count: number }>,
+    lastBrowserAttemptAt: null,
+    lastBrowserFinishedAt: null,
   });
 
   it("counts items by status", () => {
@@ -1367,6 +1393,8 @@ describe("classifyHeadlessQueueItem", () => {
     browserTopRejectedLinks: [] as any[],
     browserShortlistedLinkSamples: [] as any[],
     browserTopLinkRejectionReasons: [] as any[],
+    lastBrowserAttemptAt: null,
+    lastBrowserFinishedAt: null,
   });
 
   it("classifies PENDING_HEADLESS as active", () => {
@@ -1513,6 +1541,8 @@ describe("classifyHeadlessQueueItem — RESOLVED_BY_AGENT1_RSS", () => {
         browserTopRejectedLinks: [],
         browserShortlistedLinkSamples: [],
         browserTopLinkRejectionReasons: [],
+        lastBrowserAttemptAt: null,
+        lastBrowserFinishedAt: null,
       }),
     ).toBe("history");
   });

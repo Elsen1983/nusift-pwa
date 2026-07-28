@@ -10,6 +10,20 @@
       <LanguageSelectorModal @language-selected="handleLanguageSelection" />
     </ClientOnly>
 
+    <!-- i18n readiness guard: show minimal spinner until locale messages are loaded -->
+    <div
+      v-if="!isI18nReady"
+      class="fixed inset-0 z-[190] flex flex-col items-center justify-center bg-background"
+    >
+      <div class="relative w-12 h-12 mb-4">
+        <div class="absolute inset-0 rounded-full border-2 border-primary-container/20"></div>
+        <div class="absolute inset-0 rounded-full border-2 border-t-primary-container animate-spin"></div>
+      </div>
+      <p class="font-label text-sm text-on-surface-variant animate-pulse">
+        Loading...
+      </p>
+    </div>
+
     <div
       v-if="isLoading"
       class="fixed inset-0 backdrop-blur-sm bg-surface/80 z-[100] flex flex-col items-center justify-center"
@@ -27,10 +41,10 @@
       >
         {{
           isResettingPassword
-            ? $t("auth.loading.resetting")
+            ? safeT("auth.loading.resetting", "Authorizing Protocol...")
             : isRegistering
-              ? $t("auth.loading.registering")
-              : $t("auth.loading.initializing")
+              ? safeT("auth.loading.registering", "Forging Sovereign Identity...")
+              : safeT("auth.loading.initializing", "Initializing Secure Handshake...")
         }}
       </p>
     </div>
@@ -49,29 +63,30 @@
               src="~/assets/images/NuSift_Logo_Blue.png"
               alt="NuSift Logo"
               class="w-full h-full object-cover"
+              translate="no"
             />
           </div>
         </div>
         <h1
-          class="font-headline text-3xl font-bold tracking-tight text-on-surface text-center transition-all duration-500"
+          class="font-headline text-3xl font-bold tracking-tight text-on-surface text-center transition-all duration-500 break-words max-w-full"
         >
           {{
             isResettingPassword
-              ? $t("auth.heading.reset")
+              ? safeT("auth.heading.reset", "Secure Recovery")
               : isRegistering
-                ? $t("auth.heading.register")
-                : $t("auth.heading.login")
+                ? safeT("auth.heading.register", "Registration")
+                : safeT("auth.heading.login", "Welcome Back")
           }}
         </h1>
         <p
-          class="text-[11px] text-on-surface-variant mt-2 font-label uppercase tracking-[0.25em] text-center opacity-80"
+          class="text-[11px] text-on-surface-variant mt-2 font-label uppercase tracking-[0.25em] text-center opacity-80 break-words max-w-full"
         >
           {{
             isResettingPassword
-              ? $t("auth.subheading.reset")
+              ? safeT("auth.subheading.reset", "Authorize password reset")
               : isRegistering
-                ? $t("auth.subheading.register")
-                : $t("auth.subheading.login")
+                ? safeT("auth.subheading.register", "Unlock your daily news")
+                : safeT("auth.subheading.login", "Your personalized news awaits")
           }}
         </p>
       </section>
@@ -98,15 +113,15 @@
               <span class="material-symbols-outlined text-[14px]"
                 >arrow_back</span
               >
-              {{ $t("auth.buttons.back_to_options", "Back to options") }}
+              {{ safeT("auth.buttons.back_to_options", "Back to options") }}
             </button>
 
             <form @submit.prevent="handleAuth" class="space-y-4">
               <BaseInput
                 v-model="email"
-                :label="$t('auth.form.email_label')"
+                :label="safeT('auth.form.email_label', 'Email Address')"
                 type="email"
-                :placeholder="$t('auth.form.email_placeholder')"
+                :placeholder="safeT('auth.form.email_placeholder', 'johndoe@gmail.com')"
                 :error="emailError"
                 class="standard-field"
                 @blur="validateEmailField"
@@ -115,9 +130,9 @@
               <BaseInput
                 v-if="!isResettingPassword"
                 v-model="password"
-                :label="$t('auth.form.password_label')"
+                :label="safeT('auth.form.password_label', 'Password')"
                 type="password"
-                :placeholder="$t('auth.form.password_placeholder')"
+                :placeholder="safeT('auth.form.password_placeholder', '••••••••••••')"
                 :error="passwordError"
                 class="standard-field"
                 @blur="validatePasswordField"
@@ -133,7 +148,7 @@
                     :disabled="isLoading"
                     class="text-[11px] font-label text-primary-container hover:underline uppercase font-bold tracking-tighter disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
                   >
-                    {{ $t("auth.form.forgot_password") }}
+                    {{ safeT("auth.form.forgot_password", "Forgot?") }}
                   </button>
                 </template>
                 <template v-if="isRegistering" #help-text>
@@ -141,7 +156,7 @@
                     v-if="!passwordError"
                     class="text-[11px] text-on-surface-variant opacity-80 ml-1 italic mt-1.5 leading-tight"
                   >
-                    {{ $t("auth.form.password_hint") }}
+                    {{ safeT("auth.form.password_hint", "Min 12 characters, mix of cases and symbols.") }}
                   </p>
                 </template>
               </BaseInput>
@@ -159,10 +174,10 @@
               >
                 {{
                   isResettingPassword
-                    ? $t("auth.buttons.send_reset")
+                    ? safeT("auth.buttons.send_reset", "Send Reset Link")
                     : isRegistering
-                      ? $t("auth.buttons.register_identity")
-                      : $t("auth.buttons.authenticate")
+                      ? safeT("auth.buttons.register_identity", "Register Identity")
+                      : safeT("auth.buttons.authenticate", "Authenticate")
                 }}
               </button>
             </form>
@@ -177,7 +192,7 @@
               <span class="material-symbols-outlined text-xl opacity-80"
                 >mail</span
               >
-              {{ $t("auth.buttons.continue_email", "Continue with Email") }}
+              {{ safeT("auth.buttons.continue_email", "Continue with Email") }}
             </button>
           </div>
         </Transition>
@@ -191,7 +206,7 @@
         <span
           class="flex-shrink mx-4 text-[9px] font-label font-bold text-on-surface-variant opacity-70 tracking-[0.4em] uppercase"
         >
-          {{ $t("auth.prompts.divider_label") }}
+          {{ safeT("auth.prompts.divider_label", "Social Gate") }}
         </span>
         <div class="flex-grow border-t border-outline-variant/15"></div>
       </div>
@@ -223,8 +238,7 @@
               d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 12-4.53z"
               fill="#EA4335"
             ></path>
-          </svg>
-          {{ $t("auth.buttons.continue_google") }}
+          </svg>              {{ safeT("auth.buttons.continue_google", "Continue with Google") }}
         </button>
         <button
           @click="handleOAuth('Apple')"
@@ -236,7 +250,7 @@
               d="M17.05 20.28c-.98.95-2.05 1.78-3.3 1.78-1.2 0-1.57-.75-3.04-.75-1.47 0-1.92.73-3.04.75-1.22.02-2.33-.9-3.3-1.8-1.98-1.86-3.5-5.25-3.5-8.43 0-3.15 1.63-4.83 3.19-4.83 1.15 0 2.04.74 2.84.74.78 0 1.9-.84 3.33-.84.9 0 2.13.33 3.04 1.25-.13.1-.9.84-.9 2.22 0 1.67 1.15 2.23 1.38 2.33-.1.3-.43.8-.9 1.43-.53.75-.95 1.4-1.3 1.7zm-2.84-15.82c.6-.74.98-1.74.98-2.73 0-.15-.02-.3-.04-.44-.92.04-2.03.62-2.7 1.4-.53.6-.98 1.62-.98 2.6.14.02.28.03.44.03.88 0 1.78-.45 2.3-1.12z"
             ></path>
           </svg>
-          {{ $t("auth.buttons.continue_apple") }}
+          {{ safeT("auth.buttons.continue_apple", "Continue with Apple") }}
         </button>
       </section>
 
@@ -247,8 +261,8 @@
         >
           {{
             isRegistering
-              ? $t("auth.prompts.already_have_account")
-              : $t("auth.prompts.dont_have_account")
+              ? safeT("auth.prompts.already_have_account", "Already have an account?")
+              : safeT("auth.prompts.dont_have_account", "Don't have an account yet?")
           }}
         </p>
         <button
@@ -260,8 +274,8 @@
         >
           {{
             isRegistering
-              ? $t("auth.prompts.login_link")
-              : $t("auth.prompts.registration_link")
+              ? safeT("auth.prompts.login_link", "Login")
+              : safeT("auth.prompts.registration_link", "Register Identity")
           }}
         </button>
 
@@ -271,7 +285,7 @@
           :disabled="isLoading"
           class="text-xs font-label mt-2 text-on-surface-variant hover:text-on-surface transition-colors uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {{ $t("auth.buttons.back_to_login") }}
+          {{ safeT("auth.buttons.back_to_login", "Back to Login") }}
         </button>
       </div>
 
@@ -279,7 +293,7 @@
         <p
           class="text-[10px] text-on-surface-variant font-label uppercase tracking-[0.4em] mb-2 font-bold opacity-70"
         >
-          {{ $t("auth.footer.encryption_label") }}
+          {{ safeT("auth.footer.encryption_label", "Sovereign-Grade Encryption") }}
         </p>
         <div
           class="flex justify-center space-x-8 text-[11px] text-on-surface-variant font-bold font-label"
@@ -289,21 +303,21 @@
             :class="{ 'pointer-events-none opacity-50': isLoading }"
             class="hover:text-primary transition-all duration-300"
             @click.prevent="activeModal = 'terms'"
-            >{{ $t("auth.footer.terms") }}</a
+            >{{ safeT("auth.footer.terms", "Terms") }}</a
           >
           <a
             href="#"
             :class="{ 'pointer-events-none opacity-50': isLoading }"
             class="hover:text-primary transition-all duration-300"
             @click.prevent="activeModal = 'privacy'"
-            >{{ $t("auth.footer.privacy") }}</a
+            >{{ safeT("auth.footer.privacy", "Privacy") }}</a
           >
           <a
             href="#"
             :class="{ 'pointer-events-none opacity-50': isLoading }"
             class="hover:text-primary transition-all duration-300"
             @click.prevent="activeModal = 'help'"
-            >{{ $t("auth.footer.help") }}</a
+            >{{ safeT("auth.footer.help", "Help") }}</a
           >
         </div>
       </footer>
@@ -385,6 +399,7 @@ import { $api } from "~/utils/api";
 const authStore = useAuthStore();
 const navigate = useSovereignNavigate();
 const localePath = useLocalePath();
+const { isReady: isI18nReady, safeT } = useI18nReady();
 
 type AvailableLocales = "en" | "hu" | "fr" | "de" | "pl" | "es";
 const { t, setLocale, locale } = useI18n();
@@ -593,10 +608,13 @@ const handleAuth = async () => {
       showForgotButton.value = true;
     }
   } else {
-    const success = await authStore.loginIdentity(email.value, password.value);
+    const success = await authStore.loginIdentity(
+      email.value,
+      password.value,
+      activeLanguage.value,
+    );
     if (success) {
-      const targetLang = (authStore.user?.preferredLanguage ||
-        activeLanguage.value) as AvailableLocales;
+      const targetLang = activeLanguage.value as AvailableLocales;
       if (locale.value !== targetLang) {
         try {
           await setLocale(targetLang);
@@ -759,8 +777,7 @@ const processOAuthLogin = async (rawToken: string, providerName: string) => {
     localStorage.setItem("nusift_visited", "true");
     isRegistering.value = false;
 
-    const targetLang = (authStore.user?.preferredLanguage ||
-      activeLanguage.value) as AvailableLocales;
+    const targetLang = activeLanguage.value as AvailableLocales;
 
     if (locale.value !== targetLang) {
       try {

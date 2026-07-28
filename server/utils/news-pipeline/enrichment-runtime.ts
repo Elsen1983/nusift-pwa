@@ -38,8 +38,11 @@ import { logAgentScan } from "./log";
 /**
  * Maximum article age considered eligible for enrichment (Agent 3 dev plan
  * §6.2: at most 7 days old).
+ *
+ * Re-exported from the shared article-retention-policy module.
  */
-export const ENRICHMENT_FRESHNESS_DAYS = 7;
+import { ARTICLE_RETENTION_DAYS, getArticleRetentionCutoff } from "./article-retention-policy";
+export const ENRICHMENT_FRESHNESS_DAYS = ARTICLE_RETENTION_DAYS;
 
 /**
  * Per-batch safety caps (Agent 3 dev plan §11: max concurrency / per-run limit).
@@ -79,9 +82,7 @@ export const selectEnrichmentEligibleArticles = async (
   now: Date = new Date(),
   limit: number = MAX_ARTICLES_PER_RUN,
 ): Promise<EnrichmentEligibleArticle[]> => {
-  const cutoff = new Date(
-    now.getTime() - ENRICHMENT_FRESHNESS_DAYS * 24 * 60 * 60 * 1000,
-  );
+  const cutoff = getArticleRetentionCutoff(now);
 
   return prisma.article.findMany({
     where: {

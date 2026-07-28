@@ -46,6 +46,15 @@ export type Agent2TargetHealth = {
   lastBrowserStatus: string | null;
   currentLifecycleState: Agent2LifecycleState;
   recommendedAction: string | null;
+  // ── Browser cooldown observability ──────────────────────────────────
+  browserCooldownUntil: string | null;
+  browserRateLimitedAt: string | null;
+  browserRetryAfterAt: string | null;
+  browserRateLimitReason: string | null;
+  lastBrowserCooldownSkipAt: string | null;
+  // ── Browser timing observability ───────────────────────────────────
+  lastBrowserAttemptAt: string | null;
+  lastBrowserFinishedAt: string | null;
 };
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -249,6 +258,13 @@ export async function buildAgent2HealthReport(input?: {
     lastFailureAt: Date | null;
     lastSeenAt: Date;
     inCooldown: boolean;
+    browserCooldownUntil: string | null;
+    browserRateLimitedAt: string | null;
+    browserRetryAfterAt: string | null;
+    browserRateLimitReason: string | null;
+    lastBrowserCooldownSkipAt: string | null;
+    lastBrowserAttemptAt: string | null;
+    lastBrowserFinishedAt: string | null;
   };
 
   const byTarget = new Map<string, TargetAgg>();
@@ -294,6 +310,13 @@ export async function buildAgent2HealthReport(input?: {
           lastFailureAt: !productive && quality !== null ? artifact.createdAt : null,
           lastSeenAt: artifact.createdAt,
           inCooldown: false,
+          browserCooldownUntil: null,
+          browserRateLimitedAt: null,
+          browserRetryAfterAt: null,
+          browserRateLimitReason: null,
+          lastBrowserCooldownSkipAt: null,
+          lastBrowserAttemptAt: null,
+          lastBrowserFinishedAt: null,
         });
       }
     } else if (artifact.artifactType === "article_discovery_headless_required") {
@@ -314,7 +337,22 @@ export async function buildAgent2HealthReport(input?: {
           existing.lastFailureAt = artifact.createdAt;
         }
         if (rateLimited) existing.inCooldown = true;
+        // Extract cooldown observability metadata from payload
         if (artifact.createdAt > existing.lastSeenAt) existing.lastSeenAt = artifact.createdAt;
+        const cdUntil = readString(payload.browserCooldownUntil);
+        if (cdUntil) existing.browserCooldownUntil = cdUntil;
+        const rlAt = readString(payload.browserRateLimitedAt);
+        if (rlAt) existing.browserRateLimitedAt = rlAt;
+        const retryAfter = readString(payload.browserRetryAfterAt);
+        if (retryAfter) existing.browserRetryAfterAt = retryAfter;
+        const rlReason = readString(payload.browserRateLimitReason);
+        if (rlReason) existing.browserRateLimitReason = rlReason;
+        const lastSkip = readString(payload.lastBrowserCooldownSkipAt);
+        if (lastSkip) existing.lastBrowserCooldownSkipAt = lastSkip;
+        const attemptAt = readString(payload.headlessProcessingStartedAt);
+        if (attemptAt) existing.lastBrowserAttemptAt = attemptAt;
+        const finishedAt = readString(payload.browserFallbackFinishedAt);
+        if (finishedAt) existing.lastBrowserFinishedAt = finishedAt;
       } else {
         byTarget.set(key, {
           targetUrl,
@@ -330,6 +368,13 @@ export async function buildAgent2HealthReport(input?: {
           lastFailureAt: !resolved && BROWSER_FAILURE_STATUSES.has(artifact.status) ? artifact.createdAt : null,
           lastSeenAt: artifact.createdAt,
           inCooldown: rateLimited,
+          browserCooldownUntil: readString(payload.browserCooldownUntil),
+          browserRateLimitedAt: readString(payload.browserRateLimitedAt),
+          browserRetryAfterAt: readString(payload.browserRetryAfterAt),
+          browserRateLimitReason: readString(payload.browserRateLimitReason),
+          lastBrowserCooldownSkipAt: readString(payload.lastBrowserCooldownSkipAt),
+          lastBrowserAttemptAt: readString(payload.headlessProcessingStartedAt),
+          lastBrowserFinishedAt: readString(payload.browserFallbackFinishedAt),
         });
       }
     }
@@ -400,6 +445,13 @@ export async function buildAgent2HealthReport(input?: {
         lastBrowserStatus: target.lastBrowserStatus,
         currentLifecycleState: lifecycleState,
         recommendedAction: null,
+        browserCooldownUntil: target.browserCooldownUntil,
+        browserRateLimitedAt: target.browserRateLimitedAt,
+        browserRetryAfterAt: target.browserRetryAfterAt,
+        browserRateLimitReason: target.browserRateLimitReason,
+        lastBrowserCooldownSkipAt: target.lastBrowserCooldownSkipAt,
+        lastBrowserAttemptAt: target.lastBrowserAttemptAt,
+        lastBrowserFinishedAt: target.lastBrowserFinishedAt,
       });
       continue;
     }
@@ -430,6 +482,13 @@ export async function buildAgent2HealthReport(input?: {
       lastBrowserStatus: target.lastBrowserStatus,
       currentLifecycleState: lifecycleState,
       recommendedAction,
+      browserCooldownUntil: target.browserCooldownUntil,
+      browserRateLimitedAt: target.browserRateLimitedAt,
+      browserRetryAfterAt: target.browserRetryAfterAt,
+      browserRateLimitReason: target.browserRateLimitReason,
+      lastBrowserCooldownSkipAt: target.lastBrowserCooldownSkipAt,
+      lastBrowserAttemptAt: target.lastBrowserAttemptAt,
+      lastBrowserFinishedAt: target.lastBrowserFinishedAt,
     });
   }
 

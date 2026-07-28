@@ -16,6 +16,26 @@ describe("article-discovery-helpers", () => {
     safeFetchMock.mockReset();
   });
 
+  // ── Cross-module consistency ─────────────────────────────────────────
+
+  it("DISCOVERY_FRESHNESS_MS matches the shared article retention policy", async () => {
+    const { DISCOVERY_FRESHNESS_MS } = await import("./article-discovery-helpers");
+    const { ARTICLE_RETENTION_MS } = await import("./article-retention-policy");
+    expect(DISCOVERY_FRESHNESS_MS).toBe(ARTICLE_RETENTION_MS);
+  });
+
+  it("isWithinFreshnessWindow rejects dates older than 7-day default (no custom freshnessMs)", async () => {
+    const { isWithinFreshnessWindow } = await import("./article-discovery-helpers");
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    expect(isWithinFreshnessWindow(tenDaysAgo)).toBe(false);
+  });
+
+  it("isWithinFreshnessWindow accepts dates within 7-day default window", async () => {
+    const { isWithinFreshnessWindow } = await import("./article-discovery-helpers");
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    expect(isWithinFreshnessWindow(threeDaysAgo)).toBe(true);
+  });
+
   // ── Sitemap Discovery ──────────────────────────────────────────────────
 
   describe("discoverSitemapUrls", () => {
@@ -926,6 +946,10 @@ describe("article-discovery-helpers", () => {
     it("fallback date parsing closes the gap when extractPageMetadata misses JSON-LD date", async () => {
       const { extractPageMetadata, extractDateFromHtml, normalizePublishedAt, normalizeRawDateString, isWithinFreshnessWindow } = await import("./article-discovery-helpers");
 
+      // Use a dynamic recent date so the test remains valid regardless of when it runs.
+      // The 7-day freshness window means a fixed 2026-07-18 date would expire.
+      const recentDate = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2 hours ago
+
       // Page with only JSON-LD datePublished — extractPageMetadata doesn't check JSON-LD
       const html = `
         <html><head>
@@ -934,7 +958,7 @@ describe("article-discovery-helpers", () => {
             {
               "@type": "NewsArticle",
               "headline": "Breaking NBA Trade News Story Here",
-              "datePublished": "2026-07-18T14:00:00Z"
+              "datePublished": "${recentDate}"
             }
           </script>
         </head><body></body></html>`;
@@ -946,7 +970,7 @@ describe("article-discovery-helpers", () => {
 
       // extractDateFromHtml DOES find it from JSON-LD
       const dateExtraction = extractDateFromHtml(html);
-      expect(dateExtraction.rawDate).toBe("2026-07-18T14:00:00Z");
+      expect(dateExtraction.rawDate).toBe(recentDate);
       expect(dateExtraction.source).toBe("datePublished");
 
       // Fallback: try parsing the raw date from extractDateFromHtml
@@ -1359,6 +1383,94 @@ describe("article-discovery-helpers", () => {
       expect(result.accepted).toBe(false);
       expect(result.outcome.status).toBe("rejected_stale");
       expect(result.outcome.staleReason).toBe("future_published_at");
+    });
+  });
+
+  // ── Part 2 acceptance: 7-day retention hard-cap at evaluation level ────
+
+  describe("evaluateArticleLinkCandidateFromExtractedMetadata — 7-day retention hard-cap", () => {
+    const freshBaseInput = () => ({
+      articleUrl: "https://example.com/news/breaking-nba-trade-story-here-today",
+      sourcePageUrl: "browser:https://example.com/news/breaking-nba-trade-story-here-today",
+      targetUrl: "https://example.com",
+      sourceId: "src-1",
+      title: "A Valid Article Title For Testing",
+      description: "Description text",
+      keywords: ["news"],
+      publishedAtSource: "datePublished" as const,
+      bodyFallback: "Body text for testing.",
+    });
+
+    it("rejects a candidate with publishedAt older than 7 days using default freshnessMs", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...freshBaseInput(),
+        publishedAtRaw: tenDaysAgo,
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_stale");
+      expect(result.outcome.staleReason).toBe("published_at_before_cutoff");
+    });
+
+    it("accepts a candidate with publishedAt within 7 days using default freshnessMs", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...freshBaseInput(),
+        publishedAtRaw: twoDaysAgo,
+      });
+
+      expect(result.accepted).toBe(true);
+    });
+
+    it("rejects a candidate with missing publishedAt and allowWeakPublishedAt=false", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...freshBaseInput(),
+        publishedAtRaw: null,
+        allowWeakPublishedAt: false,
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_stale");
+      expect(result.outcome.staleReason).toBe("missing_published_at");
+    });
+
+    it("allows missing-date acceptance via allowWeakPublishedAt when score is high enough", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...freshBaseInput(),
+        publishedAtRaw: null,
+        allowWeakPublishedAt: true,
+      });
+
+      // allowWeakPublishedAt only helps with MISSING dates, not OLD dates
+      // With score >= 60 and no raw date, the candidate should be accepted
+      expect(result.accepted).toBe(true);
+      expect(result.candidate!.rawSignals).toContain("accepted_with_browser_weak_published_at");
+    });
+
+    it("allowWeakPublishedAt with true cannot bypass 7-day hard-cap for OLD dates", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...freshBaseInput(),
+        publishedAtRaw: tenDaysAgo,
+        allowWeakPublishedAt: true,
+      });
+
+      // Even with allowWeakPublishedAt=true, an old parseable date is rejected
+      // because allowWeakPublishedAt only activates when !dateExtraction.rawDate
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_stale");
+      expect(result.outcome.staleReason).toBe("published_at_before_cutoff");
     });
   });
 

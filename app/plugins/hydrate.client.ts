@@ -37,7 +37,10 @@ export default defineNuxtPlugin(() => {
       authStore.user = parsedUser;
     }
 
-    if (parsedUser?.preferredLanguage) {
+    const savedLang = localStorage.getItem("nusift_preferred_language");
+    if (savedLang) {
+      parsedUser.preferredLanguage = savedLang;
+    } else if (parsedUser?.preferredLanguage) {
       localStorage.setItem("nusift_preferred_language", parsedUser.preferredLanguage);
     }
 

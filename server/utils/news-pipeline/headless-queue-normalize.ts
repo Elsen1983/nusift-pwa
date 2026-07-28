@@ -117,6 +117,9 @@ export type NormalizedHeadlessQueueItem = {
   lastBrowserCooldownSkipAt: string | null;
   browserQualityAssessment: NormalizedBrowserQualityAssessment | null;
   renderedUrl: string | null;
+  // ── Browser timing aliases (convenience) ─────────────────────────────
+  lastBrowserAttemptAt: string | null;
+  lastBrowserFinishedAt: string | null;
   // ── Browser link audit fields ─────────────────────────────────────────
   browserShortlistedLinks: number | null;
   browserTopRejectedLinks: NormalizedBrowserLinkAuditEntry[];
@@ -411,6 +414,11 @@ export function normalizeHeadlessQueueArtifact(artifact: {
     lastBrowserCooldownSkipAt: readString(payload.lastBrowserCooldownSkipAt),
     browserQualityAssessment: browserQa,
     renderedUrl: readString(payload.renderedUrl),
+    // ── Browser timing aliases ────────────────────────────────────────
+    // lastBrowserAttemptAt maps to headlessProcessingStartedAt (claim time)
+    // lastBrowserFinishedAt maps to browserFallbackFinishedAt (completion)
+    lastBrowserAttemptAt: readString(payload.headlessProcessingStartedAt),
+    lastBrowserFinishedAt: readString(payload.browserFallbackFinishedAt),
     // ── Browser link audit fields ─────────────────────────────────────
     browserShortlistedLinks: readNumber(payload.browserShortlistedLinks),
     browserTopRejectedLinks: extractBrowserLinkAuditEntries(

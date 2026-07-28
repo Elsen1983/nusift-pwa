@@ -8,11 +8,11 @@
         <div
           class="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center"
         >
-          <span class="material-symbols-outlined text-primary-container">{{
+          <span class="material-symbols-outlined text-primary-container" translate="no">{{
             icon
           }}</span>
         </div>
-        <h3 class="text-primary-container font-headline text-[16px] font-bold">
+        <h3 class="text-primary-container font-headline text-[16px] font-bold min-w-0 truncate">
           {{ title }}
         </h3>
       </div>
@@ -27,7 +27,7 @@
     </div>
 
     <div class="space-y-2">
-      <div class="space-y-2 relative max-w-[80%] md:max-w-full">
+      <div class="space-y-2 relative max-w-full">
         <div class="flex justify-between text-[10px] text-on-surface-variant uppercase font-label font-bold tracking-wider">
           <span>{{ $t('activeCategoryCard.priority_weight') }}</span>
           <span :class="hasWeightChanged ? 'text-warning' : 'text-primary-container'">

@@ -2,7 +2,7 @@
   <div class="px-4 py-8 max-w-2xl mx-auto space-y-6 pb-20 overflow-visible">
     <section class="px-2">
       <div class="flex items-center gap-3 mb-1">
-        <span class="material-symbols-outlined text-primary-container text-2xl">settings</span>
+        <span class="material-symbols-outlined text-primary-container text-2xl" translate="no">settings</span>
         <h1 class="font-headline text-2xl font-bold text-on-surface tracking-tight">
           {{ $t("appSettings.title") }}
         </h1>
@@ -20,7 +20,7 @@
         <div class="w-full flex flex-col gap-4 p-4">
           <div class="flex items-start justify-between gap-4">
             <div class="flex items-center gap-4 text-on-surface min-w-0">
-              <span class="material-symbols-outlined text-on-surface-variant">notifications</span>
+              <span class="material-symbols-outlined text-on-surface-variant" translate="no">notifications</span>
               <div class="min-w-0">
                 <span class="font-body text-[15px] font-medium block">
                   {{ $t("appSettings.notifications.title") }}
@@ -54,7 +54,7 @@
           <div class="space-y-3">
             <div class="flex items-start justify-between gap-4">
               <div class="flex items-center gap-4 text-on-surface min-w-0">
-                <span class="material-symbols-outlined text-on-surface-variant">bolt</span>
+                <span class="material-symbols-outlined text-on-surface-variant" translate="no">bolt</span>
                 <div class="min-w-0">
                   <span class="font-body text-[15px] font-medium block">{{ $t("appSettings.notifications.breaking") }}</span>
                   <span class="text-on-surface-variant text-[11px] font-label">{{ $t("appSettings.notifications.breakingDesc") }}</span>
@@ -105,8 +105,7 @@
       </h4>
       <div class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden flex flex-col">
         <div class="w-full flex items-center justify-between p-4">
-          <div class="flex items-center gap-4 text-on-surface">
-            <span class="material-symbols-outlined text-on-surface-variant">
+          <div class="flex items-center gap-4 text-on-surface">              <span class="material-symbols-outlined text-on-surface-variant" translate="no">
               {{ isDarkMode ? "dark_mode" : "light_mode" }}
             </span>
             <div>
@@ -133,7 +132,7 @@
       <div class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden flex flex-col">
         <div class="w-full flex items-center justify-between p-4">
           <div class="flex items-center gap-4 text-on-surface">
-            <span class="material-symbols-outlined text-on-surface-variant">language</span>
+            <span class="material-symbols-outlined text-on-surface-variant" translate="no">language</span>
             <div>
               <span class="font-body text-[15px] font-medium block">
                 {{ $t("appSettings.language.label") }}
@@ -205,7 +204,7 @@
       <div class="bg-surface-container-low rounded-3xl border border-outline-variant/10 shadow-lg overflow-hidden">
         <div class="w-full flex items-center justify-between p-4">
           <div class="flex items-center gap-4 text-on-surface">
-            <span class="material-symbols-outlined text-on-surface-variant">info</span>
+            <span class="material-symbols-outlined text-on-surface-variant" translate="no">info</span>
             <span class="font-body text-[15px] font-medium">
               {{ $t("appSettings.about.version") }}
             </span>
