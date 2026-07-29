@@ -1245,3 +1245,107 @@ describe("generic RSS fallback integration", () => {
     );
   });
 });
+
+// ── URL policy integration: real ingest-path tests ─────────────────────
+describe("URL policy integration (Agent 1 RSS ingest path)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaNewsSourceFindUniqueMock.mockResolvedValue(SOURCE_BASE);
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue(null);
+    prismaSourceCategoryUpdateMock.mockResolvedValue({});
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    prismaArticleFindManyMock.mockResolvedValue([]);
+    prismaArticleCreateManyMock.mockResolvedValue({ count: 0 });
+    prismaArticleUpdateMock.mockResolvedValue({});
+    prismaTransactionMock.mockResolvedValue([]);
+    prismaFeedReviewUpdateManyMock.mockResolvedValue({});
+    prismaNewsSourceUpdateMock.mockResolvedValue({});
+    discoverFeedForUrlMock.mockResolvedValue({ feedUrl: null, scopeMatch: "generic", detection: "none", score: 0, scopeConfidence: "low" });
+  });
+
+  it("rejects non-article RSS URLs and increments skipSummary.urlPolicyRejected", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    const feed = rssXml([
+      { title: "Radio Clip", link: "https://example.com/radio/clips/123456", pubDate: freshDate().toISOString() },
+      { title: "Topics Page", link: "https://example.com/topics/politics", pubDate: freshDate().toISOString() },
+      { title: "Checkout Page", link: "https://example.com/checkout/referral", pubDate: freshDate().toISOString() },
+    ]);
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(feed);
+      return makeResponse("", false);
+    });
+
+    const result = await ingestSource("src-1");
+
+    expect(result.candidates).toHaveLength(0);
+    expect(result.skipSummary.urlPolicyRejected).toBe(3);
+
+    const policyRejected = result.rejectedItems.filter((r) => r.reason === "url_policy_rejected");
+    expect(policyRejected).toHaveLength(3);
+    expect(policyRejected.some((r) => r.canonicalUrl?.includes("radio/clips"))).toBe(true);
+    expect(policyRejected.some((r) => r.canonicalUrl?.includes("topics/politics"))).toBe(true);
+    expect(policyRejected.some((r) => r.canonicalUrl?.includes("checkout/referral"))).toBe(true);
+  });
+
+  it("accepts valid article URLs and creates candidates", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    const feed = rssXml([
+      { title: "Breaking News Story With Detailed Analysis Today", link: "https://example.com/news/2026/07/29/breaking-news-story-with-detailed-analysis", pubDate: freshDate().toISOString() },
+    ]);
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(feed);
+      return makeResponse("", false);
+    });
+
+    const result = await ingestSource("src-1");
+
+    expect(result.candidates.length).toBeGreaterThanOrEqual(1);
+    expect(result.skipSummary.urlPolicyRejected).toBeFalsy();
+  });
+
+  it("rejects non-article URLs while still accepting valid article URLs in the same feed", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    const feed = rssXml([
+      { title: "Valid News Article With Enough Detail", link: "https://example.com/news/2026/07/29/valid-news-article-with-enough-detail", pubDate: freshDate().toISOString() },
+      { title: "Radio Clip", link: "https://example.com/radio/clips/999999", pubDate: freshDate().toISOString() },
+      { title: "Podcast Episode", link: "https://example.com/podcast/latest-episode", pubDate: freshDate().toISOString() },
+    ]);
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(feed);
+      return makeResponse("", false);
+    });
+
+    const result = await ingestSource("src-1");
+
+    expect(result.candidates.length).toBe(1);
+    expect(result.candidates[0]!.canonicalUrl).toContain("valid-news-article");
+    expect(result.skipSummary.urlPolicyRejected).toBe(2);
+    const policyRejected = result.rejectedItems.filter((r) => r.reason === "url_policy_rejected");
+    expect(policyRejected).toHaveLength(2);
+  });
+
+  it("does not reject article URLs containing generic segments like /news/", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    const feed = rssXml([
+      { title: "Breaking Political News With Detailed Coverage", link: "https://example.com/news/2026/07/29/breaking-political-news-with-detailed-coverage", pubDate: freshDate().toISOString() },
+      { title: "Sports News Article Long Enough Title", link: "https://example.com/sport/gaa/match-report-long-title-here", pubDate: freshDate().toISOString() },
+    ]);
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(feed);
+      return makeResponse("", false);
+    });
+
+    const result = await ingestSource("src-1");
+
+    expect(result.candidates.length).toBe(2);
+    expect(result.skipSummary.urlPolicyRejected).toBeFalsy();
+  });
+});

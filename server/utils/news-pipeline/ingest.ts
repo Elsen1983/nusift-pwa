@@ -20,6 +20,7 @@ import { emptyTaxonomyEvidence, nonNullish, serializeDiscoveryPayload, validateD
 import { buildFeedUrlCandidates } from "./import-rss";
 import { discoverFeedForUrl, hasQueryScopedCategoryTokens } from "./feed-discovery";
 import { resolveHeadlessMarkersByAgent1Rss } from "./agent1-rss-cleanup";
+import { classifyArticleUrl } from "./article-url-policy";
 
 type ParsedFeedItem = {
   title: string;
@@ -1610,6 +1611,21 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       }
 
       const canonicalUrl = entry.canonicalUrl;
+
+      // ── Article URL policy: reject non-article URLs early ──
+      const urlPolicy = classifyArticleUrl(canonicalUrl);
+      if (!urlPolicy.accepted) {
+        skipSummary.urlPolicyRejected = (skipSummary.urlPolicyRejected || 0) + 1;
+        pushRejectedItem(rejectedItems, {
+          reason: "url_policy_rejected",
+          rawLink,
+          canonicalUrl,
+          title: item.title || null,
+          publishedAt: null,
+        });
+        continue;
+      }
+
       if (
         category?.pathUrl &&
         !isUsingDedicatedCategoryFeed &&
@@ -1833,7 +1849,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       categoryId,
       status: "SOURCE_FETCH_COMPLETED",
       executionTimeMs: Date.now() - startedAt,
-      errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skipSummary.emptyLink}, skippedOutOfScope=${skipSummary.outOfScope}, skippedAlreadySeen=${skipSummary.alreadySeenFeedItem}, skippedStale=${skipSummary.staleOrMissingPublishedAt}, rssStaleSkipped=${skipSummary.rssStaleSkipped}, skippedHtmlNonArticle=${skipSummary.htmlFallbackNonArticle}, skippedHtmlStale=${skipSummary.htmlFallbackStale}.`,
+      errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skipSummary.emptyLink}, skippedOutOfScope=${skipSummary.outOfScope}, skippedAlreadySeen=${skipSummary.alreadySeenFeedItem}, skippedStale=${skipSummary.staleOrMissingPublishedAt}, rssStaleSkipped=${skipSummary.rssStaleSkipped}, skippedHtmlNonArticle=${skipSummary.htmlFallbackNonArticle}, skippedHtmlStale=${skipSummary.htmlFallbackStale}${skipSummary.urlPolicyRejected ? `, urlPolicyRejected=${skipSummary.urlPolicyRejected}` : ''}.`,
     });
 
     return {

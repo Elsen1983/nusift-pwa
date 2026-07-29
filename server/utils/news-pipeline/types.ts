@@ -303,7 +303,8 @@ export interface IngestRejectedItem {
     | "already_seen_feed_item"
     | "html_fallback_non_article"
     | "html_fallback_stale"
-    | "discovery_profile_denied_path";
+    | "discovery_profile_denied_path"
+    | "url_policy_rejected";
   rawLink?: string | null;
   canonicalUrl?: string | null;
   title?: string | null;
@@ -326,6 +327,8 @@ export interface IngestSkipSummary {
   staleMissingPublishedAt?: number;
   /** Rejected because publishedAt exists but could not be parsed. */
   staleInvalidPublishedAt?: number;
+  /** Rejected by article URL policy (non-article URL: media clip, topic page, etc.). */
+  urlPolicyRejected?: number;
 }
 
 export type ScopeMatch = "exact" | "probable" | "generic" | "unrelated";

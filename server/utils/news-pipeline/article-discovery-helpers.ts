@@ -16,6 +16,7 @@ import {
   isWithinArticleRetentionWindow,
   getArticleRetentionCutoff,
 } from "./article-retention-policy";
+import { isLikelyArticleUrl } from "./article-url-policy";
 
 const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
 
@@ -273,6 +274,9 @@ export function filterSitemapArticleUrls(
 
       // Block utility paths
       if (BLOCKED_UTILITY_PATTERNS.some(({ pattern }) => pattern.test(path))) return false;
+
+      // Apply article URL policy for non-article URLs (media clips, topics, etc.)
+      if (!isLikelyArticleUrl(entry.url)) return false;
 
       // Category scope filter: when a category path is provided, only keep
       // entries that live under that path. Avoids unnecessary detail fetches
@@ -1183,11 +1187,26 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
 
   // Block utility paths on BOTH the article URL and the canonical URL so that
   // a canonical override cannot bypass utility-path rejection.
+  // Also apply the shared article URL policy to reject media clips, topic pages,
+  // checkout pages, and other non-article URLs that slip through BLOCKED_UTILITY_PATTERNS.
   if (!canonicalUrl || isBlockedDiscoveryPath(canonicalUrl) || isBlockedDiscoveryPath(articleUrl)) {
     return {
       accepted: false,
       candidate: null,
       outcome: makeOutcome(articleUrl, sourcePageUrl, "rejected_utility_path", { canonicalUrl, title }),
+    };
+  }
+  // Apply URL policy on BOTH the article URL and the canonical URL so that
+  // a canonical override cannot bypass non-article URL rejection.
+  if (!isLikelyArticleUrl(articleUrl) || (canonicalUrl !== articleUrl && !isLikelyArticleUrl(canonicalUrl))) {
+    return {
+      accepted: false,
+      candidate: null,
+      outcome: makeOutcome(articleUrl, sourcePageUrl, "rejected_utility_path", {
+        canonicalUrl,
+        title,
+        reason: "url_policy_rejected",
+      }),
     };
   }
 

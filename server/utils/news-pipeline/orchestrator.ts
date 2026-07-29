@@ -373,7 +373,16 @@ export async function runAgent1Batch(input?: {
       break;
     }
 
+    const targetStartedAt = Date.now();
     try {
+      await logAgentScan({
+        sourceId: target.sourceId,
+        categoryId: target.categoryId || undefined,
+        status: "A1_TARGET_STARTED",
+        executionTimeMs: 0,
+        errorLog: `Agent 1 target started. runId=${pipelineRun.id}, position=${i + 1}/${resolvedTargets.length}.`,
+      });
+
       const result = await ingestSource(target.sourceId, target.categoryId || undefined);
       candidatesFound += result.candidates.length;
       await persistPipelineArtifact({
@@ -414,9 +423,23 @@ export async function runAgent1Batch(input?: {
           Boolean(result.feedUrl) && result.feedFormat !== "html_fallback",
       });
       processed += 1;
-    } catch {
+      await logAgentScan({
+        sourceId: target.sourceId,
+        categoryId: target.categoryId || undefined,
+        status: "A1_TARGET_FINISHED",
+        executionTimeMs: Date.now() - targetStartedAt,
+        errorLog: `Agent 1 target finished. runId=${pipelineRun.id}, position=${i + 1}/${resolvedTargets.length}, candidates=${result.candidates.length}, inserted=${persisted.inserted}, skipped=${persisted.skipped}, failed=${persisted.failed + result.failed}.`,
+      });
+    } catch (error: any) {
       failed += 1;
       processed += 1;
+      await logAgentScan({
+        sourceId: target.sourceId,
+        categoryId: target.categoryId || undefined,
+        status: "A1_TARGET_FAILED",
+        executionTimeMs: Date.now() - targetStartedAt,
+        errorLog: `Agent 1 target failed. runId=${pipelineRun.id}, position=${i + 1}/${resolvedTargets.length}, error=${String(error?.message || error).slice(0, 300)}.`,
+      });
     }
   }
 

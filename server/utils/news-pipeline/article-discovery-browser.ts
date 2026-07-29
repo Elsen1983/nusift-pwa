@@ -34,7 +34,7 @@ import { normalizeUrl } from "./text";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const BROWSER_USER_AGENT =
+export const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -515,6 +515,11 @@ function scoreAndFilterBrowserLinks(
       continue;
     }
 
+    // Note: URL policy check (isLikelyArticleUrl) is applied downstream in
+    // evaluateArticleLinkCandidateFromExtractedMetadata, so we don't duplicate
+    // it here. This preserves specific rejection reasons (listing_page,
+    // out_of_category_scope) instead of collapsing them into url_policy_rejected.
+
     if (normalizedUrl === normalizeUrl(pageUrl) || isSameListingPath(raw.url, pageUrl)) {
       const entry = makeAuditEntry(true, "listing_page", { score: 0, reasons: ["listing_page"] });
       rejectedLinks.push(entry);
@@ -658,7 +663,7 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function launchBrowser(): Promise<{ browser: any | null; blockedReason?: string }> {
+export async function launchBrowser(): Promise<{ browser: any | null; blockedReason?: string }> {
   const errors: string[] = [];
 
   if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {

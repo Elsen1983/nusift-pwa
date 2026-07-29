@@ -85,6 +85,7 @@ describe("outcomeKindToArtifact", () => {
       "CANONICAL_MISMATCH",
       "LOW_CONTENT_QUALITY",
       "UNSUPPORTED_STRUCTURE",
+      "HTTP_ACCESS_BLOCKED",
     ] as const) {
       expect(outcomeKindToArtifact(kind)).toEqual({
         artifactType: "article_enrichment_rejection",
@@ -140,6 +141,39 @@ describe("buildArticleEnrichmentUpdate", () => {
       }),
     ) as Record<string, unknown>;
     expect(failed.enrichmentStatus).toBe("ENRICHMENT_FAILED");
+  });
+
+  it("persists blocking metadata in the row summary for progress cooldown checks", async () => {
+    const { buildArticleEnrichmentUpdate } = await import("./enrichment-persist");
+    const outcome = buildFailureOutcome({
+      articleId: 1,
+      provenance: baseProvenance,
+      reason: { code: "UNKNOWN", detail: "[http_error] HTTP 429", httpStatus: 429 },
+      retryable: false,
+    });
+    outcome.browserFallback = {
+      attempted: true,
+      succeeded: false,
+      staticRejectedReason: "http_error",
+      staticMethod: "http-dom",
+      method: "browser-dom",
+      rejectedReason: "http_error",
+      browserRejectedReason: "http_error",
+      statusCode: 429,
+      runtimeUnavailable: false,
+      rateLimited: true,
+      confidence: null,
+      browserDiagnostics: null,
+    };
+
+    const update = buildArticleEnrichmentUpdate(outcome) as Record<string, unknown>;
+    const summary = asObj(update.enrichmentOutcome);
+    const browserFallback = asObj(summary.browserFallback);
+
+    expect(summary.rejectionHttpStatus).toBe(429);
+    expect(summary.rejectionDetail).toBe("[http_error] HTTP 429");
+    expect(browserFallback.rateLimited).toBe(true);
+    expect(browserFallback.statusCode).toBe(429);
   });
 });
 
@@ -299,6 +333,7 @@ describe("buildEnrichmentRunSummary", () => {
             CANONICAL_MISMATCH: 0,
             LOW_CONTENT_QUALITY: 0,
             UNSUPPORTED_STRUCTURE: 0,
+            HTTP_ACCESS_BLOCKED: 0,
           },
           artifactIds: ["a", "b"],
         },

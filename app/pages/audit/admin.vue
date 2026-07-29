@@ -47,7 +47,7 @@
         v-else
         class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4 space-y-5"
       >
-        <div v-if="showFullDevTools">
+        <div v-if="false && showFullDevTools">
           <div class="flex items-center justify-between gap-3">
             <div>
               <h3 class="font-headline text-sm font-bold text-on-surface">
@@ -110,7 +110,7 @@
           </div>
         </div>
 
-        <div class="flex flex-col gap-3 rounded-xl border border-outline-variant/20 bg-surface-container px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div v-if="false" class="flex flex-col gap-3 rounded-xl border border-outline-variant/20 bg-surface-container px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
               <h2 class="font-headline text-sm font-bold text-on-surface">
@@ -162,17 +162,106 @@
             >
               {{ isEnrichingExistingArticles ? "Enriching..." : "Enrich existing articles" }}
             </button>
+            <button
+              v-if="canRunManualPipeline"
+              @click="runAgent3Enrichment"
+              :disabled="isAgent3Running"
+              class="rounded-lg border border-violet-500/20 bg-violet-500/10 px-4 py-2 text-sm font-bold text-violet-100 transition-colors hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ isAgent3Running ? "Extracting..." : "Run Agent 3 enrichment" }}
+            </button>
+            <!-- Agent 3 advanced controls -->
+            <div v-if="canRunManualPipeline" class="flex flex-wrap items-center gap-3 text-[11px] text-on-surface-variant">
+              <label class="flex items-center gap-1">
+                <select v-model.number="agent3MaxArticles" class="rounded border border-outline-variant/30 bg-surface-container px-1.5 py-0.5 text-[11px]">
+                  <option :value="10">10</option>
+                  <option :value="25">25</option>
+                  <option :value="50">50</option>
+                </select>
+                <span>max</span>
+              </label>
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input v-model="agent3IncludeEnriched" type="checkbox" class="accent-violet-400" />
+                <span>include enriched</span>
+              </label>
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input v-model="agent3ForceReprocess" type="checkbox" class="accent-violet-400" />
+                <span>force reprocess</span>
+              </label>
+              <span v-if="agent3IncludeEnriched || agent3ForceReprocess" class="text-amber-300 text-[10px]">⚠ reprocessing mode</span>
+            </div>
+            <!-- Phase 3: Browser fallback controls -->
+            <div v-if="canRunManualPipeline" class="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-on-surface-variant">
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input v-model="agent3BrowserFallback" type="checkbox" class="accent-sky-400" />
+                <span class="font-medium">browser fallback</span>
+              </label>
+              <label v-if="agent3BrowserFallback" class="flex items-center gap-1">
+                <select v-model.number="agent3BrowserFallbackMaxAttempts" class="rounded border border-outline-variant/30 bg-surface-container px-1.5 py-0.5 text-[11px]">
+                  <option :value="1">1</option>
+                  <option :value="3">3</option>
+                  <option :value="5">5</option>
+                  <option :value="10">10</option>
+                </select>
+                <span>max attempts</span>
+              </label>
+              <label v-if="agent3BrowserFallback" class="flex items-center gap-1">
+                <select v-model.number="agent3BrowserTimeoutMs" class="rounded border border-outline-variant/30 bg-surface-container px-1.5 py-0.5 text-[11px]">
+                  <option :value="15000">15s</option>
+                  <option :value="25000">25s</option>
+                  <option :value="35000">35s</option>
+                </select>
+              <span>timeout</span>
+            </label>
+            <label class="flex items-center gap-1">
+              <select v-model.number="agent3MaxArticlesPerSource" class="rounded border border-outline-variant/30 bg-surface-container px-1.5 py-0.5 text-[11px]">
+                <option :value="3">3</option>
+                <option :value="5">5</option>
+                <option :value="8">8</option>
+                <option :value="10">10</option>
+                <option :value="15">15</option>
+              </select>
+              <span>per source</span>
+            </label>
+          </div>
+            <p v-if="agent3BrowserFallback" class="mt-1 w-full text-[10px] text-amber-300/80">
+              ⚠ Browser fallback is slower and may hit site rate limits. Use small batches first.
+            </p>
+            <p class="mt-1 w-full text-[10px] text-on-surface-variant/60">
+              Testing mode: reprocesses already enriched articles and only overwrites bodyText when the new extraction is materially better.
+            </p>
           </div>
         </div>
 
-        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
+        <details v-if="showFullDevTools" open class="rounded-2xl border border-outline-variant/20 bg-surface-container-high/60 px-4 py-3">
+          <summary class="cursor-pointer select-none font-headline text-sm font-bold text-on-surface">
+            Agent 1 - RSS ingest
+          </summary>
+          <div class="mt-3 rounded-xl border border-cyan-500/15 bg-cyan-500/5 px-4 py-3">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 class="font-headline text-sm font-bold text-on-surface">Agent 1 controls</h3>
+                <p class="mt-1 text-xs text-on-surface-variant">Run the next bounded RSS ingest batch.</p>
+              </div>
+              <button
+                v-if="canRunManualPipeline"
+                @click="runManualPipeline"
+                :disabled="isPipelineRunning || !canRunManualPipeline"
+                class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {{ isPipelineRunning ? "Running..." : "Run Agent 1 batch" }}
+              </button>
+            </div>
+          </div>
+
+        <div class="mt-4 border-t border-outline-variant/20 pt-4">
           <div class="flex items-center justify-between gap-3">
             <div>
               <h3 class="font-headline text-sm font-bold text-on-surface">
                 Agent 1 RSS ingest summary
               </h3>
               <p class="mt-1 text-xs text-on-surface-variant">
-                Latest Agent 1 run outcome and reviewed source/category results.
+                Latest-run only: Agent 1 outcome and reviewed source/category results from the most recent Agent 1 pipeline run.
               </p>
             </div>
             <button
@@ -243,6 +332,7 @@
                     <span>loaded articles: <strong class="text-emerald-300">{{ item.inserted }}</strong></span>
                     <span>candidates: <strong>{{ item.candidates }}</strong></span>
                     <span>skipped: <strong>{{ item.skipped }}</strong></span>
+                    <span v-if="(item.urlPolicyRejected ?? 0) > 0" class="text-amber-300">non-article URL: <strong>{{ item.urlPolicyRejected }}</strong></span>
                   </div>
                   <p v-else class="mt-1 line-clamp-2 text-[10px] text-rose-100/80">
                     {{ item.failureReason }}
@@ -305,8 +395,42 @@
             </div>
           </div>
         </div>
+        </details>
 
         <!-- Agent 2 progress panel (page-load state) -->
+        <details v-if="showFullDevTools" open class="rounded-2xl border border-outline-variant/20 bg-surface-container-high/60 px-4 py-3">
+          <summary class="cursor-pointer select-none font-headline text-sm font-bold text-on-surface">
+            Agent 2 - Discovery and headless queue
+          </summary>
+          <div class="mt-3 rounded-xl border border-cyan-500/15 bg-cyan-500/5 px-4 py-3">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 class="font-headline text-sm font-bold text-on-surface">Agent 2 controls</h3>
+                <p class="mt-1 text-xs text-on-surface-variant">Run static discovery after Agent 1 batches are complete.</p>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button
+                  @click="runArticleDiscovery"
+                  :disabled="isAgent2BatchDisabled"
+                  :title="agent2BatchDisabledReason || 'Run the next bounded Agent 2 discovery batch.'"
+                  class="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm font-bold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {{ isArticleDiscoveryRunning ? "Discovering..." : "Run Agent 2 batch" }}
+                </button>
+                <button
+                  v-if="canRunManualPipeline"
+                  @click="runHardCaseQueue"
+                  :disabled="isHardCaseQueueRunning"
+                  class="rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-2 text-sm font-bold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {{ isHardCaseQueueRunning ? "Running..." : "Run hard-case queue" }}
+                </button>
+                <p v-if="agent2BatchDisabledReason" class="basis-full text-[11px] font-medium text-amber-200">
+                  Agent 2 batch unavailable: {{ agent2BatchDisabledReason }}
+                </p>
+              </div>
+            </div>
+          </div>
         <div
           v-if="showFullDevTools && (agent2Progress != null || agent2ProgressLoading)"
           class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4"
@@ -358,8 +482,7 @@
             </div>
           </div>
         </div>
-
-        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
+        <div class="mt-4 border-t border-outline-variant/20 pt-4">
           <div class="flex items-center justify-between gap-3">
             <div>
               <h3 class="font-headline text-sm font-bold text-on-surface">
@@ -1141,6 +1264,422 @@
           </div>
         </div>
 
+        </details>
+
+        <details v-if="showFullDevTools" open class="rounded-2xl border border-violet-500/20 bg-surface-container-high/60 px-4 py-3">
+          <summary class="cursor-pointer select-none font-headline text-sm font-bold text-on-surface">
+            Agent 3 - Article content extraction
+          </summary>
+          <div class="mt-3 rounded-xl border border-violet-500/15 bg-violet-500/5 px-4 py-3">
+            <div class="flex flex-col gap-3">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 class="font-headline text-sm font-bold text-on-surface">Agent 3 controls</h3>
+                  <p class="mt-1 text-xs text-on-surface-variant">Extract article body text and enrichment fields for Agent 2 articles.</p>
+                </div>
+                <button
+                  v-if="canRunManualPipeline"
+                  @click="runAgent3Enrichment"
+                  :disabled="isAgent3Running"
+                  class="rounded-lg border border-violet-500/20 bg-violet-500/10 px-4 py-2 text-sm font-bold text-violet-100 transition-colors hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {{ isAgent3Running ? "Extracting..." : "Run Agent 3 enrichment" }}
+                </button>
+              </div>
+              <div v-if="canRunManualPipeline" class="flex flex-wrap items-center gap-3 text-[11px] text-on-surface-variant">
+                <label class="flex items-center gap-1">
+                  <select v-model.number="agent3MaxArticles" class="rounded border border-outline-variant/30 bg-surface-container px-1.5 py-0.5 text-[11px]">
+                    <option :value="10">10</option>
+                    <option :value="25">25</option>
+                    <option :value="50">50</option>
+                  </select>
+                  <span>max</span>
+                </label>
+                <label class="flex items-center gap-1 cursor-pointer">
+                  <input v-model="agent3IncludeEnriched" type="checkbox" class="accent-violet-400" />
+                  <span>include enriched</span>
+                </label>
+                <label class="flex items-center gap-1 cursor-pointer">
+                  <input v-model="agent3ForceReprocess" type="checkbox" class="accent-violet-400" />
+                  <span>force reprocess</span>
+                </label>
+                <label class="flex items-center gap-1 cursor-pointer">
+                  <input v-model="agent3BrowserFallback" type="checkbox" class="accent-sky-400" />
+                  <span class="font-medium">browser fallback</span>
+                </label>
+                <label v-if="agent3BrowserFallback" class="flex items-center gap-1">
+                  <select v-model.number="agent3BrowserFallbackMaxAttempts" class="rounded border border-outline-variant/30 bg-surface-container px-1.5 py-0.5 text-[11px]">
+                    <option :value="1">1</option>
+                    <option :value="3">3</option>
+                    <option :value="5">5</option>
+                    <option :value="10">10</option>
+                  </select>
+                  <span>max attempts</span>
+                </label>
+                <label v-if="agent3BrowserFallback" class="flex items-center gap-1">
+                  <select v-model.number="agent3BrowserTimeoutMs" class="rounded border border-outline-variant/30 bg-surface-container px-1.5 py-0.5 text-[11px]">
+                    <option :value="15000">15s</option>
+                    <option :value="25000">25s</option>
+                    <option :value="35000">35s</option>
+                  </select>
+                  <span>timeout</span>
+                </label>
+                <label class="flex items-center gap-1">
+                  <select v-model.number="agent3MaxArticlesPerSource" class="rounded border border-outline-variant/30 bg-surface-container px-1.5 py-0.5 text-[11px]">
+                    <option :value="3">3</option>
+                    <option :value="5">5</option>
+                    <option :value="8">8</option>
+                    <option :value="10">10</option>
+                    <option :value="15">15</option>
+                  </select>
+                  <span>per source</span>
+                </label>
+              </div>
+              <p class="text-[10px] text-on-surface-variant/60">
+                Testing mode can include already enriched articles and only overwrites bodyText when the new extraction is materially better.
+              </p>
+            </div>
+          </div>
+
+        <!-- Agent 3 Enrichment Summary panel -->
+        <div
+          v-if="showFullDevTools && agent3Summary"
+          class="rounded-2xl border border-violet-500/20 bg-surface-container-high px-5 py-4"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Agent 3 Enrichment Summary
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Latest Agent 3 article content extraction run result.
+              </p>
+            </div>
+          </div>
+          <div class="mt-3 rounded-xl border border-violet-500/15 bg-surface-container px-3 py-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span
+                class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                :class="(agent3Summary.systemPersistFailed ?? 0) > 0 ? 'bg-rose-500/15 text-rose-200' : (agent3Summary.rejected ?? 0) > 0 ? 'bg-amber-500/15 text-amber-200' : 'bg-emerald-500/15 text-emerald-200'"
+              >
+                {{ (agent3Summary.systemPersistFailed ?? 0) > 0 ? 'completed with system failures' : (agent3Summary.rejected ?? 0) > 0 ? 'completed with extraction rejections' : 'completed' }}
+              </span>
+              <span v-if="agent3Summary.pipelineRunId" class="text-[10px] text-on-surface-variant">
+                run: {{ agent3Summary.pipelineRunId.slice(0, 8) }}...
+              </span>
+            </div>
+            <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-on-surface-variant">
+              <span>processed: <strong>{{ agent3Summary.articleCount }}</strong></span>
+              <span>enriched: <strong class="text-emerald-300">{{ agent3Summary.successfullyEnriched ?? agent3Summary.byKind?.SUCCESS ?? 0 }}</strong></span>
+              <span>rejected: <strong :class="(agent3Summary.rejected ?? agent3Summary.failed) > 0 ? 'text-rose-300' : 'text-emerald-300'">{{ agent3Summary.rejected ?? agent3Summary.failed }}</strong></span>
+              <span>persisted: <strong>{{ agent3Summary.persistedOutcomes ?? agent3Summary.persisted }}</strong></span>
+              <span v-if="(agent3Summary.systemPersistFailed ?? 0) > 0" class="text-rose-300">sys-fail: <strong>{{ agent3Summary.systemPersistFailed }}</strong></span>
+              <span>artifacts: <strong>{{ agent3Summary.artifactCount }}</strong></span>
+            </div>
+            <div v-if="agent3Summary.sourceCooldowns && agent3Summary.sourceCooldowns.length > 0" class="mt-2 rounded-lg border border-rose-500/15 bg-rose-500/5 px-2.5 py-1.5">
+              <p class="text-[10px] font-bold uppercase tracking-wider text-rose-300 mb-1">Source Cooldowns</p>
+              <div class="space-y-1">
+                <div v-for="cd in agent3Summary.sourceCooldowns" :key="cd.sourceId" class="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-on-surface-variant">
+                  <span class="font-bold text-rose-200">{{ cd.hostname }}</span>
+                  <span>reason: <strong>{{ cd.reason }}</strong></span>
+                  <span>failures: <strong>{{ cd.failureCount }}</strong></span>
+                  <span>skipped: <strong>{{ cd.skippedInRun }}</strong></span>
+                </div>
+              </div>
+            </div>
+            <div v-if="agent3Summary.browserFallbackStats && agent3Summary.browserFallbackStats.attempted > 0" class="mt-2 rounded-lg border border-sky-500/15 bg-sky-500/5 px-2.5 py-1.5">
+              <p class="text-[10px] font-bold uppercase tracking-wider text-sky-300 mb-1">Browser Fallback</p>
+              <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-on-surface-variant">
+                <span>attempted: <strong>{{ agent3Summary.browserFallbackStats.attempted }}</strong></span>
+                <span>succeeded: <strong class="text-emerald-300">{{ agent3Summary.browserFallbackStats.succeeded }}</strong></span>
+                <span>failed: <strong :class="agent3Summary.browserFallbackStats.failed > 0 ? 'text-rose-300' : ''">{{ agent3Summary.browserFallbackStats.failed }}</strong></span>
+                <span v-if="agent3Summary.browserFallbackStats.runtimeUnavailable > 0" class="text-amber-300">runtime unavailable: <strong>{{ agent3Summary.browserFallbackStats.runtimeUnavailable }}</strong></span>
+                <span v-if="agent3Summary.browserFallbackStats.rateLimited > 0" class="text-amber-300">rate limited: <strong>{{ agent3Summary.browserFallbackStats.rateLimited }}</strong></span>
+              </div>
+            </div>
+            <div v-if="agent3Summary.byKind && Object.keys(agent3Summary.byKind).length > 0" class="mt-2 flex flex-wrap gap-1.5">
+              <span
+                v-for="(count, kind) in agent3Summary.byKind"
+                :key="kind"
+                class="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                :class="kind === 'SUCCESS' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200'
+                  : kind === 'SKIPPED' ? 'border-outline-variant/20 bg-surface-container text-on-surface-variant'
+                  : 'border-rose-500/20 bg-rose-500/10 text-rose-200'"
+              >
+                {{ kind }}: {{ count }}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div
+          v-else-if="showFullDevTools && !agent3Summary"
+          class="rounded-2xl border border-outline-variant/10 bg-surface-container-high/50 px-5 py-3"
+        >
+          <p class="text-xs text-on-surface-variant/60">
+            No Agent 3 enrichment run in this admin session yet.
+          </p>
+        </div>
+
+        <!-- Agent 3 Progress panel -->
+        <div
+          v-if="showFullDevTools && (agent3Progress != null || agent3ProgressLoading)"
+          class="rounded-2xl border border-outline-variant/10 bg-surface-container-high/50 px-5 py-3 mt-2"
+        >
+          <div class="flex items-center justify-between">
+            <h4 class="text-xs font-bold text-on-surface-variant">Agent 3 Progress</h4>
+            <button
+              @click="loadAgent3Progress"
+              class="rounded border border-outline-variant/20 bg-surface-container px-2 py-0.5 text-[10px] font-bold text-on-surface-variant transition-colors hover:text-on-surface"
+            >
+              {{ agent3ProgressLoading ? 'Loading...' : 'Refresh' }}
+            </button>
+          </div>
+          <div v-if="agent3Progress" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-on-surface-variant">
+            <span>Total in scope: <strong>{{ agent3Progress.totalInScope }}</strong></span>
+            <span>Eligible now: <strong class="text-violet-300">{{ agent3Progress.eligibleNow }}</strong></span>
+            <span>Retryable now: <strong class="text-emerald-300">{{ agent3Progress.retryableNow ?? agent3Progress.eligibleNow }}</strong></span>
+            <span v-if="(agent3Progress.recentlyBlocked ?? 0) > 0" class="text-amber-300">Recently blocked: <strong>{{ agent3Progress.recentlyBlocked }}</strong></span>
+            <span v-if="(agent3Progress.nonRetryableCurrentVersionFailures ?? 0) > 0" class="text-rose-300/80">Non-retryable failures: <strong>{{ agent3Progress.nonRetryableCurrentVersionFailures }}</strong></span>
+            <span>Needs initial enrichment: <strong>{{ agent3Progress.needingInitialEnrichment }}</strong></span>
+            <span>Needs extractor reprocess: <strong class="text-amber-300">{{ agent3Progress.needsCurrentVersionReprocess }}</strong></span>
+            <span>Current version complete: <strong class="text-emerald-300">{{ agent3Progress.currentVersionComplete }}</strong></span>
+            <span>Remaining (retryable): <strong :class="agent3Progress.remainingAfterLatestRun > 0 ? 'text-violet-300' : 'text-emerald-300'">{{ agent3Progress.remainingAfterLatestRun }}</strong></span>
+          </div>
+          <p v-if="(agent3Progress?.nonRetryableCurrentVersionFailures ?? 0) > 0" class="mt-1 text-[10px] text-on-surface-variant/60">
+            Non-retryable failures were already attempted with the current extractor and will not be retried until force reprocess or extractor version changes.
+          </p>
+          <p v-if="agent3Progress?.progressTruncated" class="mt-1 text-[10px] text-amber-300">
+            ⚠ Progress count reached the safety scan limit ({{ agent3Progress.progressScanned }} scanned); remaining count may be higher.
+          </p>
+          <p v-else-if="agent3Progress?.selectedMode.includeEnriched" class="mt-1 text-[10px] text-amber-300/80">
+            Reprocess scope includes articles with stale extractor version or missing body text.
+          </p>
+          <div v-if="agent3Progress?.latestRun" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-on-surface-variant">
+            <span>Last run processed: <strong>{{ agent3Progress.latestRun.processed }}</strong></span>
+            <span>Enriched: <strong class="text-emerald-300">{{ agent3Progress.latestRun.successfullyEnriched }}</strong></span>
+            <span>Rejected: <strong :class="agent3Progress.latestRun.rejected > 0 ? 'text-rose-300' : 'text-emerald-300'">{{ agent3Progress.latestRun.rejected }}</strong></span>
+            <span v-if="agent3Progress.latestRun.durationMs != null">Duration: <strong>{{ Math.round(agent3Progress.latestRun.durationMs / 1000) }}s</strong></span>
+          </div>
+          <div v-if="agent3Progress?.latestRun?.browserFallbackStats && agent3Progress.latestRun.browserFallbackStats.attempted > 0" class="mt-1.5 rounded-lg border border-sky-500/15 bg-sky-500/5 px-2.5 py-1.5">
+            <p class="text-[10px] font-bold text-sky-300/80 mb-0.5">Browser fallback (persisted)</p>
+            <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-on-surface-variant">
+              <span>attempted: <strong>{{ agent3Progress.latestRun.browserFallbackStats.attempted }}</strong></span>
+              <span>succeeded: <strong class="text-emerald-300">{{ agent3Progress.latestRun.browserFallbackStats.succeeded }}</strong></span>
+              <span>failed: <strong :class="agent3Progress.latestRun.browserFallbackStats.failed > 0 ? 'text-rose-300' : ''">{{ agent3Progress.latestRun.browserFallbackStats.failed }}</strong></span>
+              <span v-if="agent3Progress.latestRun.browserFallbackStats.runtimeUnavailable > 0" class="text-amber-300">runtime unavail: <strong>{{ agent3Progress.latestRun.browserFallbackStats.runtimeUnavailable }}</strong></span>
+              <span v-if="agent3Progress.latestRun.browserFallbackStats.rateLimited > 0" class="text-amber-300">rate limited: <strong>{{ agent3Progress.latestRun.browserFallbackStats.rateLimited }}</strong></span>
+              <span v-if="agent3Progress.latestRun.browserFallbackStats.stoppedReason" class="text-amber-300">stopped: {{ agent3Progress.latestRun.browserFallbackStats.stoppedReason }}</span>
+            </div>
+          </div>
+          <p v-if="(agent3Progress?.recentlyBlocked ?? 0) > 0" class="mt-1 text-[10px] text-amber-300">
+            ⚠ Some failed articles are cooling down because the publisher returned 403/429 or browser fallback is temporarily unavailable.
+          </p>
+          <div v-if="agent3Progress?.latestRun?.sourceCooldowns && agent3Progress.latestRun.sourceCooldowns.length > 0" class="mt-2 rounded-lg border border-rose-500/15 bg-rose-500/5 px-2.5 py-1.5">
+            <p class="text-[10px] font-bold uppercase tracking-wider text-rose-300 mb-1">Source Cooldowns (persisted)</p>
+            <div class="space-y-0.5">
+              <div v-for="cd in agent3Progress.latestRun.sourceCooldowns" :key="cd.sourceId" class="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-on-surface-variant">
+                <span class="font-bold text-rose-200">{{ cd.hostname }}</span>
+                <span>reason: <strong>{{ cd.reason }}</strong></span>
+                <span>failures: <strong>{{ cd.failureCount }}</strong></span>
+                <span>skipped: <strong>{{ cd.skippedInRun }}</strong></span>
+              </div>
+            </div>
+          </div>
+          <p v-if="agent3Progress && agent3Progress.remainingAfterLatestRun > 0" class="mt-2 text-xs text-amber-200">
+            More Agent 3 articles remain for the current extractor version. Run Agent 3 again.
+          </p>
+          <p v-else-if="agent3Progress && agent3Progress.remainingAfterLatestRun === 0" class="mt-2 text-xs text-emerald-300">
+            All in-scope Agent 3 articles are processed with the current extractor version.
+          </p>
+        </div>
+
+        <!-- Agent 3 Rejection Diagnostics panel -->
+        <div
+          v-if="showFullDevTools"
+          class="rounded-2xl border border-rose-500/20 bg-surface-container-high px-5 py-4 mt-2"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Agent 3 rejection diagnostics
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Recent rejected article extraction outcomes from Agent 3.
+              </p>
+            </div>
+            <button
+              @click="loadAgent3RejectionDiagnostics"
+              :disabled="agent3RejectionLoading"
+              class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ agent3RejectionLoading ? 'Loading...' : 'Refresh' }}
+            </button>
+          </div>
+
+          <!-- Kind filter buttons -->
+          <div class="mt-3 flex flex-wrap items-center gap-1.5">
+            <button
+              v-for="mode in ['latest_run', 'recent_unique']"
+              :key="mode"
+              @click="agent3RejectionScope = mode; loadAgent3RejectionDiagnostics()"
+              class="rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider transition-colors"
+              :class="agent3RejectionScope === mode
+                ? 'border-violet-500/30 bg-violet-500/15 text-violet-200'
+                : 'border-outline-variant/20 bg-surface-container text-on-surface-variant hover:text-on-surface'"
+            >
+              {{ mode === 'latest_run' ? 'Latest run' : 'Recent unique' }}
+            </button>
+            <button
+              v-for="k in ['all', ...agent3RejectionKinds]"
+              :key="k"
+              @click="agent3RejectionFilter = k; loadAgent3RejectionDiagnostics()"
+              class="rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider transition-colors"
+              :class="agent3RejectionFilter === k
+                ? (k === 'HTTP_ACCESS_BLOCKED' ? 'border-amber-500/30 bg-amber-500/15 text-amber-200' : k === 'HEADLESS_REQUIRED' ? 'border-amber-500/30 bg-amber-500/15 text-amber-200' : 'border-rose-500/30 bg-rose-500/15 text-rose-200')
+                : 'border-outline-variant/20 bg-surface-container text-on-surface-variant hover:text-on-surface'"
+            >
+              {{ k === 'all' ? 'ALL' : k }}
+            </button>
+          </div>
+
+          <!-- Summary badges -->
+          <div v-if="agent3RejectionData" class="mt-2 flex flex-wrap gap-1.5">
+            <span
+              class="rounded-full border border-rose-500/20 bg-rose-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-rose-200"
+            >
+              total: {{ agent3RejectionData.summary.totalReturned }}
+            </span>
+            <span
+              v-for="(count, kind) in agent3RejectionData.summary.byKind"
+              :key="kind"
+              class="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+              :class="kind === 'HEADLESS_REQUIRED' || kind === 'HTTP_ACCESS_BLOCKED' ? 'border-amber-500/20 bg-amber-500/10 text-amber-200' : 'border-rose-500/20 bg-rose-500/10 text-rose-200'"
+            >
+              {{ kind }}: {{ count }}
+            </span>
+            <span
+              v-if="agent3RejectionData.summary.httpAccessBlocked"
+              class="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-200"
+            >
+              HTTP access blocked: {{ agent3RejectionData.summary.httpAccessBlocked }}
+            </span>
+            <span
+              class="rounded-full border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-200"
+            >
+              {{ agent3RejectionScope === 'latest_run' ? 'latest run only' : 'recent unique articles' }}
+            </span>
+          </div>
+
+          <div v-if="!agent3RejectionData && !agent3RejectionLoading" class="mt-3 text-xs text-on-surface-variant/60">
+            Click Refresh to load rejection diagnostics.
+          </div>
+          <div v-else-if="agent3RejectionLoading" class="mt-3 text-xs text-on-surface-variant">
+            Loading rejection diagnostics...
+          </div>
+          <div v-else-if="agent3RejectionData && agent3RejectionData.items.length === 0" class="mt-3 text-xs text-on-surface-variant">
+            No rejection diagnostics found.
+          </div>
+          <div v-else-if="agent3RejectionData" class="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
+            <div
+              v-for="item in agent3RejectionData.items"
+              :key="item.id"
+              class="rounded-xl border px-3 py-2"
+              :class="item.kind === 'HEADLESS_REQUIRED' || item.kind === 'HTTP_ACCESS_BLOCKED' ? 'border-amber-500/15 bg-amber-500/5' : 'border-rose-500/10 bg-rose-500/5'"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span
+                      class="rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+                      :class="item.kind === 'HEADLESS_REQUIRED' ? 'border-amber-500/20 bg-amber-500/10 text-amber-200'
+                        : item.kind === 'HTTP_ACCESS_BLOCKED' ? 'border-amber-500/20 bg-amber-500/10 text-amber-200'
+                        : item.kind === 'LOW_CONTENT_QUALITY' ? 'border-orange-500/20 bg-orange-500/10 text-orange-200'
+                        : item.kind === 'PAYWALL_BLOCKED' ? 'border-purple-500/20 bg-purple-500/10 text-purple-200'
+                        : 'border-rose-500/20 bg-rose-500/10 text-rose-200'"
+                    >
+                      {{ item.kind }}
+                    </span>
+                    <span
+                      v-if="item.httpAccessBlocked"
+                      class="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-200"
+                    >
+                      HTTP access blocked
+                    </span>
+                    <span v-if="item.articleId" class="text-[10px] text-on-surface-variant">id: {{ item.articleId }}</span>
+                    <span v-if="item.sourceId" class="text-[10px] text-on-surface-variant">src: {{ item.sourceId.slice(0, 8) }}...</span>
+                    <span v-if="item.confidence != null" class="text-[10px] text-on-surface-variant">conf: {{ item.confidence }}</span>
+                  </div>
+                  <p v-if="item.title" class="mt-1 truncate text-[11px] font-medium text-on-surface">
+                    {{ item.title }}
+                  </p>
+                  <a
+                    v-if="item.articleUrl"
+                    :href="item.articleUrl"
+                    target="_blank"
+                    rel="noopener"
+                    class="mt-0.5 block truncate text-[10px] text-cyan-400/70 hover:text-cyan-300 hover:underline"
+                  >
+                    {{ item.articleUrl.length > 80 ? item.articleUrl.slice(0, 80) + '...' : item.articleUrl }}
+                  </a>
+                  <p v-if="item.rejectedReason || item.detail" class="mt-1 line-clamp-2 text-[10px] text-on-surface-variant">
+                    {{ item.detail || item.rejectedReason }}
+                  </p>
+                  <!-- Extraction diagnostics -->
+                  <div v-if="item.diagnostics && item.diagnostics.selectedContainerSelector" class="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-on-surface-variant/80">
+                    <span v-if="item.diagnostics.selectedContainerSelector">selector: <strong class="text-violet-300">{{ item.diagnostics.selectedContainerSelector }}</strong></span>
+                    <span v-if="item.diagnostics.selectedContainerParagraphCount != null">paras: <strong>{{ item.diagnostics.selectedContainerParagraphCount }}</strong></span>
+                    <span v-if="item.diagnostics.selectedContainerTextLength != null">text: <strong>{{ item.diagnostics.selectedContainerTextLength }}</strong></span>
+                    <span v-if="item.diagnostics.candidateContainerCount != null">candidates: <strong>{{ item.diagnostics.candidateContainerCount }}</strong></span>
+                  </div>
+                  <div v-if="item.diagnostics?.bodyRejectedReason" class="mt-0.5 text-[10px] text-rose-300/80">
+                    body rejected: {{ item.diagnostics.bodyRejectedReason }}
+                  </div>
+                  <div v-if="item.diagnostics?.stoppedAtText" class="mt-0.5 text-[10px] text-amber-300/70">
+                    stopped at: "{{ item.diagnostics.stoppedAtText.slice(0, 80) }}"
+                  </div>
+                  <div v-if="item.diagnostics?.stoppedAtClassOrId" class="mt-0.5 text-[10px] text-amber-300/70">
+                    stopped class/id: {{ item.diagnostics.stoppedAtClassOrId.slice(0, 80) }}
+                  </div>
+                  <!-- Top candidates (max 3) -->
+                  <div v-if="item.diagnostics?.topCandidates && item.diagnostics.topCandidates.length > 0" class="mt-1.5">
+                    <p class="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant/60">
+                      Top candidates ({{ item.diagnostics.topCandidates.length }})
+                    </p>
+                    <div
+                      v-for="(c, ci) in item.diagnostics.topCandidates.slice(0, 3)"
+                      :key="ci"
+                      class="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px]"
+                    >
+                      <span class="text-violet-300/80">{{ c.selector || '?' }}</span>
+                      <span class="text-on-surface-variant/50">score: {{ c.score ?? '?' }}</span>
+                      <span class="text-on-surface-variant/50">paras: {{ c.paragraphCount ?? '?' }}</span>
+                      <span class="text-on-surface-variant/50">len: {{ c.textLength ?? '?' }}</span>
+                    </div>
+                  </div>
+                  <!-- Score reasons -->
+                  <div v-if="item.diagnostics?.scoreReasons && item.diagnostics.scoreReasons.length > 0" class="mt-1 flex flex-wrap gap-1">
+                    <span
+                      v-for="reason in item.diagnostics.scoreReasons.slice(0, 5)"
+                      :key="reason"
+                      class="rounded bg-surface-container-highest px-1.5 py-0.5 text-[9px] font-medium text-on-surface-variant"
+                    >
+                      {{ reason }}
+                    </span>
+                  </div>
+                </div>
+                <div class="shrink-0 text-right text-[10px] text-on-surface-variant">
+                  <div>{{ formatLogTime(item.createdAt) }}</div>
+                  <div v-if="item.extractorVersion" class="max-w-[80px] truncate text-[9px]">{{ item.extractorVersion }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        </details>
+
+
+
         <!-- Maintenance cleanup panel -->
         <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
           <div class="flex items-center justify-between gap-3">
@@ -1390,6 +1929,69 @@
           </div>
         </div>
 
+        <div v-if="showFullDevTools" class="border-t border-outline-variant/20 pt-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-headline text-sm font-bold text-on-surface">
+                Agent logs
+              </h3>
+              <p class="mt-1 text-xs text-on-surface-variant">
+                Recent backend pipeline activity.
+              </p>
+              <p class="mt-1 text-[11px] text-on-surface-variant">
+                {{ agentSourceCount }} subscribed source(s) currently eligible for pipeline runs.
+              </p>
+              <p v-if="rssReimportProgressText" class="mt-1 text-[11px] font-medium text-sky-200">
+                {{ rssReimportProgressText }}
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                @click="loadAgentLogs"
+                class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface"
+              >
+                Refresh logs
+              </button>
+              <button
+                v-if="canRunDestructiveActions"
+                @click="clearAgentLogs"
+                :disabled="isClearingLogs"
+                class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {{ isClearingLogs ? "Clearing..." : "Clear pipeline" }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="agentLogs.length === 0" class="mt-3 text-xs text-on-surface-variant">
+            No agent logs yet.
+          </div>
+
+          <div v-else class="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+            <div
+              v-for="log in agentLogs"
+              :key="log.id"
+              class="rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-2"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-xs font-bold text-on-surface">{{ log.displayStatus || log.status }}</span>
+                    <span v-if="log.sourceId" class="text-[10px] text-on-surface-variant">source: {{ log.sourceId }}</span>
+                  </div>
+                  <p class="mt-1 line-clamp-2 text-xs text-on-surface-variant">
+                    {{ log.errorLog || "No details." }}
+                  </p>
+                </div>
+                <div class="shrink-0 text-right text-[10px] text-on-surface-variant">
+                  <div>{{ formatLogTime(log.createdAt) }}</div>
+                  <div>{{ log.executionTimeMs }}ms</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
       </section>
     </main>
   </div>
@@ -1416,6 +2018,128 @@ const cleanupDeletionEnabled = ref(false);
 const canUseFullDevTools = ref(false);
 const isPipelineRunning = ref(false);
 const isEnrichingExistingArticles = ref(false);
+const isAgent3Running = ref(false);
+const agent3MaxArticles = ref(10);
+const agent3IncludeEnriched = ref(true);
+const agent3ForceReprocess = ref(true);
+const agent3BrowserFallback = ref(false);
+const agent3BrowserFallbackMaxAttempts = ref(3);
+const agent3BrowserTimeoutMs = ref(25000);
+const agent3MaxArticlesPerSource = ref(5);
+const agent3Progress = ref<{
+  eligibleNow: number;
+  recentlyBlocked?: number;
+  retryableNow?: number;
+  nonRetryableCurrentVersionFailures?: number;
+  totalInScope: number;
+  enrichedInScope: number;
+  needingInitialEnrichment: number;
+  failedRetryable: number;
+  needsCurrentVersionReprocess: number;
+  currentVersionComplete: number;
+  progressTruncated: boolean;
+  progressScanned: number;
+  selectedMode: { includeEnriched: boolean; forceReprocess: boolean; hasArticleFilter: boolean; hasSourceFilter: boolean };
+  latestRun: {
+    pipelineRunId: string | null;
+    processed: number;
+    successfullyEnriched: number;
+    rejected: number;
+    persistedOutcomes: number;
+    systemPersistFailed: number;
+    durationMs: number | null;
+    finishedAt: string | null;
+    byKind: Record<string, number>;
+    browserFallbackStats?: {
+      enabled: boolean;
+      attempted: number;
+      succeeded: number;
+      failed: number;
+      runtimeUnavailable: number;
+      rateLimited: number;
+      stoppedReason: string | null;
+    } | null;
+    optionsUsed?: {
+      browserFallback: boolean;
+      browserFallbackMaxAttempts: number;
+      browserTimeoutMs: number;
+      includeEnriched: boolean;
+      forceReprocess: boolean;
+      maxArticles: number;
+      maxArticlesPerSource: number;
+    } | null;
+    sourceCooldowns?: Array<{ sourceId: string; hostname: string; reason: string; failureCount: number; skippedInRun: number }> | null;
+  } | null;
+  remainingAfterLatestRun: number;
+} | null>(null);
+const agent3ProgressLoading = ref(false);
+const agent3RejectionLoading = ref(false);
+const agent3RejectionFilter = ref<string>("all");
+const agent3RejectionScope = ref<string>("latest_run");
+const agent3RejectionKinds = ["LOW_CONTENT_QUALITY", "UNSUPPORTED_STRUCTURE", "HTTP_ACCESS_BLOCKED", "HEADLESS_REQUIRED", "PAYWALL_BLOCKED", "RETRYABLE_FAILURE", "CANONICAL_MISMATCH"];
+const agent3RejectionData = ref<{
+  ok: boolean;
+  summary: {
+    totalReturned: number;
+    byKind: Record<string, number>;
+    byHostname?: Record<string, number>;
+    httpAccessBlocked?: number;
+    latestOnly?: boolean;
+  };
+  items: Array<{
+    id: string;
+    createdAt: string;
+    pipelineRunId: string | null;
+    articleId: number | null;
+    title: string | null;
+    articleUrl: string | null;
+    sourceId: string | null;
+    categoryId: string | null;
+    kind: string;
+    rejectedReason: string | null;
+    detail: string | null;
+    confidence: number | null;
+    extractorVersion: string | null;
+    httpAccessBlocked: boolean;
+    diagnostics: {
+      selectedContainerSelector: string | null;
+      selectedContainerScore: number | null;
+      selectedContainerParagraphCount: number | null;
+      selectedContainerTextLength: number | null;
+      candidateContainerCount: number | null;
+      bodyRejectedReason: string | null;
+      scoreReasons: string[];
+      bodySource: string | null;
+      linkTextRatio: number | null;
+      boilerplatePenalty: number | null;
+      topCandidates: Array<{
+        selector: string | null;
+        score: number | null;
+        paragraphCount: number | null;
+        textLength: number | null;
+        reasons: string[];
+      }>;
+      stoppedAtText: string | null;
+      stoppedAtClassOrId: string | null;
+      excludedBlockCount: number | null;
+    };
+  }>;
+} | null>(null);
+const agent3Summary = ref<{
+  pipelineRunId: string;
+  articleCount: number;
+  persisted: number;
+  failed: number;
+  byKind: Record<string, number>;
+  artifactCount: number;
+  optionsUsed?: { includeEnriched: boolean; forceReprocess: boolean; browserFallback?: boolean };
+  browserFallbackStats?: { attempted: number; succeeded: number; failed: number; runtimeUnavailable: number; rateLimited: number } | null;
+  sourceCooldowns?: Array<{ sourceId: string; hostname: string; reason: string; failureCount: number; skippedInRun: number }> | null;
+  successfullyEnriched?: number;
+  rejected?: number;
+  persistedOutcomes?: number;
+  systemPersistFailed?: number;
+} | null>(null);
 const isArticleDiscoveryRunning = ref(false);
 const isHardCaseQueueRunning = ref(false);
 const isClearingLogs = ref(false);
@@ -1633,6 +2357,7 @@ const agent1RunSummary = ref<{
     rssUrl: string | null;
     feedFormat: string | null;
     failureReason: string | null;
+    urlPolicyRejected?: number;
   }>;
 }>({ run: null, items: [] });
 
@@ -1896,6 +2621,51 @@ const loadAgent1Progress = async () => {
   }
 };
 
+const loadAgent3Progress = async () => {
+  if (!showFullDevTools.value) return;
+  agent3ProgressLoading.value = true;
+  try {
+    const params = new URLSearchParams({
+      includeEnriched: String(agent3IncludeEnriched.value),
+      forceReprocess: String(agent3ForceReprocess.value),
+    });
+    const response = await $api<{ ok: boolean; progress: typeof agent3Progress.value }>(
+      `/api/dev/agent3-progress?${params}`,
+    );
+    agent3Progress.value = response.progress || null;
+  } catch {
+    agent3Progress.value = null;
+  } finally {
+    agent3ProgressLoading.value = false;
+  }
+};
+
+const loadAgent3RejectionDiagnostics = async () => {
+  if (!showFullDevTools.value) return;
+  agent3RejectionLoading.value = true;
+  try {
+    const params = new URLSearchParams({ limit: '25' });
+    if (agent3RejectionFilter.value !== 'all') {
+      params.set('kind', agent3RejectionFilter.value);
+    }
+    const latestRunId = agent3Summary.value?.pipelineRunId || agent3Progress.value?.latestRun?.pipelineRunId || null;
+    if (agent3RejectionScope.value === "latest_run" && latestRunId) {
+      params.set("runId", latestRunId);
+      params.set("includeDuplicates", "true");
+    }
+    const response = await $api<{
+      ok: boolean;
+      summary: NonNullable<typeof agent3RejectionData.value>["summary"];
+      items: NonNullable<typeof agent3RejectionData.value>['items'];
+    }>(`/api/dev/agent3-rejection-diagnostics?${params}`);
+    agent3RejectionData.value = response as NonNullable<typeof agent3RejectionData.value>;
+  } catch {
+    agent3RejectionData.value = null;
+  } finally {
+    agent3RejectionLoading.value = false;
+  }
+};
+
 const loadHeadlessQueue = async () => {
   if (!showFullDevTools.value) return;
   headlessQueueLoading.value = true;
@@ -1988,6 +2758,8 @@ const refreshDevPanel = async () => {
       loadAgent2Progress(),
       loadAgent1Progress(),
       loadAgent2Health(),
+      loadAgent3Progress(),
+      loadAgent3RejectionDiagnostics(),
     ]);
   } catch (error) {
     console.error("Failed to refresh admin panel:", error);
@@ -2086,6 +2858,61 @@ const runArticleDiscovery = async () => {
     isArticleDiscoveryRunning.value = false;
     await refreshDevPanel();
     stopDevPanelPolling();
+  }
+};
+
+const runAgent3Enrichment = async () => {
+  if (!showAdminPipelinePanel.value || isAgent3Running.value) return;
+  isAgent3Running.value = true;
+  agent3Summary.value = null;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      pipelineRunId: string;
+      articleCount: number;
+      persisted: number;
+      failed: number;
+      byKind: Record<string, number>;
+      artifactCount: number;
+      optionsUsed?: { includeEnriched: boolean; forceReprocess: boolean; browserFallback?: boolean };
+      browserFallbackStats?: { attempted: number; succeeded: number; failed: number; runtimeUnavailable: number; rateLimited: number } | null;
+      successfullyEnriched?: number;
+      rejected?: number;
+      persistedOutcomes?: number;
+      systemPersistFailed?: number;
+      progressAfter?: typeof agent3Progress.value;
+    }>("/api/dev/run-article-enrichment", {
+      method: "POST",
+      body: {
+        maxArticles: agent3MaxArticles.value,
+        includeEnriched: agent3IncludeEnriched.value,
+        forceReprocess: agent3ForceReprocess.value,
+        browserFallback: agent3BrowserFallback.value,
+        browserFallbackMaxAttempts: agent3BrowserFallbackMaxAttempts.value,
+        browserTimeoutMs: agent3BrowserTimeoutMs.value,
+        maxArticlesPerSource: agent3MaxArticlesPerSource.value,
+      },
+    });
+    agent3Summary.value = response;
+    // Update progress from the response if available
+    if (response.progressAfter) {
+      agent3Progress.value = response.progressAfter;
+    } else {
+      // Refresh progress from server
+      await loadAgent3Progress();
+    }
+    // Refresh rejection diagnostics after Agent 3 run
+    await loadAgent3RejectionDiagnostics();
+    const enriched = response.successfullyEnriched ?? response.byKind?.SUCCESS ?? 0;
+    const rej = response.rejected ?? response.failed;
+    showToast(
+      `Agent 3: ${enriched} enriched, ${rej} rejected, ${response.articleCount} processed.`,
+      response.ok ? "success" : "error",
+    );
+  } catch (e: any) {
+    showToast(`Agent 3 enrichment failed: ${e?.data?.statusMessage || e?.message || "Unknown error"}`, "error");
+  } finally {
+    isAgent3Running.value = false;
   }
 };
 

@@ -1316,6 +1316,58 @@ describe("article-discovery-helpers", () => {
       expect(result.outcome.status).toBe("rejected_utility_path");
     });
 
+    it("rejects articleUrl when it violates URL policy (radio clip)", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://example.com/radio/clips/123456",
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_utility_path");
+      expect(result.outcome.reason).toBe("url_policy_rejected");
+    });
+
+    it("rejects articleUrl when it violates URL policy (checkout page)", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://example.com/checkout/referral",
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_utility_path");
+      expect(result.outcome.reason).toBe("url_policy_rejected");
+    });
+
+    it("rejects canonicalUrlOverride when it violates URL policy even if articleUrl looks valid", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://example.com/news/2026/07/20/valid-article-slug",
+        canonicalUrlOverride: "https://example.com/podcast/latest-episode",
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_utility_path");
+      expect(result.outcome.reason).toBe("url_policy_rejected");
+    });
+
+    it("accepts when both articleUrl and canonicalUrlOverride pass URL policy", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://example.com/news/2026/07/20/valid-article-slug",
+        canonicalUrlOverride: "https://example.com/news/2026/07/20/canonical-slug",
+      });
+
+      expect(result.accepted).toBe(true);
+    });
+
     it("uses canonicalUrlOverride for dedupe identity (same canonical from different article URLs)", async () => {
       const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
 
@@ -1572,5 +1624,73 @@ describe("article-discovery-helpers", () => {
       expect(result.rejected).toBe(true);
       expect(result.rejectionReason).toBe("invalid_url");
     });
+  });
+});
+
+describe("article URL policy integration (Agent 2 discovery)", () => {
+  it("filterSitemapArticleUrls rejects topic/media/feed URLs but keeps valid article URLs", async () => {
+    const { filterSitemapArticleUrls } = await import("./article-discovery-helpers");
+
+    const entries = [
+      { url: "https://example.com/topics/politics" },
+      { url: "https://example.com/radio/clips/123456" },
+      { url: "https://example.com/feed" },
+      { url: "https://example.com/privacy" },
+      { url: "https://example.com/news/2026/07/29/valid-article-slug" },
+      { url: "https://example.com/world/breaking-news-story-title-here" },
+    ];
+
+    const result = filterSitemapArticleUrls(entries, "https://example.com/");
+    const resultUrls = result.map((e) => e.url);
+
+    expect(resultUrls).toContain("https://example.com/news/2026/07/29/valid-article-slug");
+    expect(resultUrls).toContain("https://example.com/world/breaking-news-story-title-here");
+    expect(resultUrls).not.toContain("https://example.com/topics/politics");
+    expect(resultUrls).not.toContain("https://example.com/radio/clips/123456");
+    expect(resultUrls).not.toContain("https://example.com/feed");
+    expect(resultUrls).not.toContain("https://example.com/privacy");
+  });
+
+  it("filterSitemapArticleUrls rejects checkout/referral/account URLs", async () => {
+    const { filterSitemapArticleUrls } = await import("./article-discovery-helpers");
+
+    const entries = [
+      { url: "https://example.com/checkout/referral" },
+      { url: "https://example.com/my/discover/source" },
+      { url: "https://example.com/login" },
+      { url: "https://example.com/author/john-smith" },
+      { url: "https://example.com/news/valid-article-12345" },
+    ];
+
+    const result = filterSitemapArticleUrls(entries, "https://example.com/");
+    const resultUrls = result.map((e) => e.url);
+
+    expect(resultUrls).toContain("https://example.com/news/valid-article-12345");
+    expect(resultUrls).not.toContain("https://example.com/checkout/referral");
+    expect(resultUrls).not.toContain("https://example.com/my/discover/source");
+    expect(resultUrls).not.toContain("https://example.com/login");
+    expect(resultUrls).not.toContain("https://example.com/author/john-smith");
+  });
+
+  it("documents gap between isBlockedDiscoveryPath and URL policy", async () => {
+    const { isBlockedDiscoveryPath } = await import("./article-discovery-helpers");
+    const { isLikelyArticleUrl } = await import("./article-url-policy");
+
+    // These are caught by both BLOCKED_UTILITY_PATTERNS and URL policy
+    expect(isBlockedDiscoveryPath("https://example.com/privacy")).toBe(true);
+    expect(isBlockedDiscoveryPath("https://example.com/login")).toBe(true);
+    expect(isBlockedDiscoveryPath("https://example.com/search")).toBe(true);
+    expect(isBlockedDiscoveryPath("https://example.com/topics/politics")).toBe(true);
+
+    // These are NOT caught by BLOCKED_UTILITY_PATTERNS but ARE caught by the URL policy
+    // This documents the gap that the shared URL policy fills
+    expect(isBlockedDiscoveryPath("https://example.com/radio/clips/123456")).toBe(false);
+    expect(isLikelyArticleUrl("https://example.com/radio/clips/123456")).toBe(false);
+
+    expect(isBlockedDiscoveryPath("https://example.com/checkout/referral")).toBe(false);
+    expect(isLikelyArticleUrl("https://example.com/checkout/referral")).toBe(false);
+
+    expect(isBlockedDiscoveryPath("https://example.com/podcast/latest-episode")).toBe(false);
+    expect(isLikelyArticleUrl("https://example.com/podcast/latest-episode")).toBe(false);
   });
 });

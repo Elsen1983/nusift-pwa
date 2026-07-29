@@ -42,6 +42,8 @@ const isoCountryLocale = ("default" in enCountryLocaleJson ? enCountryLocaleJson
 
 isoCountries.registerLocale(isoCountryLocale);
 
+const FEED_DISCOVERY_HTTP_TIMEOUT_MS = 12_000;
+
 const COUNTRY_NAME_OVERRIDES: Record<string, string> = {
   "u k": "GB",
   uk: "GB",
@@ -769,6 +771,7 @@ const collectSitemapFeedCandidates = async (
   for (const target of sitemapTargets) {
     try {
       const response = await safeFetch(target, {
+        signal: AbortSignal.timeout(FEED_DISCOVERY_HTTP_TIMEOUT_MS),
         headers: {
           "User-Agent": input.userAgent,
           Accept: "text/plain, application/xml, text/xml, text/html, */*",
@@ -793,6 +796,7 @@ const collectSitemapFeedCandidates = async (
   for (const sitemapUrl of discoveredSitemapUrls) {
     try {
       const response = await safeFetch(sitemapUrl, {
+        signal: AbortSignal.timeout(FEED_DISCOVERY_HTTP_TIMEOUT_MS),
         headers: {
           "User-Agent": input.userAgent,
           Accept: "application/xml, text/xml, text/plain, */*",
@@ -2356,6 +2360,7 @@ export const verifyFeedCandidate = async (
   },
 ) => {
   const response = await safeFetch(candidateUrl, {
+    signal: AbortSignal.timeout(FEED_DISCOVERY_HTTP_TIMEOUT_MS),
     allowCrossDomainRedirects: true,
     headers: {
       "User-Agent": input.userAgent,
@@ -2443,6 +2448,7 @@ export async function discoverFeedForUrl(input: {
   try {
     const headResponse = await safeFetch(input.pageUrl, {
       method: "HEAD",
+      signal: AbortSignal.timeout(FEED_DISCOVERY_HTTP_TIMEOUT_MS),
       headers: {
         "User-Agent": input.userAgent,
         Accept: "application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, text/html,application/xhtml+xml",
@@ -2494,6 +2500,7 @@ export async function discoverFeedForUrl(input: {
   for (const candidateUrl of candidateUrls) {
     try {
       const response = await safeFetch(candidateUrl, {
+        signal: AbortSignal.timeout(FEED_DISCOVERY_HTTP_TIMEOUT_MS),
         allowCrossDomainRedirects: true,
         headers: {
           "User-Agent": input.userAgent,

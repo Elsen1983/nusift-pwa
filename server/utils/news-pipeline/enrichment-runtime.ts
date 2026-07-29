@@ -1,13 +1,19 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import {
+  AGENT3_EXTRACTOR_VERSION,
   buildFailureOutcome,
   buildHeadlessRequiredOutcome,
   buildSkippedOutcome,
   buildSuccessOutcome,
   createEnrichmentOutcome,
   type ArticleEnrichmentOutcome,
+  type ArticleFieldProvenance,
   type ArticleUpstreamProvenance,
   type EnrichmentTiming,
+  type FieldProvenanceSource,
+  type EnrichmentRejectionReason,
+  type RejectionDiagnostics,
 } from "./enrichment";
 import {
   buildEnrichmentRunSummary,
@@ -17,22 +23,30 @@ import {
 } from "./enrichment-persist";
 import { createPipelineRun } from "./artifacts";
 import { logAgentScan } from "./log";
+import {
+  extractArticleContentFromUrl,
+  type ArticleContentExtractionResult,
+  type ArticleContentExtractionFail,
+  type ExtractionDiagnostics,
+} from "./article-content-extractor";
+import {
+  extractArticleContentWithBrowser,
+  isBrowserFallbackEligibleForFailure,
+} from "./article-content-browser-extractor";
+import type { BrowserFallbackMetadata, BrowserFallbackRunStats, BrowserDiagnostics, BrowserFallbackSkippedReason } from "./enrichment";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Agent 3 — Article enrichment runtime batch path (Phase 1)
+// Agent 3 — Article enrichment runtime batch path (Phase 2)
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Wires the canonical `ArticleEnrichmentOutcome` contract into a runnable
 // batch: select eligible articles → recover precise upstream provenance from
-// Agent 1 ingest artifacts → emit attempt markers → run a controlled stub
-// extractor → persist outcomes (row summary + result artifact).
+// Agent 1 ingest artifacts → emit attempt markers → run the real HTTP
+// article content extractor → persist outcomes (row summary + result artifact).
 //
-// The real HTTP extraction crawler is Phase 2 and is intentionally NOT
-// implemented here. `stubExtractArticle` is a placeholder that exercises the
-// full persistence contract end-to-end so Phase 2 only needs to swap in the
-// real extractor. It is deliberately conservative: it SKIPS articles that are
-// already enriched and otherwise emits a SUCCESS with feed-only provenance
-// (no field overrides), so no real data is mutated destructively.
+// Phase 2: uses `extractArticleContentFromUrl` for real HTTP-based extraction
+// (canonical check, meta/DOM selectors, paywall detection, quality scoring,
+// field comparison + override). `stubExtractArticle` is retained for tests.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -43,6 +57,197 @@ import { logAgentScan } from "./log";
  */
 import { ARTICLE_RETENTION_DAYS, getArticleRetentionCutoff } from "./article-retention-policy";
 export const ENRICHMENT_FRESHNESS_DAYS = ARTICLE_RETENTION_DAYS;
+
+/**
+ * Minimum body text length for an article to be considered "usable" by Agent 3.
+ * Articles with bodyText shorter than this (but non-null) are considered stale
+ * and eligible for reprocessing when includeEnriched=true.
+ */
+export const MIN_USABLE_AGENT3_BODY_TEXT_LENGTH = 500;
+
+/**
+ * Check whether a bodyText value meets the minimum quality threshold.
+ * Returns false for null, undefined, or too-short text.
+ */
+export function hasUsableAgent3BodyText(bodyText: string | null | undefined): boolean {
+  return typeof bodyText === "string" && bodyText.trim().length >= MIN_USABLE_AGENT3_BODY_TEXT_LENGTH;
+}
+
+/**
+ * Determine whether an article needs Agent 3 reprocessing with the current extractor version.
+ *
+ * Pure helper — no DB access. Uses the same semantics as selectEnrichmentEligibleArticles
+ * and getAgent3Progress so all three stay in sync.
+ *
+ * Returns true when:
+ *  - status is INGESTED (never processed)
+ *  - status is ENRICHMENT_FAILED (previous attempt failed)
+ *  - status is ENRICHED but bodyText is missing/too short
+ *  - status is ENRICHED but enrichmentOutcome is missing
+ *  - status is ENRICHED but extractorVersion doesn't match current
+ * Returns false when:
+ *  - status is ENRICHED AND extractorVersion matches AND bodyText is usable
+ *  - status is something else (conservative: don't select unknown statuses)
+ */
+/**
+ * Cooldown windows for recently-blocked articles (cross-run retry loop prevention).
+ * Articles that failed with these blocking reasons are temporarily excluded from
+ * reselection unless forceReprocess or includeRecentlyBlocked is set.
+ */
+const HTTP_403_COOLDOWN_MS = 24 * 60 * 60 * 1000;    // 24 hours
+const HTTP_429_COOLDOWN_MS = 60 * 60 * 1000;           // 1 hour
+const BROWSER_RUNTIME_UNAVAILABLE_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Determine whether an article is "recently blocked" — its latest enrichment attempt
+ * failed with a blocking reason (HTTP 403/429, browser runtime unavailable) and the
+ * cooldown window has not yet elapsed.
+ *
+ * Only applies to ENRICHMENT_FAILED articles with the current extractor version.
+ * INGESTED articles are never "recently blocked" (they haven't been tried yet).
+ *
+ * Pure helper — no DB access.
+ */
+export function isRecentlyBlocked(
+  article: { enrichmentStatus: string | null; enrichmentOutcome?: unknown; enrichmentFinishedAt?: Date | null },
+  now: Date = new Date(),
+): boolean {
+  if (article.enrichmentStatus !== "ENRICHMENT_FAILED") return false;
+
+  const outcome = article.enrichmentOutcome as Record<string, unknown> | null | undefined;
+  if (!outcome || typeof outcome !== "object") return false;
+
+  // Must have been processed by the current extractor version
+  if (outcome.extractorVersion !== AGENT3_EXTRACTOR_VERSION) return false;
+
+  // Must have a recent enough finish time
+  const finishedAt = article.enrichmentFinishedAt;
+  if (!finishedAt) return false;
+  const elapsed = now.getTime() - finishedAt.getTime();
+  // Guard against future timestamps (clock skew)
+  if (elapsed < 0) return false;
+
+  // Check rejection details for blocking indicators
+  const rejection = outcome.rejection as Record<string, unknown> | undefined;
+  const httpStatus = typeof rejection?.httpStatus === "number"
+    ? rejection.httpStatus
+    : typeof outcome.rejectionHttpStatus === "number"
+      ? outcome.rejectionHttpStatus
+      : null;
+  const detail = typeof rejection?.detail === "string"
+    ? rejection.detail
+    : typeof outcome.rejectionDetail === "string"
+      ? outcome.rejectionDetail
+      : "";
+  const rejectionCode = typeof outcome.rejectionCode === "string" ? outcome.rejectionCode : null;
+
+  // Check browser fallback metadata
+  const bf = outcome.browserFallback as Record<string, unknown> | undefined;
+  const bfRuntimeUnavailable = bf?.runtimeUnavailable === true;
+  const bfRateLimited = bf?.rateLimited === true;
+
+  // HTTP 403 blocking: 24h cooldown
+  if (httpStatus === 403 || rejectionCode === "HTTP_403" || (rejectionCode === "HTTP_FORBIDDEN" && httpStatus !== 429) || (detail.includes("[http_error]") && detail.includes("403"))) {
+    return elapsed < HTTP_403_COOLDOWN_MS;
+  }
+
+  // HTTP 429 blocking: 1h cooldown
+  if (httpStatus === 429 || rejectionCode === "HTTP_429" || rejectionCode === "HTTP_FORBIDDEN" || (detail.includes("[http_error]") && detail.includes("429")) || bfRateLimited) {
+    return elapsed < HTTP_429_COOLDOWN_MS;
+  }
+
+  // Browser runtime unavailable: 30min cooldown
+  if (bfRuntimeUnavailable) {
+    return elapsed < BROWSER_RUNTIME_UNAVAILABLE_COOLDOWN_MS;
+  }
+
+  return false;
+}
+
+export function needsAgent3CurrentVersionReprocess(article: {
+  enrichmentStatus: string | null;
+  bodyText?: string | null;
+  enrichmentOutcome?: unknown;
+}): boolean {
+  const status = article.enrichmentStatus;
+  if (status === "INGESTED" || status === "ENRICHMENT_FAILED") return true;
+  if (status !== "ENRICHED") return false;
+
+  // ENRICHED articles: check if they need reprocess
+  if (!hasUsableAgent3BodyText(article.bodyText)) return true;
+
+  const outcome = article.enrichmentOutcome as Record<string, unknown> | null | undefined;
+  if (!outcome || typeof outcome !== "object") return true;
+
+  const version = outcome.extractorVersion;
+  if (typeof version !== "string" || version !== AGENT3_EXTRACTOR_VERSION) return true;
+
+  return false; // current version + usable bodyText → no reprocess needed
+}/**
+ * Determine whether an ENRICHMENT_FAILED article should be retried in the
+ * current Agent 3 run.
+ *
+ * Returns true for:
+ *  - INGESTED articles (not yet attempted)
+ *  - ENRICHMENT_FAILED with no outcome metadata (legacy/unknown rows)
+ *  - ENRICHMENT_FAILED with a different extractor version (version bump retry)
+ *  - ENRICHMENT_FAILED with HTTP_ACCESS_BLOCKED after cooldown expires
+ *  - ENRICHMENT_FAILED with FETCH_TIMEOUT (transient)
+ *  - ENRICHMENT_FAILED with RETRYABLE_FAILURE kind (transient)
+ *
+ * Returns false for:
+ *  - ENRICHMENT_FAILED with current extractor version + permanent failure kind
+ *    (LOW_CONTENT_QUALITY, UNSUPPORTED_STRUCTURE, PAYWALL_BLOCKED, etc.)
+ *  - ENRICHMENT_FAILED that is currently inside a cooldown window
+ *  - Non-ENRICHMENT_FAILED statuses that are not INGESTED (conservative)
+ *
+ * Pure helper — no DB access.
+ */
+export function isAgent3FailureRetryableNow(
+  article: {
+    enrichmentStatus: string | null;
+    enrichmentOutcome?: unknown;
+    enrichmentFinishedAt?: Date | null;
+  },
+  now: Date = new Date(),
+): boolean {
+  const status = article.enrichmentStatus;
+  // INGESTED articles haven't been tried — always eligible
+  if (status === "INGESTED") return true;
+  // Only ENRICHMENT_FAILED articles are subject to retry logic
+  if (status !== "ENRICHMENT_FAILED") return false;
+
+  const outcome = article.enrichmentOutcome as Record<string, unknown> | null | undefined;
+  // No outcome metadata (legacy/old rows) — allow retry
+  if (!outcome || typeof outcome !== "object") return true;
+
+  // Different extractor version — always retryable (version bump)
+  const version = typeof outcome.extractorVersion === "string" ? outcome.extractorVersion : null;
+  if (version !== AGENT3_EXTRACTOR_VERSION) return true;
+
+  // Current extractor version — check if the failure is transient/retryable
+  const kind = typeof outcome.kind === "string" ? outcome.kind : null;
+
+  // HTTP_ACCESS_BLOCKED is always retryable — cooldown exclusion is handled
+  // separately by isRecentlyBlocked/recentlyBlocked in selection and progress.
+  // This avoids double-counting in progress: eligibleNow subtracts non-retryable
+  // and retryableNow subtracts recentlyBlocked. If HTTP_ACCESS_BLOCKED were in
+  // both sets, the article would be subtracted twice.
+  if (kind === "HTTP_ACCESS_BLOCKED") {
+    return true;
+  }
+
+  // FETCH_TIMEOUT and RETRYABLE_FAILURE are transient — always retryable
+  if (kind === "RETRYABLE_FAILURE") return true;
+
+  const rejectionCode = typeof outcome.rejectionCode === "string" ? outcome.rejectionCode : null;
+  if (rejectionCode === "FETCH_TIMEOUT") return true;
+
+  // All other current-version failures are permanent
+  // (LOW_CONTENT_QUALITY, UNSUPPORTED_STRUCTURE, PAYWALL_BLOCKED,
+  //  CANONICAL_MISMATCH, HEADLESS_REQUIRED, UNKNOWN, etc.)
+  return false;
+}
 
 /**
  * Per-batch safety caps (Agent 3 dev plan §11: max concurrency / per-run limit).
@@ -67,7 +272,100 @@ type EnrichmentEligibleArticle = {
   createdAt: Date;
   enrichmentStatus: string;
   enrichmentAttemptCount: number;
+  enrichmentFinishedAt?: Date | null;
+  enrichmentOutcome?: unknown;
 };
+
+/**
+ * Options for article selection during enrichment.
+ */
+export interface EnrichmentSelectionOptions {
+  /** Include already-ENRICHED articles (for reprocessing after extractor fixes). */
+  includeEnriched?: boolean;
+  /** Include recently-blocked articles that are in cooldown (HTTP 403/429, browser unavailable). */
+  includeRecentlyBlocked?: boolean;
+  /** Force reprocess: override non-retryable failure exclusion. */
+  forceReprocess?: boolean;
+  /** Filter to specific article IDs (debug/admin rerun). Bypasses freshness cutoff. */
+  articleIds?: number[];
+  /** Filter to specific source IDs. */
+  sourceIds?: string[];
+}
+
+const ENRICHMENT_ARTICLE_SELECT = {
+  id: true,
+  sourceId: true,
+  categoryId: true,
+  canonicalUrl: true,
+  sourceUrl: true,
+  title: true,
+  bodyText: true,
+  publishedAt: true,
+  isPaywall: true,
+  createdAt: true,
+  enrichmentStatus: true,
+  enrichmentAttemptCount: true,
+  enrichmentFinishedAt: true,
+  enrichmentOutcome: true,
+} satisfies Prisma.ArticleSelect;
+
+type RecentBlockState = {
+  articleIds: ReadonlySet<number>;
+  hostnames: ReadonlySet<string>;
+};
+
+function articleHostname(article: Pick<EnrichmentEligibleArticle, "canonicalUrl" | "sourceUrl">): string {
+  const canonicalHostname = extractHostname(article.canonicalUrl);
+  if (canonicalHostname !== "unknown") return canonicalHostname;
+  return extractHostname(article.sourceUrl);
+}
+
+function isBlockedByRecentBlockState(
+  article: EnrichmentEligibleArticle,
+  state: RecentBlockState,
+): boolean {
+  if (state.articleIds.has(article.id)) return true;
+  const hostname = articleHostname(article);
+  return hostname !== "unknown" && state.hostnames.has(hostname);
+}
+
+async function scanEnrichedArticlesForSelection(
+  baseWhere: Record<string, unknown>,
+  limit: number,
+): Promise<EnrichmentEligibleArticle[]> {
+  const selected: EnrichmentEligibleArticle[] = [];
+  let scanned = 0;
+  let cursor: number | undefined;
+
+  while (selected.length < limit && scanned < PROGRESS_SCAN_SAFETY_CAP) {
+    const page = await prisma.article.findMany({
+      where: { ...baseWhere, enrichmentStatus: "ENRICHED" },
+      select: ENRICHMENT_ARTICLE_SELECT,
+      orderBy: { id: "asc" },
+      take: PROGRESS_SCAN_PAGE_SIZE,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+    });
+
+    if (!Array.isArray(page) || page.length === 0) break;
+    scanned += page.length;
+
+    for (const article of page) {
+      if (needsAgent3CurrentVersionReprocess({
+        enrichmentStatus: article.enrichmentStatus,
+        bodyText: article.bodyText,
+        enrichmentOutcome: article.enrichmentOutcome,
+      })) {
+        selected.push(article);
+        if (selected.length >= limit) break;
+      }
+    }
+
+    cursor = page[page.length - 1]!.id;
+    if (page.length < PROGRESS_SCAN_PAGE_SIZE) break;
+  }
+
+  return selected;
+}
 
 /**
  * Select articles eligible for Agent 3 enrichment (dev plan §6.2):
@@ -75,39 +373,182 @@ type EnrichmentEligibleArticle = {
  *  - at most ENRICHMENT_FRESHNESS_DAYS old
  *  - not yet successfully enriched, OR failed earlier for a retryable reason
  *
+ * When `options.includeEnriched` is true, also includes ENRICHED articles
+ * for reprocessing after extractor improvements.
+ *
+ * When `options.articleIds` is provided, bypasses the freshness cutoff
+ * (admin/debug mode: re-run specific articles regardless of age).
+ *
  * Uses the `Article_enrichmentStatus_date_idx` index added in Phase 1.
  * Capped at MAX_ARTICLES_PER_RUN per batch.
  */
+async function scanRecentBlockState(
+  baseWhere: Record<string, unknown>,
+  now: Date,
+): Promise<RecentBlockState> {
+  const articleIds = new Set<number>();
+  const hostnames = new Set<string>();
+  let cursor: number | undefined;
+  let scanned = 0;
+
+  while (scanned < PROGRESS_SCAN_SAFETY_CAP) {
+    const page = await prisma.article.findMany({
+      where: { ...baseWhere, enrichmentStatus: "ENRICHMENT_FAILED" },
+      select: {
+        id: true,
+        canonicalUrl: true,
+        sourceUrl: true,
+        enrichmentStatus: true,
+        enrichmentOutcome: true,
+        enrichmentFinishedAt: true,
+      },
+      take: PROGRESS_SCAN_PAGE_SIZE,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      orderBy: { id: "asc" },
+    });
+
+    if (!Array.isArray(page) || page.length === 0) break;
+    scanned += page.length;
+
+    for (const article of page) {
+      if (!isRecentlyBlocked(article, now)) continue;
+      articleIds.add(article.id);
+      const hostname = extractHostname(article.canonicalUrl) !== "unknown"
+        ? extractHostname(article.canonicalUrl)
+        : extractHostname(article.sourceUrl);
+      if (hostname !== "unknown") hostnames.add(hostname);
+    }
+
+    cursor = page[page.length - 1]!.id;
+    if (page.length < PROGRESS_SCAN_PAGE_SIZE) break;
+  }
+
+  return { articleIds, hostnames };
+}
+
+async function countBlockedEligibleArticles(
+  baseWhere: Record<string, unknown>,
+  includeEnriched: boolean,
+  blockState: RecentBlockState,
+): Promise<number> {
+  if (blockState.articleIds.size === 0 && blockState.hostnames.size === 0) return 0;
+
+  let count = 0;
+  let cursor: number | undefined;
+  let scanned = 0;
+  const statuses = includeEnriched
+    ? ["INGESTED", "ENRICHMENT_FAILED", "ENRICHED"]
+    : ["INGESTED", "ENRICHMENT_FAILED"];
+
+  while (scanned < PROGRESS_SCAN_SAFETY_CAP) {
+    const page = await prisma.article.findMany({
+      where: { ...baseWhere, enrichmentStatus: { in: statuses } },
+      select: ENRICHMENT_ARTICLE_SELECT,
+      take: PROGRESS_SCAN_PAGE_SIZE,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      orderBy: { id: "asc" },
+    });
+
+    if (!Array.isArray(page) || page.length === 0) break;
+    scanned += page.length;
+
+    for (const article of page) {
+      const eligible = article.enrichmentStatus === "INGESTED"
+        || article.enrichmentStatus === "ENRICHMENT_FAILED"
+        || (includeEnriched && needsAgent3CurrentVersionReprocess(article));
+      if (eligible && isBlockedByRecentBlockState(article, blockState)) count++;
+    }
+
+    cursor = page[page.length - 1]!.id;
+    if (page.length < PROGRESS_SCAN_PAGE_SIZE) break;
+  }
+
+  return count;
+}
+
 export const selectEnrichmentEligibleArticles = async (
   now: Date = new Date(),
   limit: number = MAX_ARTICLES_PER_RUN,
+  options?: EnrichmentSelectionOptions,
 ): Promise<EnrichmentEligibleArticle[]> => {
-  const cutoff = getArticleRetentionCutoff(now);
+  const includeEnriched = options?.includeEnriched ?? false;
+  const includeRecentlyBlocked = options?.includeRecentlyBlocked ?? false;
+  const articleIds = options?.articleIds;
+  const sourceIds = options?.sourceIds;
 
-  return prisma.article.findMany({
+  // When explicit articleIds are provided, bypass freshness cutoff
+  // (admin re-run mode: process specific articles regardless of age).
+  const cutoff = articleIds && articleIds.length > 0 ? undefined : getArticleRetentionCutoff(now);
+
+  // Build the where clause.
+  // When includeEnriched=true, only select ENRICHED articles that need
+  // current-version reprocess (old/missing extractor version or missing bodyText).
+  // This prevents endless reprocessing of already-current articles.
+  const where: Record<string, unknown> = {};
+
+  if (cutoff) {
+    where.date = { gte: cutoff };
+  }
+
+  if (articleIds && articleIds.length > 0) {
+    where.id = { in: articleIds };
+  }
+
+  if (sourceIds && sourceIds.length > 0) {
+    where.sourceId = { in: sourceIds };
+  }
+
+  const targetLimit = Math.min(Math.max(1, limit), MAX_ARTICLES_PER_RUN);
+  const forceReprocess = options?.forceReprocess ?? false;
+  const hasExplicitArticleIds = articleIds && articleIds.length > 0;
+  const shouldApplyRecentBlockFilter = !includeRecentlyBlocked && !forceReprocess && !hasExplicitArticleIds;
+  // Non-retryable failures are excluded unless forceReprocess or explicit articleIds
+  const shouldApplyRetryableFilter = !forceReprocess && !hasExplicitArticleIds;
+
+  const recentBlockState = shouldApplyRecentBlockFilter
+    ? await scanRecentBlockState(where, now)
+    : { articleIds: new Set<number>(), hostnames: new Set<string>() };
+
+  // Over-fetch to compensate for non-retryable exclusion, so we still fill batches.
+  const fetchLimit = shouldApplyRetryableFilter ? targetLimit * 3 : targetLimit;
+
+  const articles = await prisma.article.findMany({
     where: {
-      date: { gte: cutoff },
-      // Eligible: never attempted, or retryable failure.
-      // Already-enriched / skipped / queued-headless are excluded.
+      ...where,
       enrichmentStatus: { in: ["INGESTED", "ENRICHMENT_FAILED"] },
     },
-    select: {
-      id: true,
-      sourceId: true,
-      categoryId: true,
-      canonicalUrl: true,
-      sourceUrl: true,
-      title: true,
-      bodyText: true,
-      publishedAt: true,
-      isPaywall: true,
-      createdAt: true,
-      enrichmentStatus: true,
-      enrichmentAttemptCount: true,
-    },
+    select: ENRICHMENT_ARTICLE_SELECT,
     orderBy: [{ date: "desc" }, { id: "desc" }],
-    take: Math.min(Math.max(1, limit), MAX_ARTICLES_PER_RUN),
+    take: fetchLimit,
   });
+
+  // Filter out recently-blocked articles (cross-run retry loop prevention).
+  // Explicit articleIds bypass this filter (admin targeting specific articles).
+  let filtered = shouldApplyRecentBlockFilter
+    ? articles.filter((a) => !isBlockedByRecentBlockState(a, recentBlockState))
+    : articles;
+
+  // Filter out non-retryable current-version failures in normal runs.
+  // forceReprocess and explicit articleIds override this (admin/manual rerun).
+  if (shouldApplyRetryableFilter) {
+    filtered = filtered.filter((a) => isAgent3FailureRetryableNow(a, now));
+  }
+
+  // Trim to target limit after filtering
+  if (filtered.length > targetLimit) {
+    filtered = filtered.slice(0, targetLimit);
+  }
+
+  if (!includeEnriched || filtered.length >= targetLimit) {
+    return filtered;
+  }
+
+  const enrichedArticles = await scanEnrichedArticlesForSelection(where, targetLimit - filtered.length);
+  // Also filter recently-blocked from the enriched scan results
+  const filteredEnriched = shouldApplyRecentBlockFilter
+    ? enrichedArticles.filter((a) => !isBlockedByRecentBlockState(a, recentBlockState))
+    : enrichedArticles;
+  return [...filtered, ...filteredEnriched];
 };
 
 /**
@@ -271,8 +712,827 @@ export const recoverUpstreamProvenanceBatch = async (
   return result;
 };
 
+// ─── Phase 2: Real HTTP extractor integration ───────────────────────────────
+
 /**
- * Controlled stub extractor (Phase 1 placeholder).
+ * Map an extractor rejection reason to the enrichment rejection code.
+ * Single source of truth so the runtime never produces invalid codes.
+ */
+const extractorReasonToRejectionCode = (
+  reason: ArticleContentExtractionFail["rejectedReason"],
+): EnrichmentRejectionReason["code"] => {
+  switch (reason) {
+    case "missing_article_url":
+      return "NO_ARTICLE_URL";
+    case "fetch_failed":
+      return "FETCH_TIMEOUT";
+    case "http_error":
+      return "UNKNOWN";
+    case "non_html_response":
+      return "UNSUPPORTED_STRUCTURE";
+    case "empty_html":
+      return "LOW_CONTENT_QUALITY";
+    case "no_article_text":
+    case "too_short":
+      return "LOW_CONTENT_QUALITY";
+    case "paywall_or_blocked":
+      return "PAYWALL_BLOCKED";
+    case "stale_or_invalid":
+      return "OUTSIDE_FRESHNESS_WINDOW";
+    case "parse_error":
+      return "UNSUPPORTED_STRUCTURE";
+    default:
+      return "UNKNOWN";
+  }
+};
+
+/**
+ * Determine whether an extractor failure is retryable.
+ * Network/timeout errors are retryable; structural/content issues are not.
+ */
+const isRetryableExtractionFailure = (
+  reason: ArticleContentExtractionFail["rejectedReason"],
+): boolean => {
+  return reason === "fetch_failed";
+};
+
+/**
+ * Build a full ArticleEnrichmentOutcome from a successful extraction result.
+ * Compares extracted fields against existing article values and preserves
+ * field provenance for each touched field.
+ *
+ * When `forceReprocess` is true, uses a lower threshold for body replacement.
+ */
+const buildOutcomeFromSuccess = (
+  article: EnrichmentEligibleArticle,
+  result: Extract<ArticleContentExtractionResult, { ok: true }>,
+  provenance: ArticleUpstreamProvenance,
+  timing: EnrichmentTiming,
+  forceReprocess: boolean = false,
+): ArticleEnrichmentOutcome => {
+  const articleUrl = article.canonicalUrl || article.sourceUrl || null;
+
+  // Build field provenance for each extracted field
+  const titleProvenance = buildTitleProvenance(article.title, result.title);
+  // Only consider extracted bodyText sources, not existing-fallback.
+  const bodySource = result.diagnostics.bodySource;
+  const extractedBody = (bodySource === "dom" || bodySource === "expanded-dom" || bodySource === "readability")
+    ? result.bodyText
+    : null;
+  const bodyTextProvenance = buildBodyTextProvenance(article.bodyText, extractedBody, forceReprocess);
+  const isPaywallProvenance = buildIsPaywallProvenance(article.isPaywall, result.isPaywall);
+
+  const fields: ArticleFieldProvenance = {};
+
+  if (titleProvenance) fields.title = titleProvenance;
+
+  if (bodyTextProvenance) fields.bodyText = bodyTextProvenance;
+  // Store excerpt as separate field provenance (never as bodyText)
+  if (result.excerpt) {
+    fields.excerpt = {
+      raw: null,
+      chosenValue: result.excerpt,
+      chosenFrom: "meta" as FieldProvenanceSource,
+      overrideReason: "Extracted from meta description (excerpt only, not bodyText).",
+    };
+  }
+  if (result.imageUrl) {
+    fields.imageUrl = {
+      raw: null,
+      chosenValue: result.imageUrl,
+      chosenFrom: "meta" as FieldProvenanceSource,
+      overrideReason: "Extracted from og:image/twitter:image.",
+    };
+  }
+  if (result.author) {
+    fields.author = {
+      raw: null,
+      chosenValue: result.author,
+      chosenFrom: "meta" as FieldProvenanceSource,
+      overrideReason: "Extracted from meta/JSON-LD author.",
+    };
+  }
+  if (result.publishedAt) {
+    fields.publishedAt = {
+      raw: null,
+      chosenValue: result.publishedAt,
+      chosenFrom: "meta" as FieldProvenanceSource,
+      overrideReason: "Extracted from JSON-LD/meta datePublished.",
+    };
+  }
+  if (isPaywallProvenance) fields.isPaywall = isPaywallProvenance;
+
+  return buildSuccessOutcome({
+    articleId: article.id,
+    articleUrl,
+    provenance,
+    method: {
+      method: result.method,
+      detail: `Real HTTP extractor: ${result.qualitySignals.join(", ")}`,
+      resolvedCanonicalUrl: result.resolvedUrl,
+      redirected: result.resolvedUrl !== articleUrl,
+    },
+    timing,
+    quality: {
+      confidence: result.confidence,
+      qualityScore: Math.round(result.confidence * 100),
+      signals: result.qualitySignals,
+      bodyLength: result.bodyText?.length ?? null,
+    },
+    fields,
+  });
+};
+
+/**
+ * Build title field provenance: prefer extracted title if article has no title
+ * or if the extracted title is meaningfully different and longer.
+ */
+function buildTitleProvenance(
+  existingTitle: string,
+  extractedTitle: string | null,
+): { raw: string; chosenValue: string; chosenFrom: FieldProvenanceSource; overrideReason: string } | null {
+  if (!extractedTitle) return null;
+
+  const chosenFrom: FieldProvenanceSource =
+    !existingTitle || existingTitle.trim().length === 0 ? "meta" : "unchanged";
+  const chosenValue = chosenFrom === "meta" ? extractedTitle : existingTitle;
+
+  return {
+    raw: existingTitle,
+    chosenValue,
+    chosenFrom,
+    overrideReason:
+      chosenFrom === "meta"
+        ? "Article had no title; used extracted title."
+        : "Kept existing title from Agent 1/2 ingest.",
+  };
+}
+
+/**
+ * Build bodyText field provenance.
+ * Uses extracted body if it is better (longer, or article had no body).
+ * Does not overwrite good existing body with worse extracted content.
+ *
+ * When `forceReprocess` is true, uses a lower threshold for replacement:
+ *  - new length >= old length * 1.5
+ *  - OR new paragraph count >= old paragraph count + 3
+ *  - OR old body was lead-like/excerpt-like and new body passes full quality gate
+ */
+function buildBodyTextProvenance(
+  existingBodyText: string | null,
+  extractedBodyText: string | null,
+  forceReprocess: boolean = false,
+): { raw: string | null; chosenValue: string | null; chosenFrom: FieldProvenanceSource; overrideReason: string } | null {
+  if (!extractedBodyText) return null;
+
+  const existingLength = existingBodyText?.length ?? 0;
+  const extractedLength = extractedBodyText.length;
+  const existingParagraphs = existingBodyText ? existingBodyText.split(/\n{2,}/).filter((p) => p.trim().length > 0).length : 0;
+  const extractedParagraphs = extractedBodyText.split(/\n{2,}/).filter((p) => p.trim().length > 0).length;
+
+  let shouldUseExtracted: boolean;
+  let reason: string;
+
+  if (!existingBodyText || existingBodyText.trim().length === 0) {
+    // No existing body — always use extracted
+    shouldUseExtracted = true;
+    reason = `Extracted body (${extractedLength} chars) replaces missing existing body.`;
+  } else if (forceReprocess) {
+    // Force reprocess: materially better means
+    //  - new length >= old length * 1.5
+    //  - OR new paragraph count >= old paragraph count + 3
+    //  - OR old body is very short (< 500 chars) and new body is substantial
+    const materiallyBetter =
+      extractedLength >= existingLength * 1.5 ||
+      (extractedParagraphs >= existingParagraphs + 3) ||
+      (existingLength < 500 && extractedLength >= 1000);
+    shouldUseExtracted = materiallyBetter;
+    reason = materiallyBetter
+      ? `Force reprocess: extracted body (${extractedLength} chars, ${extractedParagraphs} paras) materially better than existing (${existingLength} chars, ${existingParagraphs} paras).`
+      : `Force reprocess: extracted body (${extractedLength} chars) not materially better than existing (${existingLength} chars).`;  } else {
+    // Normal mode: extracted must be substantially longer
+    shouldUseExtracted = extractedLength > existingLength * 1.5;
+    reason = shouldUseExtracted
+      ? `Extracted body (${extractedLength} chars) replaces shorter existing body (${existingLength} chars).`
+      : `Kept existing body (${existingLength} chars); extracted (${extractedLength} chars) not substantially better.`;
+  }
+
+  return {
+    raw: existingBodyText,
+    chosenValue: shouldUseExtracted ? extractedBodyText : existingBodyText,
+    chosenFrom: shouldUseExtracted ? "dom" : "unchanged",
+    overrideReason: reason,
+  };
+}
+
+/**
+ * Build isPaywall field provenance.
+ * Does not overwrite a definitive Agent 1 paywall=true with extracted null.
+ */
+function buildIsPaywallProvenance(
+  existingIsPaywall: boolean,
+  extractedIsPaywall: boolean | null,
+): { raw: boolean; chosenValue: boolean; chosenFrom: FieldProvenanceSource; overrideReason: string } | null {
+  if (extractedIsPaywall === null) return null;
+
+  // Don't overwrite existing true with extracted false (trust Agent 1 paywall hints)
+  if (existingIsPaywall && !extractedIsPaywall) {
+    return {
+      raw: existingIsPaywall,
+      chosenValue: existingIsPaywall,
+      chosenFrom: "unchanged",
+      overrideReason: "Kept Agent 1 paywall=true; extractor found no paywall signal.",
+    };
+  }
+
+  return {
+    raw: existingIsPaywall,
+    chosenValue: extractedIsPaywall,
+    chosenFrom: extractedIsPaywall !== existingIsPaywall ? "dom" : "unchanged",
+    overrideReason:
+      extractedIsPaywall !== existingIsPaywall
+        ? "Extractor detected paywall signals not present in Agent 1 ingest."
+        : "Paywall status unchanged.",
+  };
+}
+
+/**
+ * Build compact rejection diagnostics from extractor diagnostics.
+ * Caps arrays and strings for safe storage in artifact payloads.
+ * Never throws — returns null on malformed input.
+ */
+function buildCompactRejectionDiagnostics(
+  diag: ExtractionDiagnostics,
+  title: string | null,
+): RejectionDiagnostics {
+  // Title is included here for admin debugging since it's not in the
+  // serialized ArticleEnrichmentOutcome payload.
+  return {
+    title: title ? title.slice(0, 180) : null,
+    selectedContainerSelector: diag.selectedContainerSelector ?? null,
+    selectedContainerScore: diag.selectedContainerScore ?? null,
+    selectedContainerParagraphCount: diag.selectedContainerParagraphCount ?? null,
+    selectedContainerTextLength: diag.selectedContainerTextLength ?? null,
+    candidateContainerCount: diag.candidateContainerCount ?? null,
+    bodyRejectedReason: diag.bodyRejectedReason ?? null,
+    scoreReasons: (diag.scoreReasons ?? []).slice(0, 10),
+    bodySource: diag.bodySource ?? null,
+    linkTextRatio: typeof diag.linkTextRatio === "number" ? diag.linkTextRatio : null,
+    boilerplatePenalty: typeof diag.boilerplatePenalty === "number" ? diag.boilerplatePenalty : null,
+    topCandidates: (diag.topCandidates ?? []).slice(0, 5).map((c) => ({
+      selector: typeof c.selector === "string" ? c.selector : null,
+      score: typeof c.score === "number" ? c.score : null,
+      paragraphCount: typeof c.paragraphCount === "number" ? c.paragraphCount : null,
+      textLength: typeof c.textLength === "number" ? c.textLength : null,
+      reasons: Array.isArray(c.scoreReasons) ? c.scoreReasons.slice(0, 10) : [],
+    })),
+    stoppedAtText: diag.stoppedAtText
+      ? diag.stoppedAtText.slice(0, 120)
+      : null,
+    stoppedAtClassOrId: diag.stoppedAtClassOrId
+      ? diag.stoppedAtClassOrId.slice(0, 160)
+      : null,
+    excludedBlockCount: typeof diag.excludedBlockCount === "number" ? diag.excludedBlockCount : null,
+  };
+}
+
+/**
+ * Browser fallback options for a single article extraction attempt.
+ */
+export interface BrowserFallbackConfig {
+  /** Timeout per browser fallback attempt in ms. */
+  timeoutMs: number;
+  /** If set, browser fallback is skipped for this article with the given reason. */
+  skippedReason?: BrowserFallbackSkippedReason;
+}
+
+/**
+ * Run the real HTTP article content extractor and build a canonical
+ * `ArticleEnrichmentOutcome` from the result.
+ *
+ * This is the Phase 2 replacement for the Phase 1 stub extractor.
+ * It:
+ *  - chooses articleUrl = canonicalUrl || sourceUrl
+ *  - calls extractArticleContentFromUrl()
+ *  - maps the extraction result to the existing ArticleEnrichmentOutcome contract
+ *  - builds SUCCESS when extraction succeeds
+ *  - builds failure/skipped outcome when extraction fails
+ *  - preserves Agent 1/Agent 2 upstream provenance
+ *  - does not overwrite good existing fields with worse values
+ *
+ * Phase 3: When `browserFallback` is provided and static extraction fails
+ * with a browser-eligible reason, attempts browser fallback extraction.
+ * Browser success produces a normal SUCCESS outcome with method="browser-dom".
+ * Browser failure metadata is attached to the outcome for admin diagnostics.
+ */
+export const extractAndBuildArticleOutcome = async (
+  article: EnrichmentEligibleArticle,
+  now: Date = new Date(),
+  provenanceOverride?: ArticleUpstreamProvenance,
+  forceReprocess: boolean = false,
+  browserFallback?: BrowserFallbackConfig,
+): Promise<ArticleEnrichmentOutcome> => {
+  const provenance = provenanceOverride ?? buildArticleProvenance(article);
+  const articleUrl = article.canonicalUrl || article.sourceUrl || null;
+  const startedAt = now.getTime();
+
+  if (!articleUrl) {
+    const timing: EnrichmentTiming = {
+      startedAt: now.toISOString(),
+      finishedAt: now.toISOString(),
+      durationMs: 0,
+    };
+    return buildSkippedOutcome({
+      articleId: article.id,
+      articleUrl: null,
+      provenance,
+      reasonCode: "NO_ARTICLE_URL",
+      detail: "Article has no canonicalUrl or sourceUrl.",
+      timing,
+    });
+  }
+
+  // Run the real HTTP extractor
+  let result: ArticleContentExtractionResult;
+  try {
+    result = await extractArticleContentFromUrl({
+      articleId: article.id,
+      articleUrl,
+      existingTitle: article.title,
+      existingBodyText: article.bodyText,
+      now,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    const finishedAt = new Date();
+    const timing: EnrichmentTiming = {
+      startedAt: now.toISOString(),
+      finishedAt: finishedAt.toISOString(),
+      durationMs: finishedAt.getTime() - startedAt,
+    };
+    return buildFailureOutcome({
+      articleId: article.id,
+      articleUrl,
+      provenance,
+      reason: { code: "UNKNOWN", detail: `Unexpected extractor error: ${message}` },
+      retryable: false,
+      error: message,
+      timing,
+    });
+  }
+
+  const finishedAt = new Date();
+  const timing: EnrichmentTiming = {
+    startedAt: now.toISOString(),
+    finishedAt: finishedAt.toISOString(),
+    durationMs: finishedAt.getTime() - startedAt,
+    fetchMs: null,
+    extractMs: null,
+  };
+
+  // Handle success
+  if (result.ok) {
+    return buildOutcomeFromSuccess(article, result, provenance, timing, forceReprocess);
+  }
+
+  // Handle failure — check if browser fallback should be attempted
+  let rejectionCode = extractorReasonToRejectionCode(result.rejectedReason);
+  const retryable = isRetryableExtractionFailure(result.rejectedReason);
+
+  // Phase 3: Browser fallback logic with per-artifact skipped reason
+  const failureOutcome = buildFailureOutcome({
+    articleId: article.id,
+    articleUrl,
+    provenance,
+    reason: {
+      code: rejectionCode,
+      detail: `[${result.rejectedReason}] ${result.detail}`,
+      httpStatus: result.statusCode,
+    },
+    retryable,
+    method: { method: result.method !== "none" ? result.method : "http-dom" },
+    timing,
+    httpStatus: result.statusCode,
+  });
+
+  // Attach compact rejection diagnostics from the extractor result.
+  failureOutcome.rejectionDiagnostics = buildCompactRejectionDiagnostics(
+    result.diagnostics,
+    article.title,
+  );
+
+  // Determine browser fallback skipped reason and attempt if eligible
+  if (browserFallback?.skippedReason) {
+    // Runtime decided to skip browser for this article (budget exhausted, etc.)
+    failureOutcome.browserFallback = buildBrowserFallbackSkippedMetadata(
+      browserFallback.skippedReason, result,
+    );
+  } else if (browserFallback && isBrowserFallbackEligibleForFailure(result)) {
+    // Browser fallback is available and the failure is eligible — attempt it
+    const browserResult = await attemptBrowserFallback(article, browserFallback.timeoutMs);
+
+    if (browserResult.ok) {
+      // Browser fallback succeeded — build success outcome using shared helper
+      const outcome = buildOutcomeFromSuccess(article, browserResult, provenance, timing, forceReprocess);
+      outcome.method.detail = `Browser fallback extractor: ${browserResult.qualitySignals.join(", ")}`;
+      outcome.browserFallback = {
+        attempted: true,
+        succeeded: true,
+        staticRejectedReason: result.rejectedReason,
+        staticMethod: result.method !== "none" ? result.method : null,
+        method: browserResult.method,
+        rejectedReason: null,
+        browserRejectedReason: null,
+        statusCode: browserResult.statusCode,
+        runtimeUnavailable: false,
+        rateLimited: false,
+        confidence: browserResult.confidence,
+        browserDiagnostics: null,
+      };
+      return outcome;
+    }
+
+    // Browser fallback failed — attach browser metadata to the static failure
+    failureOutcome.browserFallback = buildBrowserFallbackMetadata(browserResult, result);
+  } else {
+    // No browser config OR failure not eligible for browser fallback
+    const eligible = isBrowserFallbackEligibleForFailure(result);
+    const reason: BrowserFallbackSkippedReason = !browserFallback
+      ? (eligible ? "browser_disabled" : "not_eligible")
+      : "not_eligible";
+    failureOutcome.browserFallback = buildBrowserFallbackSkippedMetadata(reason, result);
+  }
+
+  return failureOutcome;
+};
+
+/**
+ * Post-hoc classification: upgrade a failure outcome to HTTP_ACCESS_BLOCKED
+ * when the static fetch or browser fallback received HTTP 403 or 429.
+ *
+ * Runs after all browser fallback attempts so it catches both the
+ * static-only and the post-browser-fallback paths. Modifies the
+ * outcome in place.
+ */
+function classifyHttpAccessBlocked(outcome: ArticleEnrichmentOutcome): void {
+  const rejection = outcome.rejection;
+  const httpStatus = outcome.browserFallback?.statusCode
+    ?? rejection?.httpStatus
+    ?? null;
+  const isHttpBlocked =
+    httpStatus === 403 || httpStatus === 429 ||
+    (rejection?.code === "HTTP_FORBIDDEN") ||
+    outcome.browserFallback?.rateLimited === true;
+
+  if (isHttpBlocked) {
+    outcome.kind = "HTTP_ACCESS_BLOCKED";
+    if (rejection) {
+      if (rejection.code !== "HTTP_FORBIDDEN") {
+        rejection.code = "HTTP_FORBIDDEN";
+      }
+      // Update httpStatus and detail to reflect the final effective status.
+      // Browser fallback statusCode takes precedence over the static fetch
+      // status so isRecentlyBlocked applies the correct cooldown window.
+      // The detail string is also updated so isRecentlyBlocked's detail-based
+      // checks don't apply the wrong cooldown (e.g. static 403 detail
+      // triggering 24h cooldown when the final status was actually 429/1h).
+      if (outcome.browserFallback?.statusCode != null) {
+        const browserStatus = outcome.browserFallback.statusCode;
+        rejection.httpStatus = browserStatus;
+        if (rejection.detail && /\[http_error\] HTTP \d+/.test(rejection.detail)) {
+          rejection.detail = rejection.detail.replace(
+            /\[http_error\] HTTP \d+/,
+            `[http_error] HTTP ${browserStatus}`,
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Attempt browser fallback extraction for an article.
+ * Returns the raw extraction result (may be ok or fail).
+ */
+async function attemptBrowserFallback(
+  article: EnrichmentEligibleArticle,
+  timeoutMs: number,
+): Promise<ArticleContentExtractionResult> {
+  const articleUrl = article.canonicalUrl || article.sourceUrl || "";
+  try {
+    return await extractArticleContentWithBrowser({
+      articleUrl,
+      existingTitle: article.title,
+      existingBodyText: article.bodyText,
+      timeoutMs,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      method: "browser-dom",
+      resolvedUrl: articleUrl,
+      statusCode: null,
+      rejectedReason: "fetch_failed",
+      detail: `Browser fallback unexpected error: ${message}`,
+      confidence: 0,
+      qualitySignals: ["browser_unexpected_error"],
+      diagnostics: {
+        selectedContainerSelector: null,
+        selectedContainerScore: null,
+        selectedContainerParagraphCount: null,
+        selectedContainerTextLength: null,
+        candidateContainerCount: 0,
+        bodyRejectedReason: null,
+        scoreReasons: [],
+        excerptLength: null,
+        bodyEqualsExcerpt: false,
+        bodySource: "none",
+        linkTextRatio: null,
+        boilerplatePenalty: null,
+        topCandidates: [],
+        usedExpansion: false,
+        expansionType: null,
+        leadLikePenaltyApplied: false,
+        stopReason: null,
+        boundaryMarkersSeen: 0,
+        stoppedAtText: null,
+        stoppedAtClassOrId: null,
+        excludedBlockCount: 0,
+      },
+    };
+  }
+}
+
+/**
+ * Build BrowserFallbackMetadata from a browser extraction result.
+ * Includes the original static failure reason, browser-specific rejection
+ * reason, and compact browser-side diagnostics when the fallback fails.
+ */
+function buildBrowserFallbackMetadata(
+  browserResult: ArticleContentExtractionResult,
+  staticResult: ArticleContentExtractionFail,
+): BrowserFallbackMetadata {
+  const runtimeUnavailable =
+    !browserResult.ok && browserResult.qualitySignals.includes("browser_runtime_unavailable");
+  const rateLimited =
+    !browserResult.ok && browserResult.statusCode === 429;
+
+  // Determine browser-specific rejection reason:
+  // "browser_runtime_unavailable" when the browser itself couldn't launch
+  // otherwise the extraction result's rejectedReason
+  const browserRejectedReason = runtimeUnavailable
+    ? "browser_runtime_unavailable"
+    : browserResult.ok
+      ? null
+      : (browserResult.rejectedReason || null);
+
+  // Build compact browser diagnostics from extraction diagnostics on failure
+  let browserDiagnostics: BrowserDiagnostics | null = null;
+  if (!browserResult.ok) {
+    const diag = browserResult.diagnostics;
+    browserDiagnostics = {
+      selectedContainerSelector: diag.selectedContainerSelector ?? null,
+      paragraphCount: diag.selectedContainerParagraphCount ?? null,
+      totalTextLength: diag.selectedContainerTextLength ?? null,
+      candidateContainerCount: diag.candidateContainerCount ?? null,
+      stoppedAtText: diag.stoppedAtText ? diag.stoppedAtText.slice(0, 120) : null,
+      stoppedAtClassOrId: diag.stoppedAtClassOrId ? diag.stoppedAtClassOrId.slice(0, 160) : null,
+      topCandidates: (diag.topCandidates ?? []).slice(0, 5).map((c) => ({
+        selector: typeof c.selector === "string" ? c.selector : null,
+        score: typeof c.score === "number" ? c.score : null,
+        paragraphCount: typeof c.paragraphCount === "number" ? c.paragraphCount : null,
+        textLength: typeof c.textLength === "number" ? c.textLength : null,
+      })),
+    };
+  }
+
+  return {
+    attempted: true,
+    succeeded: browserResult.ok,
+    staticRejectedReason: staticResult.rejectedReason,
+    staticMethod: staticResult.method !== "none" ? staticResult.method : null,
+    method: browserResult.method || null,
+    rejectedReason: browserResult.ok ? null : (browserResult.rejectedReason || null),
+    browserRejectedReason,
+    statusCode: browserResult.statusCode ?? null,
+    runtimeUnavailable,
+    rateLimited,
+    confidence: browserResult.ok ? browserResult.confidence : null,
+    browserDiagnostics,
+  };
+}
+
+/**
+ * Build BrowserFallbackMetadata for a skipped browser fallback attempt.
+ * Sets attempted=false and the given skipped reason.
+ */
+function buildBrowserFallbackSkippedMetadata(
+  skippedReason: BrowserFallbackSkippedReason,
+  staticResult: ArticleContentExtractionFail,
+): BrowserFallbackMetadata {
+  return {
+    attempted: false,
+    succeeded: false,
+    staticRejectedReason: staticResult.rejectedReason,
+    staticMethod: staticResult.method !== "none" ? staticResult.method : null,
+    method: null,
+    rejectedReason: null,
+    browserRejectedReason: null,
+    statusCode: null,
+    runtimeUnavailable: false,
+    rateLimited: false,
+    confidence: null,
+    browserDiagnostics: null,
+    browserFallbackSkippedReason: skippedReason,
+  };
+}
+
+// ─── Source cooldown and diversity ─────────────────────────────────────────
+
+/**
+ * Maximum articles from a single source per batch.
+ * Prevents one blocked source from consuming the entire batch.
+ */
+const DEFAULT_MAX_ARTICLES_PER_SOURCE = 5;
+const MIN_MAX_ARTICLES_PER_SOURCE = 1;
+const MAX_MAX_ARTICLES_PER_SOURCE = 25;
+
+/** Cooldown threshold: consecutive failures from the same source before cooling down. */
+const SOURCE_COOLDOWN_THRESHOLD = 3;
+
+/** Failure reasons eligible for source cooldown tracking. */
+const COOLDOWN_ELIGIBLE_REASONS: ReadonlySet<string> = new Set([
+  "http_error",
+  "fetch_failed",
+  "no_article_text",
+  "empty_html",
+]);
+
+/** Source cooldown entry for PipelineRun.summary. */
+export interface SourceCooldownEntry {
+  sourceId: string;
+  hostname: string;
+  reason: "http_403" | "http_429" | "browser_runtime_unavailable";
+  failureCount: number;
+  skippedInRun: number;
+  firstFailureAt: string;
+  lastFailureAt: string;
+}
+
+/**
+ * Extract hostname from a URL string for admin diagnostics grouping.
+ * Returns "unknown" for malformed URLs.
+ */
+export function extractHostname(url: string | null | undefined): string {
+  if (!url) return "unknown";
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * In-run source cooldown tracker.
+ * Tracks consecutive failures per sourceId and stops selecting articles
+ * from sources that repeatedly fail (HTTP 403, 429, etc.).
+ */
+export class SourceCooldownTracker {
+  private consecutiveFailures = new Map<string, number>();
+  private cooldowns = new Map<string, SourceCooldownEntry>();
+  private skipCounts = new Map<string, number>();
+  private hostnames = new Map<string, string>();
+
+  /**
+   * Record an extraction failure for a source.
+   * If the source hits the cooldown threshold, it is added to cooldown.
+   * Returns true if the source was newly added to cooldown.
+   */
+  recordFailure(
+    sourceId: string,
+    hostname: string,
+    rejectedReason: string,
+    statusCode: number | null,
+    runtimeUnavailable: boolean = false,
+  ): boolean {
+    if (!COOLDOWN_ELIGIBLE_REASONS.has(rejectedReason)) return false;
+
+    this.hostnames.set(sourceId, hostname);
+
+    const count = (this.consecutiveFailures.get(sourceId) ?? 0) + 1;
+    this.consecutiveFailures.set(sourceId, count);
+
+    if (runtimeUnavailable) {
+      return this.addToCooldown(sourceId, hostname, "browser_runtime_unavailable");
+    }
+    if (statusCode === 429) {
+      return this.addToCooldown(sourceId, hostname, "http_429");
+    }
+    if (statusCode === 403 && count >= SOURCE_COOLDOWN_THRESHOLD) {
+      return this.addToCooldown(sourceId, hostname, "http_403");
+    }
+    return false;
+  }
+
+  /** Record a success for a source (resets consecutive failure count). */
+  recordSuccess(sourceId: string): void {
+    this.consecutiveFailures.delete(sourceId);
+  }
+
+  /** Check if a source is in cooldown. */
+  isCoolingDown(sourceId: string): boolean {
+    return this.cooldowns.has(sourceId);
+  }
+
+  /** Increment skip count for a cooled-down source. */
+  incrementSkip(sourceId: string): void {
+    this.skipCounts.set(sourceId, (this.skipCounts.get(sourceId) ?? 0) + 1);
+  }
+
+  /** Get cooldown entries for persistence. */
+  getEntries(): SourceCooldownEntry[] {
+    const entries: SourceCooldownEntry[] = [];
+    for (const [sourceId, entry] of this.cooldowns) {
+      entries.push({
+        ...entry,
+        skippedInRun: this.skipCounts.get(sourceId) ?? 0,
+      });
+    }
+    return entries;
+  }
+
+  private addToCooldown(
+    sourceId: string,
+    hostname: string,
+    reason: SourceCooldownEntry["reason"],
+  ): boolean {
+    if (this.cooldowns.has(sourceId)) return false;
+    const now = new Date().toISOString();
+    this.cooldowns.set(sourceId, {
+      sourceId,
+      hostname,
+      reason,
+      failureCount: this.consecutiveFailures.get(sourceId) ?? 0,
+      skippedInRun: 0,
+      firstFailureAt: now,
+      lastFailureAt: now,
+    });
+    return true;
+  }
+}
+
+/**
+ * Apply source diversity to a batch of articles.
+ * Groups articles by sourceId and round-robins across groups,
+ * capping each source at `maxPerSource`.
+ * Returns articles in round-robin order (interleaved across sources).
+ */
+export function applySourceDiversity<T extends { sourceId: string }>(
+  articles: T[],
+  maxPerSource: number,
+): T[] {
+  const capped = Math.min(Math.max(maxPerSource, MIN_MAX_ARTICLES_PER_SOURCE), MAX_MAX_ARTICLES_PER_SOURCE);
+  const bySource = new Map<string, T[]>();
+
+  for (const article of articles) {
+    const group = bySource.get(article.sourceId) ?? [];
+    group.push(article);
+    bySource.set(article.sourceId, group);
+  }
+
+  // Cap each group
+  for (const [sourceId, group] of bySource) {
+    if (group.length > capped) {
+      bySource.set(sourceId, group.slice(0, capped));
+    }
+  }
+
+  // Round-robin across sources
+  const result: T[] = [];
+  const sourceIds = [...bySource.keys()];
+  const indices = new Map<string, number>();
+  for (const id of sourceIds) indices.set(id, 0);
+
+  let added = true;
+  while (added) {
+    added = false;
+    for (const sourceId of sourceIds) {
+      const group = bySource.get(sourceId)!;
+      const idx = indices.get(sourceId)!;
+      if (idx < group.length) {
+        result.push(group[idx]!);
+        indices.set(sourceId, idx + 1);
+        added = true;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Controlled stub extractor (Phase 1 placeholder, retained for tests).
  *
  * This is NOT a real extractor. It exercises the full persistence contract
  * so Phase 2 only needs to swap in the real HTTP/meta/DOM extraction. It is
@@ -282,10 +1542,6 @@ export const recoverUpstreamProvenanceBatch = async (
  *    → SKIPPED (ALREADY_ENRICHED).
  *  - Otherwise → SUCCESS with feed-only provenance and NO field overrides
  *    (every field marked `unchanged`), so no real data is mutated.
- *
- * Phase 2 will replace this function with the real HTTP-based extraction
- * (canonical check, meta/DOM selectors, paywall detection, quality scoring,
- * field comparison + override) per the Agent 3 dev plan §7.
  *
  * @param provenanceOverride Optional precise provenance recovered from Agent 1
  *   artifacts. When omitted, the conservative `buildArticleProvenance` fallback
@@ -328,7 +1584,6 @@ export const stubExtractArticle = (
   }
 
   // Conservative SUCCESS: keep all feed values, mark every field `unchanged`.
-  // Phase 2 will replace this with real extraction + field comparison.
   return buildSuccessOutcome({
     articleId: article.id,
     articleUrl,
@@ -373,6 +1628,461 @@ export const stubExtractArticle = (
   });
 };
 
+// ─── Agent 3 Progress Reporting ─────────────────────────────────────────────
+
+/**
+ * Progress snapshot for Agent 3 enrichment.
+ * Used by the admin UI to show how many articles still need review.
+ */
+export interface Agent3Progress {
+  eligibleNow: number;
+  recentlyBlocked: number;
+  retryableNow: number;
+  /** Current-version permanent failures that won't be retried until extractor version changes or force reprocess. */
+  nonRetryableCurrentVersionFailures: number;
+  totalInScope: number;
+    enrichedInScope: number;
+    needingInitialEnrichment: number;
+    failedRetryable: number;
+    needsCurrentVersionReprocess: number;
+    currentVersionComplete: number;
+  selectedMode: {
+    includeEnriched: boolean;
+    forceReprocess: boolean;
+    hasArticleFilter: boolean;
+    hasSourceFilter: boolean;
+  };
+  latestRun: {
+    pipelineRunId: string | null;
+    processed: number;
+    successfullyEnriched: number;
+    rejected: number;
+    persistedOutcomes: number;
+    systemPersistFailed: number;
+    durationMs: number | null;
+    finishedAt: string | null;
+    byKind: Record<string, number>;
+    browserFallbackStats?: {
+      enabled: boolean;
+      attempted: number;
+      succeeded: number;
+      failed: number;
+      runtimeUnavailable: number;
+      rateLimited: number;
+      stoppedReason: string | null;
+    } | null;
+    optionsUsed?: {
+      browserFallback: boolean;
+      browserFallbackMaxAttempts: number;
+      browserTimeoutMs: number;
+      includeEnriched: boolean;
+      forceReprocess: boolean;
+      maxArticles: number;
+      maxArticlesPerSource: number;
+    } | null;
+    sourceCooldowns?: SourceCooldownEntry[] | null;
+  } | null;
+  remainingAfterLatestRun: number;
+  /** True if the safety cap was hit and counts may be incomplete. */
+  progressTruncated: boolean;
+  /** Total ENRICHED articles scanned for version-aware counts. */
+  progressScanned: number;
+}
+
+/**
+ * Options for Agent 3 progress query.
+ */
+export interface Agent3ProgressOptions {
+  now?: Date;
+  includeEnriched?: boolean;
+  forceReprocess?: boolean;
+  sourceIds?: string[];
+  articleIds?: number[];
+}
+
+/**
+ * Page size for scanning ENRICHED articles in progress counting.
+ * Bounded to keep individual DB queries fast.
+ */
+const PROGRESS_SCAN_PAGE_SIZE = 500;
+
+/**
+ * Hard safety cap for progress scanning. If more than this many ENRICHED
+ * articles exist in scope, scanning stops and sets progressTruncated=true.
+ * This prevents unbounded memory/CPU usage while still covering production
+ * scale (normal deployments have <20k articles in retention window).
+ */
+const PROGRESS_SCAN_SAFETY_CAP = 20_000;
+
+/**
+ * Scan ENRICHMENT_FAILED articles in scope to count non-retryable current-version
+ * failures. These are articles that failed with the current extractor version and
+ * a permanent failure kind (LOW_CONTENT_QUALITY, UNSUPPORTED_STRUCTURE, etc.).
+ *
+ * Returns the count of non-retryable failures and total scanned.
+ */
+async function scanNonRetryableFailures(
+  baseWhere: Record<string, unknown>,
+  now: Date,
+): Promise<{ count: number; scanned: number; truncated: boolean }> {
+  let count = 0;
+  let scanned = 0;
+  let cursor: number | undefined;
+
+  while (scanned < PROGRESS_SCAN_SAFETY_CAP) {
+    const page = await prisma.article.findMany({
+      where: { ...baseWhere, enrichmentStatus: "ENRICHMENT_FAILED" },
+      select: {
+        id: true,
+        enrichmentOutcome: true,
+        enrichmentFinishedAt: true,
+        enrichmentStatus: true,
+      },
+      take: PROGRESS_SCAN_PAGE_SIZE,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      orderBy: { id: "asc" },
+    });
+
+    if (!Array.isArray(page) || page.length === 0) break;
+    scanned += page.length;
+
+    for (const article of page) {
+      if (!isAgent3FailureRetryableNow(article, now)) {
+        count++;
+      }
+    }
+
+    cursor = page[page.length - 1]!.id;
+    if (page.length < PROGRESS_SCAN_PAGE_SIZE) break;
+  }
+
+  let truncated = false;
+  if (scanned >= PROGRESS_SCAN_SAFETY_CAP) {
+    const moreExist = await prisma.article.count({
+      where: { ...baseWhere, enrichmentStatus: "ENRICHMENT_FAILED" },
+      skip: PROGRESS_SCAN_SAFETY_CAP,
+      take: 1,
+    });
+    truncated = moreExist > 0;
+  }
+
+  return { count, scanned, truncated };
+}
+
+/**
+ * Scan all ENRICHED articles in scope using cursor-based pagination,
+ * applying needsAgent3CurrentVersionReprocess in memory.
+ *
+ * Returns accurate counts without the MAX_ARTICLES_PER_RUN cap.
+ * Uses bounded page queries (500 at a time) for DB efficiency.
+ */
+async function scanEnrichedArticleVersions(
+  enrichedWhere: Record<string, unknown>,
+): Promise<{ needsReprocess: number; currentComplete: number; scanned: number; truncated: boolean }> {
+  let needsReprocess = 0;
+  let currentComplete = 0;
+  let scanned = 0;
+  let cursor: string | undefined;
+
+  while (scanned < PROGRESS_SCAN_SAFETY_CAP) {
+    const page = await prisma.article.findMany({
+      where: enrichedWhere,
+      select: { id: true, bodyText: true, enrichmentOutcome: true },
+      take: PROGRESS_SCAN_PAGE_SIZE,
+      ...(cursor ? { skip: 1, cursor: { id: parseInt(cursor, 10) } } : {}),
+      orderBy: { id: "asc" },
+    });
+
+    if (!Array.isArray(page) || page.length === 0) break;
+
+    for (const article of page) {
+      if (needsAgent3CurrentVersionReprocess({
+        enrichmentStatus: "ENRICHED",
+        bodyText: article.bodyText,
+        enrichmentOutcome: article.enrichmentOutcome,
+      })) {
+        needsReprocess++;
+      } else {
+        currentComplete++;
+      }
+    }
+
+    scanned += page.length;
+    cursor = String(page[page.length - 1]!.id);
+
+    // If we got fewer than a full page, we've reached the end
+    if (page.length < PROGRESS_SCAN_PAGE_SIZE) break;
+  }
+
+  // Check if there are more articles beyond the safety cap
+  let truncated = false;
+  if (scanned >= PROGRESS_SCAN_SAFETY_CAP) {
+    const moreExist = await prisma.article.count({
+      where: enrichedWhere,
+      skip: PROGRESS_SCAN_SAFETY_CAP,
+      take: 1,
+    });
+    truncated = moreExist > 0;
+  }
+
+  return { needsReprocess, currentComplete, scanned, truncated };
+}
+
+/**
+ * Get Agent 3 enrichment progress: eligible counts, latest run summary,
+ * and remaining targets.
+ *
+ * Uses the same selection semantics as `selectEnrichmentEligibleArticles`
+ * so the admin UI shows consistent counts.
+ *
+ * Uses Prisma count queries for simple counts and paged scanning for
+ * version-aware ENRICHED article counts (no hard 50-row cap).
+ */
+export const getAgent3Progress = async (
+  options?: Agent3ProgressOptions,
+): Promise<Agent3Progress> => {
+  const now = options?.now ?? new Date();
+  const includeEnriched = options?.includeEnriched ?? false;
+  const forceReprocess = options?.forceReprocess ?? false;
+  const articleIds = options?.articleIds;
+  const sourceIds = options?.sourceIds;
+
+  // When explicit articleIds are provided, bypass freshness cutoff
+  const cutoff = articleIds && articleIds.length > 0 ? undefined : getArticleRetentionCutoff(now);
+
+  // Build base where clause for scope queries
+  const baseWhere: Record<string, unknown> = {};
+  if (cutoff) baseWhere.date = { gte: cutoff };
+  if (articleIds && articleIds.length > 0) baseWhere.id = { in: articleIds };
+  if (sourceIds && sourceIds.length > 0) baseWhere.sourceId = { in: sourceIds };
+
+  const enrichedWhere = { ...baseWhere, enrichmentStatus: "ENRICHED" };
+
+  // Run count queries and enriched article scan in parallel.
+  // The scan pages through all ENRICHED articles for accurate version-aware counts.
+  const [totalInScope, needingInitialEnrichment, enrichedInScope, failedRetryable, enrichedScan, nonRetryableScan] = await Promise.all([
+    prisma.article.count({ where: baseWhere }),
+    prisma.article.count({ where: { ...baseWhere, enrichmentStatus: { in: ["INGESTED", "ENRICHMENT_FAILED"] } } }),
+    prisma.article.count({ where: enrichedWhere }),
+    prisma.article.count({ where: { ...baseWhere, enrichmentStatus: "ENRICHMENT_FAILED" } }),
+    scanEnrichedArticleVersions(enrichedWhere),
+    scanNonRetryableFailures(baseWhere, now),
+  ]);
+
+  const needsCurrentVersionReprocess = enrichedScan.needsReprocess;
+  const currentVersionComplete = enrichedScan.currentComplete;
+  const nonRetryableCurrentVersionFailures = nonRetryableScan.count;
+
+  // eligibleNow: same semantics as selectEnrichmentEligibleArticles (before recently-blocked filter)
+  // Excludes non-retryable current-version failures (permanent extraction failures)
+  // because they will always fail with the current extractor version.
+  const rawEligibleNow = includeEnriched
+    ? needingInitialEnrichment + needsCurrentVersionReprocess
+    : needingInitialEnrichment;
+  const eligibleNow = Math.max(0, rawEligibleNow - nonRetryableCurrentVersionFailures);
+
+  // Recently-blocked is host-aware: once a current-version 403/429/runtime
+  // block is observed, other eligible articles on the same hostname are also
+  // excluded until the cooldown expires.
+  const recentBlockState = await scanRecentBlockState(baseWhere, now);
+  const recentlyBlockedCount = await countBlockedEligibleArticles(
+    baseWhere,
+    includeEnriched,
+    recentBlockState,
+  );
+
+  // retryableNow: articles we can actually process right now
+  // (excluding both recently-blocked AND non-retryable current-version failures)
+  const retryableNow = Math.max(0, eligibleNow - recentlyBlockedCount);
+
+  // Find the latest Agent 3 enrichment PipelineRun
+  let latestRun: Agent3Progress["latestRun"] = null;
+  try {
+    const latestPipelineRun = await prisma.pipelineRun.findFirst({
+      where: {
+        summary: { path: ["agent"], equals: "enrichment" },
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        candidatesFound: true,
+        inserted: true,
+        skipped: true,
+        failed: true,
+        finishedAt: true,
+        summary: true,
+      },
+    });
+
+    if (latestPipelineRun) {
+      const summary = (latestPipelineRun.summary ?? {}) as Record<string, unknown>;
+      const byKind = (summary.byKind ?? {}) as Record<string, number>;
+      const successfullyEnriched = byKind.SUCCESS ?? latestPipelineRun.inserted ?? 0;
+      const rejected = Object.entries(byKind)
+        .filter(([k]) => k !== "SUCCESS" && k !== "SKIPPED")
+        .reduce((sum, [, v]) => sum + (v as number), 0);
+      const systemPersistFailed = (summary.persistFailed as number) ?? latestPipelineRun.failed ?? 0;
+      const processed = (summary.articleCount as number) ?? latestPipelineRun.candidatesFound ?? 0;
+      const persistedOutcomes = (summary.persisted as number) ?? processed;
+
+      const startedAt = latestPipelineRun.finishedAt
+        ? new Date(latestPipelineRun.finishedAt.getTime() - ((summary.durationMs as number) ?? 0))
+        : null;
+      const durationMs = (summary.durationMs as number) ?? null;
+
+      // Parse browser fallback stats from persisted summary (if present)
+      const bfsRaw = summary.browserFallbackStats;
+      const browserFallbackStats =
+        bfsRaw && typeof bfsRaw === "object" && !Array.isArray(bfsRaw)
+          ? {
+              enabled: typeof (bfsRaw as Record<string, unknown>).enabled === "boolean"
+                ? (bfsRaw as Record<string, unknown>).enabled as boolean
+                : false,
+              attempted: typeof (bfsRaw as Record<string, unknown>).attempted === "number"
+                ? (bfsRaw as Record<string, unknown>).attempted as number
+                : 0,
+              succeeded: typeof (bfsRaw as Record<string, unknown>).succeeded === "number"
+                ? (bfsRaw as Record<string, unknown>).succeeded as number
+                : 0,
+              failed: typeof (bfsRaw as Record<string, unknown>).failed === "number"
+                ? (bfsRaw as Record<string, unknown>).failed as number
+                : 0,
+              runtimeUnavailable: typeof (bfsRaw as Record<string, unknown>).runtimeUnavailable === "number"
+                ? (bfsRaw as Record<string, unknown>).runtimeUnavailable as number
+                : 0,
+              rateLimited: typeof (bfsRaw as Record<string, unknown>).rateLimited === "number"
+                ? (bfsRaw as Record<string, unknown>).rateLimited as number
+                : 0,
+              stoppedReason: typeof (bfsRaw as Record<string, unknown>).stoppedReason === "string"
+                ? (bfsRaw as Record<string, unknown>).stoppedReason as string
+                : null,
+            }
+          : null;
+
+      const ouRaw = summary.optionsUsed;
+      const optionsUsed =
+        ouRaw && typeof ouRaw === "object" && !Array.isArray(ouRaw)
+          ? {
+              browserFallback: typeof (ouRaw as Record<string, unknown>).browserFallback === "boolean"
+                ? (ouRaw as Record<string, unknown>).browserFallback as boolean
+                : false,
+              browserFallbackMaxAttempts: typeof (ouRaw as Record<string, unknown>).browserFallbackMaxAttempts === "number"
+                ? (ouRaw as Record<string, unknown>).browserFallbackMaxAttempts as number
+                : 3,
+              browserTimeoutMs: typeof (ouRaw as Record<string, unknown>).browserTimeoutMs === "number"
+                ? (ouRaw as Record<string, unknown>).browserTimeoutMs as number
+                : 25000,
+              includeEnriched: typeof (ouRaw as Record<string, unknown>).includeEnriched === "boolean"
+                ? (ouRaw as Record<string, unknown>).includeEnriched as boolean
+                : false,
+              forceReprocess: typeof (ouRaw as Record<string, unknown>).forceReprocess === "boolean"
+                ? (ouRaw as Record<string, unknown>).forceReprocess as boolean
+                : false,
+              maxArticles: typeof (ouRaw as Record<string, unknown>).maxArticles === "number"
+                ? (ouRaw as Record<string, unknown>).maxArticles as number
+                : 50,
+              maxArticlesPerSource: typeof (ouRaw as Record<string, unknown>).maxArticlesPerSource === "number"
+                ? (ouRaw as Record<string, unknown>).maxArticlesPerSource as number
+                : 5,
+            }
+          : null;
+
+      // Parse source cooldowns from persisted summary (if present)
+      const scRaw = summary.agent3SourceCooldowns;
+      const validReasons: ReadonlySet<string> = new Set(["http_403", "http_429", "browser_runtime_unavailable"]);
+      const sourceCooldowns: SourceCooldownEntry[] | null =
+        Array.isArray(scRaw)
+          ? scRaw
+              .filter((e: unknown) => e && typeof e === "object")
+              .map((e: unknown) => {
+                const entry = e as Record<string, unknown>;
+                const reason = typeof entry.reason === "string" ? entry.reason : "http_403";
+                return {
+                  sourceId: typeof entry.sourceId === "string" ? entry.sourceId : "",
+                  hostname: typeof entry.hostname === "string" ? entry.hostname : "unknown",
+                  reason: (validReasons.has(reason) ? reason : "http_403") as SourceCooldownEntry["reason"],
+                  failureCount: typeof entry.failureCount === "number" ? entry.failureCount : 0,
+                  skippedInRun: typeof entry.skippedInRun === "number" ? entry.skippedInRun : 0,
+                  firstFailureAt: typeof entry.firstFailureAt === "string" ? entry.firstFailureAt : "",
+                  lastFailureAt: typeof entry.lastFailureAt === "string" ? entry.lastFailureAt : "",
+                };
+              })
+              .filter((e) => e.sourceId.length > 0)
+          : null;
+
+      latestRun = {
+        pipelineRunId: latestPipelineRun.id,
+        processed,
+        successfullyEnriched,
+        rejected,
+        persistedOutcomes,
+        systemPersistFailed,
+        durationMs,
+        finishedAt: latestPipelineRun.finishedAt?.toISOString() ?? null,
+        byKind,
+        browserFallbackStats,
+        optionsUsed,
+        sourceCooldowns,
+      };
+    }
+  } catch {
+    // PipelineRun query failure is non-fatal; progress still returns counts.
+  }
+
+  // remainingAfterLatestRun: recompute current eligible count
+  // This is simply eligibleNow, since failed/rejected rows remain eligible
+  // for retry and reprocessing handles already-enriched rows.
+  const remainingAfterLatestRun = retryableNow;
+    return {
+      eligibleNow,
+      recentlyBlocked: recentlyBlockedCount,
+      retryableNow,
+      nonRetryableCurrentVersionFailures,
+      totalInScope,
+    enrichedInScope,
+    needingInitialEnrichment,
+    failedRetryable,
+    needsCurrentVersionReprocess,
+    currentVersionComplete,
+    selectedMode: {
+      includeEnriched,
+      forceReprocess,
+      hasArticleFilter: Boolean(articleIds && articleIds.length > 0),
+      hasSourceFilter: Boolean(sourceIds && sourceIds.length > 0),
+    },
+    latestRun,
+    remainingAfterLatestRun,
+    progressTruncated: enrichedScan.truncated,
+    progressScanned: enrichedScan.scanned,
+  };
+};
+
+/**
+ * Options for a full Agent 3 enrichment batch run.
+ */
+export interface EnrichmentBatchOptions {
+  /** Run timestamp. */
+  now?: Date;
+  /** Maximum articles per batch. */
+  maxArticles?: number;
+  /** Include already-ENRICHED articles for reprocessing. */
+  includeEnriched?: boolean;
+  /** Force overwrite existing bodyText when new extraction is materially better. */
+  forceReprocess?: boolean;
+  /** Filter to specific source IDs. */
+  sourceIds?: string[];
+  /** Filter to specific article IDs (debug/admin). */
+  articleIds?: number[];
+  /** Enable browser fallback for articles rejected by static extraction. */
+  browserFallback?: boolean;
+  /** Maximum number of browser fallback attempts per batch (default 3, clamp 0..10). */
+  browserFallbackMaxAttempts?: number;
+  /** Timeout per browser fallback attempt in ms (default 25000, clamp 5000..45000). */
+  browserTimeoutMs?: number;
+  /** Maximum articles from a single source per batch (default 5, clamp 1..25). */
+  maxArticlesPerSource?: number;
+}
+
 /**
  * Result of a full Agent 3 enrichment batch run.
  */
@@ -380,110 +2090,306 @@ export interface EnrichmentRunResult {
   pipelineRunId: string;
   articleCount: number;
   persist: EnrichmentBatchPersistResult;
+  optionsUsed: {
+    includeEnriched: boolean;
+    forceReprocess: boolean;
+    browserFallback: boolean;
+  };
+  browserFallbackStats?: BrowserFallbackRunStats;
+  sourceCooldowns?: SourceCooldownEntry[];
 }
 
 /**
  * Run a full Agent 3 enrichment batch:
  *  1. create a `PipelineRun` to track the batch
  *  2. select eligible articles
- *  3. build canonical outcomes via the stub extractor
+ *  3. build canonical outcomes via the real HTTP extractor
  *  4. persist outcomes (row summary + artifacts)
  *  5. finalize the `PipelineRun` with an enrichment summary
  *  6. log start/finish
  *
- * No real extraction is performed — this exercises the persistence contract
- * end-to-end. Phase 2 swaps `stubExtractArticle` for the real extractor.
+ * Phase 2: uses `extractAndBuildArticleOutcome` which calls the real
+ * `extractArticleContentFromUrl` for each article.
+ *
+ * Accepts optional `EnrichmentBatchOptions` for reprocessing support.
  */
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
+
 export const runEnrichmentBatch = async (
-  now: Date = new Date(),
+  options?: EnrichmentBatchOptions,
 ): Promise<EnrichmentRunResult> => {
+  const now = options?.now ?? new Date();
+  const forceReprocess = options?.forceReprocess ?? false;
+  const includeEnriched = options?.includeEnriched ?? false;
+  const maxArticles = options?.maxArticles;
   const startedAt = Date.now();
 
-  const pipelineRun = await createPipelineRun(0);
+  // Phase 3: Browser fallback options
+  const browserFallbackEnabled = options?.browserFallback ?? false;
+  const browserFallbackMaxAttempts = clamp(
+    options?.browserFallbackMaxAttempts ?? 3, 0, 10,
+  );
+  const browserTimeoutMs = clamp(
+    options?.browserTimeoutMs ?? 25_000, 5_000, 45_000,
+  );
+  let browserAttemptsRemaining = browserFallbackEnabled ? browserFallbackMaxAttempts : 0;
+  const browserStats: BrowserFallbackRunStats = {
+    attempted: 0, succeeded: 0, failed: 0, runtimeUnavailable: 0, rateLimited: 0,
+  };
 
-  await logAgentScan({
-    status: "ARTICLE_CONTENT_ENRICHMENT_STARTED",
-    executionTimeMs: 0,
-    errorLog: "Agent 3 article enrichment batch started (Phase 1 stub extractor).",
-  });
+  let pipelineRun: { id: string } | null = null;
 
-  const articles = await selectEnrichmentEligibleArticles(now);
+  try {
+    pipelineRun = await createPipelineRun(0);
 
-  // Recover precise upstream provenance from Agent 1 ingest artifacts.
-  // This replaces the conservative fallback when artifact data exists.
-  const provenanceMap = await recoverUpstreamProvenanceBatch(articles);
+    await logAgentScan({
+      status: "ARTICLE_CONTENT_ENRICHMENT_STARTED",
+      executionTimeMs: 0,
+      errorLog: `Agent 3 article enrichment batch started (Phase 3 browser fallback). includeEnriched=${includeEnriched}, forceReprocess=${forceReprocess}, browserFallback=${browserFallbackEnabled} (maxAttempts=${browserFallbackMaxAttempts}, timeout=${browserTimeoutMs}ms).`,
+    });
 
-  const outcomes: ArticleEnrichmentOutcome[] = [];
-  const attemptMarkerIds: string[] = [];
+    // Source diversity: cap articles per source and round-robin across sources
+    const maxArticlesPerSource = clamp(
+      options?.maxArticlesPerSource ?? DEFAULT_MAX_ARTICLES_PER_SOURCE,
+      MIN_MAX_ARTICLES_PER_SOURCE,
+      MAX_MAX_ARTICLES_PER_SOURCE,
+    );
 
-  for (const article of articles) {
-    const provenance =
-      provenanceMap.get(article.id) ?? buildArticleProvenance(article);
-    const attemptNumber = article.enrichmentAttemptCount + 1;
-    const attemptStartedAt = now.toISOString();
+    const articles = await selectEnrichmentEligibleArticles(
+      now,
+      maxArticles ?? MAX_ARTICLES_PER_RUN,
+      {
+        includeEnriched,
+        forceReprocess,
+        articleIds: options?.articleIds,
+        sourceIds: options?.sourceIds,
+      },
+    );
 
-    // Emit a lightweight attempt marker before running extraction.
-    // Non-fatal: if the marker fails, we still proceed with the outcome.
-    try {
-      const markerId = await persistAttemptMarker(
-        article.id,
-        attemptNumber,
-        attemptStartedAt,
-        pipelineRun.id,
-        article.sourceId,
-        article.categoryId,
+    // Apply source diversity: round-robin across sources, cap per source.
+    // Explicit articleIds bypass diversity (admin is targeting specific articles).
+    const diversified = (options?.articleIds && options.articleIds.length > 0)
+      ? articles
+      : applySourceDiversity(articles, maxArticlesPerSource);
+
+    // Recover precise upstream provenance from Agent 1 ingest artifacts.
+    // This replaces the conservative fallback when artifact data exists.
+    const provenanceMap = await recoverUpstreamProvenanceBatch(diversified);
+
+    const outcomes: ArticleEnrichmentOutcome[] = [];
+    const attemptMarkerIds: string[] = [];
+    const sourceCooldown = new SourceCooldownTracker();
+
+    for (const article of diversified) {
+      // Skip articles from sources in cooldown
+      if (sourceCooldown.isCoolingDown(article.sourceId)) {
+        sourceCooldown.incrementSkip(article.sourceId);
+        continue;
+      }
+      const provenance =
+        provenanceMap.get(article.id) ?? buildArticleProvenance(article);
+      const attemptNumber = article.enrichmentAttemptCount + 1;
+      const attemptStartedAt = now.toISOString();
+
+      // Emit a lightweight attempt marker before running extraction.
+      // Non-fatal: if the marker fails, we still proceed with the outcome.
+      try {
+        const markerId = await persistAttemptMarker(
+          article.id,
+          attemptNumber,
+          attemptStartedAt,
+          pipelineRun.id,
+          article.sourceId,
+          article.categoryId,
+        );
+        attemptMarkerIds.push(markerId);
+      } catch {
+        // Attempt marker failure is non-fatal; the final result artifact is
+        // the authoritative record. Continue with extraction.
+      }
+
+      // Phase 2: use the real HTTP extractor with forceReprocess option
+      // Phase 3: determine browser fallback config with skipped reason if applicable
+      let browserConfig: BrowserFallbackConfig | undefined;
+      if (!browserFallbackEnabled) {
+        // Browser globally disabled — extractAndBuildArticleOutcome handles browser_disabled/not_eligible
+        browserConfig = undefined;
+      } else if (sourceCooldown.isCoolingDown(article.sourceId)) {
+        browserConfig = { timeoutMs: browserTimeoutMs, skippedReason: "source_cooldown" };
+      } else if (browserAttemptsRemaining <= 0) {
+        const reason: BrowserFallbackSkippedReason = browserStats.runtimeUnavailable > 0
+          ? "runtime_unavailable_global_stop"
+          : "max_attempts_exhausted";
+        browserConfig = { timeoutMs: browserTimeoutMs, skippedReason: reason };
+      } else {
+        browserConfig = { timeoutMs: browserTimeoutMs };
+      }
+      const outcome = await extractAndBuildArticleOutcome(
+        article,
+        now,
+        provenance,
+        forceReprocess,
+        browserConfig,
       );
-      attemptMarkerIds.push(markerId);
-    } catch {
-      // Attempt marker failure is non-fatal; the final result artifact is
-      // the authoritative record. Continue with extraction.
+
+      // Classify HTTP access blocked BEFORE source cooldown tracking so the
+      // cooldown tracker uses the final effective status code. For example,
+      // if static extraction got 403 but browser fallback got 429, the
+      // cooldown tracker must see 429 (immediate cooldown) not 403 (threshold).
+      classifyHttpAccessBlocked(outcome);
+
+      // Track source cooldown: if this outcome is a block-type failure,
+      // record it on the cooldown tracker. If the source hits the threshold,
+      // subsequent articles from the same source will be skipped.
+      if (outcome.kind !== "SUCCESS" && outcome.kind !== "SKIPPED") {
+        const articleUrl = article.canonicalUrl || article.sourceUrl;
+        const hostname = extractHostname(articleUrl);
+        // Extract rejectedReason from the detail format: "[reason] detail"
+        const detail = outcome.rejection?.detail || "";
+        const rejectedReason = (detail.match(/^\[([^\]]+)\]/)?.[1]) || "unknown";
+        const statusCode = outcome.rejection?.httpStatus ?? null;
+        // Check if browser runtime was unavailable for this outcome
+        const runtimeUnavailable = Boolean(
+          outcome.browserFallback?.runtimeUnavailable ||
+          (outcome.browserFallback?.browserRejectedReason === "browser_runtime_unavailable"),
+        );
+        sourceCooldown.recordFailure(
+          article.sourceId, hostname,
+          rejectedReason, statusCode, runtimeUnavailable,
+        );
+      } else if (outcome.kind === "SUCCESS") {
+        sourceCooldown.recordSuccess(article.sourceId);
+      }
+
+      // Track browser fallback stats
+      if (outcome.browserFallback?.attempted) {
+        browserAttemptsRemaining--;
+        browserStats.attempted++;
+        if (outcome.browserFallback.succeeded) browserStats.succeeded++;
+        else browserStats.failed++;
+        if (outcome.browserFallback.runtimeUnavailable) browserStats.runtimeUnavailable++;
+        if (outcome.browserFallback.rateLimited) browserStats.rateLimited++;
+
+        // Stop browser fallback if runtime is unavailable or repeated 429s
+        if (outcome.browserFallback.runtimeUnavailable) {
+          browserAttemptsRemaining = 0;
+        }
+        if (browserStats.rateLimited >= 3) {
+          browserAttemptsRemaining = 0;
+        }
+      }
+
+      outcomes.push(outcome);
     }
 
-    outcomes.push(stubExtractArticle(article, now, provenance));
+    const persistResult = await persistEnrichmentBatch(outcomes, pipelineRun.id);
+
+    // Single PipelineRun update: finalize status + counts AND set the canonical
+    // enrichment summary in one write. We avoid finalizePipelineRun here because
+    // its PipelineResult summary shape is Agent 1-specific (sourcesScanned etc.
+    // do not map cleanly onto an article-enrichment run), and calling it would
+    // force a second update to overwrite the summary. One write is cheaper and
+    // gives full control over the enrichment-specific summary shape.
+    //
+    // Note on field-name reuse: PipelineRun uses Agent 1 field names (candidates
+    // = articles eligible for enrichment, inserted = successfully enriched).
+    // These are the best available fits in the shared run-tracking schema; the
+    // canonical per-kind breakdown lives in the `summary` JSON below.
+    await prisma.pipelineRun.update({
+      where: { id: pipelineRun.id },
+      data: {
+        status: persistResult.failed > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
+        finishedAt: new Date(),
+        targetCount: articles.length,
+        candidatesFound: articles.length,
+        inserted: persistResult.byKind.SUCCESS,
+        skipped: persistResult.byKind.SKIPPED,
+        failed: persistResult.failed + persistResult.byKind.RETRYABLE_FAILURE,
+        artifactCount: attemptMarkerIds.length + persistResult.artifactIds.length,
+        summary: buildEnrichmentRunSummary(persistResult, diversified.length, {
+          durationMs: Date.now() - startedAt,
+          agent3SourceCooldowns: sourceCooldown.getEntries().length > 0 ? sourceCooldown.getEntries() : undefined,
+          browserFallbackStats: browserFallbackEnabled
+            ? {
+                enabled: true,
+                ...browserStats,
+                stoppedReason:
+                  browserStats.runtimeUnavailable > 0
+                    ? "runtime_unavailable"
+                    : browserStats.rateLimited >= 3
+                      ? "rate_limited"
+                      : browserFallbackMaxAttempts > 0 && browserStats.attempted >= browserFallbackMaxAttempts
+                        ? "max_attempts"
+                        : null,
+              }
+            : undefined,
+          optionsUsed: {
+            browserFallback: browserFallbackEnabled,
+            browserFallbackMaxAttempts,
+            browserTimeoutMs,
+            includeEnriched,
+            forceReprocess,
+            maxArticles: maxArticles ?? MAX_ARTICLES_PER_RUN,
+            maxArticlesPerSource,
+          },
+        }),
+      },
+    });
+
+    const browserLog = browserFallbackEnabled
+      ? ` browser=[attempted=${browserStats.attempted},succeeded=${browserStats.succeeded},failed=${browserStats.failed},runtimeUnavailable=${browserStats.runtimeUnavailable},rateLimited=${browserStats.rateLimited}]`
+      : "";
+    await logAgentScan({
+      status: "ARTICLE_CONTENT_ENRICHMENT_FINISHED",
+      executionTimeMs: Date.now() - startedAt,
+      errorLog: `Agent 3 article enrichment batch finished. articles=${diversified.length}, selected=${articles.length}, attemptMarkers=${attemptMarkerIds.length}, persisted=${persistResult.persisted}, failed=${persistResult.failed}, byKind=${JSON.stringify(persistResult.byKind)}.${browserLog}`,
+    });
+
+    const cooldowns = sourceCooldown.getEntries();
+    return {
+      pipelineRunId: pipelineRun.id,
+      articleCount: diversified.length,
+      persist: persistResult,
+      optionsUsed: {
+        includeEnriched,
+        forceReprocess,
+        browserFallback: browserFallbackEnabled,
+      },
+      ...(browserFallbackEnabled ? { browserFallbackStats: browserStats } : {}),
+      ...(cooldowns.length > 0 ? { sourceCooldowns: cooldowns } : {}),
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    const durationMs = Date.now() - startedAt;
+
+    // Attempt to mark PipelineRun as FAILED if it was created.
+    // Non-fatal: if this fails, the log is the authoritative failure record.
+    if (pipelineRun) {
+      try {
+        await prisma.pipelineRun.update({
+          where: { id: pipelineRun.id },
+          data: {
+            status: "FAILED",
+            finishedAt: new Date(),
+          },
+        });
+      } catch {
+        // PipelineRun update failure is non-fatal during error recovery.
+      }
+    }
+
+    // Emit ARTICLE_CONTENT_ENRICHMENT_FAILED log. Non-fatal if logging fails.
+    try {
+      await logAgentScan({
+        status: "ARTICLE_CONTENT_ENRICHMENT_FAILED",
+        executionTimeMs: durationMs,
+        errorLog: `Agent 3 enrichment batch failed: ${message}`,
+      });
+    } catch {
+      // Log failure is non-fatal during error recovery.
+    }
+
+    throw err;
   }
-
-  const persistResult = await persistEnrichmentBatch(outcomes, pipelineRun.id);
-
-  // Single PipelineRun update: finalize status + counts AND set the canonical
-  // enrichment summary in one write. We avoid finalizePipelineRun here because
-  // its PipelineResult summary shape is Agent 1-specific (sourcesScanned etc.
-  // do not map cleanly onto an article-enrichment run), and calling it would
-  // force a second update to overwrite the summary. One write is cheaper and
-  // gives full control over the enrichment-specific summary shape.
-  // Single PipelineRun update: finalize status + counts AND set the canonical
-  // enrichment summary in one write. We avoid finalizePipelineRun here because
-  // its PipelineResult summary shape is Agent 1-specific (sourcesScanned etc.
-  // do not map cleanly onto an article-enrichment run), and calling it would
-  // force a second update to overwrite the summary.
-  //
-  // Note on field-name reuse: PipelineRun uses Agent 1 field names (candidates
-  // = articles eligible for enrichment, inserted = successfully enriched).
-  // These are the best available fits in the shared run-tracking schema; the
-  // canonical per-kind breakdown lives in the `summary` JSON below.
-  await prisma.pipelineRun.update({
-    where: { id: pipelineRun.id },
-    data: {
-      status: persistResult.failed > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
-      finishedAt: new Date(),
-      targetCount: articles.length,
-      candidatesFound: articles.length,
-      inserted: persistResult.byKind.SUCCESS,
-      skipped: persistResult.byKind.SKIPPED,
-      failed: persistResult.failed + persistResult.byKind.RETRYABLE_FAILURE,
-      artifactCount: attemptMarkerIds.length + persistResult.artifactIds.length,
-      summary: buildEnrichmentRunSummary(persistResult, articles.length),
-    },
-  });
-
-  await logAgentScan({
-    status: "ARTICLE_CONTENT_ENRICHMENT_FINISHED",
-    executionTimeMs: Date.now() - startedAt,
-    errorLog: `Agent 3 article enrichment batch finished. articles=${articles.length}, attemptMarkers=${attemptMarkerIds.length}, persisted=${persistResult.persisted}, failed=${persistResult.failed}, byKind=${JSON.stringify(persistResult.byKind)}.`,
-  });
-
-  return {
-    pipelineRunId: pipelineRun.id,
-    articleCount: articles.length,
-    persist: persistResult,
-  };
 };

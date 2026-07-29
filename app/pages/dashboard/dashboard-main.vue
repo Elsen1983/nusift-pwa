@@ -380,6 +380,7 @@ interface Article {
   tags: string[];
   reasoning: string;
   signals: string[];
+  bodyText?: string | null;
 }
 
 interface SourceFilterOption {
@@ -708,19 +709,37 @@ const activeArticleData = ref<any>(null);
 const showRatingModal = ref(false);
 const activeRatingArticleId = ref<number | null>(null);
 
-const loremIpsum = [
-  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
-  "Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident.",
-  "Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam.",
-  "Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione.",
-];
+const escapeHtml = (text: string): string =>
+  text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 
 const readerContent = computed(() => {
   if (!activeArticleData.value) return "";
-  if (activeArticleData.value.isPaywall) {
-    return `<p>${loremIpsum[0]}</p><p>${loremIpsum[1]}</p><p class="opacity-30 pb-40">${loremIpsum[2]}</p>`;
+
+  const bodyText = activeArticleData.value.bodyText;
+  if (bodyText && bodyText.trim().length > 0) {
+    // Split body text into paragraphs, escape HTML entities, and wrap in <p> tags
+    const paragraphs = bodyText
+      .split(/\n{2,}/)
+      .map((p: string) => p.trim())
+      .filter((p: string) => p.length > 0);
+
+    if (activeArticleData.value.isPaywall) {
+      // Show first 2 paragraphs, then a fading preview of the third
+      const preview = paragraphs.slice(0, 2).map((p: string) => `<p>${escapeHtml(p)}</p>`).join("");
+      const faded = paragraphs[2] ? `<p class="opacity-30 pb-40">${escapeHtml(paragraphs[2])}</p>` : "";
+      return preview + faded;
+    }
+
+    return paragraphs.map((p: string) => `<p>${escapeHtml(p)}</p>`).join("");
   }
-  return loremIpsum.map((p) => `<p>${p}</p>`).join("");
+
+  // Fallback: no body text available
+  return "";
 });
 
 const handleReadNow = (article: any) => {

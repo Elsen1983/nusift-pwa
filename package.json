@@ -15,9 +15,12 @@
     "agent2:docker": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1",
     "agent2:docker:batch": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1 -batch",
     "agent2:docker:headless": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1 -headless",
-    "agent2:docker:check": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1 -checkRuntime"
+    "agent2:docker:check": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1 -checkRuntime",
+    "agent3:docker": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent3-docker.ps1",
+    "agent3:docker:batch": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent3-docker.ps1 -batch"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "@nuxtjs/color-mode": "^4.0.1",
     "@nuxtjs/tailwindcss": "^6.14.0",
     "@pinia/nuxt": "^0.11.3",
@@ -58,8 +61,8 @@
     "jsdom": "^29.1.1",
     "nuxi": "^3.35.1",
     "prisma": "^7.8.0",
-    "vitest": "^4.1.9",
     "tsx": "^4.19.0",
+    "vitest": "^4.1.9",
     "vue-tsc": "^3.3.6"
   },
   "allowScripts": {

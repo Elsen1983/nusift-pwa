@@ -22,12 +22,21 @@
           </div>
           <h1 class="font-headline text-2xl md:text-3xl font-bold text-on-surface mb-6 leading-tight">{{ article.title }}</h1>
           
+          <template v-if="content && content.trim().length > 0">
           <ClientOnly>
             <div class="font-body text-sm md:text-base text-on-surface-variant leading-relaxed space-y-5" v-html="sanitizedContent"></div>
             <template #fallback>
               <div class="font-body text-sm md:text-base text-on-surface-variant leading-relaxed space-y-5">{{ strippedContent }}</div>
             </template>
           </ClientOnly>
+        </template>
+        <template v-else>
+          <div class="rounded-xl border border-outline-variant/20 bg-surface-container px-5 py-6 text-center">
+            <span class="material-symbols-outlined text-[32px] text-on-surface-variant/40 mb-2 block" translate="no">article</span>
+            <p class="text-sm text-on-surface-variant">{{ $t('articleReaderModal.no_content') || 'Full article content is not available for this item.' }}</p>
+            <p class="mt-1 text-xs text-on-surface-variant/60">{{ $t('articleReaderModal.no_content_hint') || 'Use the button below to read the article in your browser.' }}</p>
+          </div>
+        </template>
 
           <div class="mt-8 flex justify-center">
             <button

@@ -47,7 +47,8 @@ export type EnrichmentOutcomeKind =
   | "PAYWALL_BLOCKED"
   | "CANONICAL_MISMATCH"
   | "LOW_CONTENT_QUALITY"
-  | "UNSUPPORTED_STRUCTURE";
+  | "UNSUPPORTED_STRUCTURE"
+  | "HTTP_ACCESS_BLOCKED";
 
 /**
  * Structured rejection / skip reason. Never a free-form log string.
@@ -166,7 +167,7 @@ export interface EnrichmentTiming {
  */
 export interface ExtractionMethod {
   /** Coarse extraction strategy. */
-  method: "http-meta" | "http-dom" | "none";
+  method: "http-meta" | "http-dom" | "browser-dom" | "none";
   /** Optional detail: selectors used, fallback chain, etc. */
   detail?: string | null;
   /** Final canonical URL resolved for the article, if any. */
@@ -201,9 +202,128 @@ export interface ExtractionQuality {
  * Compatible with Prisma JSON columns (Article.enrichmentOutcome summary,
  * PipelineArtifact payload).
  */
+/**
+ * Current Agent 3 extractor version.
+ * Bumped when the extraction algorithm changes materially (boundary detection,
+ * scoring, paragraph extraction, etc.). Stored in enrichmentOutcome JSON so
+ * the admin UI can track which articles have been processed with the current
+ * extractor and avoid endless reprocessing loops.
+ *
+ * Stable string — do not include timestamps.
+ */
+export const AGENT3_EXTRACTOR_VERSION = "a3-browser-fallback-v1";
+
+/**
+ * Compact extraction diagnostics stored on rejection artifacts.
+ * Provides enough data to debug why extraction failed without storing
+ * raw HTML, full page text, or full bodyText.
+ */
+export interface RejectionDiagnostics {
+  /** Article title at time of extraction (for admin debugging). */
+  title?: string | null;
+  selectedContainerSelector: string | null;
+  selectedContainerScore: number | null;
+  selectedContainerParagraphCount: number | null;
+  selectedContainerTextLength: number | null;
+  candidateContainerCount: number | null;
+  bodyRejectedReason: string | null;
+  scoreReasons: string[];
+  bodySource: string | null;
+  linkTextRatio: number | null;
+  boilerplatePenalty: number | null;
+  topCandidates: Array<{
+    selector: string | null;
+    score: number | null;
+    paragraphCount: number | null;
+    textLength: number | null;
+    reasons: string[];
+  }>;
+  stoppedAtText: string | null;
+  stoppedAtClassOrId: string | null;
+  excludedBlockCount: number | null;
+}
+
+/**
+ * Compact metadata about a browser fallback attempt for an article.
+ * Stored on the outcome when browser fallback was attempted, providing
+ * visibility into whether the browser path helped recover content.
+ */
+/**
+ * Compact browser-side extraction diagnostics stored on BrowserFallbackMetadata
+ * when browser fallback fails. Provides enough data to debug browser extraction
+ * quality without storing raw HTML or large text blobs.
+ */
+export interface BrowserDiagnostics {
+  selectedContainerSelector: string | null;
+  paragraphCount: number | null;
+  totalTextLength: number | null;
+  candidateContainerCount: number | null;
+  stoppedAtText: string | null;
+  stoppedAtClassOrId: string | null;
+  topCandidates: Array<{
+    selector: string | null;
+    score: number | null;
+    paragraphCount: number | null;
+    textLength: number | null;
+  }>;
+}
+
+/** Reasons why browser fallback was skipped for an article. */
+export type BrowserFallbackSkippedReason =
+  | "not_eligible"
+  | "browser_disabled"
+  | "max_attempts_exhausted"
+  | "source_cooldown"
+  | "runtime_unavailable_global_stop"
+  | "rate_limited_source"
+  | "recently_blocked";
+
+export interface BrowserFallbackMetadata {
+  /** Whether browser fallback was attempted. */
+  attempted: boolean;
+  /** Whether browser fallback succeeded (produced usable content). */
+  succeeded: boolean;
+  /** The static extractor rejection reason that triggered the browser fallback. */
+  staticRejectedReason: string | null;
+  /** The static extractor method before fallback. */
+  staticMethod: string | null;
+  /** Extraction method from the browser result. */
+  method: string | null;
+  /** Rejection reason from the browser extraction result. */
+  rejectedReason: string | null;
+  /** Browser-specific rejection reason when the browser itself failed (e.g. "browser_runtime_unavailable"). */
+  browserRejectedReason: string | null;
+  /** HTTP status code from the browser navigation. */
+  statusCode: number | null;
+  /** Whether the browser runtime was unavailable. */
+  runtimeUnavailable: boolean;
+  /** Whether the browser hit a rate limit (429). */
+  rateLimited: boolean;
+  /** Why browser fallback was skipped, if it was not attempted. */
+  browserFallbackSkippedReason?: BrowserFallbackSkippedReason | null;
+  /** Confidence score from browser extraction (if succeeded). */
+  confidence: number | null;
+  /** Compact browser-side diagnostics when fallback failed. */
+  browserDiagnostics: BrowserDiagnostics | null;
+}
+
+/**
+ * Per-batch browser fallback run statistics.
+ * Persisted in PipelineRun.summary for post-refresh observability.
+ */
+export interface BrowserFallbackRunStats {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  runtimeUnavailable: number;
+  rateLimited: number;
+}
+
 export interface ArticleEnrichmentOutcome {
   /** Schema version for forward-compatible deserialization. */
   schemaVersion: 1;
+  /** Agent 3 extractor version that produced this outcome. */
+  extractorVersion: string;
   /** Canonical outcome kind. */
   kind: EnrichmentOutcomeKind;
   /** Numeric Article.id this outcome refers to. */
@@ -224,6 +344,10 @@ export interface ArticleEnrichmentOutcome {
   rejection: EnrichmentRejectionReason | null;
   /** Free-form error message for unexpected exceptions (audit only). */
   error: string | null;
+  /** Compact extraction diagnostics for rejection artifacts (admin debugging). */
+  rejectionDiagnostics?: RejectionDiagnostics;
+  /** Browser fallback metadata, present when browser fallback was attempted. */
+  browserFallback?: BrowserFallbackMetadata;
 }
 
 // ─── Constants / validation sets ─────────────────────────────────────────────
@@ -247,6 +371,7 @@ const VALID_OUTCOME_KINDS: ReadonlySet<string> = new Set<EnrichmentOutcomeKind>(
   "CANONICAL_MISMATCH",
   "LOW_CONTENT_QUALITY",
   "UNSUPPORTED_STRUCTURE",
+  "HTTP_ACCESS_BLOCKED",
 ]);
 
 const VALID_REJECTION_CODES: ReadonlySet<string> = new Set([
@@ -310,6 +435,7 @@ export const createEnrichmentOutcome = (
   input: CreateEnrichmentOutcomeInput,
 ): ArticleEnrichmentOutcome => ({
   schemaVersion: 1,
+  extractorVersion: AGENT3_EXTRACTOR_VERSION,
   kind: input.kind,
   articleId: input.articleId,
   articleUrl: isStringOrNull(input.articleUrl) ? input.articleUrl : null,
@@ -367,6 +493,7 @@ export const serializeEnrichmentPayload = (
 ): Prisma.InputJsonValue =>
   ({
     schemaVersion: outcome.schemaVersion,
+    extractorVersion: outcome.extractorVersion,
     kind: outcome.kind,
     articleId: outcome.articleId,
     articleUrl: outcome.articleUrl,
@@ -377,6 +504,8 @@ export const serializeEnrichmentPayload = (
     fields: outcome.fields,
     rejection: outcome.rejection,
     error: outcome.error,
+    rejectionDiagnostics: outcome.rejectionDiagnostics ?? null,
+    browserFallback: outcome.browserFallback ?? null,
     // The nested generic FieldProvenance<T> types prevent a direct
     // Prisma.InputJsonValue assertion (TS2352). Double-cast through
     // `unknown` is safe here: every value is JSON-primitive-compatible
@@ -398,10 +527,24 @@ export const serializeOutcomeSummary = (
 ): Prisma.InputJsonValue =>
   ({
     schemaVersion: outcome.schemaVersion,
+    extractorVersion: outcome.extractorVersion,
     kind: outcome.kind,
     method: outcome.method.method,
     confidence: outcome.quality.confidence,
     rejectionCode: outcome.rejection?.code ?? null,
+    rejectionHttpStatus: outcome.rejection?.httpStatus ?? null,
+    rejectionDetail: outcome.rejection?.detail ?? null,
+    browserFallback: outcome.browserFallback
+      ? {
+          attempted: outcome.browserFallback.attempted,
+          succeeded: outcome.browserFallback.succeeded,
+          runtimeUnavailable: outcome.browserFallback.runtimeUnavailable,
+          rateLimited: outcome.browserFallback.rateLimited,
+          statusCode: outcome.browserFallback.statusCode,
+          browserRejectedReason: outcome.browserFallback.browserRejectedReason,
+          browserFallbackSkippedReason: outcome.browserFallback.browserFallbackSkippedReason ?? null,
+        }
+      : null,
     provenance: {
       sourceId: outcome.provenance.sourceId,
       categoryId: outcome.provenance.categoryId,
@@ -579,6 +722,7 @@ export const validateEnrichmentOutcome = (
     // This is the v1 validator; always emit schemaVersion 1. A future v2
     // payload would be handled by a dedicated v2 validator, not here.
     schemaVersion: 1,
+    extractorVersion: typeof raw.extractorVersion === "string" ? raw.extractorVersion : "",
     kind: kind as EnrichmentOutcomeKind,
     articleId: raw.articleId,
     articleUrl: isStringOrNull(raw.articleUrl) ? raw.articleUrl : null,
@@ -727,8 +871,10 @@ const rejectionCodeToTerminalKind = (
       return "UNSUPPORTED_STRUCTURE";
     case "HEADLESS_REQUIRED":
       return "HEADLESS_REQUIRED";
-    // HTTP access failures / timeouts as terminal → page not extractable
+    // HTTP 403/429 access failures → distinct HTTP_ACCESS_BLOCKED kind
     case "HTTP_FORBIDDEN":
+      return "HTTP_ACCESS_BLOCKED";
+    // Other HTTP failures / timeouts → page not extractable
     case "HTTP_NOT_FOUND":
     case "FETCH_TIMEOUT":
       return "UNSUPPORTED_STRUCTURE";
@@ -802,6 +948,7 @@ export const outcomeKindToStatus = (
     case "CANONICAL_MISMATCH":
     case "LOW_CONTENT_QUALITY":
     case "UNSUPPORTED_STRUCTURE":
+    case "HTTP_ACCESS_BLOCKED":
       return "ENRICHMENT_FAILED";
     default:
       return "ENRICHMENT_FAILED";

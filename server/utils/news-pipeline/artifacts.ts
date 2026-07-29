@@ -51,6 +51,8 @@ const serializeSkipSummary = (skipSummary: IngestSkipSummary) => ({
   ...(skipSummary.staleOutsideRetentionWindow ? { staleOutsideRetentionWindow: skipSummary.staleOutsideRetentionWindow } : {}),
   ...(skipSummary.staleMissingPublishedAt ? { staleMissingPublishedAt: skipSummary.staleMissingPublishedAt } : {}),
   ...(skipSummary.staleInvalidPublishedAt ? { staleInvalidPublishedAt: skipSummary.staleInvalidPublishedAt } : {}),
+  // ── URL policy rejection counter (additive) ──────────────────────
+  ...(skipSummary.urlPolicyRejected ? { urlPolicyRejected: skipSummary.urlPolicyRejected } : {}),
 });
 
 const serializeRejectedItem = (item: IngestRejectedItem) => ({

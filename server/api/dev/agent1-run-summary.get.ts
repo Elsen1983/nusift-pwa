@@ -92,6 +92,13 @@ export default defineEventHandler(async (event) => {
         rssUrl: readString(payload.rssUrl),
         feedFormat: readString(payload.feedFormat),
         failureReason: readString(payload.failureReason) || artifact.errorLog,
+        // urlPolicyRejected is nested inside skipSummary in the payload
+        urlPolicyRejected: (() => {
+          const ss = (payload as Record<string, unknown>).skipSummary;
+          return ss && typeof ss === "object" && !Array.isArray(ss)
+            ? readNumber((ss as Record<string, unknown>).urlPolicyRejected)
+            : 0;
+        })(),
       };
     }),
   };

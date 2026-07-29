@@ -356,6 +356,44 @@ describe("persistAgent1TargetOutcomeArtifact – errorLog consistency", () => {
     );
   });
 
+  it("preserves urlPolicyRejected in skipSummary when present", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-url-policy",
+      result: makeResult({
+        skipSummary: {
+          emptyLink: 0,
+          outOfScope: 2,
+          staleOrMissingPublishedAt: 0,
+          alreadySeenFeedItem: 0,
+          htmlFallbackNonArticle: 0,
+          htmlFallbackStale: 0,
+          rssStaleSkipped: 0,
+          urlPolicyRejected: 5,
+        },
+      }),
+      persisted: makePersisted(),
+    });
+
+    expect(prismaCreateMock).toHaveBeenCalledTimes(1);
+    const payload = prismaCreateMock.mock.calls[0]![0].data.payload;
+    expect(payload.skipSummary.urlPolicyRejected).toBe(5);
+    expect(payload.skipSummary.outOfScope).toBe(2);
+  });
+
+  it("omits urlPolicyRejected from skipSummary when zero", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-no-policy",
+      result: makeResult(),
+      persisted: makePersisted(),
+    });
+
+    expect(prismaCreateMock).toHaveBeenCalledTimes(1);
+    const payload = prismaCreateMock.mock.calls[0]![0].data.payload;
+    expect(payload.skipSummary.urlPolicyRejected).toBeUndefined();
+  });
+
   it("does not mask real fetch failures as RSS_ACTIVE (rssActive requires failed === 0)", async () => {
     const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
     await persistAgent1TargetOutcomeArtifact({

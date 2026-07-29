@@ -13,6 +13,7 @@ import {
   hasFreshGenericEvidence,
   GENERIC_EVIDENCE_TTL_MS,
 } from "./ingest";
+import { classifyArticleUrl, isLikelyArticleUrl } from "./article-url-policy";
 import { cleanFeedValue } from "./text";
 import type { ScopeMatch, TaxonomyEvidence } from "./types";
 
@@ -628,5 +629,74 @@ describe("isScopedCategoryFeed — query-scoped JSON payloads", () => {
         {},
       ),
     ).toBe(false);
+  });
+});
+
+describe("article URL policy classifier regression", () => {
+  it("rejects obvious non-article RSS feed URLs", () => {
+    const nonArticleUrls = [
+      "https://www.rte.ie/radio/clips/11809297",
+      "https://www.rte.ie/radio/radio1/clips/22633747",
+      "https://ground.news/checkout/referral",
+      "https://ground.news/my/discover/source",
+      "https://www.bbc.com/hindi/topics/c9wjr8rzzjzt",
+      "https://www.bbc.com/ukchina/trad/topics/cn52l508pdrt",
+      "https://example.com/search?q=test",
+      "https://example.com/feed",
+      "https://example.com/author/john-smith",
+      "https://example.com/tag/politics",
+      "https://example.com/privacy",
+    ];
+
+    for (const url of nonArticleUrls) {
+      const result = classifyArticleUrl(url);
+      expect(result.accepted, `expected ${url} to be rejected`).toBe(false);
+      expect(result.reason, `expected ${url} to have a rejection reason`).not.toBeNull();
+    }
+  });
+
+  it("accepts valid article URLs from RSS feeds", () => {
+    const articleUrls = [
+      "https://www.rte.ie/news/business/2026/0729/1585607-ubs-quarterly-results/",
+      "https://www.rte.ie/news/dublin/2026/0728/1585601-arrest-made-in-connection-with-mans-disappearance/",
+      "https://www.nba.com/news/nba-announces-team-partnership-ticket-sales-service-awards-2025-26-season",
+      "https://timesofindia.indiatimes.com/world/europe/example-news-title/articleshow/123456789.cms",
+      "https://www.irishmirror.ie/news/irish-news/family-missing-charlie-clarke-feared-12345678",
+      "https://pecaverzum.hu/aktualis/budapesten-es-meg-negy-helyszinen-dolt-meg-a-legalacsonyabb-dunai-vizallas-rekordja",
+      "https://www.bbc.com/news/articles/c1234567890o",
+      "https://www.independent.ie/irish-news/courts/example-story-title/a123456789.html",
+    ];
+
+    for (const url of articleUrls) {
+      const result = classifyArticleUrl(url);
+      expect(result.accepted, `expected ${url} to be accepted`).toBe(true);
+    }
+  });
+
+  it("does not reject article URLs containing generic segments like /news/", () => {
+    // URLs with /news/ in the path should be accepted when they have strong
+    // article evidence (date, slug, ID, etc.)
+    const urls = [
+      "https://example.com/news/2026/07/29/breaking-political-upheaval",
+      "https://example.com/world-news/politics/example-article-title-here",
+      "https://example.com/sport/gaa/example-match-report-title-12345",
+    ];
+
+    for (const url of urls) {
+      expect(isLikelyArticleUrl(url), `expected ${url} to be accepted`).toBe(true);
+    }
+  });
+
+  it("rejects video-only paths without strong article evidence", () => {
+    const result = classifyArticleUrl("https://pecaverzum.hu/aktualis/video-xyz");
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toContain("video");
+  });
+
+  it("accepts video- prefix paths when they have strong article evidence (long slug)", () => {
+    const result = classifyArticleUrl(
+      "https://pecaverzum.hu/aktualis/budapesten-es-meg-negy-helyszinen-dolt-meg-a-legalacsonyabb-dunai-vizallas-rekordja",
+    );
+    expect(result.accepted).toBe(true);
   });
 });

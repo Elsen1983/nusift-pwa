@@ -28,6 +28,7 @@ import {
   type JsonLdArticle,
 } from "./article-discovery-helpers";
 import { Prisma } from "@prisma/client";
+import { isLikelyArticleUrl } from "./article-url-policy";
 import type { IngestCandidate, IngestRejectedItem, IngestSkipSummary, PipelineResult } from "./types";
 
 // DISCOVERY_FRESHNESS_MS re-exported from article-discovery-helpers for backward compat
@@ -251,6 +252,7 @@ const extractListingArticleLinks = (
       const resolved = new URL(href, pageUrl).toString();
       if (links.has(resolved)) continue;
       if (isBlockedDiscoveryPath(resolved)) continue;
+      if (!isLikelyArticleUrl(resolved)) continue;
       if (!isLikelyArticleLink(resolved, pageUrl)) continue;
       // Check deniedPathPrefixes from active discovery profile
       if (deniedPathPrefixes && deniedPathPrefixes.length > 0) {

@@ -67,6 +67,7 @@ export const outcomeKindToArtifact = (
     case "CANONICAL_MISMATCH":
     case "LOW_CONTENT_QUALITY":
     case "UNSUPPORTED_STRUCTURE":
+    case "HTTP_ACCESS_BLOCKED":
       return {
         artifactType: "article_enrichment_rejection",
         status: "FAILED",
@@ -95,7 +96,7 @@ export const buildArticleEnrichmentUpdate = (
   outcome: ArticleEnrichmentOutcome,
 ): Prisma.ArticleUpdateInput => {
   const status = outcomeKindToStatus(outcome.kind);
-  return {
+  const update: Prisma.ArticleUpdateInput = {
     enrichmentStatus: status,
     enrichmentStartedAt: new Date(outcome.timing.startedAt),
     enrichmentFinishedAt: new Date(outcome.timing.finishedAt),
@@ -104,6 +105,25 @@ export const buildArticleEnrichmentUpdate = (
     enrichmentConfidence: outcome.quality.confidence,
     enrichmentOutcome: serializeOutcomeSummary(outcome),
   };
+
+  // Phase 2: persist extracted bodyText on SUCCESS when the extractor
+  // produced a better value than the existing one.
+  if (outcome.kind === "SUCCESS" && outcome.fields.bodyText) {
+    const bp = outcome.fields.bodyText;
+    if (bp.chosenFrom === "dom" && bp.chosenValue) {
+      update.bodyText = bp.chosenValue;
+    }
+  }
+
+  // Phase 2: persist isPaywall when the extractor produced a definitive value.
+  if (outcome.kind === "SUCCESS" && outcome.fields.isPaywall) {
+    const pp = outcome.fields.isPaywall;
+    if (pp.chosenFrom === "dom" && typeof pp.chosenValue === "boolean") {
+      update.isPaywall = pp.chosenValue;
+    }
+  }
+
+  return update;
 };
 
 /**
@@ -261,6 +281,7 @@ const emptyByKind = (): Record<EnrichmentOutcomeKind, number> => ({
   CANONICAL_MISMATCH: 0,
   LOW_CONTENT_QUALITY: 0,
   UNSUPPORTED_STRUCTURE: 0,
+  HTTP_ACCESS_BLOCKED: 0,
 });
 
 /**
@@ -307,18 +328,56 @@ export const persistEnrichmentBatch = async (
 /**
  * Build the `PipelineRun.summary` JSON for an Agent 3 enrichment batch.
  * Mirrors the Agent 1 `finalizePipelineRun` summary shape but with
- * enrichment-specific counts.
+ * enrichment-specific counts and optional browser fallback statistics.
+ *
+ * The `agent` field allows getAgent3Progress to filter for enrichment runs.
+ * Browser fallback stats survive page refresh because they are persisted here.
  */
 export const buildEnrichmentRunSummary = (
   result: EnrichmentBatchPersistResult,
   articleCount: number,
+  options?: {
+    browserFallbackStats?: {
+      enabled: boolean;
+      attempted: number;
+      succeeded: number;
+      failed: number;
+      runtimeUnavailable: number;
+      rateLimited: number;
+      stoppedReason?: "max_attempts" | "runtime_unavailable" | "rate_limited" | null;
+    };
+    optionsUsed?: {
+      browserFallback: boolean;
+      browserFallbackMaxAttempts: number;
+      browserTimeoutMs: number;
+      includeEnriched: boolean;
+      forceReprocess: boolean;
+      maxArticles: number;
+      maxArticlesPerSource: number;
+    };
+    durationMs?: number;
+    agent3SourceCooldowns?: Array<{
+      sourceId: string;
+      hostname: string;
+      reason: string;
+      failureCount: number;
+      skippedInRun: number;
+      firstFailureAt: string;
+      lastFailureAt: string;
+    }>;
+  },
 ): Prisma.InputJsonValue =>
   ({
+    agent: "enrichment",
     articleCount,
     persisted: result.persisted,
     failed: result.failed,
     byKind: result.byKind,
     artifactCount: result.artifactIds.length,
+    durationMs: options?.durationMs ?? null,
+    ...(options?.optionsUsed ? { optionsUsed: options.optionsUsed } : {}),
+    ...(options?.browserFallbackStats ? { browserFallbackStats: options.browserFallbackStats } : {}),
+    ...(options?.agent3SourceCooldowns ? { agent3SourceCooldowns: options.agent3SourceCooldowns } : {}),
   }) as Prisma.InputJsonValue;
 
 /**
@@ -339,6 +398,7 @@ export const readEnrichmentSummary = (
   method: string;
   confidence: number;
   rejectionCode: string | null;
+  extractorVersion: string | null;
   provenance: { sourceId: string; categoryId: string | null; feedOrigin: string };
 } | null => {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
@@ -362,6 +422,7 @@ export const readEnrichmentSummary = (
     method: typeof s.method === "string" ? s.method : "none",
     confidence: typeof s.confidence === "number" ? s.confidence : 0,
     rejectionCode: typeof s.rejectionCode === "string" ? s.rejectionCode : null,
+    extractorVersion: typeof s.extractorVersion === "string" ? s.extractorVersion : null,
     provenance: {
       sourceId: p.sourceId,
       categoryId: typeof p.categoryId === "string" ? p.categoryId : null,

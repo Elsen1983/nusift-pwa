@@ -28,6 +28,7 @@ const ESSENTIAL_AGENT_LOG_STATUSES = new Set([
   "ARTICLE_ENRICHMENT_FINISHED",
   "ARTICLE_CONTENT_ENRICHMENT_STARTED",
   "ARTICLE_CONTENT_ENRICHMENT_FINISHED",
+  "ARTICLE_CONTENT_ENRICHMENT_FAILED",
   "ARTICLE_DISCOVERY_STARTED",
   "ARTICLE_DISCOVERY_BATCH_STARTED",
   "ARTICLE_DISCOVERY_BATCH_FINISHED",
@@ -66,6 +67,9 @@ const ESSENTIAL_AGENT_LOG_STATUSES = new Set([
   "A1_BATCH_STARTED",
   "A1_BATCH_FINISHED",
   "A1_BATCH_STOPPED",
+  "A1_TARGET_STARTED",
+  "A1_TARGET_FINISHED",
+  "A1_TARGET_FAILED",
   "A1_TARGETS_DEFERRED",
   // ── Discovery profile logging ────────────────────────────────────────
   "DISCOVERY_PROFILE_ACTIVATED",
@@ -139,6 +143,7 @@ export const getAgentLogPrefix = (status: string) => {
       "ARTICLE_ENRICHMENT_FINISHED",
       "ARTICLE_CONTENT_ENRICHMENT_STARTED",
       "ARTICLE_CONTENT_ENRICHMENT_FINISHED",
+      "ARTICLE_CONTENT_ENRICHMENT_FAILED",
     ].includes(status)
   ) {
     return "A3";
@@ -160,7 +165,15 @@ export const getAgentLogPrefix = (status: string) => {
     return "MT";
   }
 
-  if (["A1_BATCH_STARTED", "A1_BATCH_FINISHED", "A1_BATCH_STOPPED", "A1_TARGETS_DEFERRED"].includes(status)) {
+  if ([
+    "A1_BATCH_STARTED",
+    "A1_BATCH_FINISHED",
+    "A1_BATCH_STOPPED",
+    "A1_TARGET_STARTED",
+    "A1_TARGET_FINISHED",
+    "A1_TARGET_FAILED",
+    "A1_TARGETS_DEFERRED",
+  ].includes(status)) {
     return "A1";
   }
 

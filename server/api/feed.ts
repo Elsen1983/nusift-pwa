@@ -69,6 +69,7 @@ export default defineEventHandler(async (event) => {
       tags: true,
       signals: true,
       reasoning: true,
+      bodyText: true,
       source: {
         select: {
           frontPageUrl: true,
@@ -97,5 +98,6 @@ export default defineEventHandler(async (event) => {
     tags: article.tags,
     signals: article.signals,
     reasoning: article.reasoning || "",
+    bodyText: article.bodyText || null,
   }));
 });
