@@ -21,6 +21,7 @@ import { buildFeedUrlCandidates } from "./import-rss";
 import { discoverFeedForUrl, hasQueryScopedCategoryTokens } from "./feed-discovery";
 import { resolveHeadlessMarkersByAgent1Rss } from "./agent1-rss-cleanup";
 import { classifyArticleUrl } from "./article-url-policy";
+import { observeAndLogUrlPolicyDecisions } from "./url-policy-decision-observer";
 
 type ParsedFeedItem = {
   title: string;
@@ -1623,8 +1624,32 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
           title: item.title || null,
           publishedAt: null,
         });
+        // ── Fire-and-forget URL policy observation ────────────────
+        // Observe both production and candidate decisions for rejected URLs.
+        observeAndLogUrlPolicyDecisions({
+          url: canonicalUrl,
+          sourceId: source.id,
+          categoryId: categoryId || null,
+          agent: "AGENT_1",
+          stage: "rss-ingest",
+          discoveryMethod: parsedCandidateOrigin === "rss" ? "RSS" : parsedCandidateOrigin === "atom" ? "ATOM" : "JSON_FEED",
+        }).catch(() => {});
         continue;
       }
+
+      // ── Fire-and-forget URL policy observation for accepted URLs ──
+      // Observe both production and candidate decisions for URLs that
+      // passed the URL policy check. This closes the accepted-URL
+      // observation gap so the persisted decision log captures the full
+      // picture of Agent 1 URL policy behavior.
+      observeAndLogUrlPolicyDecisions({
+        url: canonicalUrl,
+        sourceId: source.id,
+        categoryId: categoryId || null,
+        agent: "AGENT_1",
+        stage: "rss-ingest",
+        discoveryMethod: parsedCandidateOrigin === "rss" ? "RSS" : parsedCandidateOrigin === "atom" ? "ATOM" : "JSON_FEED",
+      }).catch(() => {});
 
       if (
         category?.pathUrl &&

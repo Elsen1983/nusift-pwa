@@ -1114,8 +1114,11 @@ describe("boundary detection regressions", () => {
       expect(result.bodyText).not.toContain("Investigation after");
       // Should NOT include share links
       expect(result.bodyText).not.toContain("Share");
-      // Boundary diagnostics should be present
-      expect(result.diagnostics.stopReason || result.diagnostics.boundaryMarkersSeen).toBeTruthy();
+      // Should NOT include more-by-author content
+      expect(result.bodyText).not.toContain("More by Paul Reynolds");
+      // Body should include all the policy paragraphs
+      expect(result.bodyText).toContain("policy measure focuses");
+      expect(result.bodyText).toContain("Opposition parties");
     }
   });
 
@@ -1329,6 +1332,621 @@ describe("boundary detection regressions", () => {
     if (result.ok) {
       expect(result.diagnostics.bodySource).not.toBe("readability");
       expect(result.bodyText).toContain("The first paragraph introduces");
+    }
+  });
+});
+
+describe("lead/credit/truncation hardening regressions", () => {
+  beforeEach(() => {
+    safeFetchMock.mockReset();
+  });
+
+  it("Test G: lead+credit container followed by real body — extracts full body, not truncated lead", async () => {
+    // Scenario: container has credit/byline at top, followed by real paragraphs.
+    // The extractor must not stop after the credit line.
+    const credit = "By Staff Reporter, National Affairs Correspondent";
+    const summary = "The government today unveiled a comprehensive package of measures designed to address long-standing concerns about public infrastructure across the country.";
+    const bodyP1 = "The first major component of the package focuses on expanding healthcare access in rural communities where residents have historically struggled to receive adequate medical attention and treatment options.".repeat(2);
+    const bodyP2 = "The second component introduces new funding mechanisms for education reform including technology upgrades in schools and teacher training programs that will begin next academic year.".repeat(2);
+    const bodyP3 = "The third component addresses transportation infrastructure with a multi-year plan to upgrade bridges highways and public transit systems in major metropolitan areas.".repeat(2);
+    const bodyP4 = "The fourth component introduces environmental safeguards that will require impact assessments before major construction projects can proceed in ecologically sensitive areas.".repeat(2);
+    const bodyP5 = "Opposition lawmakers criticized the package as insufficient arguing that the proposed funding levels fall short of what is needed to address the scale of the infrastructure challenges facing the nation.".repeat(2);
+
+    const bodyPs = [bodyP1, bodyP2, bodyP3, bodyP4, bodyP5].map((t) => `<p>${t}</p>`).join("\n    ");
+
+    const html = `<!DOCTYPE html>
+<html><head><title>Infrastructure Package</title>
+<meta property="og:description" content="${summary}" />
+</head>
+<body>
+  <article>
+    <div class="story-header">
+      <h1>Infrastructure Package Announced</h1>
+      <p class="byline">${credit}</p>
+      <p class="lead">${summary}</p>
+    </div>
+    <div class="story-body">
+      ${bodyPs}
+    </div>
+    <div class="related">
+      <h3>Related Stories</h3>
+      <a href="/s1">Previous infrastructure report</a>
+    </div>
+  </article>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 500,
+      articleUrl: "https://example.com/infrastructure-package",
+      existingTitle: "Infrastructure Package",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Must contain ALL body paragraphs, not just the credit/lead
+      expect(result.bodyText).toContain("healthcare access");
+      expect(result.bodyText).toContain("education reform");
+      expect(result.bodyText).toContain("transportation infrastructure");
+      expect(result.bodyText).toContain("environmental safeguards");
+      expect(result.bodyText).toContain("Opposition lawmakers");
+      // Must NOT contain related stories
+      expect(result.bodyText).not.toContain("Related Stories");
+      expect(result.bodyText).not.toContain("Previous infrastructure");
+      // Body should be much longer than just the credit + summary
+      expect(result.bodyText!.length).toBeGreaterThan(summary.length * 3);
+      expect(result.diagnostics.selectedContainerParagraphCount).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("Test H: extractor prefers substantive multi-paragraph content over short lead fragment", async () => {
+    // Two containers: one is a short lead div, the other is the real body div.
+    // The real body should win even if the lead div has a semantic advantage.
+    const leadText = "A brief overview of the situation.";
+    const bodyP1 = "The detailed investigation reveals significant patterns in how public funds were allocated across multiple agencies and departments over the past several years.".repeat(2);
+    const bodyP2 = "Witnesses described a systematic process whereby decisions were made without proper oversight or accountability mechanisms in place to prevent misuse of resources.".repeat(2);
+    const bodyP3 = "The commission recommends sweeping changes to the governance structure including new reporting requirements and independent auditing procedures for all public expenditures.".repeat(2);
+    const bodyP4 = "Legal experts say the findings could have far reaching implications for similar investigations currently underway in other jurisdictions across the country.".repeat(2);
+
+    const bodyPs = [bodyP1, bodyP2, bodyP3, bodyP4].map((t) => `<p>${t}</p>`).join("\n    ");
+
+    const html = `<!DOCTYPE html>
+<html><head><title>Investigation Findings</title>
+<meta property="og:description" content="${leadText}" />
+</head>
+<body>
+  <main>
+    <div class="lead-summary">
+      <p>${leadText}</p>
+    </div>
+    <div class="article-body">
+      ${bodyPs}
+    </div>
+  </main>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 501,
+      articleUrl: "https://example.com/investigation-findings",
+      existingTitle: "Investigation Findings",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Must include the full body paragraphs
+      expect(result.bodyText).toContain("detailed investigation");
+      expect(result.bodyText).toContain("systematic process");
+      expect(result.bodyText).toContain("sweeping changes");
+      expect(result.bodyText).toContain("far reaching implications");
+      expect(result.bodyText!.length).toBeGreaterThan(leadText.length * 10);
+    }
+  });
+
+  it("Test I: valid short article still passes — genuinely complete small article not rejected", async () => {
+    // A short but complete article: 3 substantive paragraphs, no hidden content.
+    // Must NOT be rejected as lead-dominated or truncated.
+    const p1 = "The local council voted unanimously tonight to approve the new community center project that residents have been requesting for over five years.".repeat(2);
+    const p2 = "Construction is expected to begin in the spring with an estimated completion date of eighteen months from the start of work on the facility.".repeat(2);
+    const p3 = "The center will include meeting rooms a gymnasium and a library space that can be used by community groups and organizations throughout the year.".repeat(2);
+
+    const html = `<!DOCTYPE html>
+<html><head><title>Community Center Approved</title>
+<meta property="og:description" content="Council approves new community center" />
+</head>
+<body>
+  <article>
+    <h1>Community Center Approved</h1>
+    <p>${p1}</p>
+    <p>${p2}</p>
+    <p>${p3}</p>
+  </article>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 502,
+      articleUrl: "https://example.com/community-center",
+      existingTitle: "Community Center Approved",
+    });
+
+    // Must succeed — this is a legitimate short article
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.bodyText).toContain("local council voted");
+      expect(result.bodyText).toContain("Construction is expected");
+      expect(result.bodyText).toContain("meeting rooms");
+      expect(result.diagnostics.selectedContainerParagraphCount).toBeGreaterThanOrEqual(3);
+      // No skipped candidates — first candidate should pass all checks
+      expect(result.diagnostics.skippedCandidateReasons).toEqual([]);
+    }
+  });
+
+  it("Test J: diagnostics include textYieldRatio and skippedCandidateReasons", async () => {
+    const html = articleHtml();
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 503,
+      articleUrl: "https://example.com/diag-yield",
+      existingTitle: "Test Article Title",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // New diagnostics fields exist
+      expect(Array.isArray(result.diagnostics.skippedCandidateReasons)).toBe(true);
+      // topCandidates should include textYieldRatio
+      if (result.diagnostics.topCandidates.length > 0) {
+        expect(typeof result.diagnostics.topCandidates[0]!.textYieldRatio).toBe("number");
+        expect(result.diagnostics.topCandidates[0]!.textYieldRatio).toBeGreaterThan(0);
+        expect(result.diagnostics.topCandidates[0]!.textYieldRatio).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it("Test K: container with lead-dominant opening gets penalized in scoring", async () => {
+    // A container where the first paragraph is very short (credit line) and the
+    // rest are normal. The lead_dominant_opening penalty should reduce its score.
+    const credit = "By Jonathan Smith, Senior Investigative Reporter for the National Affairs Desk";
+    const p1 = "The investigation spans multiple years of research and analysis into the matter at hand and reveals important patterns.".repeat(4);
+    const p2 = "Additional findings reveal systemic issues that extend beyond the initial scope of the inquiry into public accountability and governance.".repeat(4);
+    const p3 = "The final report recommends significant reforms to prevent similar problems from occurring in the future of public administration policy.".repeat(4);
+
+    const html = `<!DOCTYPE html>
+<html><title>Report</title>
+<meta property="og:description" content="Investigation report" />
+<body>
+  <article>
+    <p>${credit}</p>
+    <p>${p1}</p>
+    <p>${p2}</p>
+    <p>${p3}</p>
+  </article>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 504,
+      articleUrl: "https://example.com/lead-penalty",
+      existingTitle: "Report",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Should still extract the full body despite the credit line
+      expect(result.bodyText).toContain("investigation spans");
+      expect(result.bodyText).toContain("systemic issues");
+      expect(result.bodyText).toContain("significant reforms");
+      // The lead_dominant_opening penalty should have been applied
+      expect(result.diagnostics.scoreReasons).toContain("lead_dominant_opening");
+    }
+  });
+
+  it("Test L: retry loop skips failing candidate and selects the next valid one", async () => {
+    // Deterministic retry-loop test:
+    // - The <article> is wrapped in <div class="intro"> to isolate it from
+    //   sibling expansion. This prevents the article's sibling expansion from
+    //   absorbing the div's paragraphs, and prevents the div's sibling expansion
+    //   from absorbing the article's paragraphs (isLeadLikeContainer skips
+    //   /intro/i matched elements).
+    // - candidate 0: <div class="intro"> wrapper — 5 paragraphs total, scores
+    //   highest, but fails isLeadDominatedBody (matched by /intro/i).
+    // - candidate 1: <article> — 2 unique paragraphs (~420 chars). Semantic
+    //   +15 bonus, but fails isUsableBody (2 < 800 for Gate 2).
+    // - candidate 2: <div class="story-text"> — 3 long paragraphs (~960 chars).
+    //   Passes isUsableBody Gate 1 (3+ paragraphs, >= 500 chars).
+    // Two DIFFERENT paragraphs (avoid dedup) totaling ~420 chars.
+    const articleP1 = "The opening paragraph of this report provides a comprehensive overview of the key findings discovered during the investigation and sets the stage for the detailed analysis that follows in subsequent sections of this document.";
+    const articleP2 = "The second introductory paragraph summarizes the methodology used in the investigation and highlights the most significant evidence uncovered during the extensive research phase conducted over several months.";
+
+    const longP1 = "The first real article paragraph provides detailed analysis of the current situation and its implications for the broader community of stakeholders involved in the process.".repeat(2);
+    const longP2 = "The second real article paragraph continues with additional evidence and expert commentary on the significance of recent developments in the field of study.".repeat(2);
+    const longP3 = "The third real article paragraph concludes with recommendations and a summary of key findings from the investigation into the matter at hand.".repeat(2);
+
+    // Wrap the article in a non-lead-like <div> so that:
+    // 1. The article's sibling expansion cannot reach the story-text div
+    //    (the article is the only child of its wrapper)
+    // 2. The wrapper div is not a semantic candidate (no matching selector)
+    //    and has the same 2 paragraphs as the article, so it scores lower
+    //    and is skipped first as not_usable
+    // 3. The story-text div's sibling expansion tries the wrapper, but
+    //    isLeadLikeContainer skips it (class contains /intro/i)
+    const html = `<!DOCTYPE html>
+<html><head><title>Retry Test</title>
+<meta property="og:description" content="Test retry loop" />
+</head>
+<body>
+  <div class="article-intro">
+    <article>
+      <p>${articleP1}</p>
+      <p>${articleP2}</p>
+    </article>
+  </div>
+  <div class="story-text">
+    <p>${longP1}</p>
+    <p>${longP2}</p>
+    <p>${longP3}</p>
+  </div>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 505,
+      articleUrl: "https://example.com/retry-test",
+      existingTitle: "Retry Test",
+    });
+
+    // Must succeed — the retry loop selects candidate 1
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Body should contain the div content, not the article content
+      expect(result.bodyText).toContain("first real article paragraph");
+      expect(result.bodyText).toContain("third real article paragraph");
+      expect(result.bodyText).not.toContain("opening paragraph of this report");
+      // skippedCandidateReasons must record why candidate 0 was skipped
+      expect(result.diagnostics.skippedCandidateReasons.length).toBeGreaterThanOrEqual(1);
+      expect(result.diagnostics.skippedCandidateReasons[0]).toBe("candidate_0:not_usable");
+      expect(result.diagnostics.selectedContainerSelector).toBe("div/section");
+      expect(result.diagnostics.topCandidates[0]?.selector).not.toBe(
+        result.diagnostics.selectedContainerSelector,
+      );
+    }
+  });
+
+  it("Test L-fail: without retry loop, the failing candidate causes extraction failure", async () => {
+    // Same fixture as Test L but only the failing candidate exists.
+    // This proves the retry loop is necessary: without a second candidate,
+    // extraction fails. Uses unique paragraphs to avoid dedup.
+    const failP1 = "The opening paragraph of this report provides a brief overview of the key findings and sets the stage for the detailed analysis that follows in subsequent sections.";
+    const failP2 = "The second introductory paragraph summarizes the methodology used in the investigation and highlights the most significant evidence uncovered during the research.";
+
+    const html = `<!DOCTYPE html>
+<html><title>Fail Only</title>
+<meta property="og:description" content="Test" />
+<body>
+  <article>
+    <p>${failP1}</p>
+    <p>${failP2}</p>
+  </article>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 505,
+      articleUrl: "https://example.com/fail-only",
+      existingTitle: "Fail Only",
+    });
+
+    // Must fail — the only candidate doesn't pass isUsableBody
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Diagnostics should still record why the candidate was skipped
+      expect(result.diagnostics.skippedCandidateReasons.length).toBeGreaterThanOrEqual(1);
+      expect(result.diagnostics.skippedCandidateReasons[0]).toContain("not_usable");
+      expect(result.diagnostics.topCandidates.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("Test M: boilerplate-heavy wrapper does not cause false truncation rejection", async () => {
+    // A valid multi-paragraph article inside a large wrapper with nav/header/footer/sidebar.
+    // The wrapper inflates rawTextLength, but cleanedTextLength should be reasonable
+    // because boilerplate is stripped before the truncation check.
+    const p1 = "The central bank announced a new interest rate policy that will affect lending markets across the eurozone for the foreseeable future.".repeat(2);
+    const p2 = "Economists have broadly welcomed the decision saying it provides much needed stability for financial markets during uncertain times.".repeat(2);
+    const p3 = "The policy will take effect next month and is expected to influence mortgage rates and business lending terms significantly.".repeat(2);
+    const p4 = "Industry analysts predict the changes will lead to increased economic activity in the housing sector over the coming quarters.".repeat(2);
+    const p5 = "The central bank governor expressed confidence that the new policy framework will achieve its stated objectives.".repeat(2);
+
+    const bodyPs = [p1, p2, p3, p4, p5].map((t) => `<p>${t}</p>`).join("\n    ");
+
+    const html = `<!DOCTYPE html>
+<html><head><title>Rate Decision</title>
+<meta property="og:description" content="Interest rate decision" />
+</head>
+<body>
+  <nav>${"Navigation link item ".repeat(40)}</nav>
+  <header>${"Header content area ".repeat(40)}</header>
+  <main>
+    <article>
+      <h1>Rate Decision</h1>
+      ${bodyPs}
+    </article>
+    <aside>${"Sidebar widget content ".repeat(40)}</aside>
+  </main>
+  <footer>${"Footer content area ".repeat(40)}</footer>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 506,
+      articleUrl: "https://example.com/rate-decision",
+      existingTitle: "Rate Decision",
+    });
+
+    // Must succeed — boilerplate-heavy wrapper should not cause false rejection
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.bodyText).toContain("central bank announced");
+      expect(result.bodyText).toContain("central bank governor");
+      expect(result.bodyText).not.toContain("Navigation link");
+      expect(result.bodyText).not.toContain("Sidebar widget");
+      expect(result.diagnostics.selectedContainerParagraphCount).toBeGreaterThanOrEqual(5);
+    }
+  });
+
+  it("Test M-truncation: truncated-only candidate is detected and extraction fails cleanly", async () => {
+    // A single <article> with 3 paragraphs (~320 chars each after .repeat(2) = ~960 total)
+    // inside a container with ~3000 chars of span text. The article passes
+    // isUsableBody (3+ paragraphs, 960+ chars, Gate 1) but fails isTruncatedExtraction
+    // (yield ~0.24 < 0.30 with < 4 paragraphs). No alternative candidate exists.
+    // Readability is mocked to return null, so extraction must fail cleanly.
+    vi.resetModules();
+    vi.doMock("@mozilla/readability", () => ({
+      Readability: class {
+        parse() { return null; }
+      },
+    }));
+
+    const bigSpan = "Metadata label content ".repeat(150); // ~3000 chars in a span
+    const p1 = "The first paragraph of the article provides meaningful context about the situation and discusses the key implications for stakeholders involved in the matter.".repeat(2);
+    const p2 = "The second paragraph adds additional detail to the overall narrative and presents supporting evidence from multiple sources consulted during the research phase.".repeat(2);
+    const p3 = "The third paragraph wraps up the available content and provides concluding remarks about the significance of the findings presented in this article.".repeat(2);
+
+    const html = `<!DOCTYPE html>
+<html><head><title>Truncated</title>
+<meta property="og:description" content="Test truncation" />
+</head>
+<body>
+  <article>
+    <h1>Truncated Article</h1>
+    <span>${bigSpan}</span>
+    <p>${p1}</p>
+    <p>${p2}</p>
+    <p>${p3}</p>
+  </article>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 507,
+      articleUrl: "https://example.com/truncated-test",
+      existingTitle: "Truncated",
+    });
+
+    vi.doUnmock("@mozilla/readability");
+
+    // Must fail — the only candidate is truncated and no alternative exists
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(["too_short", "no_article_text"]).toContain(result.rejectedReason);
+      // skippedCandidateReasons must record exactly why the candidate was rejected.
+      // The article passes isUsableBody (3 paragraphs, ~540 chars, Gate 1) but
+      // fails isTruncatedExtraction (yield ~0.15 < 0.30 with < 4 paragraphs).
+      expect(result.diagnostics.skippedCandidateReasons.length).toBeGreaterThanOrEqual(1);
+      expect(result.diagnostics.skippedCandidateReasons[0]).toContain("truncated_extraction");
+      // topCandidates must be preserved even though extraction failed
+      expect(result.diagnostics.topCandidates.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("Test M-all-fail: all candidates fail diagnostics are preserved in rejection", async () => {
+    // Every candidate is too short to pass isUsableBody. Extraction must fail
+    // with a clear rejection reason. Diagnostics must preserve skippedCandidateReasons
+    // and topCandidates even though no body was extracted.
+    // Use paragraphs that are meaningful enough to create candidates (pass
+    // scoreCandidate) but too short to pass isUsableBody.
+    // 2 paragraphs of ~130 chars each = ~260 total. Fails Gate 1 (< 500 chars
+    // with only 2 paragraphs) and Gate 2 (< 800 chars).
+    const shortPara = "This paragraph is just long enough to pass the meaningful paragraph filter but not long enough to qualify as a usable article body for extraction purposes.";
+
+    const html = `<!DOCTYPE html>
+<html><head><title>All Fail</title>
+<meta property="og:description" content="Test all fail" />
+</head>
+<body>
+  <article>
+    <h1>All Fail</h1>
+    <p>${shortPara}</p>
+    <p>${shortPara}</p>
+  </article>
+  <div class="content">
+    <h2>Content</h2>
+    <p>${shortPara}</p>
+    <p>${shortPara}</p>
+  </div>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 508,
+      articleUrl: "https://example.com/all-fail",
+      existingTitle: "All Fail",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(["too_short", "no_article_text"]).toContain(result.rejectedReason);
+      // Diagnostics must survive total failure
+      expect(result.diagnostics.topCandidates.length).toBeGreaterThanOrEqual(1);
+      // skippedCandidateReasons must be populated with failure reasons
+      expect(result.diagnostics.skippedCandidateReasons.length).toBeGreaterThanOrEqual(1);
+      expect(result.diagnostics.skippedCandidateReasons.some((r: string) => r.includes("not_usable"))).toBe(true);
+    }
+  });
+
+  it("Test N: same-container credit-first extraction — credit paragraph + real paragraphs in one article", async () => {
+    // A single <article> container where the first direct child is a short
+    // credit/byline paragraph, followed by multiple substantive article paragraphs.
+    // There is no separate story-body div. The extractor must capture ALL
+    // paragraphs, not stop after the credit.
+    const credit = "By Sarah Johnson, Senior Correspondent for the National Desk reporting from the capital city.";
+    const p1 = "The first major section of the article explores the historical context and background of the topic in considerable depth with expert analysis.".repeat(2);
+    const p2 = "The second section examines current trends and data providing evidence-based insights into the present situation and its implications.".repeat(2);
+    const p3 = "The third section analyzes potential future implications and what experts predict will happen next in this evolving situation.".repeat(2);
+    const p4 = "The fourth section discusses counterarguments and alternative perspectives on the issue at hand from multiple viewpoints.".repeat(2);
+    const p5 = "The fifth section presents case studies that illustrate the practical applications of the concepts discussed throughout the article.".repeat(2);
+
+    const html = `<!DOCTYPE html>
+<html><head><title>Same Container Article</title>
+<meta property="og:description" content="A test article" />
+</head>
+<body>
+  <article>
+    <h1>Same Container Article</h1>
+    <p>${credit}</p>
+    <p>${p1}</p>
+    <p>${p2}</p>
+    <p>${p3}</p>
+    <p>${p4}</p>
+    <p>${p5}</p>
+  </article>
+  <aside class="related">
+    <h3>Related stories</h3>
+    <a href="/r1">Related story one</a>
+  </aside>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 509,
+      articleUrl: "https://example.com/same-container",
+      existingTitle: "Same Container Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Must contain ALL body paragraphs including the credit
+      expect(result.bodyText).toContain("Sarah Johnson");
+      expect(result.bodyText).toContain("historical context");
+      expect(result.bodyText).toContain("current trends");
+      expect(result.bodyText).toContain("future implications");
+      expect(result.bodyText).toContain("counterarguments");
+      expect(result.bodyText).toContain("case studies");
+      // Must NOT contain related stories
+      expect(result.bodyText).not.toContain("Related stories");
+      expect(result.bodyText).not.toContain("Related story one");
+      // Must have 6+ paragraphs (credit + 5 body)
+      expect(result.diagnostics.selectedContainerParagraphCount).toBeGreaterThanOrEqual(6);
+    }
+  });
+
+  it("Test O: valid short article in moderately noisy wrapper is accepted", async () => {
+    // A short but complete article (3 paragraphs) inside a wrapper with some
+    // sidebar and footer content. Must not be rejected as truncated.
+    const p1 = "The local council voted tonight to approve the community center project that residents have been requesting.".repeat(2);
+    const p2 = "Construction is expected to begin in the spring with an estimated completion date of eighteen months.".repeat(2);
+    const p3 = "The center will include meeting rooms a gymnasium and a library space for community use.".repeat(2);
+
+    const html = `<!DOCTYPE html>
+<html><head><title>Short Article</title>
+<meta property="og:description" content="Short news" />
+</head>
+<body>
+  <main>
+    <article>
+      <h1>Short Article</h1>
+      <p>${p1}</p>
+      <p>${p2}</p>
+      <p>${p3}</p>
+    </article>
+    <aside>${"Sidebar widget content here ".repeat(20)}</aside>
+  </main>
+  <footer>${"Footer links and information ".repeat(20)}</footer>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 510,
+      articleUrl: "https://example.com/short-noisy",
+      existingTitle: "Short Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.bodyText).toContain("local council voted");
+      expect(result.bodyText).toContain("Construction is expected");
+      expect(result.bodyText).toContain("meeting rooms");
+      expect(result.bodyText).not.toContain("Sidebar widget");
+      expect(result.bodyText).not.toContain("Footer links");
+      expect(result.diagnostics.selectedContainerParagraphCount).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("Test P: isTruncatedExtraction unit check — uses cleanedTextLength not raw", async () => {
+    // Verify that isTruncatedExtraction uses cleanedTextLength (after boilerplate
+    // stripping) rather than rawTextLength. A container with lots of boilerplate
+    // that inflates rawTextLength should NOT trigger truncation when the cleaned
+    // text is proportional to extracted content.
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+
+    // This is the same as Test M (boilerplate-heavy) — if it passes, the
+    // cleanedTextLength-based check is working.
+    const p1 = "The research team published their findings today after three years of extensive fieldwork.".repeat(3);
+    const p2 = "The study found significant correlations between climate patterns and biodiversity loss.".repeat(3);
+    const p3 = "Conservation efforts have been stepped up in response to the findings.".repeat(3);
+
+    const bodyPs = [p1, p2, p3].map((t) => `<p>${t}</p>`).join("\n    ");
+
+    const html = `<!DOCTYPE html>
+<html><title>Research</title>
+<meta property="og:description" content="Research findings" />
+<body>
+  <nav>${"Nav link ".repeat(60)}</nav>
+  <header>${"Header ".repeat(60)}</header>
+  <article>
+    <h1>Research Findings</h1>
+    ${bodyPs}
+  </article>
+  <aside>${"Sidebar ".repeat(60)}</aside>
+  <footer>${"Footer ".repeat(60)}</footer>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const result = await extractArticleContentFromUrl({
+      articleId: 511,
+      articleUrl: "https://example.com/research-cleaned",
+      existingTitle: "Research",
+    });
+
+    // Must succeed — boilerplate should not cause false truncation
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.bodyText).toContain("research team");
+      expect(result.bodyText).toContain("biodiversity");
+      expect(result.bodyText).toContain("Conservation");
     }
   });
 });

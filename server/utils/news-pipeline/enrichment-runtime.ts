@@ -1259,6 +1259,7 @@ async function attemptBrowserFallback(
         stoppedAtText: null,
         stoppedAtClassOrId: null,
         excludedBlockCount: 0,
+        skippedCandidateReasons: [],
       },
     };
   }

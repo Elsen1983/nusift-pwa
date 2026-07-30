@@ -1678,6 +1678,159 @@
 
         </details>
 
+        <!-- URL Policy Evaluation panel -->
+        <details v-if="showFullDevTools" class="rounded-2xl border border-outline-variant/20 bg-surface-container-high/60 px-4 py-3">
+          <summary class="cursor-pointer select-none font-headline text-sm font-bold text-on-surface">
+            URL Policy Evaluation
+          </summary>
+          <div class="mt-3">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <h3 class="font-headline text-sm font-bold text-on-surface">Policy version comparison</h3>
+                <p class="mt-1 text-xs text-on-surface-variant">
+                  Production baseline vs candidate shadow URL policy metrics using labeled tuning/holdout datasets.
+                </p>
+              </div>
+              <button
+                @click="loadUrlPolicyEvaluation"
+                :disabled="urlPolicyEvalLoading"
+                class="rounded-lg border border-outline-variant/20 bg-surface-container px-3 py-1.5 text-xs font-bold text-on-surface-variant transition-colors hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {{ urlPolicyEvalLoading ? "Loading..." : "Load report" }}
+              </button>
+            </div>
+
+            <div v-if="urlPolicyEvalError" class="mt-3 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2">
+              <p class="text-xs text-rose-200">{{ urlPolicyEvalError }}</p>
+            </div>
+
+            <div v-if="urlPolicyEvalResult" class="mt-3">
+              <div class="rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-2">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="text-[10px] font-bold uppercase tracking-wider text-primary">
+                    Dataset: {{ urlPolicyEvalResult.datasetVersion }}
+                  </span>
+                  <span class="text-[10px] text-on-surface-variant">
+                    Policy: {{ urlPolicyEvalResult.splits?.tuning?.policies ? Object.keys(urlPolicyEvalResult.splits.tuning.policies).join(" vs ") : "N/A" }}
+                  </span>
+                </div>
+              </div>
+
+              <div
+                v-for="(splitData, splitName) in urlPolicyEvalResult.splits"
+                :key="String(splitName)"
+                class="mt-3"
+              >
+                <h4 class="font-headline text-xs font-bold uppercase tracking-wider text-on-surface-variant/70">
+                  {{ splitName }} split
+                </h4>
+                <div
+                  v-for="(policyData, policyName) in (splitData as Record<string, any>).policies"
+                  :key="String(policyName)"
+                  class="mt-2 rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-2"
+                >
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+                      :class="String(policyName).includes('production') ? 'bg-cyan-500/15 text-cyan-200' : 'bg-violet-500/15 text-violet-200'"
+                    >
+                      {{ (policyName as string).includes('production') ? 'production' : 'candidate' }}
+                    </span>
+                    <span class="text-[10px] text-on-surface-variant">{{ policyName }}</span>
+                  </div>
+                  <div class="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-on-surface-variant">
+                    <span>evaluated: <strong>{{ (policyData as any).counts?.evaluated ?? 0 }}</strong></span>
+                    <span>accepted: <strong>{{ (policyData as any).counts?.accepted ?? 0 }}</strong></span>
+                    <span>rejected: <strong>{{ (policyData as any).counts?.rejected ?? 0 }}</strong></span>
+                    <span>uncertain: <strong class="text-amber-300">{{ (policyData as any).counts?.uncertain ?? 0 }}</strong></span>
+                    <span title="accepted true articles / all accepted">precision: <strong>{{ ((policyData as any).rates?.articleAcceptPrecision ?? 0).toFixed(4) }}</strong></span>
+                    <span title="accepted true articles / all true articles">recall: <strong>{{ ((policyData as any).rates?.articleAcceptRecall ?? 0).toFixed(4) }}</strong></span>
+                    <span title="rejected true articles / all true articles" class="text-rose-300">false reject: <strong>{{ ((policyData as any).rates?.falseRejectRate ?? 0).toFixed(4) }}</strong></span>
+                    <span title="accepted non-articles / all accepted" class="text-amber-300">leakage: <strong>{{ ((policyData as any).rates?.nonArticleLeakageRate ?? 0).toFixed(4) }}</strong></span>
+                    <span title="UNCERTAIN / all evaluated">uncertain rate: <strong>{{ ((policyData as any).rates?.uncertainRate ?? 0).toFixed(4) }}</strong></span>
+                    <span title="(ACCEPT + REJECT) / all evaluated">coverage: <strong>{{ ((policyData as any).rates?.policyCoverage ?? 0).toFixed(4) }}</strong></span>
+                    <span title="uncertain true articles / all true articles">uncert.article: <strong>{{ ((policyData as any).rates?.uncertainArticleRate ?? 0).toFixed(4) }}</strong></span>
+                    <span title="uncertain non-articles / all non-articles">uncert.non-article: <strong>{{ ((policyData as any).rates?.uncertainNonArticleRate ?? 0).toFixed(4) }}</strong></span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Comparison section -->
+              <div v-if="urlPolicyEvalResult.comparison?.length" class="mt-3 rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-2">
+                <h4 class="font-headline text-xs font-bold uppercase tracking-wider text-on-surface-variant/70">
+                  Production vs candidate delta
+                </h4>
+                <div class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-on-surface-variant">
+                  <div
+                    v-for="(cmp, ci) in urlPolicyEvalResult.comparison"
+                    :key="ci"
+                    class="flex items-baseline gap-1"
+                  >
+                    <span>{{ (cmp as any).metric }}:</span>
+                    <span>{{ (cmp as any).productionValue != null ? Number((cmp as any).productionValue).toFixed(4) : 'n/a' }}</span>
+                    <span class="text-on-surface-variant/50">→</span>
+                    <span>{{ (cmp as any).candidateValue != null ? Number((cmp as any).candidateValue).toFixed(4) : 'n/a' }}</span>
+                    <span
+                      :class="(cmp as any).delta > 0 ? 'text-emerald-300' : (cmp as any).delta < 0 ? 'text-rose-300' : 'text-on-surface-variant/50'"
+                    >
+                      ({{ (cmp as any).delta != null ? ((cmp as any).delta >= 0 ? '+' : '') + Number((cmp as any).delta).toFixed(4) : 'n/a' }})
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Sample groups -->
+              <div class="mt-3 grid gap-3 sm:grid-cols-3">
+                <div v-if="urlPolicyEvalResult.samples?.falseRejectSamples?.length" class="rounded-xl border border-rose-500/15 bg-rose-500/5 px-2.5 py-2">
+                  <p class="text-[9px] font-bold uppercase tracking-wider text-rose-300/80">
+                    False rejects ({{ urlPolicyEvalResult.samples.falseRejectSamples.length }})
+                  </p>
+                  <div
+                    v-for="(sample, si) in urlPolicyEvalResult.samples.falseRejectSamples.slice(0, 5)"
+                    :key="si"
+                    class="mt-1 truncate text-[10px] text-on-surface-variant"
+                    :title="(sample as any).url"
+                  >
+                    {{ (sample as any).url?.slice(0, 60) || 'N/A' }}
+                  </div>
+                </div>
+                <div v-if="urlPolicyEvalResult.samples?.nonArticleLeakageSamples?.length" class="rounded-xl border border-amber-500/15 bg-amber-500/5 px-2.5 py-2">
+                  <p class="text-[9px] font-bold uppercase tracking-wider text-amber-300/80">
+                    Leakage ({{ urlPolicyEvalResult.samples.nonArticleLeakageSamples.length }})
+                  </p>
+                  <div
+                    v-for="(sample, si) in urlPolicyEvalResult.samples.nonArticleLeakageSamples.slice(0, 5)"
+                    :key="si"
+                    class="mt-1 truncate text-[10px] text-on-surface-variant"
+                    :title="(sample as any).url"
+                  >
+                    {{ (sample as any).url?.slice(0, 60) || 'N/A' }}
+                  </div>
+                </div>
+                <div v-if="urlPolicyEvalResult.samples?.uncertainSamples?.length" class="rounded-xl border border-sky-500/15 bg-sky-500/5 px-2.5 py-2">
+                  <p class="text-[9px] font-bold uppercase tracking-wider text-sky-300/80">
+                    Uncertain ({{ urlPolicyEvalResult.samples.uncertainSamples.length }})
+                  </p>
+                  <div
+                    v-for="(sample, si) in urlPolicyEvalResult.samples.uncertainSamples.slice(0, 5)"
+                    :key="si"
+                    class="mt-1 truncate text-[10px] text-on-surface-variant"
+                    :title="(sample as any).url"
+                  >
+                    {{ (sample as any).url?.slice(0, 60) || 'N/A' }}
+                  </div>
+                </div>
+              </div>
+              <p v-if="!urlPolicyEvalResult.samples?.falseRejectSamples?.length && !urlPolicyEvalResult.samples?.nonArticleLeakageSamples?.length && !urlPolicyEvalResult.samples?.uncertainSamples?.length" class="mt-3 text-[11px] text-on-surface-variant">
+                No sample deviations between production and candidate policy.
+              </p>
+            </div>
+            <p v-else-if="!urlPolicyEvalLoading" class="mt-3 text-xs text-on-surface-variant">
+              Click "Load report" to fetch the URL policy evaluation report.
+            </p>
+          </div>
+        </details>
+
 
 
         <!-- Maintenance cleanup panel -->
@@ -2026,6 +2179,11 @@ const agent3BrowserFallback = ref(false);
 const agent3BrowserFallbackMaxAttempts = ref(3);
 const agent3BrowserTimeoutMs = ref(25000);
 const agent3MaxArticlesPerSource = ref(5);
+
+// ── URL Policy Evaluation ─────────────────────────────────────────────────
+const urlPolicyEvalResult = ref<any>(null);
+const urlPolicyEvalLoading = ref(false);
+const urlPolicyEvalError = ref<string | null>(null);
 const agent3Progress = ref<{
   eligibleNow: number;
   recentlyBlocked?: number;
@@ -2663,6 +2821,29 @@ const loadAgent3RejectionDiagnostics = async () => {
     agent3RejectionData.value = null;
   } finally {
     agent3RejectionLoading.value = false;
+  }
+};
+
+const loadUrlPolicyEvaluation = async () => {
+  if (!showFullDevTools.value) return;
+  urlPolicyEvalLoading.value = true;
+  urlPolicyEvalError.value = null;
+  try {
+    const response = await $api<{
+      ok: boolean;
+      report: any;
+    }>("/api/dev/url-policy-evaluation");
+    if (!response.ok || !response.report) {
+      urlPolicyEvalError.value = "No evaluation report available.";
+      urlPolicyEvalResult.value = null;
+    } else {
+      urlPolicyEvalResult.value = response.report;
+    }
+  } catch (error: any) {
+    urlPolicyEvalError.value = error?.data?.statusMessage || error?.message || "Failed to load URL policy evaluation.";
+    urlPolicyEvalResult.value = null;
+  } finally {
+    urlPolicyEvalLoading.value = false;
   }
 };
 

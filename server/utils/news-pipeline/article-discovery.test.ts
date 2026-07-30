@@ -379,6 +379,8 @@ describe("article-discovery", () => {
 
   it("discovers article candidates from a listing page and follows one pagination hop", async () => {
     const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const recentArticle1 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const recentArticle2 = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
 
     const listing1 = `
       <html>
@@ -400,7 +402,7 @@ describe("article-discovery", () => {
         <head>
           <title>Alpha story one</title>
           <meta name="description" content="Alpha description" />
-          <meta property="article:published_time" content="2026-07-24T09:00:00.000Z" />
+          <meta property="article:published_time" content="${recentArticle1}" />
           <meta name="keywords" content="alpha,news" />
         </head>
         <body><p>Alpha body</p></body>
@@ -411,7 +413,7 @@ describe("article-discovery", () => {
         <head>
           <title>Bravo story two</title>
           <meta name="description" content="Bravo description" />
-          <meta property="article:published_time" content="2026-07-23T09:00:00.000Z" />
+          <meta property="article:published_time" content="${recentArticle2}" />
           <meta name="keywords" content="bravo,news" />
         </head>
         <body><p>Bravo body</p></body>

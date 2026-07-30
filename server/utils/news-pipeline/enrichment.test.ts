@@ -236,7 +236,7 @@ describe("buildFailureOutcome", () => {
     expect(outcome.rejection?.httpStatus).toBe(403);
   });
 
-  it("maps a terminal HTTP_FORBIDDEN code to a valid outcome kind (UNSUPPORTED_STRUCTURE), not the raw code", () => {
+  it("maps a terminal HTTP_FORBIDDEN code to HTTP_ACCESS_BLOCKED, not the raw code", () => {
     // Regression: previously `buildFailureOutcome` cast `reason.code` directly
     // to `EnrichmentOutcomeKind`, producing an invalid kind like "HTTP_FORBIDDEN"
     // that would fail validation on round-trip. Now it must map to a valid kind.
@@ -249,7 +249,7 @@ describe("buildFailureOutcome", () => {
     });
 
     expect(outcome.kind).not.toBe("HTTP_FORBIDDEN");
-    expect(outcome.kind).toBe("UNSUPPORTED_STRUCTURE");
+    expect(outcome.kind).toBe("HTTP_ACCESS_BLOCKED");
     expect(outcome.rejection?.code).toBe("HTTP_FORBIDDEN");
 
     // And it must round-trip validly
@@ -266,7 +266,7 @@ describe("buildFailureOutcome", () => {
       ["LOW_CONTENT_QUALITY", "LOW_CONTENT_QUALITY"],
       ["UNSUPPORTED_STRUCTURE", "UNSUPPORTED_STRUCTURE"],
       ["HEADLESS_REQUIRED", "HEADLESS_REQUIRED"],
-      ["HTTP_FORBIDDEN", "UNSUPPORTED_STRUCTURE"],
+      ["HTTP_FORBIDDEN", "HTTP_ACCESS_BLOCKED"],
       ["HTTP_NOT_FOUND", "UNSUPPORTED_STRUCTURE"],
       ["FETCH_TIMEOUT", "UNSUPPORTED_STRUCTURE"],
       ["DUPLICATE_OR_REDUNDANT", "SKIPPED"],

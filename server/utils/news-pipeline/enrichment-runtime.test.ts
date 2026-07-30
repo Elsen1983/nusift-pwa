@@ -3824,7 +3824,10 @@ describe("getAgent3Progress with non-retryable counts", () => {
       return Promise.resolve([]);
     });
 
-    const progress = await getAgent3Progress({ includeEnriched: false });
+    const progress = await getAgent3Progress({
+      includeEnriched: false,
+      now: new Date("2026-07-29T11:30:00Z"),
+    });
 
     // nonRetryableCurrentVersionFailures = 3 (LOW_CONTENT, UNSUPPORTED, PAYWALL)
     // HTTP_ACCESS_BLOCKED items are always retryable (cooldown handled by recentlyBlocked)

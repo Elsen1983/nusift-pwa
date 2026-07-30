@@ -105,6 +105,7 @@ export async function extractArticleContentWithBrowser(
         stoppedAtText: null,
         stoppedAtClassOrId: null,
         excludedBlockCount: 0,
+        skippedCandidateReasons: [],
       },
     };
   }
@@ -288,6 +289,7 @@ function emptyDiagnostics(
     stoppedAtText: null,
     stoppedAtClassOrId: null,
     excludedBlockCount: 0,
+    skippedCandidateReasons: [],
   };
 }
 

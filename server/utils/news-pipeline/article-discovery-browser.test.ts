@@ -1700,7 +1700,7 @@ describe("page.evaluate and extractArticleDetailFromDocument equivalence", () =>
     mockChromiumLaunch.mockReset();
   });
 
-  function makeMockDocumentForEquivalence() {
+  function makeMockDocumentForEquivalence(publishedAt: string) {
     const elements: Record<string, { getAttribute: (n: string) => string | null; textContent: string | null; innerText: string }> = {
       'link[rel="canonical"]': { getAttribute: (n: string) => n === "href" ? "https://example.com/news/2026/07/20/equiv-canonical" : null, textContent: null, innerText: "" },
       'meta[name="keywords"]': { getAttribute: (n: string) => n === "content" ? "breaking, politics, world" : null, textContent: null, innerText: "" },
@@ -1708,7 +1708,7 @@ describe("page.evaluate and extractArticleDetailFromDocument equivalence", () =>
 
     const jsonLdContent = JSON.stringify({
       headline: "Equivalence Test Headline",
-      datePublished: "2026-07-20T14:00:00Z",
+      datePublished: publishedAt,
       name: "Equivalence Name",
     });
 
@@ -1726,6 +1726,7 @@ describe("page.evaluate and extractArticleDetailFromDocument equivalence", () =>
   }
 
   it("page.evaluate uses standard Playwright (pageFn, singleArg) pattern and produces equivalent output", async () => {
+    const recentPublishedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
 
@@ -1739,7 +1740,7 @@ describe("page.evaluate and extractArticleDetailFromDocument equivalence", () =>
     const { extractArticleDetailFromDocument, normalizeArticleDetailFromRaw } = mod;
 
     // Build a mock document and run the pure helper directly
-    const mockDoc = makeMockDocumentForEquivalence();
+    const mockDoc = makeMockDocumentForEquivalence(recentPublishedAt);
     const helperOutput = extractArticleDetailFromDocument(
       mockDoc as any,
       "https://example.com/news/2026/07/20/equiv-article",
@@ -1748,7 +1749,7 @@ describe("page.evaluate and extractArticleDetailFromDocument equivalence", () =>
     // Verify the helper produces expected output
     expect(helperOutput.canonicalUrl).toBe("https://example.com/news/2026/07/20/equiv-canonical");
     expect(helperOutput.title).toBe("Equivalence Test Headline");
-    expect(helperOutput.publishedAtRaw).toBe("2026-07-20T14:00:00Z");
+    expect(helperOutput.publishedAtRaw).toBe(recentPublishedAt);
     expect(helperOutput.keywords).toEqual(["breaking", "politics", "world"]);
     expect(helperOutput.bodyFallback).toBe("Equivalence body text for testing the regression.");
 
@@ -1772,7 +1773,7 @@ describe("page.evaluate and extractArticleDetailFromDocument equivalence", () =>
       publishdate: null,
       timeDatetime: null,
       metaDate: null,
-      jsonLdScripts: [JSON.stringify({ headline: "Equivalence Test Headline", datePublished: "2026-07-20T14:00:00Z", name: "Equivalence Name" })],
+      jsonLdScripts: [JSON.stringify({ headline: "Equivalence Test Headline", datePublished: recentPublishedAt, name: "Equivalence Name" })],
       bodyText: "Equivalence body text for testing the regression.",
     };
 

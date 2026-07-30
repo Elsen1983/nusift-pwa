@@ -17,6 +17,7 @@ import {
   getArticleRetentionCutoff,
 } from "./article-retention-policy";
 import { isLikelyArticleUrl } from "./article-url-policy";
+import { observeAndLogUrlPolicyDecisions } from "./url-policy-decision-observer";
 
 const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
 
@@ -276,7 +277,20 @@ export function filterSitemapArticleUrls(
       if (BLOCKED_UTILITY_PATTERNS.some(({ pattern }) => pattern.test(path))) return false;
 
       // Apply article URL policy for non-article URLs (media clips, topics, etc.)
-      if (!isLikelyArticleUrl(entry.url)) return false;
+      const observedUrl = entry.url;
+      if (!isLikelyArticleUrl(observedUrl)) {
+        // ── Fire-and-forget URL policy observation (listing extraction, rejected) ──
+        // Only observe rejected URLs here. Accepted URLs are observed downstream
+        // in evaluateArticleLinkCandidateFromExtractedMetadata() during metadata
+        // evaluation, avoiding duplicate decision logs for the same URL.
+        observeAndLogUrlPolicyDecisions({
+          url: observedUrl,
+          agent: "AGENT_2",
+          stage: "listing-extraction",
+          discoveryMethod: "STATIC_LISTING",
+        }).catch(() => {});
+        return false;
+      }
 
       // Category scope filter: when a category path is provided, only keep
       // entries that live under that path. Avoids unnecessary detail fetches
@@ -1199,6 +1213,13 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
   // Apply URL policy on BOTH the article URL and the canonical URL so that
   // a canonical override cannot bypass non-article URL rejection.
   if (!isLikelyArticleUrl(articleUrl) || (canonicalUrl !== articleUrl && !isLikelyArticleUrl(canonicalUrl))) {
+    // ── Fire-and-forget URL policy observation (metadata eval) ───────
+    observeAndLogUrlPolicyDecisions({
+      url: canonicalUrl || articleUrl,
+      agent: "AGENT_2",
+      stage: "metadata-evaluation",
+      discoveryMethod: "STATIC_LISTING",
+    }).catch(() => {});
     return {
       accepted: false,
       candidate: null,
@@ -1209,6 +1230,14 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
       }),
     };
   }
+
+  // ── Fire-and-forget URL policy observation (metadata eval, accepted) ─
+  observeAndLogUrlPolicyDecisions({
+    url: canonicalUrl || articleUrl,
+    agent: "AGENT_2",
+    stage: "metadata-evaluation",
+    discoveryMethod: "STATIC_LISTING",
+  }).catch(() => {});
 
   const canonicalHostname = new URL(canonicalUrl).hostname.replace(/^www\./, "");
   const targetHostname = new URL(targetUrl).hostname.replace(/^www\./, "");

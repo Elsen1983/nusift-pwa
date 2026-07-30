@@ -213,6 +213,8 @@ export interface TopCandidateSummary {
   linkTextRatio: number;
   boilerplatePenalty: number;
   scoreReasons: string[];
+  /** Ratio of extracted text length to raw container text length (0..1). */
+  textYieldRatio: number;
 }
 
 /** Compact diagnostics for audit trails. Never contains raw HTML. */
@@ -243,6 +245,8 @@ export interface ExtractionDiagnostics {
   stoppedAtClassOrId: string | null;
   /** Number of blocks skipped due to boundary/boilerplate detection. */
   excludedBlockCount: number;
+  /** Reasons why higher-scoring candidates were skipped (e.g. 'lead_dominated', 'truncated_extraction'). */
+  skippedCandidateReasons: string[];
 }
 
 /** Score for a single body candidate container. */
@@ -252,6 +256,10 @@ interface CandidateScore {
   paragraphs: string[];
   paragraphCount: number;
   totalTextLength: number;
+  /** Raw container text length BEFORE stripping boilerplate. */
+  rawTextLength: number;
+  /** Container text length AFTER stripping boilerplate (before paragraph extraction). */
+  cleanedTextLength: number;
   averageParagraphLength: number;
   linkTextRatio: number;
   headingCount: number;
@@ -584,6 +592,19 @@ function stripNonContentElements(container: Element): void {
   }
 }
 
+function measureContainerText(element: Element): {
+  rawTextLength: number;
+  cleanedTextLength: number;
+} {
+  const rawTextLength = (element.textContent || "").trim().length;
+  const clone = element.cloneNode(true) as Element;
+  stripNonContentElements(clone);
+  return {
+    rawTextLength,
+    cleanedTextLength: (clone.textContent || "").trim().length,
+  };
+}
+
 /**
  * Compute the ratio of link text to total text in a container.
  * High link-text ratio suggests navigation/related sections.
@@ -820,6 +841,7 @@ function scoreCandidate(
 ): CandidateScore | null {
   // Clone to avoid mutating original
   const clone = element.cloneNode(true) as Element;
+  const { rawTextLength, cleanedTextLength } = measureContainerText(element);
   stripNonContentElements(clone);
 
   const paragraphs = extractMeaningfulParagraphs(clone);
@@ -940,12 +962,37 @@ function scoreCandidate(
   if (boundaryMarkerCount >= 3) { score -= 15; scoreReasons.push("many_boundary_markers"); }
   else if (boundaryMarkerCount >= 1) { score -= 8; scoreReasons.push("some_boundary_markers"); }
 
+  // Penalize low text yield: extracted text is much less than raw container text.
+  // This catches containers where boundary/boilerplate detection stopped too early
+  // or where only a lead portion was captured from a larger container.
+  const textYieldRatio = rawTextLength > 0 ? totalTextLength / rawTextLength : 1;
+  if (rawTextLength > 1000 && textYieldRatio < 0.3) {
+    score -= 25;
+    scoreReasons.push("low_text_yield");
+  } else if (rawTextLength > 800 && textYieldRatio < 0.4) {
+    score -= 15;
+    scoreReasons.push("moderate_low_text_yield");
+  }
+
+  // Penalize lead-dominant patterns: first paragraph is much shorter than average,
+  // suggesting the container opens with a credit/byline/teaser that could dominate.
+  if (paragraphCount >= 2) {
+    const firstParaLen = paragraphs[0]!.length;
+    const avgLen = averageParagraphLength;
+    if (firstParaLen < avgLen * 0.3 && firstParaLen < 200 && totalTextLength < 2000) {
+      score -= 12;
+      scoreReasons.push("lead_dominant_opening");
+    }
+  }
+
   return {
     element,
     selector,
     paragraphs,
     paragraphCount,
     totalTextLength,
+    rawTextLength,
+    cleanedTextLength,
     averageParagraphLength,
     linkTextRatio,
     headingCount,
@@ -1074,6 +1121,7 @@ function tryExpandCandidate(
   if (expanded.paragraphCount < 4 || expanded.totalTextLength < 1200) {
     const siblings: string[] = [...expanded.paragraphs];
     const seen = new Set(siblings.map((s) => s.trim().toLowerCase()));
+    const includedSiblingElements = new Set<Element>();
 
     const containerParent = expanded.element.parentElement;
     if (containerParent) {
@@ -1100,13 +1148,16 @@ function tryExpandCandidate(
         stripNonContentElements(siblingClone);
 
         const siblingParagraphs = extractMeaningfulParagraphs(siblingClone);
+        let addedParagraph = false;
         for (const para of siblingParagraphs) {
           const normalized = para.trim().toLowerCase();
           if (!seen.has(normalized)) {
             seen.add(normalized);
             siblings.push(para);
+            addedParagraph = true;
           }
         }
+        if (addedParagraph) includedSiblingElements.add(sibling);
       }
 
       // Also collect siblings BEFORE the container (some layouts have content above)
@@ -1131,23 +1182,35 @@ function tryExpandCandidate(
         stripNonContentElements(siblingClone);
 
         const siblingParagraphs = extractMeaningfulParagraphs(siblingClone);
+        let addedParagraph = false;
         for (const para of siblingParagraphs) {
           const normalized = para.trim().toLowerCase();
           if (!seen.has(normalized)) {
             seen.add(normalized);
             siblings.push(para);
+            addedParagraph = true;
           }
         }
+        if (addedParagraph) includedSiblingElements.add(sibling);
       }
     }
 
     if (siblings.length > expanded.paragraphCount) {
       const totalLen = siblings.reduce((sum, p) => sum + p.length, 0);
+      let siblingRawTextLength = 0;
+      let siblingCleanedTextLength = 0;
+      for (const sibling of includedSiblingElements) {
+        const measured = measureContainerText(sibling);
+        siblingRawTextLength += measured.rawTextLength;
+        siblingCleanedTextLength += measured.cleanedTextLength;
+      }
       const expandedCandidate: CandidateScore = {
         ...expanded,
         paragraphs: siblings,
         paragraphCount: siblings.length,
         totalTextLength: totalLen,
+        rawTextLength: expanded.rawTextLength + siblingRawTextLength,
+        cleanedTextLength: expanded.cleanedTextLength + siblingCleanedTextLength,
         averageParagraphLength: totalLen / siblings.length,
         score: expanded.score + (siblings.length - expanded.paragraphCount) * 5,
         scoreReasons: [...expanded.scoreReasons, "sibling_expansion"],
@@ -1197,9 +1260,19 @@ interface BodyExtractionResult {
   stoppedAtClassOrId: string | null;
   /** Number of blocks excluded by boundary/boilerplate detection. */
   excludedBlockCount: number;
+  /** Reasons why higher-scoring candidates were skipped (e.g. 'lead_dominated', 'truncated_extraction'). */
+  skippedCandidateReasons: string[];
 }
 
-function extractBodyText(doc: Document, excerpt?: string | null): BodyExtractionResult | null {
+/** Result returned when all candidates fail sanity checks. */
+interface BodyExtractionDiagnosticsOnly {
+  __diagnosticsOnly: true;
+  topCandidates: TopCandidateSummary[];
+  skippedCandidateReasons: string[];
+  candidateContainerCount: number;
+}
+
+function extractBodyText(doc: Document, excerpt?: string | null): BodyExtractionResult | BodyExtractionDiagnosticsOnly | null {
   const candidates = collectAndScoreCandidates(doc, excerpt);
 
   if (candidates.length === 0) return null;
@@ -1213,74 +1286,113 @@ function extractBodyText(doc: Document, excerpt?: string | null): BodyExtraction
     linkTextRatio: Math.round(c.linkTextRatio * 100) / 100,
     boilerplatePenalty: Math.round(c.boilerplatePenalty * 100) / 100,
     scoreReasons: c.scoreReasons,
+    textYieldRatio: c.rawTextLength > 0
+      ? Math.round((c.totalTextLength / c.rawTextLength) * 100) / 100
+      : 1,
   }));
 
-  // Pick the best candidate (candidates are sorted by score desc)
-  let best = candidates[0]!;
+  // ── Retry loop: try up to 3 top candidates ──
+  // If the best candidate fails post-selection sanity checks (lead-dominated,
+  // truncated extraction), try the next-best candidate before giving up.
+  const MAX_RETRIES = Math.min(candidates.length, 3);
+  const skippedCandidateReasons: string[] = [];
 
-  // Try expansion for thin candidates
-  const [expandedBest, expansionType] = tryExpandCandidate(best, doc, excerpt);
-  best = expandedBest;
-  const usedExpansion = expansionType !== null;
+  for (let i = 0; i < MAX_RETRIES; i++) {
+    let best = candidates[i]!;
 
-  // Build final text from the selected paragraphs
-  const text = best.paragraphs.join("\n\n");
+    // Try expansion for thin candidates
+    const [expandedBest, expansionType] = tryExpandCandidate(best, doc, excerpt);
+    best = expandedBest;
+    const usedExpansion = expansionType !== null;
 
-  if (!isUsableBody(text, best)) return null;
+    // Build final text from the selected paragraphs
+    const text = best.paragraphs.join("\n\n");
 
-  // Compute boundary diagnostics from the selected container
-  const boundaryCount = best.boundaryMarkerCount;
-  let stopReason: string | null = null;
-  let stoppedAtText: string | null = null;
-  let stoppedAtClassOrId: string | null = null;
-  let excludedBlockCount = 0;
+    if (!isUsableBody(text, best)) {
+      skippedCandidateReasons.push(`candidate_${i}:not_usable`);
+      continue;
+    }
 
-  if (boundaryCount > 0) {
-    stopReason = `boundary_markers_in_container:${boundaryCount}`;
-    // Find the first boundary element in the container for diagnostic detail
+    // ── Post-selection sanity checks ──
+    // Only apply to non-first candidates when the first passed isUsableBody,
+    // or to the first candidate to catch obvious failures early.
+    const paragraphs = best.paragraphs;
+    const rawLen = best.rawTextLength;
+
+    // Check 1: Lead-dominated body (only 1-2 short paragraphs from a much larger container)
+    if (isLeadDominatedBody(paragraphs, best.totalTextLength, rawLen)) {
+      skippedCandidateReasons.push(`candidate_${i}:lead_dominated`);
+      continue;
+    }
+
+    // Check 2: Truncated extraction (extracted text is a small fraction of container)
+    if (isTruncatedExtraction(best.totalTextLength, rawLen, best.cleanedTextLength, best.paragraphCount)) {
+      skippedCandidateReasons.push(`candidate_${i}:truncated_extraction`);
+      continue;
+    }
+
+    // ── Candidate passed all checks — build result ──
+
+    // Compute boundary diagnostics from the selected container
+    const boundaryCount = best.boundaryMarkerCount;
+    let stopReason: string | null = null;
+    let stoppedAtText: string | null = null;
+    let stoppedAtClassOrId: string | null = null;
+    let excludedBlockCount = 0;
+
+    if (boundaryCount > 0) {
+      stopReason = `boundary_markers_in_container:${boundaryCount}`;
+      try {
+        const children = best.element.querySelectorAll("h2, h3, h4, h5, h6, div, section, aside");
+        for (const child of children) {
+          if (isArticleEndBoundaryElement(child)) {
+            const childText = (child.textContent || "").trim();
+            stoppedAtText = childText.length > 120 ? childText.slice(0, 120) : childText || null;
+            const cls = child.getAttribute("class") || "";
+            const id = child.getAttribute("id") || "";
+            const combined = `${cls} ${id}`.trim();
+            stoppedAtClassOrId = combined.length > 160 ? combined.slice(0, 160) : combined || null;
+            break;
+          }
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    // Count excluded blocks for audit
     try {
-      const children = best.element.querySelectorAll("h2, h3, h4, h5, h6, div, section, aside");
-      for (const child of children) {
-        if (isArticleEndBoundaryElement(child)) {
-          const text = (child.textContent || "").trim();
-          stoppedAtText = text.length > 120 ? text.slice(0, 120) : text || null;
-          const cls = child.getAttribute("class") || "";
-          const id = child.getAttribute("id") || "";
-          const combined = `${cls} ${id}`.trim();
-          stoppedAtClassOrId = combined.length > 160 ? combined.slice(0, 160) : combined || null;
-          break;
+      const allBlocks = best.element.querySelectorAll("h2, h3, h4, h5, h6, div, section, aside, p, li, blockquote");
+      for (const block of allBlocks) {
+        if (isSkippableNonContentElement(block) || isInsideBoundarySection(block)) {
+          excludedBlockCount++;
         }
       }
     } catch { /* non-fatal */ }
+
+    return {
+      text: capBodyText(text),
+      method: "dom",
+      selector: best.selector,
+      score: best,
+      bodySource: usedExpansion ? "expanded-dom" : "dom",
+      candidateContainerCount: candidates.length,
+      topCandidates,
+      usedExpansion,
+      expansionType,
+      stopReason,
+      stoppedAtText,
+      stoppedAtClassOrId,
+      excludedBlockCount,
+      skippedCandidateReasons,
+    };
   }
 
-  // Count excluded blocks (skippable non-content elements and boundary sections).
-  // Note: this is a post-hoc diagnostic count computed after extraction, not during
-  // the extractMeaningfulParagraphs walk. It approximates what was skipped and is
-  // intended for audit/debug purposes, not exact block-level accounting.
-  try {
-    const allBlocks = best.element.querySelectorAll("h2, h3, h4, h5, h6, div, section, aside, p, li, blockquote");
-    for (const block of allBlocks) {
-      if (isSkippableNonContentElement(block) || isInsideBoundarySection(block)) {
-        excludedBlockCount++;
-      }
-    }
-  } catch { /* non-fatal */ }
-
+  // All candidates failed sanity checks — return null but preserve diagnostics
+  // so the caller can report skipped candidate reasons.
   return {
-    text: capBodyText(text),
-    method: "dom",
-    selector: best.selector,
-    score: best,
-    bodySource: usedExpansion ? "expanded-dom" : "dom",
-    candidateContainerCount: candidates.length,
+    __diagnosticsOnly: true as const,
     topCandidates,
-    usedExpansion,
-    expansionType,
-    stopReason,
-    stoppedAtText,
-    stoppedAtClassOrId,
-    excludedBlockCount,
+    skippedCandidateReasons,
+    candidateContainerCount: candidates.length,
   };
 }
 
@@ -1350,6 +1462,8 @@ async function extractReadabilityBodyText(
         paragraphs,
         paragraphCount: paragraphs.length,
         totalTextLength,
+        rawTextLength: totalTextLength,
+        cleanedTextLength: totalTextLength,
         linkTextRatio: 0,
         headingCount: 0,
         boilerplatePenalty: 0,
@@ -1378,6 +1492,7 @@ async function extractReadabilityBodyText(
           linkTextRatio: 0,
           boilerplatePenalty: 0,
           scoreReasons: score.scoreReasons,
+          textYieldRatio: 1,
         }],
         usedExpansion: false,
         expansionType: null,
@@ -1385,6 +1500,7 @@ async function extractReadabilityBodyText(
         stoppedAtText: null,
         stoppedAtClassOrId: null,
         excludedBlockCount: 0,
+        skippedCandidateReasons: [],
       };
     } finally {
       try { contentDom.window.close(); } catch { /* cleanup is non-fatal */ }
@@ -1613,6 +1729,80 @@ function isUsableBody(text: string, score?: CandidateScore): boolean {
 }
 
 /**
+ * Post-selection sanity check: detect lead/credit-dominated bodies.
+ *
+ * A body is lead-dominated when:
+ * - it has only 1-2 very short paragraphs (each under 150 chars)
+ * - AND the container has substantially more text available (rawTextLength > body * 3)
+ *
+ * This catches cases where the extractor captured only the credit/byline/teaser
+ * portion of a container that also holds real article paragraphs.
+ *
+ * Legitimate short articles pass this check because their containers don't have
+ * much more hidden text — the raw container text is proportional to the extracted body.
+ */
+function isLeadDominatedBody(
+  paragraphs: string[],
+  totalTextLength: number,
+  rawContainerTextLength: number,
+): boolean {
+  // Need very few, very short paragraphs to be lead-dominated
+  if (paragraphs.length > 2) return false;
+
+  const allShort = paragraphs.every((p) => p.length < 150);
+  if (!allShort) return false;
+
+  // Container has much more text than what was extracted — there's hidden content
+  if (rawContainerTextLength > totalTextLength * 3 && rawContainerTextLength > 600) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Post-selection sanity check: detect truncated extractions.
+ *
+ * An extraction is truncated when the extracted text is much shorter than
+ * the raw container text, suggesting that boundary detection or paragraph
+ * collection stopped too early inside a container that holds more content.
+ *
+ * Threshold: extracted text < 40% of raw container text, when raw > 1500 chars.
+ * This is intentionally conservative to avoid rejecting containers that simply
+ * have a lot of stripped boilerplate/nav/footer content.
+ */
+function isTruncatedExtraction(
+  totalTextLength: number,
+  rawContainerTextLength: number,
+  cleanedContainerTextLength: number,
+  paragraphCount: number,
+): boolean {
+  // Use cleanedTextLength (after boilerplate stripping) as the primary
+  // denominator. This avoids false positives when a large wrapper contains
+  // nav/header/footer/sidebar/ads that inflate rawTextLength.
+  // Fall back to rawTextLength only when cleaned is unavailable.
+  const availableText = cleanedContainerTextLength > 0
+    ? cleanedContainerTextLength
+    : rawContainerTextLength;
+
+  if (availableText < 800) return false;
+  if (totalTextLength < 1) return true;
+
+  const yieldRatio = totalTextLength / availableText;
+
+  // Flag as truncated when yield is low AND paragraphs are few.
+  // A container with 5+ paragraphs that has low yield probably had
+  // a lot of boilerplate stripped — that's fine, not truncated.
+  if (yieldRatio < 0.30 && paragraphCount < 4) return true;
+
+  // Very low yield regardless of paragraph count — only when the
+  // cleaned container is substantially larger than extracted content.
+  if (yieldRatio < 0.15 && availableText > 2000) return true;
+
+  return false;
+}
+
+/**
  * Cap body text to MAX_BODY_TEXT_CHARS.
  */
 function capBodyText(text: string): string {
@@ -1813,6 +2003,7 @@ function emptyDiagnostics(bodySource: ExtractionDiagnostics["bodySource"] = "non
     stoppedAtText: null,
     stoppedAtClassOrId: null,
     excludedBlockCount: 0,
+    skippedCandidateReasons: [],
   };
 }
 
@@ -1900,35 +2091,78 @@ export async function extractArticleContentFromHtml(
     // Pass excerpt so scoring can penalize containers that are just the summary
     let bodyResult = extractBodyText(doc, excerpt);
     const readabilityResult = await extractReadabilityBodyText(html, resolvedUrl, excerpt);
-    if (shouldPreferReadabilityBody(bodyResult, readabilityResult)) {
+
+    // Capture DOM diagnostics BEFORE readability can override them.
+    // This handles two cases:
+    //   1. extractBodyText returns BodyExtractionDiagnosticsOnly (all candidates
+    //      failed sanity checks) — preserves full candidate evaluation diagnostics.
+    //   2. extractBodyText returns BodyExtractionResult with skip reasons, but
+    //      readability is later preferred — DOM skip reasons would otherwise be lost.
+    const domDiagnosticsOnly = bodyResult && "__diagnosticsOnly" in bodyResult
+      ? bodyResult as BodyExtractionDiagnosticsOnly
+      : null;
+    const domFullResult = domDiagnosticsOnly ? null : bodyResult as BodyExtractionResult | null;
+
+    // Capture DOM diagnostics before readability comparison
+    const domSkipReasons = domDiagnosticsOnly?.skippedCandidateReasons
+      ?? domFullResult?.skippedCandidateReasons
+      ?? [];
+    const domTopCandidates = domDiagnosticsOnly?.topCandidates
+      ?? domFullResult?.topCandidates
+      ?? [];
+    const domCandidateCount = domDiagnosticsOnly?.candidateContainerCount
+      ?? domFullResult?.candidateContainerCount
+      ?? 0;
+
+    if (shouldPreferReadabilityBody(domFullResult, readabilityResult)) {
       bodyResult = readabilityResult;
+    } else if (domDiagnosticsOnly) {
+      bodyResult = null;
     }
-    let bodyText = bodyResult?.text || null;
-    const bodySource = bodyResult?.bodySource || "none";
+
+    const effectiveResult = bodyResult && "__diagnosticsOnly" in bodyResult
+      ? null
+      : bodyResult as BodyExtractionResult | null;
+
+    let bodyText = effectiveResult?.text || null;
+    const bodySource = effectiveResult?.bodySource || "none";
+
+    // Merge diagnostics: always prefer captured DOM diagnostics (which include
+    // candidate skip reasons from the full evaluation) over effectiveResult
+    // (which may be readability with empty diagnostics).
+    const mergedTopCandidates = domTopCandidates.length
+      ? domTopCandidates
+      : effectiveResult?.topCandidates ?? [];
+    const mergedSkippedReasons = domSkipReasons.length
+      ? domSkipReasons
+      : effectiveResult?.skippedCandidateReasons ?? [];
+    const mergedCandidateCount = domCandidateCount
+      || effectiveResult?.candidateContainerCount || 0;
 
     // Build diagnostics
     const diagnostics: ExtractionDiagnostics = {
-      selectedContainerSelector: bodyResult?.score.selector || null,
-      selectedContainerScore: bodyResult?.score.score ?? null,
-      selectedContainerParagraphCount: bodyResult?.score.paragraphCount ?? null,
-      selectedContainerTextLength: bodyResult?.score.totalTextLength ?? null,
-      candidateContainerCount: bodyResult?.candidateContainerCount ?? 0,
+      selectedContainerSelector: effectiveResult?.score.selector || null,
+      selectedContainerScore: effectiveResult?.score.score ?? null,
+      selectedContainerParagraphCount: effectiveResult?.score.paragraphCount ?? null,
+      selectedContainerTextLength: effectiveResult?.score.totalTextLength ?? null,
+      candidateContainerCount: mergedCandidateCount,
       bodyRejectedReason: null,
-      scoreReasons: bodyResult?.score.scoreReasons || [],
+      scoreReasons: effectiveResult?.score.scoreReasons || [],
       excerptLength: excerpt?.length ?? null,
       bodyEqualsExcerpt: false,
       bodySource,
-      linkTextRatio: bodyResult?.score.linkTextRatio ?? null,
-      boilerplatePenalty: bodyResult?.score.boilerplatePenalty ?? null,
-      topCandidates: bodyResult?.topCandidates || [],
-      usedExpansion: bodyResult?.usedExpansion || false,
-      expansionType: bodyResult?.expansionType || null,
-      leadLikePenaltyApplied: bodyResult?.score.leadLikePenaltyApplied || false,
-      stopReason: bodyResult?.stopReason ?? null,
-      boundaryMarkersSeen: bodyResult?.score.boundaryMarkerCount ?? 0,
-      stoppedAtText: bodyResult?.stoppedAtText ?? null,
-      stoppedAtClassOrId: bodyResult?.stoppedAtClassOrId ?? null,
-      excludedBlockCount: bodyResult?.excludedBlockCount ?? 0,
+      linkTextRatio: effectiveResult?.score.linkTextRatio ?? null,
+      boilerplatePenalty: effectiveResult?.score.boilerplatePenalty ?? null,
+      topCandidates: mergedTopCandidates,
+      usedExpansion: effectiveResult?.usedExpansion || false,
+      expansionType: effectiveResult?.expansionType || null,
+      leadLikePenaltyApplied: effectiveResult?.score.leadLikePenaltyApplied || false,
+      stopReason: effectiveResult?.stopReason ?? null,
+      boundaryMarkersSeen: effectiveResult?.score.boundaryMarkerCount ?? 0,
+      stoppedAtText: effectiveResult?.stoppedAtText ?? null,
+      stoppedAtClassOrId: effectiveResult?.stoppedAtClassOrId ?? null,
+      excludedBlockCount: effectiveResult?.excludedBlockCount ?? 0,
+      skippedCandidateReasons: mergedSkippedReasons,
     };
 
     // Also extract raw text from the page for paywall detection.
@@ -2000,7 +2234,7 @@ export async function extractArticleContentFromHtml(
     }
 
     // Step 10: Check minimum quality threshold
-    if (!isUsableBody(bodyText, bodyResult?.score)) {
+    if (!isUsableBody(bodyText, effectiveResult?.score)) {
       diagnostics.bodyRejectedReason = "below_quality_threshold";
 
       // Additional checks for rejection reason
@@ -2010,7 +2244,7 @@ export async function extractArticleContentFromHtml(
       }
 
       // High link ratio check
-      if (bodyResult?.score && bodyResult.score.linkTextRatio > 0.5) {
+      if (effectiveResult?.score && effectiveResult.score.linkTextRatio > 0.5) {
         diagnostics.bodyRejectedReason = "high_link_ratio";
       }
 
@@ -2031,7 +2265,7 @@ export async function extractArticleContentFromHtml(
 
     // Step 11: Compute confidence
     const confidence = computeConfidence(
-      { method: bodyResult?.method || "meta", selector: bodyResult?.score.selector || "none" },
+      { method: effectiveResult?.method || "meta", selector: effectiveResult?.score.selector || "none" },
       bodyText.length,
       !!title,
       !!excerpt,
@@ -2042,11 +2276,11 @@ export async function extractArticleContentFromHtml(
 
     const qualitySignals: string[] = [];
     if (bodyResult) {
-      qualitySignals.push(`selector:${bodyResult.score.selector}`);
-      qualitySignals.push(`method:${bodyResult.method}`);
-      qualitySignals.push(`score:${bodyResult.score.score}`);
-      qualitySignals.push(`paragraphs:${bodyResult.score.paragraphCount}`);
-      qualitySignals.push(`linkRatio:${bodyResult.score.linkTextRatio.toFixed(2)}`);
+      qualitySignals.push(`selector:${effectiveResult!.score.selector}`);
+      qualitySignals.push(`method:${effectiveResult!.method}`);
+      qualitySignals.push(`score:${effectiveResult!.score.score}`);
+      qualitySignals.push(`paragraphs:${effectiveResult!.score.paragraphCount}`);
+      qualitySignals.push(`linkRatio:${effectiveResult!.score.linkTextRatio.toFixed(2)}`);
     }
     if (paywall.isPaywall) {
       qualitySignals.push(...paywall.signals);

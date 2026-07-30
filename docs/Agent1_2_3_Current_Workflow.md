@@ -1,6 +1,6 @@
 # NuSift Agent 1-2-3 Current Pipeline Workflow
 
-Last reviewed from code: 2026-07-29
+Last reviewed from code: 2026-07-30
 
 This document describes the current NuSift content pipeline as implemented in the repository. It is written for external review by a larger model or human engineer. It focuses on operational workflow, fallback behavior, retry/cooldown policy, persistence, admin visibility, and known gaps.
 
@@ -13,6 +13,8 @@ NuSift currently uses three pipeline agents:
    - Discovers or uses RSS/Atom/JSON feeds.
    - Ingests fresh feed items into the `Article` table.
    - Falls back to HTML link extraction when feeds are unavailable.
+   - Applies the shared article URL policy before candidate creation, rejecting obvious non-article URLs such as radio clips, topic/listing pages, checkout/referral pages, account/private pages, search/feed/archive pages, and utility pages.
+   - Records `urlPolicyRejected` in structured Agent 1 skip summaries and admin/API diagnostics.
    - Produces audit artifacts and hard-case discovery candidates.
    - Runs in bounded batches for Vercel/serverless safety.
 
@@ -20,6 +22,7 @@ NuSift currently uses three pipeline agents:
    - Runs after Agent 1 batches are complete.
    - Targets sources/categories where RSS is absent, weak, non-productive, or failed.
    - Performs static web discovery from listing pages, sitemap, JSON-LD, and link extraction.
+   - Applies the same shared article URL policy in listing extraction, sitemap filtering, and article/canonical metadata evaluation.
    - Persists discovered article candidates.
    - Creates headless/browser fallback queue markers for weak/failed static discovery.
    - Browser fallback can be run separately, locally through Docker for production-like browser runtime parity.
@@ -33,6 +36,8 @@ NuSift currently uses three pipeline agents:
    - Writes article row summaries, body text, and enrichment artifacts.
 
 The pipeline is intentionally split into bounded batches. Agent 1 does not automatically run Agent 2. Agent 2 does not automatically run Agent 3. This is deliberate to avoid Vercel timeouts and to make each stage auditable.
+
+As of the latest implementation pass, the main upstream URL-quality improvement is no longer just a proposal: Agent 1 and Agent 2 now share a generic, score-based URL acceptance policy. The remaining URL-quality work is measurement and calibration: a versioned evaluation framework with tuning/holdout datasets, production-baseline comparison, and candidate shadow decisions.
 
 ## Main Runtime Surfaces
 
@@ -260,9 +265,19 @@ If the batch hits Vercel/serverless budget:
 - Persist remaining targets as deferred.
 - UI tells the admin to run Agent 1 again.
 
-### Agent 1 current known gaps
+### Agent 1 URL policy behavior
 
-Observed non-article URLs can still enter the article table through feed/discovery routes. Examples include radio clips, topic pages, checkout/referral pages, and media-only/video pages. The recommended next hardening is a shared Agent 1/2 article URL policy before persistence.
+Agent 1 now runs the shared article URL policy after canonical URL resolution and before downstream scope/duplicate/freshness checks. If the URL is classified as an obvious non-article URL:
+
+- no ingest candidate is created
+- `skipSummary.urlPolicyRejected` increments
+- `rejectedItems` records `reason: "url_policy_rejected"`
+- the Agent 1 target outcome artifact preserves `skipSummary.urlPolicyRejected`
+- the Agent 1 run summary API and admin UI expose the counter as `non-article URL: N`
+
+This currently behaves as an enforced production filter for high-confidence non-article URLs. The policy is generic and score-based rather than publisher-specific.
+
+Important limitation: the current policy is not yet backed by a labeled tuning/holdout evaluation set. The next step is not to add more hard reject rules blindly, but to measure the current production policy against candidate shadow policies.
 
 ## Agent 2 - Static Article Discovery Workflow
 
@@ -362,6 +377,19 @@ Eligible targets are converted to `ArticleDiscoveryTarget` records with:
    - Reason: `max_targets` or `time_budget`.
 
 15. Finalize `PipelineRun` and log finish/stopped status.
+
+### Agent 2 URL policy behavior
+
+Agent 2 uses the same shared URL policy as Agent 1, but at multiple discovery points:
+
+- listing extraction rejects obvious non-article anchors before candidate scoring
+- sitemap filtering rejects topic/media/feed/archive/account/checkout/utility URLs while preserving valid article URLs
+- article detail metadata evaluation checks both `articleUrl` and canonical URL override
+- a canonical URL cannot bypass URL policy rejection if it points to a non-article URL
+
+When `evaluateArticleLinkCandidateFromExtractedMetadata()` rejects a URL through this policy, it preserves existing compatibility by using the existing rejected outcome shape while adding `reason: "url_policy_rejected"`.
+
+Browser fallback does not duplicate the URL policy in its raw link scoring path. Browser-discovered candidates still flow through downstream metadata evaluation before persistence, so the shared policy is applied there.
 
 ### Agent 2 quality classification
 
@@ -831,23 +859,37 @@ The runner processes pipeline artifacts first, then articles, in time-budgeted r
 
 ## Current Known Gaps and Recommended Next Work
 
-### 1. Agent 1/2 URL acceptance hardening
+### 1. URL policy measurement and calibration
 
-Current Agent 3 diagnostics show that some non-article URLs still enter the `Article` table:
+The shared Agent 1/2 URL policy now exists and is enforced for high-confidence non-article URLs. The remaining risk is not the absence of a policy, but the absence of objective measurement.
 
-- RTE radio clips
-- BBC topic pages
-- Ground checkout/referral/private pages
-- video-only pages without meaningful article body
+Recommended next work:
 
-Recommended fix:
+- Build a versioned URL policy evaluation framework.
+- Create labeled tuning and holdout datasets.
+- Run the current production policy and candidate shadow policies on the same URLs.
+- Support `ACCEPT`, `REJECT`, and `UNCERTAIN` decisions for candidate policies.
+- Keep candidate shadow decisions non-blocking.
+- Compare false reject rate, non-article leakage, article recall, precision, uncertain rate, and policy coverage.
+- Only promote future candidate rules from `SHADOW` to `ENFORCED` after holdout results are reviewed.
 
-- Add a shared generic article URL policy before persistence in Agent 1 and Agent 2.
-- Reject obvious listing/topic/account/feed/search/radio/audio/clip/utility URLs.
-- Keep rules generic and score-based, not publisher-specific.
-- Preserve valid article URLs with date/id/long-slug/article suffix signals.
+The detailed next prompts for this work live in:
 
-### 2. Agent 3 browser fallback production readiness
+- `docs/nextPrompts/01-url-policy-evaluation-foundation.md`
+- `docs/nextPrompts/02-url-policy-evaluation-runner-metrics.md`
+- `docs/nextPrompts/03-url-policy-shadow-logging-api-admin.md`
+- `docs/nextPrompts/04-url-policy-evaluation-hardening-final-validation.md`
+
+### 2. Candidate/publication lifecycle
+
+Agent 1 and Agent 2 still create `Article` rows before Agent 3 proves that body extraction is usable. The URL policy reduces obvious leakage, but the cleaner long-term design is still one of:
+
+- an `ArticleCandidate` table that is promoted to `Article` only after URL and extraction quality gates pass
+- or separate `PipelineStatus` and `PublicationStatus` fields so the normal app feed only reads publishable rows
+
+This should not be implemented until the URL policy evaluation framework provides baseline measurements.
+
+### 3. Agent 3 browser fallback production readiness
 
 Agent 3 browser fallback exists, but should remain carefully bounded:
 
@@ -859,7 +901,7 @@ Agent 3 browser fallback exists, but should remain carefully bounded:
 
 Do not put Agent 3 browser fallback on cron until success rates are verified.
 
-### 3. Better action-oriented diagnostics
+### 4. Better action-oriented diagnostics
 
 Admin diagnostics are already useful, but can be improved with clearer categories:
 
@@ -870,12 +912,12 @@ Admin diagnostics are already useful, but can be improved with clearer categorie
 - candidate body selected too early
 - related/sidebar pollution
 
-### 4. Cron automation for Agent 3
+### 5. Cron automation for Agent 3
 
 Agent 3 should only be cron-enabled after:
 
 - normal retryable backlog behavior is stable
-- URL acceptance is hardened
+- URL acceptance is measured and calibrated
 - browser fallback behavior is production-safe
 - failure categories are clean enough for unattended operation
 
@@ -898,12 +940,20 @@ Agent 3 should only be cron-enabled after:
 
 5. Inspect Agent 3 rejection diagnostics.
    - `HTTP_ACCESS_BLOCKED`: access/cooldown/browser strategy issue.
-   - `LOW_CONTENT_QUALITY` with radio/topic/referral URLs: upstream URL acceptance issue.
+   - `LOW_CONTENT_QUALITY` with radio/topic/referral URLs: possible upstream URL policy gap or legacy article row created before the current policy.
    - `UNSUPPORTED_STRUCTURE`: possible extractor/Readability/browser fallback issue.
 
 6. Only use `forceReprocess` or `includeEnriched` for targeted testing or after extractor changes.
 
 7. Only use Agent 3 browser fallback in small batches and preferably Docker/local parity when testing.
+
+8. Inspect Agent 1 URL policy counters.
+   - In Agent 1 summary, `non-article URL: N` means obvious non-article feed items were rejected before candidate creation.
+   - This is expected when feeds contain media clips, topic pages, or utility links.
+   - A sudden spike should be reviewed by source/domain.
+
+9. Do not add new URL hard-reject rules directly.
+   - New URL policy rules should first go through the versioned evaluation/shadow framework described in `docs/nextPrompts`.
 
 ## Summary for External Review
 
@@ -913,4 +963,6 @@ The current NuSift pipeline is a staged, auditable ingestion and enrichment syst
 - Agent 2 is no-RSS/static discovery plus headless/browser recovery.
 - Agent 3 is article content extraction with custom DOM scoring, Mozilla Readability, optional browser fallback, source cooldowns, and retry policy.
 
-The architecture is now operationally coherent, but the main remaining quality issue is upstream URL acceptance: non-article URLs can still become Article rows, and Agent 3 then correctly rejects them as non-retryable. The next highest-leverage improvement is a shared generic Agent 1/2 URL policy before article persistence.
+The architecture is now operationally coherent. The shared Agent 1/2 URL policy is implemented and prevents many obvious non-article URLs from becoming candidates. The main remaining quality issue is calibration: the policy needs a versioned evaluation framework with labeled tuning/holdout datasets, production-baseline comparison, and candidate shadow decisions before additional rules are promoted to enforced behavior.
+
+The next highest-leverage improvement is therefore not another extractor tweak or broad refactor. It is the measurement foundation documented in `docs/nextPrompts`: evaluation dataset, side-effect-free production policy evaluator, candidate shadow policy, deterministic metrics, and admin/API comparison report.
