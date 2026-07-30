@@ -989,7 +989,15 @@
           </div>
 
           <div v-if="hardSources.length === 0 && !hardSourcesLoading" class="mt-3 text-xs text-on-surface-variant">
-            No hard sources detected. Either all targets are productive statically, or browser fallback resolved the remaining ones.
+            <template v-if="hardSourceSummary.evidenceTargetCount === 0">
+              No Agent 2 discovery evidence exists in the current reporting window.
+            </template>
+            <template v-else-if="hardSourceSummary.cooldownOnlyCount > 0">
+              No target currently qualifies as a hard source. {{ hardSourceSummary.cooldownOnlyCount }} target(s) are under active 429 cooldown and {{ hardSourceSummary.resolvedOrProductiveCount }} are resolved or productive.
+            </template>
+            <template v-else>
+              Evidence exists for {{ hardSourceSummary.evidenceTargetCount }} target(s), but none currently qualifies as a hard source. {{ hardSourceSummary.resolvedOrProductiveCount }} are resolved or productive.
+            </template>
           </div>
           <div v-else-if="hardSourcesLoading" class="mt-3 text-xs text-on-surface-variant">
             Loading hard sources...
@@ -1054,7 +1062,18 @@
           </div>
 
           <div v-if="hardSourceProfiles.length === 0 && !hardSourceProfilesLoading" class="mt-3 text-xs text-on-surface-variant">
-            No hard-source profiles persisted yet. Profiles are created when both static and browser discovery fail.
+            <template v-if="hardSourceSummary.qualifyingHardSourceCount > 0">
+              {{ hardSourceSummary.qualifyingHardSourceCount }} qualifying hard-source target(s) exist, but their profiles have not been generated yet.
+            </template>
+            <template v-else-if="hardSourceSummary.evidenceTargetCount === 0">
+              No profiles exist because there is no Agent 2 discovery evidence in the current reporting window.
+            </template>
+            <template v-else-if="hardSourceSummary.cooldownOnlyCount > 0">
+              No profiles exist for temporary failures. {{ hardSourceSummary.cooldownOnlyCount }} target(s) are under active 429 cooldown.
+            </template>
+            <template v-else>
+              No profiles are required: current evidence is resolved, productive, or otherwise non-qualifying.
+            </template>
           </div>
           <div v-else-if="hardSourceProfilesLoading" class="mt-3 text-xs text-on-surface-variant">
             Loading profiles...
@@ -2427,6 +2446,12 @@ type HardSourceEntry = {
 
 const hardSources = ref<HardSourceEntry[]>([]);
 const hardSourcesLoading = ref(false);
+const hardSourceSummary = ref({
+  evidenceTargetCount: 0,
+  qualifyingHardSourceCount: 0,
+  cooldownOnlyCount: 0,
+  resolvedOrProductiveCount: 0,
+});
 
 type HardSourceProfileEntry = {
   id: string;
@@ -2481,7 +2506,7 @@ const agent2HealthTargets = ref<Array<{
 }>>([]);
 const agent2HealthLoading = ref(false);
 
-const headlessQueueSummary = ref<{ total: number; byStatus: Record<string, number>; activeTotal: number; historyTotal: number; retryableTotal: number; cooldownPendingTotal: number; resolvedRecentTotal: number } | null>(null);
+const headlessQueueSummary = ref<{ total: number; byStatus: Record<string, number>; activeTotal: number; historyTotal: number; retryableTotal: number; cooldownPendingTotal: number; resolvedRecentTotal: number; cooldownOnlyTotal?: number; retryableExcludingCooldown?: number } | null>(null);
 const headlessBrowserEnvDisabled = ref(false);
 const agentLogs = ref<Array<{ id: string; status: string; displayStatus?: string; agentPrefix?: string; sourceId?: string | null; errorLog?: string | null; createdAt: string; executionTimeMs: number }>>([]);
 const agentSourceCount = ref(0);
@@ -2862,7 +2887,7 @@ const loadHeadlessQueue = async () => {
     const response = await $api<{
       ok: boolean;
       items: typeof headlessQueueItems.value;
-      summary: { total: number; byStatus: Record<string, number>; activeTotal: number; historyTotal: number; retryableTotal: number; cooldownPendingTotal: number; resolvedRecentTotal: number };
+      summary: { total: number; byStatus: Record<string, number>; activeTotal: number; historyTotal: number; retryableTotal: number; cooldownPendingTotal: number; resolvedRecentTotal: number; cooldownOnlyTotal?: number; retryableExcludingCooldown?: number };
       view: string;
       browserFallbackEnabled: boolean;
     }>(`/api/dev/article-discovery-headless-queue${viewParam}`);
@@ -2885,12 +2910,28 @@ const loadHardSources = async () => {
         scannedArtifacts: number;
         hardSources: HardSourceEntry[];
         total: number;
+        cooldownOnlyCount?: number;
+        evidenceTargetCount?: number;
+        qualifyingHardSourceCount?: number;
+        resolvedOrProductiveCount?: number;
       };
     }>("/api/dev/article-discovery-hard-sources");
     hardSources.value = response.report?.hardSources || [];
+    hardSourceSummary.value = {
+      evidenceTargetCount: response.report?.evidenceTargetCount ?? 0,
+      qualifyingHardSourceCount: response.report?.qualifyingHardSourceCount ?? hardSources.value.length,
+      cooldownOnlyCount: response.report?.cooldownOnlyCount ?? 0,
+      resolvedOrProductiveCount: response.report?.resolvedOrProductiveCount ?? 0,
+    };
   } catch (error) {
     console.error("Failed to load hard sources:", error);
     hardSources.value = [];
+    hardSourceSummary.value = {
+      evidenceTargetCount: 0,
+      qualifyingHardSourceCount: 0,
+      cooldownOnlyCount: 0,
+      resolvedOrProductiveCount: 0,
+    };
   } finally {
     hardSourcesLoading.value = false;
   }

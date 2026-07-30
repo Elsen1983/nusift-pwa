@@ -29,6 +29,22 @@ vi.mock("./text", () => ({
     if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, "");
     return u.toString();
   },
+  stableTargetKey: (
+    sourceId: string | null | undefined,
+    categoryId: string | null | undefined,
+    targetUrl: string | null | undefined,
+  ): string | null => {
+    if (!sourceId || !targetUrl) return null;
+    try {
+      const u = new URL(targetUrl);
+      u.hostname = u.hostname.toLowerCase();
+      u.hash = "";
+      if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, "");
+      return `${sourceId}|${categoryId ?? ""}|${u.toString()}`;
+    } catch {
+      return null;
+    }
+  },
 }));
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

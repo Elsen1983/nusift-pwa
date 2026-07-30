@@ -19,7 +19,11 @@ import {
 } from "./article-discovery-helpers";
 import { persistCandidates } from "./ingest";
 import type { IngestCandidate } from "./types";
-import { normalizeUrl } from "./text";
+import { stableTargetKey, normalizeTargetUrl } from "./text";
+import {
+  loadPersistedHostCooldowns,
+  type HostCooldownEvidence,
+} from "./host-cooldown-evidence";
 import { createOrUpdateHardSourceProfile, resolveHardSourceProfilesForTarget } from "./hard-source-profile";
 import { lookupActiveDiscoveryProfile } from "./agent2-discovery-profile";
 
@@ -29,7 +33,6 @@ const MAX_BROWSER_LIMIT = 3;
 const MAX_BROWSER_DETAIL_EVALUATED_LINKS = 10;
 const MAX_BROWSER_ACCEPTED_CANDIDATES = 10;
 const BROWSER_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
-const MAX_CONSECUTIVE_BROWSER_429 = 2;
 
 type HeadlessQueueInput = {
   limit?: number;
@@ -80,6 +83,7 @@ type HeadlessQueueProcessResult = {
   browserFailed?: number;
   browserCandidatesFound?: number;
   browserCooldownSkipped?: number;
+  skippedDuplicateTarget?: number;
   browserAttemptedTargets?: number;
   browserCandidatesPersisted?: { inserted: number; skipped: number; failed: number };
 };
@@ -118,15 +122,12 @@ function extractPayloadFields(payload: Record<string, unknown>) {
 
 /**
  * Safely normalize a URL for cooldown comparison, returning null on invalid input.
- * Reuses the existing normalizeUrl helper from ./text.ts which strips hash,
- * tracking params (UTM, fbclid, gclid), and trailing slashes.
+ * Uses normalizeTargetUrl which lowercases hostname, strips default ports,
+ * strips hash, tracking params, and trailing slashes. This ensures consistent
+ * normalization with stableTargetKey for cooldown identity.
  */
 function safeNormalizeUrl(raw: string): string | null {
-  try {
-    return normalizeUrl(raw) || null;
-  } catch {
-    return null;
-  }
+  return normalizeTargetUrl(raw);
 }
 
 /**
@@ -313,6 +314,28 @@ export async function processArticleDiscoveryHeadlessQueue(
   let skippedAlreadyClaimed = 0;
   const updatedArtifactIds: string[] = [];
 
+  // Same-run deduplication: prevent processing the same stable target key
+  // more than once per invocation. This prevents duplicate browser requests
+  // even when duplicate PENDING_HEADLESS artifacts exist in the database.
+  const inRunProcessedKeys = new Set<string>();
+  // Host-level cooldown: after a 429, skip all remaining targets on the
+  // same host for the rest of this run. Pre-populated from persisted DB
+  // evidence so cooldown survives across queue runs.
+  const inRunHostCooldown = new Map<string, HostCooldownEvidence>();
+
+  // ── Load persisted host cooldown evidence ─────────────────────────
+  // Load recent rate-limited artifacts from the last 2 hours. Extract
+  // hostnames from targets whose retry-after has not yet expired. This
+  // ensures host cooldown persists across queue invocations.
+  if (browserEnabled) {
+    const persistedHosts = await loadPersistedHostCooldowns().catch((error) => {
+      console.warn("[agent2-headless] Failed to load persisted host cooldown evidence.", error);
+      return new Map<string, HostCooldownEvidence>();
+    });
+    for (const [host, cooldown] of persistedHosts) inRunHostCooldown.set(host, cooldown);
+  }
+  let skippedDuplicateTarget = 0;
+
   // Browser-specific counters
   let browserProcessed = 0;
   let browserResolved = 0;
@@ -355,6 +378,54 @@ export async function processArticleDiscoveryHeadlessQueue(
     const fields = extractPayloadFields(item.payload);
     const targetUrl = fields.targetUrl!;
     const sourceId = (item.payload.sourceId as string) || item.sourceId;
+
+    // ── Same-run target deduplication ──────────────────────────────────
+    // Skip if we already processed (or claimed) this stable target key
+    // in this invocation. Prevents duplicate browser requests.
+    if (runBrowser && browserEnabled) {
+      const targetKey = stableTargetKey(sourceId, item.categoryId, targetUrl);
+      if (targetKey) {
+        if (inRunProcessedKeys.has(targetKey)) {
+          skippedDuplicateTarget += 1;
+          continue;
+        }
+        inRunProcessedKeys.add(targetKey);
+      }
+
+      // ── Host-level cooldown ───────────────────────────────────────────
+      // If a previous item in this run received a 429, skip remaining
+      // targets on the same host.
+      const targetHost = normalizeTargetUrl(targetUrl);
+      let hostname: string | null = null;
+      if (targetHost) {
+        try { hostname = new URL(targetHost).hostname; } catch { /* invalid */ }
+      }
+      const hostCooldown = hostname ? inRunHostCooldown.get(hostname) : null;
+      if (hostCooldown && Date.parse(hostCooldown.retryAfterAt) > Date.now()) {
+        browserCooldownSkipped += 1;
+        // Update payload with cooldown metadata but keep PENDING_HEADLESS.
+        await prisma.pipelineArtifact.updateMany({
+          where: {
+            id: item.id,
+            artifactType: "article_discovery_headless_required",
+            status: "PENDING_HEADLESS",
+          },
+          data: {
+            payload: {
+              ...item.payload,
+              skippedDueToBrowserCooldown: true,
+              browserRateLimited: true,
+              browserRateLimitReason: hostCooldown.reason,
+              browserRateLimitedAt: hostCooldown.rateLimitedAt,
+              browserRetryAfterAt: hostCooldown.retryAfterAt,
+              browserCooldownUntil: hostCooldown.retryAfterAt,
+              lastBrowserCooldownSkipAt: new Date().toISOString(),
+            },
+          },
+        }).catch(() => {});
+        continue;
+      }
+    }
 
     // ── Browser fallback path ──────────────────────────────────────────
     if (runBrowser) {
@@ -528,6 +599,11 @@ export async function processArticleDiscoveryHeadlessQueue(
         };
       }
 
+      // ── Detect listing-page 429 early (used in both failure and success paths) ──
+      const isListingPage429 =
+        browserResult.reason === "http_error" &&
+        /\b429\b/.test(browserResult.diagnostics.blockedReason || "");
+
       if (!browserResult.ok) {
         // Semantics note: the spec defines BROWSER_NO_CANDIDATES as "browser
         // ran but no valid article candidates survived evaluation". Here we
@@ -554,6 +630,10 @@ export async function processArticleDiscoveryHeadlessQueue(
         // Preserve the same compact browser metadata shape as the success
         // path so the admin normalizer can consume both uniformly.
         const failedFinishedAt = new Date().toISOString();
+        const listingRateLimitedAt = isListingPage429 ? new Date().toISOString() : null;
+        const listingRetryAfterAt = isListingPage429
+          ? new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString()
+          : null;
         await prisma.pipelineArtifact.updateMany({
           where: {
             id: item.id,
@@ -590,9 +670,19 @@ export async function processArticleDiscoveryHeadlessQueue(
               browserDetailFetchRecovered: 0,
               browserDetailRecoveryReasons: [],
               browserError: `Browser fallback failed: ${browserResult.reason}. ${browserResult.diagnostics.blockedReason || ""}`,
-              browserRateLimited: false,
-              browserRateLimitReason: null,
-              browserDetailEvaluationStoppedReason: null,
+              browserRateLimited: isListingPage429,
+              browserRateLimitReason: isListingPage429 ? "http_429" : null,
+              browserDetailEvaluationStoppedReason: isListingPage429 ? "rate_limited" : null,
+              // ── Listing-page 429 rate-limit metadata ───────────────────
+              browserRateLimitedAt: listingRateLimitedAt,
+              browserRetryAfterAt: listingRetryAfterAt,
+              browserRateLimitedCount: isListingPage429 ? 1 : null,
+              // ── Cooldown state (Approach A: stays PENDING_HEADLESS) ────
+              ...(isListingPage429 ? {
+                skippedDueToBrowserCooldown: true,
+                browserCooldownUntil: listingRetryAfterAt,
+                lastBrowserCooldownSkipAt: new Date().toISOString(),
+              } : {}),
               browserOutcomeSummary: {
                 totalEvaluated: 0,
                 accepted: 0,
@@ -624,6 +714,30 @@ export async function processArticleDiscoveryHeadlessQueue(
           },
         });
 
+        // ── Listing-page 429: activate host cooldown, skip hard-source profile ──
+        if (isListingPage429) {
+          // Note: browserFailed was already incremented in the general
+          // !browserResult.ok branch above, so do NOT increment again.
+          try {
+            const host = new URL(targetUrl).hostname;
+            if (host && listingRetryAfterAt) {
+              inRunHostCooldown.set(host.toLowerCase(), {
+                retryAfterAt: listingRetryAfterAt,
+                rateLimitedAt: listingRateLimitedAt,
+                reason: "http_429",
+              });
+            }
+          } catch { /* invalid URL */ }
+          await logAgentScan({
+            sourceId: item.sourceId,
+            categoryId: item.categoryId || undefined,
+            status: "ARTICLE_DISCOVERY_BROWSER_RATE_LIMITED",
+            executionTimeMs: browserResult.diagnostics.elapsedMs,
+            errorLog: `Listing-page 429 for ${targetUrl}. Host added to cooldown. Artifact stays BROWSER_NO_CANDIDATES with rate-limit metadata.`,
+          }).catch(() => {});
+          continue;
+        }
+
         await logAgentScan({
           sourceId: item.sourceId,
           categoryId: item.categoryId || undefined,
@@ -634,7 +748,7 @@ export async function processArticleDiscoveryHeadlessQueue(
 
         // Persist a hard-source profile for failed browser targets so
         // future AI inspection or custom adapter generation can work
-        // from structured evidence.
+        // from structured evidence. NOT created for 429 rate-limited targets.
         if (sourceId) {
           const topReasons = (browserResult.topRejectionReasons ?? []).map((r) => r.reason);
           const linkFilterReasons: Record<string, number> = {};
@@ -836,13 +950,22 @@ export async function processArticleDiscoveryHeadlessQueue(
               const detailReason = String(detailEval.outcome.reason || "");
               if (/\b429\b/.test(detailReason)) {
                 consecutiveBrowserRateLimitCount += 1;
-                if (consecutiveBrowserRateLimitCount >= MAX_CONSECUTIVE_BROWSER_429) {
-                  browserBlockedReason = "http_429";
-                  browserRateLimitedAt = new Date().toISOString();
-                  browserRetryAfterAt = new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString();
-                  browserError = `Browser detail fetches are rate-limited by ${targetUrl}; retry after ${browserRetryAfterAt}.`;
-                  break;
-                }
+                browserBlockedReason = "http_429";
+                browserRateLimitedAt = new Date().toISOString();
+                browserRetryAfterAt = new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString();
+                browserError = `Browser detail fetches are rate-limited by ${targetUrl}; retry after ${browserRetryAfterAt}.`;
+                // Activate host-level cooldown for the rest of this run
+                try {
+                  const host = new URL(targetUrl).hostname;
+                  if (host && browserRetryAfterAt) {
+                    inRunHostCooldown.set(host.toLowerCase(), {
+                      retryAfterAt: browserRetryAfterAt,
+                      rateLimitedAt: browserRateLimitedAt,
+                      reason: "http_429",
+                    });
+                  }
+                } catch { /* invalid URL */ }
+                break;
               } else {
                 consecutiveBrowserRateLimitCount = 0;
               }
@@ -855,11 +978,22 @@ export async function processArticleDiscoveryHeadlessQueue(
               const reason = String(evaluation.outcome.reason || "");
               if (/\b429\b/.test(reason)) {
                 consecutiveBrowserRateLimitCount += 1;
-                if (consecutiveBrowserRateLimitCount >= MAX_CONSECUTIVE_BROWSER_429) {
+                if (consecutiveBrowserRateLimitCount >= 1) {
                   browserBlockedReason = "http_429";
                   browserRateLimitedAt = new Date().toISOString();
                   browserRetryAfterAt = new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString();
                   browserError = `Browser detail fetches are rate-limited by ${targetUrl}; retry after ${browserRetryAfterAt}.`;
+                  // Activate host-level cooldown for the rest of this run
+                  try {
+                    const host = new URL(targetUrl).hostname;
+                    if (host && browserRetryAfterAt) {
+                      inRunHostCooldown.set(host.toLowerCase(), {
+                        retryAfterAt: browserRetryAfterAt,
+                        rateLimitedAt: browserRateLimitedAt,
+                        reason: "http_429",
+                      });
+                    }
+                  } catch { /* invalid URL */ }
                   break;
                 }
               } else {
@@ -1061,8 +1195,15 @@ export async function processArticleDiscoveryHeadlessQueue(
         browserNoCandidates += 1;
       }
 
+      // Do NOT create a hard-source profile when the browser was rate-limited
+      // (429). A 429 is a temporary rate-limit, not a permanent discovery failure.
+      // After cooldown expiry the target may be retried normally.
+      // Check both detail-level 429 (browserBlockedReason) and listing-page 429.
+      // isListingPage429 was already detected above before the !browserResult.ok branch.
       if (
         finalStatus === "BROWSER_NO_CANDIDATES" &&
+        browserBlockedReason !== "http_429" &&
+        !isListingPage429 &&
         (fields.quality === "failed" || fields.quality === "weak" || fields.quality === "blocked") &&
         sourceId
       ) {
@@ -1166,6 +1307,7 @@ export async function processArticleDiscoveryHeadlessQueue(
     result.browserFailed = browserFailed;
     result.browserCandidatesFound = browserCandidatesFound;
     result.browserCooldownSkipped = browserCooldownSkipped;
+    result.skippedDuplicateTarget = skippedDuplicateTarget;
     result.browserAttemptedTargets = browserAttemptedTargets;
     result.browserCandidatesPersisted = { inserted: totalInserted, skipped: totalSkipped, failed: totalFailed };
   }

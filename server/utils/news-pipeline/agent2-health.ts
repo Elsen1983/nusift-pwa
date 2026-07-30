@@ -28,6 +28,7 @@ import {
   isAgent2TargetResolved,
   type Agent2LifecycleState,
 } from "./agent2-target-lifecycle";
+import { stableTargetKey } from "./text";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -81,8 +82,11 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Legacy targetKey wrapper — delegates to shared stableTargetKey.
+ */
 function targetKey(sourceId: string, categoryId: string | null, targetUrl: string): string {
-  return `${sourceId}|${categoryId ?? ""}|${targetUrl}`;
+  return stableTargetKey(sourceId, categoryId, targetUrl) ?? `${sourceId}|${categoryId ?? ""}|${targetUrl}`;
 }
 
 // ─── Scoring logic ──────────────────────────────────────────────────────────
@@ -239,11 +243,13 @@ export async function buildAgent2HealthReport(input?: {
       createdAt: true,
       payload: true,
     },
-    orderBy: { createdAt: "asc" },
+    orderBy: { createdAt: "desc" },
     take: scanLimit,
   });
 
-  // Aggregate per-target
+  // Aggregate per-target (artifacts are newest-first due to desc ordering).
+  // First encounter of a key = most recent artifact, sets authoritative state.
+  // Subsequent (older) artifacts only contribute to failure streak.
   type TargetAgg = {
     targetUrl: string;
     sourceId: string;
@@ -265,6 +271,8 @@ export async function buildAgent2HealthReport(input?: {
     lastBrowserCooldownSkipAt: string | null;
     lastBrowserAttemptAt: string | null;
     lastBrowserFinishedAt: string | null;
+    /** Whether consecutive failure streak is still accumulating (desc-order). */
+    _streakActive: boolean;
   };
 
   const byTarget = new Map<string, TargetAgg>();
@@ -285,17 +293,17 @@ export async function buildAgent2HealthReport(input?: {
       const productive = quality === "productive";
 
       if (existing) {
-        existing.lastStaticQuality = quality ?? existing.lastStaticQuality;
-        existing.lastStaticEscalated = escalated;
-        if (productive) {
-          existing.consecutiveFailures = 0;
-          existing.lastProductiveAt = artifact.createdAt;
-        } else if (quality !== null && quality !== "productive") {
-          existing.consecutiveFailures += 1;
-          existing.lastFailureAt = artifact.createdAt;
+        // Older artifact: only contribute to failure streak if active.
+        if (existing._streakActive) {
+          if (productive) {
+            existing._streakActive = false;
+          } else if (quality !== null && quality !== "productive") {
+            existing.consecutiveFailures += 1;
+            existing.lastFailureAt = artifact.createdAt;
+          }
         }
-        if (artifact.createdAt > existing.lastSeenAt) existing.lastSeenAt = artifact.createdAt;
       } else {
+        // First (most recent) encounter — set authoritative state.
         byTarget.set(key, {
           targetUrl,
           sourceId,
@@ -317,6 +325,7 @@ export async function buildAgent2HealthReport(input?: {
           lastBrowserCooldownSkipAt: null,
           lastBrowserAttemptAt: null,
           lastBrowserFinishedAt: null,
+          _streakActive: !productive,
         });
       }
     } else if (artifact.artifactType === "article_discovery_headless_required") {
@@ -326,19 +335,17 @@ export async function buildAgent2HealthReport(input?: {
       const rateLimited = payload.browserRateLimited === true || payload.skippedDueToBrowserCooldown === true;
 
       if (existing) {
-        existing.lastBrowserStatus = artifact.status;
-        existing.lastAcceptedCount = accepted;
-        existing.lastInsertedCount = inserted;
-        if (resolved) {
-          existing.consecutiveFailures = 0;
-          existing.lastProductiveAt = artifact.createdAt;
-        } else if (BROWSER_FAILURE_STATUSES.has(artifact.status)) {
-          existing.consecutiveFailures += 1;
-          existing.lastFailureAt = artifact.createdAt;
+        // Older artifact: only contribute to failure streak if active.
+        if (existing._streakActive) {
+          if (resolved) {
+            existing._streakActive = false;
+          } else if (BROWSER_FAILURE_STATUSES.has(artifact.status)) {
+            existing.consecutiveFailures += 1;
+            existing.lastFailureAt = artifact.createdAt;
+          }
         }
         if (rateLimited) existing.inCooldown = true;
-        // Extract cooldown observability metadata from payload
-        if (artifact.createdAt > existing.lastSeenAt) existing.lastSeenAt = artifact.createdAt;
+        // Cooldown metadata: keep newest (first encounter sets it).
         const cdUntil = readString(payload.browserCooldownUntil);
         if (cdUntil) existing.browserCooldownUntil = cdUntil;
         const rlAt = readString(payload.browserRateLimitedAt);
@@ -375,6 +382,7 @@ export async function buildAgent2HealthReport(input?: {
           lastBrowserCooldownSkipAt: readString(payload.lastBrowserCooldownSkipAt),
           lastBrowserAttemptAt: readString(payload.headlessProcessingStartedAt),
           lastBrowserFinishedAt: readString(payload.browserFallbackFinishedAt),
+          _streakActive: !resolved,
         });
       }
     }

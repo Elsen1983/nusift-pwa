@@ -9,6 +9,7 @@ import {
 } from "../../utils/news-pipeline/headless-queue-normalize";
 import { isBrowserFallbackEnabled } from "../../utils/news-pipeline/article-discovery-browser";
 import { readBoundedNumber } from "../../utils/news-pipeline/parse-bounded-number";
+import { stableTargetKey } from "../../utils/news-pipeline/text";
 
 const VALID_VIEWS = new Set<HeadlessQueueView>(["active", "history", "all"]);
 const RESOLVED_TARGET_STATUSES = [
@@ -24,8 +25,7 @@ function buildTargetKey(item: {
   categoryId: string | null;
   targetUrl: string | null;
 }): string | null {
-  if (!item.sourceId || !item.targetUrl) return null;
-  return [item.sourceId, item.categoryId ?? "", item.targetUrl].join("\u0001");
+  return stableTargetKey(item.sourceId, item.categoryId, item.targetUrl);
 }
 
 async function filterItemsResolvedByNewerArtifact(

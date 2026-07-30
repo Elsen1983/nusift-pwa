@@ -342,10 +342,21 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
   });
 
   it("caps limit at 3 when runBrowser=true", async () => {
+    // Ensure browser fallback env flag is off so browserEnabled=false.
+    // When browserEnabled=false, fetchLimit = limit = min(10, MAX_BROWSER_LIMIT=3) = 3.
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    delete process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+
     findManyMock.mockResolvedValue([]);
     const fn = await loadFn();
     await fn({ dryRun: true, runBrowser: true, limit: 10 });
     expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 3 }));
+
+    if (original !== undefined) {
+      process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original;
+    } else {
+      delete process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    }
   });
 
   it("does not run browser in dry-run mode even when runBrowser=true", async () => {

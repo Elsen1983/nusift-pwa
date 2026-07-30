@@ -443,6 +443,10 @@ export type ExtendedHeadlessQueueSummary = HeadlessQueueSummary & {
   retryableTotal: number;
   cooldownPendingTotal: number;
   resolvedRecentTotal: number;
+  /** Items with evidence exist but all candidates are under cooldown. */
+  cooldownOnlyTotal: number;
+  /** Items that qualify as retryable AND are NOT under cooldown. */
+  retryableExcludingCooldown: number;
 };
 
 /**
@@ -471,6 +475,8 @@ export function buildHeadlessQueueSummary(
   let retryableTotal = 0;
   let cooldownPendingTotal = 0;
   let resolvedRecentTotal = 0;
+  let cooldownOnlyTotal = 0;
+  let retryableExcludingCooldown = 0;
 
   for (const item of items) {
     byStatus[item.status] = (byStatus[item.status] || 0) + 1;
@@ -481,11 +487,23 @@ export function buildHeadlessQueueSummary(
       historyTotal++;
     }
 
-    if (RETRYABLE_STATUSES.has(item.status)) {
+    const isRetryableStatus = RETRYABLE_STATUSES.has(item.status);
+    const isInCooldown =
+      item.skippedDueToBrowserCooldown ||
+      (item.browserRetryAfterAt !== null && new Date(item.browserRetryAfterAt).getTime() > Date.now());
+
+    // Cooldown-aware retryable classification:
+    // retryableTotal excludes items under active cooldown (per Prompt 07).
+    // cooldownPendingTotal counts all items currently blocked by cooldown
+    // (regardless of retryable status).
+    if (isRetryableStatus && !isInCooldown) {
       retryableTotal++;
+      retryableExcludingCooldown++;
+    } else if (isRetryableStatus && isInCooldown) {
+      cooldownOnlyTotal++;
     }
 
-    if (item.skippedDueToBrowserCooldown) {
+    if (isInCooldown) {
       cooldownPendingTotal++;
     }
 
@@ -497,5 +515,5 @@ export function buildHeadlessQueueSummary(
     }
   }
 
-  return { total: items.length, byStatus, activeTotal, historyTotal, retryableTotal, cooldownPendingTotal, resolvedRecentTotal };
+  return { total: items.length, byStatus, activeTotal, historyTotal, retryableTotal, cooldownPendingTotal, resolvedRecentTotal, cooldownOnlyTotal, retryableExcludingCooldown };
 }

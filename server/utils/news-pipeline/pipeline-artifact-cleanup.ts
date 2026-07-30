@@ -55,7 +55,7 @@
 
 import { prisma } from "../prisma";
 import { logAgentScan } from "./log";
-import { normalizeUrl } from "./text";
+import { stableTargetKey } from "./text";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -185,35 +185,21 @@ function readString(value: unknown): string | null {
 }
 
 /**
- * Safely normalize a URL for target comparison, returning null on invalid
- * input. Reuses the existing normalizeUrl helper from ./text.ts which strips
- * hash, tracking params (UTM, fbclid, gclid), and trailing slashes.
- */
-function safeNormalizeUrl(raw: string): string | null {
-  try {
-    return normalizeUrl(raw) || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Build a strict target key from sourceId + categoryId + normalized targetUrl.
  * Returns null if any required component is missing — meaning the artifact
  * cannot be safely matched for superseded logic and must rely on status-age
  * cleanup only.
  *
- * categoryId null vs non-null is significant and preserved in the key.
+ * Uses the shared stableTargetKey() helper from ./text.ts to ensure
+ * consistent normalization with all other target-key consumers
+ * (queue processor, hard-source tracking, admin API, etc.).
  */
 function buildTargetKey(
   sourceId: string | null,
   categoryId: string | null,
   targetUrl: string | null,
 ): string | null {
-  if (!sourceId || !targetUrl) return null;
-  const normalized = safeNormalizeUrl(targetUrl);
-  if (!normalized) return null;
-  return [sourceId, categoryId ?? "", normalized].join("\u0001");
+  return stableTargetKey(sourceId, categoryId, targetUrl);
 }
 
 type ArtifactRow = {

@@ -6,6 +6,7 @@ import { RssStatus } from '@prisma/client';
 import 'dotenv/config'; 
 import { prisma } from '../server/utils/prisma'; 
 import * as isoPackage from 'i18n-iso-countries';
+import { normalizeSourceIdentityUrl } from '../server/utils/source-url-identity';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -129,12 +130,12 @@ async function processJson(filePath: string, defaultStatus: RssStatus): Promise<
 
       try {
         const urlObj = new URL(resolvedUrl);
-        const rootUrl = `${urlObj.protocol}//${urlObj.hostname}`;
+        const rootUrl = normalizeSourceIdentityUrl(resolvedUrl, { rootOnly: true });
         const isCategory = urlObj.pathname !== '/' && urlObj.pathname !== '';
 
         extractedPayloads.push({
           rootUrl: rootUrl.toLowerCase().trim(),
-          fullUrl: resolvedUrl,
+          fullUrl: normalizeSourceIdentityUrl(resolvedUrl),
           isCategory,
           mediaName: cleanField(data.item.media_name) || 'Unknown Media',
           mediaType: cleanField(data.item.media_type),

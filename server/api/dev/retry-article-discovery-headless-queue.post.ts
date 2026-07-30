@@ -2,6 +2,7 @@ import { createError } from "h3";
 import { requireAdminId } from "../../utils/require-admin";
 import { assertRateLimit } from "../../utils/rate-limit";
 import { prisma } from "../../utils/prisma";
+import { createHeadlessQueueArtifactIfAbsent } from "../../utils/news-pipeline/headless-queue-artifact";
 
 const RETRIABLE_HEADLESS_STATUSES = new Set([
   "BROWSER_NO_CANDIDATES",
@@ -152,28 +153,18 @@ export default defineEventHandler(async (event) => {
     select: { id: true },
   });
 
-  const retryArtifact = await prisma.pipelineArtifact.create({
-    data: {
-      pipelineRunId: run.id,
-      sourceId,
-      categoryId: categoryId || null,
-      artifactType: "article_discovery_headless_required",
-      status: "PENDING_HEADLESS",
-      candidateCount: 0,
-      payload: retryPayload,
-      errorLog: `Manual retry requested for ${artifact.status} artifact ${artifact.id}.`,
-    },
-    select: {
-      id: true,
-      status: true,
-      sourceId: true,
-      categoryId: true,
-      payload: true,
-    },
+  const { artifact: retryArtifact, created } = await createHeadlessQueueArtifactIfAbsent({
+    pipelineRunId: run.id,
+    sourceId,
+    categoryId: categoryId || null,
+    targetUrl,
+    payload: retryPayload,
+    errorLog: `Manual retry requested for ${artifact.status} artifact ${artifact.id}.`,
   });
 
   return {
     ok: true,
     retryArtifact,
+    created,
   };
 });

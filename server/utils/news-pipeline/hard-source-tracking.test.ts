@@ -1,8 +1,12 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 
 const findManyMock = vi.fn();
 const findManySourceMock = vi.fn();
 const findManyCategoryMock = vi.fn();
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -225,6 +229,8 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
     inserted?: number;
     categoryId?: string | null;
     createdAt?: Date;
+    browserRateLimited?: boolean;
+    browserRetryAfterAt?: string | null;
   }) {
     return {
       id: `browser-${overrides.sourceId}-${overrides.targetUrl}`,
@@ -240,6 +246,9 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
         browserFallbackRan: true,
         browserAccepted: overrides.accepted ?? 0,
         browserInserted: overrides.inserted ?? 0,
+        browserRateLimited: overrides.browserRateLimited ?? false,
+        browserRateLimitReason: overrides.browserRateLimited ? "http_429" : null,
+        browserRetryAfterAt: overrides.browserRetryAfterAt ?? null,
       },
     };
   }
@@ -265,17 +274,18 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
     // visible as an AI-inspection candidate." A single static failure (+1)
     // followed by a single browser BROWSER_NO_CANDIDATES (+1) = 2 consecutive
     // failed discovery attempts, which triggers ai_inspection_candidate.
+    // Desc ordering: browser (2026-07-16) comes before static (2026-07-15).
     findManyMock.mockResolvedValue([
-      makeStaticArtifact({
-        sourceId: "src-hard",
-        targetUrl: "https://hard.com/news",
-        quality: "failed",
-      }),
       makeBrowserArtifact({
         sourceId: "src-hard",
         targetUrl: "https://hard.com/news",
         status: "BROWSER_NO_CANDIDATES",
         accepted: 0,
+      }),
+      makeStaticArtifact({
+        sourceId: "src-hard",
+        targetUrl: "https://hard.com/news",
+        quality: "failed",
       }),
     ]);
 
@@ -291,18 +301,19 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
   });
 
   it("browser resolved → NOT a hard source", async () => {
+    // Desc ordering: browser (newer) comes before static (older).
     findManyMock.mockResolvedValue([
-      makeStaticArtifact({
-        sourceId: "src-resolved",
-        targetUrl: "https://resolved.com/news",
-        quality: "failed",
-      }),
       makeBrowserArtifact({
         sourceId: "src-resolved",
         targetUrl: "https://resolved.com/news",
         status: "RESOLVED",
         accepted: 5,
         inserted: 5,
+      }),
+      makeStaticArtifact({
+        sourceId: "src-resolved",
+        targetUrl: "https://resolved.com/news",
+        quality: "failed",
       }),
     ]);
 
@@ -312,18 +323,103 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
     expect(report.total).toBe(0);
   });
 
-  it("active scoped RSS resolution hides stale Agent 2 hard-source markers", async () => {
+  it("excludes an active 429 from hard sources and counts it once as cooldown-only", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-30T12:00:00.000Z"));
     findManyMock.mockResolvedValue([
       makeStaticArtifact({
-        sourceId: "src-rss",
-        targetUrl: "https://example.com/category",
+        sourceId: "src-cooldown",
+        targetUrl: "https://cooldown.com/news",
         quality: "failed",
-        categoryId: "cat-rss",
+        createdAt: new Date("2026-07-30T11:55:00.000Z"),
       }),
+      makeBrowserArtifact({
+        sourceId: "src-cooldown",
+        targetUrl: "https://cooldown.com/news",
+        status: "BROWSER_NO_CANDIDATES",
+        browserRateLimited: true,
+        browserRetryAfterAt: "2026-07-30T13:00:00.000Z",
+        createdAt: new Date("2026-07-30T11:50:00.000Z"),
+      }),
+    ]);
+
+    const fn = await loadFn();
+    const report = await fn();
+
+    expect(report.hardSources).toEqual([]);
+    expect(report.cooldownOnlyCount).toBe(1);
+    expect(report.qualifyingHardSourceCount).toBe(0);
+    expect(report.evidenceTargetCount).toBe(1);
+    vi.useRealTimers();
+  });
+
+  it("newer static evidence does not erase active browser cooldown", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-30T12:00:00.000Z"));
+    findManyMock.mockResolvedValue([
+      makeStaticArtifact({
+        sourceId: "src-mixed",
+        targetUrl: "https://mixed.com/news",
+        quality: "failed",
+        createdAt: new Date("2026-07-30T11:59:00.000Z"),
+      }),
+      makeBrowserArtifact({
+        sourceId: "src-mixed",
+        targetUrl: "https://mixed.com/news",
+        status: "BROWSER_NO_CANDIDATES",
+        browserRateLimited: true,
+        browserRetryAfterAt: "2026-07-30T13:00:00.000Z",
+        createdAt: new Date("2026-07-30T11:58:00.000Z"),
+      }),
+    ]);
+
+    const fn = await loadFn();
+    const report = await fn();
+
+    expect(report.cooldownOnlyCount).toBe(1);
+    expect(report.hardSources).toHaveLength(0);
+    vi.useRealTimers();
+  });
+
+  it("expired 429 can qualify as a hard source again", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-30T14:00:00.000Z"));
+    findManyMock.mockResolvedValue([
+      makeBrowserArtifact({
+        sourceId: "src-expired",
+        targetUrl: "https://expired.com/news",
+        status: "BROWSER_NO_CANDIDATES",
+        browserRateLimited: true,
+        browserRetryAfterAt: "2026-07-30T13:00:00.000Z",
+      }),
+      makeStaticArtifact({
+        sourceId: "src-expired",
+        targetUrl: "https://expired.com/news",
+        quality: "failed",
+      }),
+    ]);
+
+    const fn = await loadFn();
+    const report = await fn();
+
+    expect(report.cooldownOnlyCount).toBe(0);
+    expect(report.hardSources).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it("active scoped RSS resolution hides stale Agent 2 hard-source markers", async () => {
+    // Desc ordering: browser (newer) comes before static (older).
+    findManyMock.mockResolvedValue([
       makeBrowserArtifact({
         sourceId: "src-rss",
         targetUrl: "https://example.com/category",
         status: "BROWSER_NO_CANDIDATES",
+        categoryId: "cat-rss",
+      }),
+      makeStaticArtifact({
+        sourceId: "src-rss",
+        targetUrl: "https://example.com/category",
+        quality: "failed",
         categoryId: "cat-rss",
       }),
     ]);
@@ -345,17 +441,18 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
   });
 
   it("runtime unavailable → recommended action is run_browser, not AI inspection", async () => {
+    // Desc ordering: browser (newer) comes before static (older).
     findManyMock.mockResolvedValue([
-      makeStaticArtifact({
-        sourceId: "src-unavail",
-        targetUrl: "https://unavail.com/news",
-        quality: "blocked",
-      }),
       makeBrowserArtifact({
         sourceId: "src-unavail",
         targetUrl: "https://unavail.com/news",
         status: "BROWSER_RUNTIME_UNAVAILABLE",
         accepted: 0,
+      }),
+      makeStaticArtifact({
+        sourceId: "src-unavail",
+        targetUrl: "https://unavail.com/news",
+        quality: "blocked",
       }),
     ]);
 
@@ -386,18 +483,20 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
   });
 
   it("weak static WITH escalation + browser failure IS a hard source → AI inspection (single + single = 2 attempts)", async () => {
+    // Desc ordering: newest artifact must come first in mock array.
+    // Browser artifact (2026-07-16) is newer than static (2026-07-15).
     findManyMock.mockResolvedValue([
-      makeStaticArtifact({
-        sourceId: "src-weak-esc",
-        targetUrl: "https://weak-esc.com/news",
-        quality: "weak",
-        escalated: true,
-      }),
       makeBrowserArtifact({
         sourceId: "src-weak-esc",
         targetUrl: "https://weak-esc.com/news",
         status: "BROWSER_NO_CANDIDATES",
         accepted: 0,
+      }),
+      makeStaticArtifact({
+        sourceId: "src-weak-esc",
+        targetUrl: "https://weak-esc.com/news",
+        quality: "weak",
+        escalated: true,
       }),
     ]);
 
@@ -429,17 +528,18 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
   });
 
   it("preserves sourceId, categoryId, targetUrl in the entry", async () => {
+    // Desc ordering: browser (newer) comes before static (older).
     findManyMock.mockResolvedValue([
-      makeStaticArtifact({
-        sourceId: "src-cat",
-        targetUrl: "https://cat.com/sports",
-        quality: "failed",
-        categoryId: "cat-1",
-      }),
       makeBrowserArtifact({
         sourceId: "src-cat",
         targetUrl: "https://cat.com/sports",
         status: "BROWSER_NO_CANDIDATES",
+        categoryId: "cat-1",
+      }),
+      makeStaticArtifact({
+        sourceId: "src-cat",
+        targetUrl: "https://cat.com/sports",
+        quality: "failed",
         categoryId: "cat-1",
       }),
     ]);

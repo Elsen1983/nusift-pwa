@@ -12,6 +12,7 @@ const evaluateArticleLinkCandidateWithBrowserMock = vi.fn();
 const persistCandidatesMock = vi.fn();
 const createOrUpdateHardSourceProfileMock = vi.fn();
 const resolveHardSourceProfilesForTargetMock = vi.fn();
+const loadPersistedHostCooldownsMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -85,6 +86,11 @@ vi.mock("./hard-source-profile", () => ({
 // return values intended for cooldown checks and queue fetch tests.
 vi.mock("./agent2-discovery-profile", () => ({
   lookupActiveDiscoveryProfile: vi.fn().mockResolvedValue(null),
+}));
+
+// Mock the persisted host cooldown loader so it doesn't consume findMany mocks.
+vi.mock("./host-cooldown-evidence", () => ({
+  loadPersistedHostCooldowns: (...args: unknown[]) => loadPersistedHostCooldownsMock(...args),
 }));
 
 vi.mock("./types", () => ({}));
@@ -189,11 +195,13 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     persistCandidatesMock.mockReset();
     createOrUpdateHardSourceProfileMock.mockReset();
     resolveHardSourceProfilesForTargetMock.mockReset();
+    loadPersistedHostCooldownsMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
     isBrowserFallbackEnabledMock.mockReturnValue(true);
     persistCandidatesMock.mockResolvedValue({ inserted: 0, skipped: 0, failed: 0 });
     createOrUpdateHardSourceProfileMock.mockResolvedValue("profile-1");
     resolveHardSourceProfilesForTargetMock.mockResolvedValue(0);
+    loadPersistedHostCooldownsMock.mockResolvedValue(new Map());
   });
 
   async function loadFn() {
@@ -951,8 +959,10 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
       expect(result.browserNoCandidates).toBe(1);
       expect(result.browserResolved).toBe(0);
     }
-    expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledTimes(2);
-    expect(evaluateArticleLinkCandidateWithBrowserMock).toHaveBeenCalledTimes(2);
+    // With first-429 semantics, the loop breaks after the first 429
+    // (link 0 evaluation + link 0 recovery = 1 call each, then break)
+    expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledTimes(1);
+    expect(evaluateArticleLinkCandidateWithBrowserMock).toHaveBeenCalledTimes(1);
     expect(persistCandidatesMock).not.toHaveBeenCalled();
 
     const finalCall = updateManyMock.mock.calls[1]![0];
@@ -963,12 +973,42 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     expect(finalCall.data.payload.browserDetailEvaluationStoppedReason).toBe("rate_limited");
     expect(finalCall.data.payload.browserRateLimitedAt).toEqual(expect.any(String));
     expect(finalCall.data.payload.browserRetryAfterAt).toEqual(expect.any(String));
-    expect(finalCall.data.payload.browserRateLimitedCount).toBe(2);
+    expect(finalCall.data.payload.browserRateLimitedCount).toBe(1);
     expect(finalCall.data.payload.browserError).toContain("rate-limited");
-    expect(finalCall.data.payload.browserEvaluated).toBe(2);
+    expect(finalCall.data.payload.browserEvaluated).toBe(1);
   });
 
   // ── Browser cooldown (Approach A) ───────────────────────────────────
+
+  it("preserves exact persisted host cooldown metadata when skipping a target", async () => {
+    const retryAfterAt = "2099-07-30T13:00:00.000Z";
+    loadPersistedHostCooldownsMock.mockResolvedValue(new Map([[
+      "example.com",
+      {
+        retryAfterAt,
+        rateLimitedAt: "2099-07-30T12:00:00.000Z",
+        reason: "http_429",
+      },
+    ]]));
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true, limit: 1 });
+
+    if (result.dryRun) throw new Error("Expected queue processing result.");
+    expect(result.browserCooldownSkipped).toBe(1);
+    expect(discoverArticleLinksWithBrowserMock).not.toHaveBeenCalled();
+    const payload = updateManyMock.mock.calls[0]![0].data.payload;
+    expect(payload).toMatchObject({
+      browserRateLimited: true,
+      browserRateLimitReason: "http_429",
+      browserRateLimitedAt: "2099-07-30T12:00:00.000Z",
+      browserRetryAfterAt: retryAfterAt,
+      browserCooldownUntil: retryAfterAt,
+      skippedDueToBrowserCooldown: true,
+    });
+  });
 
   it("skips browser work when cooldown is active and keeps artifact as PENDING_HEADLESS", async () => {
     const targetUrl = "https://example.com/news";
@@ -977,6 +1017,7 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
 
     // First findMany = queue fetch (returns PENDING_HEADLESS artifacts)
     // Second findMany = cooldown check (returns rate-limited artifact for same target)
+    // (host cooldown evidence query is handled by beforeEach)
     findManyMock
       .mockResolvedValueOnce([makeArtifact({ payload: { targetUrl, sourceId: "src-1" } })])
       .mockResolvedValueOnce([{
@@ -1023,6 +1064,7 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const futureRetryAfter = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
 
     // First findMany = queue fetch, second = cooldown check with different targetUrl
+    // (host cooldown evidence query is handled by beforeEach)
     findManyMock
       .mockResolvedValueOnce([makeArtifact()])
       .mockResolvedValueOnce([{
@@ -1241,8 +1283,10 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
   });
 
   it("cooldown-skipped items do not consume the browser work cap", async () => {
-    // limit=2. First 2 items are cooldown-skipped, next 2 are valid.
-    // All 4 are fetched (fetchLimit >= 4), but only 2 valid ones run browser work.
+    // limit=2. First 2 items are cooldown-skipped (same target), next 2 are valid.
+    // With same-run dedup, art-cool-2 is deduped (same stableTargetKey as art-cool-1)
+    // before reaching the cooldown check. So browserCooldownSkipped=1, skippedDuplicateTarget=1.
+    // The 2 valid items still run browser work.
     const cooldownUrl = "https://example.com/news";
     const validUrl1 = "https://example.com/tech";
     const validUrl2 = "https://example.com/sports";
@@ -1261,15 +1305,13 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
       payload: { targetUrl: cooldownUrl, browserRateLimited: true, browserRetryAfterAt: futureRetryAfter },
     };
 
-    // Each artifact needs a cooldown check (findMany) before the cap is evaluated.
-    // art-cool-1: cooldown match → skip (no cap consumed)
-    // art-cool-2: cooldown match → skip (no cap consumed)
-    // art-valid-1: no cooldown → claim → browser work (attempted=1)
-    // art-valid-2: no cooldown → claim → browser work (attempted=2)
+    // art-cool-1: dedup check (new target key) → cooldown match → skip (no cap consumed)
+    // art-cool-2: dedup check (same target key) → dedup skip (no cooldown check)
+    // art-valid-1: dedup check (new target key) → no cooldown → claim → browser work
+    // art-valid-2: dedup check (new target key) → no cooldown → claim → browser work
     findManyMock
       .mockResolvedValueOnce(artifacts)          // queue fetch
       .mockResolvedValueOnce([cooldownArtifact]) // cooldown check art-cool-1
-      .mockResolvedValueOnce([cooldownArtifact]) // cooldown check art-cool-2
       .mockResolvedValueOnce([])                 // cooldown check art-valid-1
       .mockResolvedValueOnce([]);                // cooldown check art-valid-2
 
@@ -1287,8 +1329,10 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
 
     expect(result.dryRun).toBe(false);
     if (!result.dryRun) {
-      expect(result.browserCooldownSkipped).toBe(2);
-      // The 2 valid items should have run browser work despite 2 cooldown skips
+      // art-cool-1 hits cooldown check, art-cool-2 is deduped
+      expect(result.browserCooldownSkipped).toBe(1);
+      expect(result.skippedDuplicateTarget).toBe(1);
+      // The 2 valid items should have run browser work despite cooldown + dedup skips
       expect(result.browserAttemptedTargets).toBe(2);
       expect(result.browserProcessed).toBe(2);
     }

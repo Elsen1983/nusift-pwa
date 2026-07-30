@@ -26,6 +26,7 @@
  */
 
 import { prisma } from "../prisma";
+import { stableTargetKey, normalizeTargetUrl } from "./text";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,18 @@ export type HardSourceReport = {
   hardSources: HardSourceEntry[];
   /** Total hard-source count (convenience for admin summary). */
   total: number;
+  /**
+   * Targets that have evidence but are currently under active 429 cooldown.
+   * These are NOT included in hardSources because a 429 is a temporary
+   * rate-limit, not a permanent discovery failure.
+   */
+  cooldownOnlyCount: number;
+  /** Total targets with any evidence (hard-sources + cooldown-only + non-qualifying). */
+  evidenceTargetCount: number;
+  /** Targets that qualify as hard sources (same as hardSources.length). */
+  qualifyingHardSourceCount: number;
+  /** Targets that were productive or resolved (excluded from report). */
+  resolvedOrProductiveCount: number;
 };
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -127,6 +140,13 @@ type AggregatedTarget = {
   consecutiveFailedDiscoveryAttempts: number;
   /** Most recent artifact timestamp (used for ordering + recency). */
   lastSeenAt: Date;
+  /** Whether consecutive failure streak is still accumulating (desc-order aggregation). */
+  _streakActive: boolean;
+  /** Exact rate-limit fields from persisted payload (for cooldown classification). */
+  browserRateLimited: boolean;
+  browserRateLimitReason: string | null;
+  browserRateLimitedAt: string | null;
+  browserRetryAfterAt: string | null;
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -145,8 +165,13 @@ function readBoolean(value: unknown): boolean {
   return value === true;
 }
 
+/**
+ * Legacy targetKey wrapper — delegates to shared stableTargetKey.
+ * Returns empty string on invalid input for backward compat with callers
+ * that don't check null.
+ */
 function targetKey(sourceId: string, categoryId: string | null, targetUrl: string): string {
-  return `${sourceId}|${categoryId ?? ""}|${targetUrl}`;
+  return stableTargetKey(sourceId, categoryId, targetUrl) ?? `${sourceId}|${categoryId ?? ""}|${targetUrl}`;
 }
 
 function isActiveScopedRssResolution(input: {
@@ -170,6 +195,17 @@ function isActiveScopedRssResolution(input: {
  *
  * Artifacts are assumed to be passed in createdAt-ascending order so the
  * "last" values naturally reflect the most recent artifact for each target.
+ */
+/**
+ * Aggregate a single artifact into the per-target map.
+ *
+ * IMPORTANT: Artifacts are now expected in createdAt-DESCENDING order
+ * (newest first). The FIRST encounter of a target key is the most recent
+ * artifact and sets the authoritative state. Subsequent (older) artifacts
+ * only contribute to the consecutive failure streak counter.
+ *
+ * This ensures the most recent state is never overwritten by stale data
+ * when the query uses `orderBy: { createdAt: "desc" }`.
  */
 function aggregateArtifact(
   byTarget: Map<string, AggregatedTarget>,
@@ -199,17 +235,22 @@ function aggregateArtifact(
       (quality !== "weak" || escalated);
 
     if (existing) {
-      existing.lastStaticQuality = quality ?? existing.lastStaticQuality;
-      existing.lastStaticEscalated = escalated;
-      if (productive) {
-        existing.consecutiveFailedDiscoveryAttempts = 0;
-      } else if (failed) {
-        existing.consecutiveFailedDiscoveryAttempts += 1;
+      // Older artifact: fill in missing fields and contribute to failure streak.
+      // Always update lastStaticQuality if the existing entry doesn't have it
+      // (can happen when the first-encounter artifact was a browser artifact).
+      if (existing.lastStaticQuality === null && quality !== null) {
+        existing.lastStaticQuality = quality;
+        existing.lastStaticEscalated = escalated;
       }
-      if (artifact.createdAt > existing.lastSeenAt) {
-        existing.lastSeenAt = artifact.createdAt;
+      if (existing._streakActive) {
+        if (productive) {
+          existing._streakActive = false; // stop counting further back
+        } else if (failed) {
+          existing.consecutiveFailedDiscoveryAttempts += 1;
+        }
       }
     } else {
+      // First (most recent) encounter — set authoritative state.
       byTarget.set(key, {
         targetUrl,
         sourceId,
@@ -222,6 +263,11 @@ function aggregateArtifact(
         lastInsertedCount: null,
         consecutiveFailedDiscoveryAttempts: productive ? 0 : failed ? 1 : 0,
         lastSeenAt: artifact.createdAt,
+        _streakActive: !productive,
+        browserRateLimited: false,
+        browserRateLimitReason: null,
+        browserRateLimitedAt: null,
+        browserRetryAfterAt: null,
       });
     }
     return;
@@ -232,22 +278,31 @@ function aggregateArtifact(
     const inserted = readNumber(payload.browserInserted);
 
     if (existing) {
-      existing.lastBrowserStatus = artifact.status;
-      existing.lastAcceptedCount = accepted;
-      existing.lastInsertedCount = inserted;
-      // Browser RESOLVED resets the failure streak (browser unblocked it).
-      // Browser failure (no candidates / runtime unavailable / etc.) IS a
-      // failed discovery attempt and increments the streak — this matches the
-      // spec acceptance: "static and browser both fail → AI-inspection candidate".
-      if (artifact.status === "RESOLVED" || (accepted !== null && accepted > 0)) {
-        existing.consecutiveFailedDiscoveryAttempts = 0;
-      } else if (BROWSER_FAILURE_STATUSES.has(artifact.status)) {
-        existing.consecutiveFailedDiscoveryAttempts += 1;
+      // Older artifact: fill in missing fields and contribute to failure streak.
+      // Always update lastBrowserStatus if the existing entry doesn't have it
+      // (can happen when the first-encounter artifact was a static artifact).
+      if (existing.lastBrowserStatus === null) {
+        existing.lastBrowserStatus = artifact.status;
+        existing.lastAcceptedCount = accepted;
+        existing.lastInsertedCount = inserted;
+        existing.browserRateLimited = payload.browserRateLimited === true;
+        existing.browserRateLimitReason = readString(payload.browserRateLimitReason);
+        existing.browserRateLimitedAt = readString(payload.browserRateLimitedAt);
+        existing.browserRetryAfterAt =
+          readString(payload.browserRetryAfterAt) ?? readString(payload.browserCooldownUntil);
       }
-      if (artifact.createdAt > existing.lastSeenAt) {
-        existing.lastSeenAt = artifact.createdAt;
+      const resolved = artifact.status === "RESOLVED" || (accepted !== null && accepted > 0);
+      if (existing._streakActive) {
+        if (resolved) {
+          existing._streakActive = false;
+        } else if (BROWSER_FAILURE_STATUSES.has(artifact.status)) {
+          existing.consecutiveFailedDiscoveryAttempts += 1;
+        }
       }
     } else {
+      // First (most recent) encounter — set authoritative state.
+      const resolved = artifact.status === "RESOLVED" || (accepted !== null && accepted > 0);
+      const rateLimited = payload.browserRateLimited === true;
       byTarget.set(key, {
         targetUrl,
         sourceId,
@@ -258,13 +313,14 @@ function aggregateArtifact(
         lastBrowserStatus: artifact.status,
         lastAcceptedCount: accepted,
         lastInsertedCount: inserted,
-        consecutiveFailedDiscoveryAttempts:
-          artifact.status === "RESOLVED" || (accepted !== null && accepted > 0)
-            ? 0
-            : BROWSER_FAILURE_STATUSES.has(artifact.status)
-              ? 1
-              : 0,
+        consecutiveFailedDiscoveryAttempts: resolved ? 0 : BROWSER_FAILURE_STATUSES.has(artifact.status) ? 1 : 0,
         lastSeenAt: artifact.createdAt,
+        _streakActive: !resolved,
+        browserRateLimited: rateLimited,
+        browserRateLimitReason: readString(payload.browserRateLimitReason),
+        browserRateLimitedAt: readString(payload.browserRateLimitedAt),
+        browserRetryAfterAt:
+          readString(payload.browserRetryAfterAt) ?? readString(payload.browserCooldownUntil),
       });
     }
   }
@@ -361,10 +417,13 @@ export async function buildHardSourceReport(input?: {
       createdAt: true,
       payload: true,
     },
-    orderBy: { createdAt: "asc" },
+    orderBy: { createdAt: "desc" },
     take: scanLimit,
   });
 
+  // Aggregate artifacts newest-first. aggregateArtifact only sets
+  // lastStaticQuality / lastBrowserStatus on the FIRST encounter of each
+  // target key (i.e. the most recent artifact), preserving newest state.
   const byTarget = new Map<string, AggregatedTarget>();
   for (const artifact of artifacts) {
     aggregateArtifact(byTarget, artifact);
@@ -404,6 +463,10 @@ export async function buildHardSourceReport(input?: {
   );
 
   const hardSources: HardSourceEntry[] = [];
+  let cooldownOnlyCount = 0;
+  let evidenceTargetCount = 0;
+  let resolvedOrProductiveCount = 0;
+  const nowMs = Date.now();
   for (const target of byTarget.values()) {
     const activeSource = activeSourceById.get(target.sourceId) || null;
     const activeCategory =
@@ -418,16 +481,42 @@ export async function buildHardSourceReport(input?: {
       categoryRssStatus: activeCategory?.rssStatus || null,
     });
 
-    if (target.resolvedByAgent1ScopedRss) continue;
+    if (target.lastStaticQuality !== null || target.lastBrowserStatus !== null) {
+      evidenceTargetCount += 1;
+    }
+
+    if (target.resolvedByAgent1ScopedRss) {
+      resolvedOrProductiveCount += 1;
+      continue;
+    }
 
     // Filter out productive static targets — never hard sources.
-    if (target.lastStaticQuality === "productive") continue;
+    if (target.lastStaticQuality === "productive") {
+      resolvedOrProductiveCount += 1;
+      continue;
+    }
 
     // Filter out browser-resolved targets.
     const browserResolved =
       target.lastBrowserStatus === "RESOLVED" ||
       (target.lastAcceptedCount !== null && target.lastAcceptedCount > 0);
-    if (browserResolved) continue;
+    if (browserResolved) {
+      resolvedOrProductiveCount += 1;
+      continue;
+    }
+
+    const retryAfterMs = target.browserRetryAfterAt
+      ? Date.parse(target.browserRetryAfterAt)
+      : Number.NaN;
+    if (
+      target.browserRateLimited &&
+      target.browserRateLimitReason === "http_429" &&
+      Number.isFinite(retryAfterMs) &&
+      retryAfterMs > nowMs
+    ) {
+      cooldownOnlyCount += 1;
+      continue;
+    }
 
     // A static target counts as failed only when it is failed/blocked, OR
     // weak WITH escalation. Weak-without-escalation targets are stable and
@@ -470,11 +559,19 @@ export async function buildHardSourceReport(input?: {
     return b.targetUrl.localeCompare(a.targetUrl);
   });
 
+  // Count targets that have evidence but are excluded because they
+  // are under active 429 cooldown (not permanent failures).
+  // Uses EXACT persisted rate-limit fields from the artifact payload,
+  // not approximate status-based checks.
   return {
     generatedAt: new Date().toISOString(),
     scannedArtifacts: artifacts.length,
     hardSources,
     total: hardSources.length,
+    cooldownOnlyCount,
+    evidenceTargetCount,
+    qualifyingHardSourceCount: hardSources.length,
+    resolvedOrProductiveCount,
   };
 }
 
@@ -498,6 +595,11 @@ export function classifyRecommendedNextAction(input: {
     lastStaticEscalated: true,
     lastInsertedCount: null,
     lastSeenAt: new Date(0),
+    _streakActive: true,
+    browserRateLimited: false,
+    browserRateLimitReason: null,
+    browserRateLimitedAt: null,
+    browserRetryAfterAt: null,
     ...input,
   });
 }

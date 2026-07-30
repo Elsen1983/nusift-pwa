@@ -5,8 +5,10 @@ const mockAssertRateLimit = vi.fn();
 const mockReadBody = vi.fn();
 const mockFindUnique = vi.fn();
 const mockFindFirst = vi.fn();
+const mockFindMany = vi.fn();
 const mockArtifactCreate = vi.fn();
 const mockRunCreate = vi.fn();
+const mockAdvisoryLock = vi.fn();
 
 (globalThis as any).defineEventHandler = (fn: any) => fn;
 (globalThis as any).readBody = (...args: any[]) => mockReadBody(...args);
@@ -40,6 +42,14 @@ vi.mock("../../utils/rate-limit", () => ({
 
 vi.mock("../../utils/prisma", () => ({
   prisma: {
+    $transaction: async (callback: (tx: unknown) => unknown) =>
+      callback({
+        $queryRawUnsafe: (...args: any[]) => mockAdvisoryLock(...args),
+        pipelineArtifact: {
+          findMany: (...args: any[]) => mockFindMany(...args),
+          create: (...args: any[]) => mockArtifactCreate(...args),
+        },
+      }),
     pipelineArtifact: {
       findUnique: (...args: any[]) => mockFindUnique(...args),
       findFirst: (...args: any[]) => mockFindFirst(...args),
@@ -59,6 +69,8 @@ describe("POST /api/dev/retry-article-discovery-headless-queue", () => {
     mockAssertRateLimit.mockResolvedValue(undefined);
     mockReadBody.mockResolvedValue({ artifactId: "artifact-1" });
     mockFindFirst.mockResolvedValue(null);
+    mockFindMany.mockResolvedValue([]);
+    mockAdvisoryLock.mockResolvedValue([]);
     mockFindUnique.mockResolvedValue({
       id: "artifact-1",
       artifactType: "article_discovery_headless_required",
@@ -133,7 +145,6 @@ describe("POST /api/dev/retry-article-discovery-headless-queue", () => {
           retryRequestedByUserId: "admin-1",
         }),
       }),
-      select: expect.any(Object),
     }));
   });
 

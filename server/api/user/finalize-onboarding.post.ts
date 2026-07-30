@@ -6,6 +6,7 @@ import { runNewsPipeline } from "../../utils/news-pipeline/orchestrator";
 import { requireUserId } from "../../utils/require-user";
 import { validateHostname, SSRFError } from "../../utils/ssrf-guard";
 import { shouldRevalidateExistingSource } from "../../utils/source-trust";
+import { normalizeSourceIdentityUrl } from "../../utils/source-url-identity";
 import { ISO_LANG_CODES } from "../../utils/langCodes"; // ÚJ: Importáljuk a nyelv-Set-et (Ellenőrizd az elérési utat!)
 
 const MAX_SUBMITTED_SOURCES = 20;
@@ -63,7 +64,7 @@ function normalizeUrl(raw: string) {
   const incomingPath = incomingUrlObj.pathname
     .replace(/(^\/|\/$)/g, "")
     .toLowerCase();
-  const pureRootUrl = `${incomingUrlObj.protocol}//${incomingUrlObj.hostname}`;
+  const pureRootUrl = normalizeSourceIdentityUrl(raw, { rootOnly: true });
   return { incomingUrlObj, cleanIncomingHostname, incomingPath, pureRootUrl };
 }
 
@@ -361,7 +362,7 @@ export default defineEventHandler(async (event) => {
                 name: incomingUrlObj.pathname
                   .substring(1)
                   .replace(/\//g, " - "),
-                pathUrl: rawUrl,
+                pathUrl: normalizeSourceIdentityUrl(rawUrl),
                 isUserRequested: true,
                 rssStatus: normalizeRssStatus("PENDING_DISCOVERY", null),
               },

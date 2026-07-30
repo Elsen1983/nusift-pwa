@@ -969,6 +969,7 @@ const resolveCategoryFeedUrl = async (
     id: string;
     pathUrl: string;
     rssFeedUrl: string | null;
+    feedProvenance?: string | null;
     discoveryEvidence?: unknown;
     lastRssCheckAt?: Date | null;
   } | null,
@@ -1120,6 +1121,7 @@ const resolveCategoryFeedUrl = async (
           lastError: errorMessage,
         },
       ),
+      preserveSubmittedFeed: category.feedProvenance === "USER_SUBMITTED",
     });
 
     return {
@@ -1289,8 +1291,19 @@ const markCategoryAsNoRssFound = async (
     lastError?: string;
     discoveryEvidence?: ReturnType<typeof buildDiscoveryEvidencePayload>;
     shouldIncrementNonProductiveRuns?: boolean;
+    preserveSubmittedFeed?: boolean;
   },
 ) => {
+  if (opts?.preserveSubmittedFeed) {
+    await logAgentScan({
+      sourceId,
+      categoryId,
+      status: "CATEGORY_HANDOFF_SKIPPED_USER_SUBMITTED",
+      executionTimeMs: 0,
+      errorLog: `Preserved USER_SUBMITTED feed after ${opts.reason || "unknown"} failure.`,
+    });
+    return;
+  }
   const shouldIncrement = opts?.shouldIncrementNonProductiveRuns !== false;
   try {
     await prisma.sourceCategory.update({
@@ -1379,6 +1392,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             id: true,
             pathUrl: true,
             rssFeedUrl: true,
+            feedProvenance: true,
             discoveryEvidence: true,
             lastRssCheckAt: true,
           },
@@ -1540,6 +1554,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
           reason: "root_feed_empty",
           targetUrl: category?.pathUrl || undefined,
           lastError: lastFeedFetchError || "Feed parsed but produced 0 usable RSS/Atom items.",
+          preserveSubmittedFeed: category?.feedProvenance === "USER_SUBMITTED",
         });
         categoryFeedDiscoveryFailed = true;
       }
@@ -1790,6 +1805,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             await markCategoryAsNoRssFound(categoryId!, sourceId, {
               reason: "html_fallback_failed",
               targetUrl: category?.pathUrl || undefined,
+              preserveSubmittedFeed: category?.feedProvenance === "USER_SUBMITTED",
             });
           }
           return {
@@ -1843,6 +1859,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             reason: "html_fallback_exception",
             targetUrl: category?.pathUrl || undefined,
             lastError: fallbackError?.message || String(fallbackError),
+            preserveSubmittedFeed: category?.feedProvenance === "USER_SUBMITTED",
           });
         }
         return {
@@ -1954,6 +1971,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         reason: "root_feed_fetch_exception",
         targetUrl: category?.pathUrl || undefined,
         lastError: error?.message || String(error),
+        preserveSubmittedFeed: category?.feedProvenance === "USER_SUBMITTED",
       });
     }
 

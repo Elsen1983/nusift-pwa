@@ -1,4 +1,5 @@
 import { prisma } from "../prisma";
+import { createHeadlessQueueArtifactIfAbsent } from "./headless-queue-artifact";
 import { safeFetch } from "../ssrf-guard";
 import { logAgentScan } from "./log";
 import { createPipelineRun, finalizePipelineRun } from "./artifacts";
@@ -1532,15 +1533,12 @@ export async function runArticleDiscoveryBatch(input?: {
 
       // Persist escalation marker artifact when static discovery is insufficient.
       if (result.qualityAssessment.shouldEscalateToHeadless) {
-        await prisma.pipelineArtifact.create({
-          data: {
-            pipelineRunId: pipelineRun.id,
-            sourceId: target.sourceId,
-            categoryId: target.categoryId || null,
-            artifactType: "article_discovery_headless_required",
-            status: "PENDING_HEADLESS",
-            candidateCount: 0,
-            payload: {
+        const queued = await createHeadlessQueueArtifactIfAbsent({
+          pipelineRunId: pipelineRun.id,
+          sourceId: target.sourceId,
+          categoryId: target.categoryId || null,
+          targetUrl: target.targetUrl,
+          payload: {
               schemaVersion: 1,
               artifactKind: "headless_escalation_marker",
               sourceId: target.sourceId,
@@ -1552,10 +1550,9 @@ export async function runArticleDiscoveryBatch(input?: {
               outcomeSummary: result.outcomeSummary,
               discoverySources: result.discoverySources,
               createdAt: new Date().toISOString(),
-            },
           },
         });
-        artifactCount += 1;
+        if (queued.created) artifactCount += 1;
       }
 
       // Resolve stale PENDING_HEADLESS markers when static discovery is now productive.

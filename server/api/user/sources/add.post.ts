@@ -5,6 +5,7 @@ import { executeTargetedDiscovery } from "../../../utils/discovery";
 import { executeTargetedCategoryDiscovery } from "../../../utils/discovery";
 import { runNewsPipeline } from "../../../utils/news-pipeline/orchestrator";
 import { shouldRevalidateExistingSource } from "../../../utils/source-trust";
+import { normalizeSourceIdentityUrl } from "../../../utils/source-url-identity";
 
 export default defineEventHandler(async (event) => {
   // 1. Authentication (session-guard validates tokenVersion)
@@ -259,7 +260,7 @@ export default defineEventHandler(async (event) => {
       });
     } else {
       // ESET 3: Teljesen ismeretlen link.
-      const pureRootUrl = `${urlObj.protocol}//${urlObj.hostname}`;
+      const pureRootUrl = normalizeSourceIdentityUrl(normalizedInputUrl, { rootOnly: true });
       const path = urlObj.pathname;
 
       // CORRECTED: Switched from .create to .upsert to prevent 500 crashes
@@ -313,7 +314,7 @@ export default defineEventHandler(async (event) => {
           data: {
             newsSourceId: newRoot.id,
             name: path.substring(1).replace(/\//g, " - "),
-            pathUrl: url,
+            pathUrl: normalizeSourceIdentityUrl(normalizedInputUrl),
             isUserRequested: true,
             rssStatus: "PENDING_DISCOVERY",
           },
