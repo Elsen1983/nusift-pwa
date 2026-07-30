@@ -2590,6 +2590,7 @@ const isAgent2BatchDisabled = computed(() =>
 );
 
 let devPanelPollTimer: number | null = null;
+let devPanelRefreshInFlight = false;
 const DEV_PANEL_POLL_MS = 10000;
 
 const formatLogTime = (value: string) =>
@@ -2926,8 +2927,17 @@ const loadAgent2Health = async () => {
 };
 
 const refreshDevPanel = async () => {
-  if (!showFullDevTools.value) return;
+  if (!showFullDevTools.value || devPanelRefreshInFlight) return;
+  devPanelRefreshInFlight = true;
   try {
+    if (isPipelineRunning.value) {
+      await Promise.all([
+        loadAgent1RunSummary(),
+        loadAgent1Progress(),
+      ]);
+      return;
+    }
+
     await Promise.all([
       loadAgentLogs(),
       loadAgent1RunSummary(),
@@ -2944,6 +2954,8 @@ const refreshDevPanel = async () => {
     ]);
   } catch (error) {
     console.error("Failed to refresh admin panel:", error);
+  } finally {
+    devPanelRefreshInFlight = false;
   }
 };
 

@@ -40,14 +40,17 @@ export default defineNuxtRouteMiddleware(async (to, from) => {
       // Pointing to your existing validation endpoint
       await $fetch('/api/auth/user-validate');
     } catch (error: any) {
-      // Pass the 'error' object to the console logger to satisfy SonarQube
-      console.warn("Sovereign Shield: Active session rejected by authority. Forcing eviction.", error);
-      
-      tokenCookie.value = null;
-      hasActiveSession = false;
-      authStore.$reset();
-      
-      return navigateTo(AUTH_PATH, { replace: true });
+      const status = error?.statusCode ?? error?.status ?? error?.response?.status;
+      if (status === 401) {
+        console.warn("Sovereign Shield: Active session rejected by authority. Forcing eviction.", error);
+        tokenCookie.value = null;
+        hasActiveSession = false;
+        authStore.$reset();
+        return navigateTo(AUTH_PATH, { replace: true });
+      }
+
+      // Infrastructure failures must not destroy an otherwise valid client session.
+      console.warn("Sovereign Shield: Session authority temporarily unavailable. Preserving session.", error);
     }
   }
   // 2. ANCHOR SYNC-CHECK (Ghost State Prevention)
