@@ -22,6 +22,15 @@ import {
 } from "./url-policy-evaluation";
 import type { Prisma } from "@prisma/client";
 
+/**
+ * Per-URL persistence is intentionally opt-in until callers use a bounded,
+ * request-scoped batch writer. Unbounded fire-and-forget writes can exhaust a
+ * serverless instance's database pool during large Agent 1/2 runs.
+ */
+export function isUrlPolicyDecisionPersistenceEnabled(): boolean {
+  return process.env.NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE === "true";
+}
+
 // ─── Query Parameter Sanitization ───────────────────────────────────────────
 
 /** Sensitive query parameter names that should be stripped from logged URLs. */
@@ -216,6 +225,15 @@ export async function observeAndLogUrlPolicyDecisions(
   candidateArtifactId: string | null;
 }> {
   const decisions = observeUrlPolicyDecisions(input);
+
+  if (!isUrlPolicyDecisionPersistenceEnabled()) {
+    return {
+      production: decisions.production,
+      candidate: decisions.candidate,
+      productionArtifactId: null,
+      candidateArtifactId: null,
+    };
+  }
 
   // Resolve or create a shared PipelineRun for this observation batch
   const pipelineRunId = options?.pipelineRunId ?? (await ensureUrlPolicyRun());

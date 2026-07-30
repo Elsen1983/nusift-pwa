@@ -99,6 +99,17 @@ const report = runUrlPolicyEvaluation(createTuningDataset(), createHoldoutDatase
 // report.comparison
 ```
 
+## Online Decision Persistence Safety
+
+Per-URL decision persistence is disabled by default. Agent 1 and Agent 2 still
+evaluate production and candidate decisions, but they do not create observation
+PipelineRun and PipelineArtifact rows unless
+`NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE=true`.
+
+Do not enable this flag in production until persistence is converted to a
+bounded, request-scoped batch writer that reuses the active pipeline run.
+The static tuning/holdout evaluation report does not depend on this flag.
+
 ## How to Inspect the Admin Report
 
 The admin UI at `/admin` includes a "URL Policy Evaluation" panel (visible when dev tools are enabled). It shows:

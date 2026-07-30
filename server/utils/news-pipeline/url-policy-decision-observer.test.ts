@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   sanitizeUrlForLogging,
   observeUrlPolicyDecisions,
+  observeAndLogUrlPolicyDecisions,
   buildDecisionLogIdempotencyKey,
   getRecentUrlPolicyDecisions,
+  isUrlPolicyDecisionPersistenceEnabled,
 } from "./url-policy-decision-observer";
 import {
   evaluateProductionUrlPolicy,
@@ -132,6 +134,48 @@ describe("observeUrlPolicyDecisions", () => {
     const first = observeUrlPolicyDecisions(input);
     const second = observeUrlPolicyDecisions(input);
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+});
+
+describe("URL policy decision persistence safety", () => {
+  it("is disabled by default and performs no persistence work", async () => {
+    const previous = process.env.NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE;
+    delete process.env.NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE;
+
+    try {
+      expect(isUrlPolicyDecisionPersistenceEnabled()).toBe(false);
+      const result = await observeAndLogUrlPolicyDecisions({
+        url: "https://example.com/news/2026/07/30/safe-default",
+        agent: "AGENT_1",
+        stage: "rss-ingest",
+        discoveryMethod: "RSS",
+      });
+
+      expect(result.productionArtifactId).toBeNull();
+      expect(result.candidateArtifactId).toBeNull();
+      expect(result.production).toBeDefined();
+      expect(result.candidate).toBeDefined();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE;
+      } else {
+        process.env.NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE = previous;
+      }
+    }
+  });
+
+  it("requires an exact true flag value", () => {
+    const previous = process.env.NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE;
+    process.env.NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE = "false";
+    expect(isUrlPolicyDecisionPersistenceEnabled()).toBe(false);
+    process.env.NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE = "true";
+    expect(isUrlPolicyDecisionPersistenceEnabled()).toBe(true);
+
+    if (previous === undefined) {
+      delete process.env.NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE;
+    } else {
+      process.env.NUXT_ENABLE_URL_POLICY_DECISION_PERSISTENCE = previous;
+    }
   });
 });
 
