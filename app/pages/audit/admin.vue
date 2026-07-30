@@ -71,7 +71,7 @@
                 Refresh logs
               </button>
               <button
-                v-if="canRunDestructiveActions"
+                v-if="pipelineResetEnabled"
                 @click="clearAgentLogs"
                 :disabled="isClearingLogs"
                 class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -2106,7 +2106,7 @@
                 Refresh logs
               </button>
               <button
-                v-if="canRunDestructiveActions"
+                v-if="pipelineResetEnabled"
                 @click="clearAgentLogs"
                 :disabled="isClearingLogs"
                 class="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-bold text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
@@ -2167,6 +2167,7 @@ const canAccessDevPanel = ref(false);
 const canRunManualPipeline = ref(false);
 const canRunArticleDiscovery = ref(false);
 const canRunDestructiveActions = ref(false);
+const pipelineResetEnabled = ref(false);
 const cleanupDeletionEnabled = ref(false);
 const canUseFullDevTools = ref(false);
 const isPipelineRunning = ref(false);
@@ -2667,6 +2668,7 @@ const checkDevPanelAccess = async () => {
     canRunManualPipeline.value = false;
     canRunArticleDiscovery.value = false;
     canRunDestructiveActions.value = false;
+    pipelineResetEnabled.value = false;
     cleanupDeletionEnabled.value = false;
     canUseFullDevTools.value = false;
     stopDevPanelPolling();
@@ -2685,6 +2687,7 @@ const checkDevPanelAccess = async () => {
       canRunManualPipeline.value = false;
       canRunArticleDiscovery.value = false;
       canRunDestructiveActions.value = false;
+      pipelineResetEnabled.value = false;
       cleanupDeletionEnabled.value = false;
       canUseFullDevTools.value = false;
       stopDevPanelPolling();
@@ -2697,6 +2700,7 @@ const checkDevPanelAccess = async () => {
       manualPipelineEnabled?: boolean;
       manualArticleDiscoveryEnabled?: boolean;
       destructiveActionsEnabled?: boolean;
+      pipelineResetEnabled?: boolean;
       cleanupDeletionEnabled?: boolean;
       diagnosticsEnabled?: boolean;
     };
@@ -2704,6 +2708,7 @@ const checkDevPanelAccess = async () => {
     canRunManualPipeline.value = payload.manualPipelineEnabled !== false;
     canRunArticleDiscovery.value = payload.manualArticleDiscoveryEnabled === true;
     canRunDestructiveActions.value = payload.destructiveActionsEnabled === true;
+    pipelineResetEnabled.value = payload.pipelineResetEnabled === true;
     cleanupDeletionEnabled.value = payload.cleanupDeletionEnabled === true;
     canUseFullDevTools.value = payload.diagnosticsEnabled === true;
     return canAccessDevPanel.value;
@@ -2712,6 +2717,7 @@ const checkDevPanelAccess = async () => {
     canRunManualPipeline.value = false;
     canRunArticleDiscovery.value = false;
     canRunDestructiveActions.value = false;
+    pipelineResetEnabled.value = false;
     cleanupDeletionEnabled.value = false;
     canUseFullDevTools.value = false;
     stopDevPanelPolling();
@@ -2960,11 +2966,16 @@ const refreshDevPanel = async () => {
 };
 
 const clearAgentLogs = async () => {
-  if (!showFullDevTools.value || !canRunDestructiveActions.value || isClearingLogs.value) return;
+  if (!showFullDevTools.value || !pipelineResetEnabled.value || isClearingLogs.value) return;
+  const confirmed = window.confirm(
+    "Permanently delete ALL articles, agent logs, pipeline artifacts, and pipeline runs? This cannot be undone.",
+  );
+  if (!confirmed) return;
   isClearingLogs.value = true;
   try {
     const response = await $api<{ ok: boolean; deletedCount: number; articleCount?: number; artifactCount?: number; runCount?: number }>("/api/dev/agent-logs", {
       method: "DELETE",
+      body: { confirmation: "DELETE_ALL_PIPELINE_DATA" },
     });
     agentLogs.value = [];
     await feedStore.fetchFeed({ force: true });
@@ -3640,6 +3651,7 @@ watch(
       canRunManualPipeline.value = false;
       canRunArticleDiscovery.value = false;
       canRunDestructiveActions.value = false;
+      pipelineResetEnabled.value = false;
       cleanupDeletionEnabled.value = false;
       canUseFullDevTools.value = false;
       stopDevPanelPolling();
@@ -3657,6 +3669,7 @@ watch(
       canRunManualPipeline.value = false;
       canRunArticleDiscovery.value = false;
       canRunDestructiveActions.value = false;
+      pipelineResetEnabled.value = false;
       cleanupDeletionEnabled.value = false;
       canUseFullDevTools.value = false;
       stopDevPanelPolling();

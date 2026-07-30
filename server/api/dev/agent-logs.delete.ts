@@ -6,8 +6,12 @@ import { prisma } from "../../utils/prisma";
 export default defineEventHandler(async (event) => {
   await requireAdminId(event);
 
-  if (process.env.NODE_ENV === "production") {
-    throw createError({ statusCode: 403, statusMessage: "Dev endpoints disabled in production." });
+  const body = await readBody(event).catch(() => ({}));
+  if (body?.confirmation !== "DELETE_ALL_PIPELINE_DATA") {
+    throw createError({
+      statusCode: 400,
+      statusMessage: "Explicit pipeline reset confirmation is required.",
+    });
   }
 
   await assertRateLimit(event, "agent-logs-delete", 3, 10 * 60 * 1000);
