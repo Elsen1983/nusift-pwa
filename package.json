@@ -33,6 +33,7 @@
     "bcryptjs": "^3.0.3",
     "chart.js": "^4.5.1",
     "chartjs-chart-wordcloud": "^4.4.5",
+    "chromium-bidi": "15.0.0",
     "dompurify": "^3.4.11",
     "i18n-iso-countries": "^7.14.0",
     "jsonwebtoken": "^9.0.3",

@@ -292,3 +292,49 @@ _None._
 
 - “Suspended” means inactive user subscription, not an RSS enum. An active subscription can have FAILED, DOMAIN_DEAD, or NO_RSS_FOUND health.
 - This is a point-in-time report and can become stale.
+
+## Source URL list
+
+The following is a deduplicated, alphabetically sorted list of all source target URLs shown in the report. RSS feed URLs and technical metadata URLs are intentionally excluded.
+
+1. https://444.hu
+2. https://bleacherreport.com/nascar
+3. https://bleacherreport.com/nba
+4. https://chiponline.hu
+5. https://evamagazin.hu
+6. https://fitnessfiesta.hu
+7. https://fitnesslife.hu
+8. https://ground.news/interest/science
+9. https://hu.euronews.com
+10. https://hu.euronews.com/culture/kulturalis-hirek
+11. https://kontroll.hu
+12. https://magyarnemzet.hu
+13. https://mediapiac.com
+14. https://nemzetisport.hu
+15. https://nlc.hu
+16. https://nosalty.hu
+17. https://nyito.mohosz.hu/index.php/hirfolyam
+18. https://pecaverzum.hu
+19. https://prog.hu
+20. https://telex.hu/rovat/belfold
+21. https://telex.hu/rovat/eletmod
+22. https://timesofindia.indiatimes.com/world/europe
+23. https://www.asiabulletin.com
+24. https://www.bbc.com
+25. https://www.bignewsnetwork.com/category/arizona-news
+26. https://www.blikk.hu/politika
+27. https://www.corkbeo.ie/
+28. https://www.euronews.com
+29. https://www.gsplus.hu
+30. https://www.independent.ie/
+31. https://www.independent.ie/county/cork/
+32. https://www.irishmirror.ie/news/irish-news/crime/
+33. https://www.joy.hu
+34. https://www.lrt.lt/
+35. https://www.nba.com
+36. https://www.nepszava.hu/
+37. https://www.newstalk.com/news
+38. https://www.rte.ie
+39. https://www.rte.ie/news/munster/
+40. https://www.szon.hu
+41. https://www.thesun.ie/
