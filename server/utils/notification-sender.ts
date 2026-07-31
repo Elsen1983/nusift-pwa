@@ -12,17 +12,23 @@ const slotHours: Record<"MORNING" | "NOON" | "EVENING", number[]> = {
   EVENING: [18, 22],
 };
 
+export type DailyNotificationSlot = keyof typeof slotHours;
+
 function isWithinSlot(slot: "MORNING" | "NOON" | "EVENING", now = new Date()) {
   const hour = now.getHours();
   const [start, end] = slotHours[slot];
   return hour >= start! && hour <= end!;
 }
 
-export async function sendDueDailyNotifications(now = new Date()) {
+export async function sendDueDailyNotifications(
+  now = new Date(),
+  requestedSlots?: DailyNotificationSlot[],
+) {
+  const selectedSlots = requestedSlots?.length ? new Set(requestedSlots) : null;
   const users = await prisma.user.findMany({
     where: {
       notificationScheduleSlot: {
-        in: ["MORNING", "NOON", "EVENING"],
+        in: requestedSlots?.length ? requestedSlots : ["MORNING", "NOON", "EVENING"],
       },
     },
     select: {
@@ -53,7 +59,11 @@ export async function sendDueDailyNotifications(now = new Date()) {
   const results: Array<{ userId: string; sent: number }> = [];
 
   for (const user of users) {
-    if (!isWithinSlot(user.notificationScheduleSlot, now)) continue;
+    if (selectedSlots) {
+      if (!selectedSlots.has(user.notificationScheduleSlot)) continue;
+    } else if (!isWithinSlot(user.notificationScheduleSlot, now)) {
+      continue;
+    }
 
     const alreadySentToday = await prisma.notification.findFirst({
       where: {

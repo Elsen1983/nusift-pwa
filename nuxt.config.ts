@@ -32,7 +32,8 @@ export default defineNuxtConfig({
     "@vite-pwa/nuxt", 
     '@nuxt/icon', 
     "@nuxtjs/i18n",
-    "@nuxtjs/color-mode" // ÚJ: Color mode modul hozzáadva
+    "@nuxtjs/color-mode", // ÚJ: Color mode modul hozzáadva
+    "workflow/nuxt"
   ],
 
   // ANCHOR COLOR-MODE CONFIGURATION

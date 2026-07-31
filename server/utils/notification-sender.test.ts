@@ -36,6 +36,41 @@ describe("sendDueDailyNotifications", () => {
     notificationCreateMock.mockResolvedValue({});
   });
 
+  it("can deliver one workflow-selected slot after the terminal pipeline stage", async () => {
+    userFindManyMock.mockResolvedValue([
+      {
+        id: "morning-user",
+        email: "morning@example.com",
+        notificationScheduleSlot: "MORNING",
+        allowBreakingNotifications: true,
+        pushSubscriptions: [],
+        sourceSubscriptions: [],
+        categorySubscriptions: [],
+      },
+      {
+        id: "evening-user",
+        email: "evening@example.com",
+        notificationScheduleSlot: "EVENING",
+        allowBreakingNotifications: true,
+        pushSubscriptions: [],
+        sourceSubscriptions: [],
+        categorySubscriptions: [],
+      },
+    ]);
+
+    const { sendDueDailyNotifications } = await import("./notification-sender");
+    const result = await sendDueDailyNotifications(
+      new Date("2026-08-01T03:00:00.000Z"),
+      ["MORNING"],
+    );
+
+    expect(result).toEqual([{ userId: "morning-user", sent: 0 }]);
+    expect(notificationCreateMock).toHaveBeenCalledTimes(1);
+    expect(userFindManyMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: { notificationScheduleSlot: { in: ["MORNING"] } },
+    }));
+  });
+
   it("counts articles from each user's active source and category subscriptions", async () => {
     userFindManyMock.mockResolvedValue([
       {
