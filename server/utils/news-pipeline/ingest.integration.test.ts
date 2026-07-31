@@ -43,6 +43,14 @@ vi.mock("../ssrf-guard", () => ({ safeFetch: safeFetchMock, SSRFError: class SSR
 const logAgentScanMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("./log", () => ({ logAgentScan: logAgentScanMock }));
 
+const resolveHeadlessMarkersByAgent1RssMock = vi.hoisted(() => vi.fn().mockResolvedValue({
+  resolvedMarkerCount: 0,
+  resolvedProfileCount: 0,
+}));
+vi.mock("./agent1-rss-cleanup", () => ({
+  resolveHeadlessMarkersByAgent1Rss: resolveHeadlessMarkersByAgent1RssMock,
+}));
+
 // ── Discovery mock ────────────────────────────────────────────────────
 const discoverFeedForUrlMock = vi.hoisted(() => vi.fn());
 const hasQueryScopedCategoryTokensMock = vi.hoisted(() => vi.fn().mockReturnValue(false));
@@ -52,10 +60,18 @@ vi.mock("./feed-discovery", () => ({
 }));
 
 // ── Helpers ───────────────────────────────────────────────────────────
-const makeResponse = (body: string, ok = true) => ({
+const makeResponse = (
+  body: string,
+  ok = true,
+  status = ok ? 200 : 500,
+  headers: Record<string, string> = {},
+) => ({
   ok,
+  status,
   text: async () => body,
-  headers: { get: () => "application/rss+xml" },
+  headers: {
+    get: (name: string) => headers[name.toLowerCase()] || (name.toLowerCase() === "content-type" ? "application/rss+xml" : null),
+  },
 });
 
 const freshDate = () => new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -160,6 +176,12 @@ describe("generic RSS fallback integration", () => {
 
     // Discovery should NOT have been called (scoped feed already exists)
     expect(discoverFeedForUrlMock).not.toHaveBeenCalled();
+    expect(resolveHeadlessMarkersByAgent1RssMock).toHaveBeenCalledWith({
+      sourceId: "src-1",
+      categoryId: "cat-politics",
+      targetUrl: "https://example.com/politics",
+      rssFeedUrl: "https://example.com/politics/rss",
+    });
   });
 
   // ── 2. Generic fallback used without saving rssFeedUrl ──────────────
@@ -608,7 +630,6 @@ describe("generic RSS fallback integration", () => {
 
     // Result should be failed
     expect(result.failed).toBe(1);
-
     // resolveCategoryFeedUrl success path + outer catch markCategoryAsNoRssFound both update category
     const categoryUpdates = prismaSourceCategoryUpdateMock.mock.calls.filter(
       (call: any[]) => call[0]?.where?.id === "cat-politics",
@@ -662,12 +683,147 @@ describe("generic RSS fallback integration", () => {
 
     // Result should be failed
     expect(result.failed).toBe(1);
+    expect(result.feedUrl).toBe("https://example.com/politics/rss");
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    expect(safeFetchMock).toHaveBeenCalledWith(
+      "https://example.com/politics/rss",
+      expect.any(Object),
+    );
 
     // markCategoryAsNoRssFound should NOT have been called (scoped feed exists)
     const handoffLog = logAgentScanMock.mock.calls.find(
       (call: any[]) => call[0]?.status === "CATEGORY_HANDOFF_TO_AGENT2",
     );
     expect(handoffLog).toBeUndefined();
+    expect(resolveHeadlessMarkersByAgent1RssMock).not.toHaveBeenCalled();
+  });
+
+  it("does not run root feed discovery for a category with a scoped feed", async () => {
+    const { ingestSource } = await import("./ingest");
+    prismaNewsSourceFindUniqueMock.mockResolvedValue({
+      ...SOURCE_BASE,
+      rssFeedUrl: null,
+      rssStatus: "NO_RSS_FOUND",
+    });
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: "https://example.com/politics/rss",
+      feedProvenance: "USER_SUBMITTED",
+      discoveryEvidence: SCOPED_EVIDENCE,
+      nextRetryAt: null,
+    });
+    safeFetchMock.mockResolvedValue(makeResponse(rssXml([{
+      title: "Valid article title",
+      link: "https://example.com/politics/valid-article-title",
+      pubDate: freshDate().toUTCString(),
+    }])));
+
+    await ingestSource("src-1", "cat-politics");
+
+    expect(discoverFeedForUrlMock).not.toHaveBeenCalled();
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    expect(safeFetchMock).toHaveBeenCalledWith(
+      "https://example.com/politics/rss",
+      expect.any(Object),
+    );
+  });
+
+  it("defers a rate-limited user category feed without handing it to Agent 2", async () => {
+    const { ingestSource } = await import("./ingest");
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: "https://example.com/politics/rss",
+      feedProvenance: "USER_SUBMITTED",
+      discoveryEvidence: SCOPED_EVIDENCE,
+      nextRetryAt: null,
+    });
+    safeFetchMock.mockResolvedValue(makeResponse("", false, 429, { "retry-after": "300" }));
+
+    const result = await ingestSource("src-1", "cat-politics");
+
+    expect(result.failed).toBe(0);
+    expect(result.deferredReason).toBe("rate_limited");
+    expect(result.retryAt).toBeTruthy();
+    expect(result.hardCaseQueueCandidates).toEqual([]);
+    expect(prismaSourceCategoryUpdateMock).toHaveBeenCalledWith({
+      where: { id: "cat-politics" },
+      data: {
+        nextRetryAt: expect.toSatisfy(
+          (value: Date) => value.getTime() - Date.now() <= 5 * 60 * 1000,
+        ),
+      },
+    });
+    expect(resolveHeadlessMarkersByAgent1RssMock).not.toHaveBeenCalled();
+  });
+
+  it("honors a bounded Retry-After header for a rate-limited category feed", async () => {
+    const { ingestSource } = await import("./ingest");
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: "https://example.com/politics/rss",
+      feedProvenance: "USER_SUBMITTED",
+      discoveryEvidence: SCOPED_EVIDENCE,
+      nextRetryAt: null,
+    });
+    safeFetchMock.mockResolvedValue(makeResponse("", false, 429, { "retry-after": "120" }));
+
+    const before = Date.now();
+    await ingestSource("src-1", "cat-politics");
+
+    const retryAt = prismaSourceCategoryUpdateMock.mock.calls[0]?.[0]?.data?.nextRetryAt as Date;
+    expect(retryAt.getTime()).toBeGreaterThanOrEqual(before + 120_000);
+    expect(retryAt.getTime()).toBeLessThanOrEqual(Date.now() + 120_000);
+  });
+
+  it("recovers from a transient 429 before persisting a category cooldown", async () => {
+    const { ingestSource } = await import("./ingest");
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: "https://example.com/politics/rss",
+      feedProvenance: "USER_SUBMITTED",
+      discoveryEvidence: SCOPED_EVIDENCE,
+      nextRetryAt: null,
+    });
+    safeFetchMock
+      .mockResolvedValueOnce(makeResponse("", false, 429, { "retry-after": "0" }))
+      .mockResolvedValueOnce(makeResponse(rssXml([{
+        title: "Valid article title",
+        link: "https://example.com/politics/valid-article-title",
+        pubDate: freshDate().toUTCString(),
+      }])));
+
+    const result = await ingestSource("src-1", "cat-politics");
+
+    expect(safeFetchMock).toHaveBeenCalledTimes(2);
+    expect(result.deferredReason).toBeUndefined();
+    expect(result.feedFormat).toBe("rss");
+    expect(prismaSourceCategoryUpdateMock).not.toHaveBeenCalledWith({
+      where: { id: "cat-politics" },
+      data: { nextRetryAt: expect.any(Date) },
+    });
+  });
+
+  it("clears an expired category feed cooldown after a successful response", async () => {
+    const { ingestSource } = await import("./ingest");
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue({
+      ...CATEGORY_BASE,
+      rssFeedUrl: "https://example.com/politics/rss",
+      feedProvenance: "USER_SUBMITTED",
+      discoveryEvidence: SCOPED_EVIDENCE,
+      nextRetryAt: new Date(Date.now() - 1_000),
+    });
+    safeFetchMock.mockResolvedValue(makeResponse(rssXml([{
+      title: "Valid article title",
+      link: "https://example.com/politics/valid-article-title",
+      pubDate: freshDate().toUTCString(),
+    }])));
+
+    await ingestSource("src-1", "cat-politics");
+
+    expect(prismaSourceCategoryUpdateMock).toHaveBeenCalledWith({
+      where: { id: "cat-politics" },
+      data: { nextRetryAt: null },
+    });
   });
 
   // ── 13. HTML fallback fails → category NO_RSS_FOUND ──

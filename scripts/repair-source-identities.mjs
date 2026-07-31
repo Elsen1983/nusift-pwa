@@ -5,10 +5,14 @@ import pg from "pg";
 const args = new Set(process.argv.slice(2));
 const apply = args.has("--apply");
 const envArg = process.argv.find((arg) => arg.startsWith("--env="));
-const envFile = envArg?.slice("--env=".length) || ".env.local";
+const envFile = envArg?.slice("--env=".length) || ".env";
 const env = dotenv.parse(fs.readFileSync(envFile));
+const databaseUrl = new URL(env.DATABASE_URL);
+if (!["localhost", "127.0.0.1", "::1"].includes(databaseUrl.hostname)) {
+  throw new Error("This repair utility is local-only and refuses non-local database hosts.");
+}
 const pool = new pg.Pool({
-  connectionString: env.DATABASE_URL,
+  connectionString: databaseUrl.toString(),
   max: 1,
   connectionTimeoutMillis: 15_000,
 });

@@ -19,3 +19,19 @@ export const normalizeSourceIdentityUrl = (
 
 export const sourceIdentityKey = (rawUrl: string) =>
   normalizeSourceIdentityUrl(rawUrl).toLowerCase();
+
+export type SourceUrlIdentity = {
+  normalizedUrl: string;
+  rootUrl: string;
+  isRoot: boolean;
+};
+
+export const resolveSourceUrlIdentity = (rawUrl: string): SourceUrlIdentity => {
+  const normalizedUrl = normalizeSourceIdentityUrl(rawUrl);
+  const rootUrl = normalizeSourceIdentityUrl(rawUrl, { rootOnly: true });
+  return {
+    normalizedUrl,
+    rootUrl,
+    isRoot: normalizedUrl === rootUrl,
+  };
+};

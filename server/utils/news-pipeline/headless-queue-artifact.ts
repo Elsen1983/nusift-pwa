@@ -44,7 +44,7 @@ export async function createHeadlessQueueArtifactIfAbsent(
 
   return prisma.$transaction(async (tx) => {
     await tx.$queryRawUnsafe(
-      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0)) IS NULL AS locked",
       `article-discovery-headless:${targetKey}`,
     );
 

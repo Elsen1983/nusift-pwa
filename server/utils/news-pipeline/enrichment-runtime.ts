@@ -17,8 +17,12 @@ import {
 } from "./enrichment";
 import {
   buildEnrichmentRunSummary,
+  claimEnrichmentArticle,
+  createEmptyEnrichmentBatchPersistResult,
+  mergeEnrichmentBatchPersistResult,
   persistAttemptMarker,
   persistEnrichmentBatch,
+  recoverExpiredEnrichmentClaims,
   type EnrichmentBatchPersistResult,
 } from "./enrichment-persist";
 import { createPipelineRun } from "./artifacts";
@@ -34,6 +38,7 @@ import {
   isBrowserFallbackEligibleForFailure,
 } from "./article-content-browser-extractor";
 import type { BrowserFallbackMetadata, BrowserFallbackRunStats, BrowserDiagnostics, BrowserFallbackSkippedReason } from "./enrichment";
+import { hasUsableAgent3BodyText } from "./publication-gate";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent 3 — Article enrichment runtime batch path (Phase 2)
@@ -57,21 +62,6 @@ import type { BrowserFallbackMetadata, BrowserFallbackRunStats, BrowserDiagnosti
  */
 import { ARTICLE_RETENTION_DAYS, getArticleRetentionCutoff } from "./article-retention-policy";
 export const ENRICHMENT_FRESHNESS_DAYS = ARTICLE_RETENTION_DAYS;
-
-/**
- * Minimum body text length for an article to be considered "usable" by Agent 3.
- * Articles with bodyText shorter than this (but non-null) are considered stale
- * and eligible for reprocessing when includeEnriched=true.
- */
-export const MIN_USABLE_AGENT3_BODY_TEXT_LENGTH = 500;
-
-/**
- * Check whether a bodyText value meets the minimum quality threshold.
- * Returns false for null, undefined, or too-short text.
- */
-export function hasUsableAgent3BodyText(bodyText: string | null | undefined): boolean {
-  return typeof bodyText === "string" && bodyText.trim().length >= MIN_USABLE_AGENT3_BODY_TEXT_LENGTH;
-}
 
 /**
  * Determine whether an article needs Agent 3 reprocessing with the current extractor version.
@@ -557,27 +547,23 @@ export const selectEnrichmentEligibleArticles = async (
  * Agent 3 must NOT re-derive or overwrite upstream provenance — it preserves
  * traceability of where the article came from. The Article row does not store
  * the exact feed origin/feedUrl that Agent 1 recorded (that lives in the
- * ingest artifact payload), so we reconstruct a conservative provenance:
- *  - feedOrigin defaults to "rss" (the common case); a future Phase 2 can
- *    join the ingest artifact to recover the precise origin.
- *  - arrivedViaHardCaseRerun is unknown at the row level and left false; a
- *    future Phase 2 can recover it from the source/category discovery evidence.
- *  - ingestedAt = article.createdAt.
- *
- * This conservative reconstruction is safe because it never claims more
- * precision than the row actually holds.
+ * ingest artifact payload), so an Article-row-only fallback uses explicit
+ * unknown values rather than asserting an origin.
+ *  - feedOrigin is null until Agent 1 evidence proves it.
+ *  - discoveredFromCategoryFeed and arrivedViaHardCaseRerun are null when
+ *    the row does not prove them.
+ *  - ingestedAt = article.createdAt (the row timestamp, not a claimed feed time).
  */
 export const buildArticleProvenance = (
   article: EnrichmentEligibleArticle,
 ): ArticleUpstreamProvenance => ({
   sourceId: article.sourceId,
   categoryId: article.categoryId,
-  // Article row does not persist the exact feed origin; default to "rss".
-  // Phase 2 can recover the precise origin from the ingest PipelineArtifact.
-  feedOrigin: "rss",
+  // Article row does not prove the feed origin or discovery route.
+  feedOrigin: null,
   feedUrl: null,
-  discoveredFromCategoryFeed: Boolean(article.categoryId),
-  arrivedViaHardCaseRerun: false,
+  discoveredFromCategoryFeed: null,
+  arrivedViaHardCaseRerun: null,
   ingestedAt: article.createdAt.toISOString(),
 });
 
@@ -589,15 +575,15 @@ export const buildArticleProvenance = (
  * canonicalUrl to extract the exact feed origin, feed URL, and
  * discoveredFromCategoryFeed flag that Agent 1 recorded.
  *
- * Falls back to the conservative `buildArticleProvenance` defaults when:
+ * Falls back to the explicit-unknown `buildArticleProvenance` values when:
  *  - no ingest artifact exists for the source
  *  - no candidate matches the article's canonicalUrl
  *  - the candidate provenance is malformed
  *  - any DB query fails
  *
- * `arrivedViaHardCaseRerun` falls back to `false` (the conservative default)
- * because determining it precisely requires cross-referencing pipeline run
- * timelines, which is deferred to Phase 2.
+ * `arrivedViaHardCaseRerun` remains `null` unless the available evidence proves
+ * it; determining it precisely requires cross-referencing pipeline run timelines,
+ * which is deferred to Phase 2.
  *
  * Returns a Map from article.id → recovered provenance.
  */
@@ -620,18 +606,26 @@ export const recoverUpstreamProvenanceBatch = async (
         status: "CAPTURED",
       },
       orderBy: { createdAt: "desc" },
-      select: { sourceId: true, payload: true },
+      select: { id: true, pipelineRunId: true, sourceId: true, payload: true },
     });
 
     // Build lookup: sourceId → list of payloads (most recent first).
     // We search through all payloads for the source because an article
     // may have been ingested in an earlier run, not just the most recent.
     // Note: PipelineArtifact.sourceId is nullable; filter out nulls.
-    const ingestBySource = new Map<string, Array<Record<string, unknown>>>();
+    const ingestBySource = new Map<string, Array<{
+      id?: string;
+      pipelineRunId?: string;
+      payload: Record<string, unknown>;
+    }>>();
     for (const artifact of ingestArtifacts) {
       if (!artifact.sourceId) continue;
       const existing = ingestBySource.get(artifact.sourceId) ?? [];
-      existing.push(artifact.payload as Record<string, unknown>);
+      existing.push({
+        id: typeof artifact.id === "string" ? artifact.id : undefined,
+        pipelineRunId: typeof artifact.pipelineRunId === "string" ? artifact.pipelineRunId : undefined,
+        payload: artifact.payload as Record<string, unknown>,
+      });
       ingestBySource.set(artifact.sourceId, existing);
     }
 
@@ -660,7 +654,8 @@ export const recoverUpstreamProvenanceBatch = async (
 
       // Search through artifacts (most recent first) for the matching candidate.
       let matched = false;
-      for (const payload of payloads) {
+      for (const artifact of payloads) {
+        const payload = artifact.payload;
         const candidates = Array.isArray(payload.candidates)
           ? (payload.candidates as Array<Record<string, unknown>>)
           : [];
@@ -681,15 +676,17 @@ export const recoverUpstreamProvenanceBatch = async (
           categoryId: article.categoryId,
           feedOrigin: origin && validOrigins.has(origin)
             ? (origin as ArticleUpstreamProvenance["feedOrigin"])
-            : "rss",
+            : null,
           feedUrl: typeof prov.feedUrl === "string" ? prov.feedUrl : null,
           discoveredFromCategoryFeed:
             typeof prov.discoveredFromCategoryFeed === "boolean"
               ? prov.discoveredFromCategoryFeed
-              : Boolean(article.categoryId),
-          // Phase 1 conservative fallback: precise hard-case detection requires
-          // cross-referencing pipeline run timelines, deferred to Phase 2.
-          arrivedViaHardCaseRerun: false,
+              : null,
+          // The artifact/run references identify the evidence used for this
+          // recovery; they are never inferred when the mock/legacy row lacks them.
+          ingestArtifactId: artifact.id ?? null,
+          ingestPipelineRunId: artifact.pipelineRunId ?? null,
+          arrivedViaHardCaseRerun: null,
           ingestedAt: article.createdAt.toISOString(),
         });
         matched = true;
@@ -883,7 +880,15 @@ function buildBodyTextProvenance(
   extractedBodyText: string | null,
   forceReprocess: boolean = false,
 ): { raw: string | null; chosenValue: string | null; chosenFrom: FieldProvenanceSource; overrideReason: string } | null {
-  if (!extractedBodyText) return null;
+  if (!extractedBodyText) {
+    if (!existingBodyText || existingBodyText.trim().length === 0) return null;
+    return {
+      raw: existingBodyText,
+      chosenValue: existingBodyText,
+      chosenFrom: "unchanged",
+      overrideReason: "Kept existing body because extraction produced no replacement.",
+    };
+  }
 
   const existingLength = existingBodyText?.length ?? 0;
   const extractedLength = extractedBodyText.length;
@@ -2089,7 +2094,12 @@ export interface EnrichmentBatchOptions {
  */
 export interface EnrichmentRunResult {
   pipelineRunId: string;
+  /** Number of articles durably claimed and processed by this worker. */
   articleCount: number;
+  /** Number of selected articles another worker already owned. */
+  claimSkipped: number;
+  /** Number of expired leases released before selection. */
+  expiredClaimsRecovered: number;
   persist: EnrichmentBatchPersistResult;
   optionsUsed: {
     includeEnriched: boolean;
@@ -2150,6 +2160,11 @@ export const runEnrichmentBatch = async (
       errorLog: `Agent 3 article enrichment batch started (Phase 3 browser fallback). includeEnriched=${includeEnriched}, forceReprocess=${forceReprocess}, browserFallback=${browserFallbackEnabled} (maxAttempts=${browserFallbackMaxAttempts}, timeout=${browserTimeoutMs}ms).`,
     });
 
+    // `options.now` is the deterministic content/enrichment timestamp. Lease
+    // recovery must use the current wall clock so a historical run timestamp
+    // cannot preserve or delete claims incorrectly.
+    const expiredClaimsRecovered = await recoverExpiredEnrichmentClaims(new Date());
+
     // Source diversity: cap articles per source and round-robin across sources
     const maxArticlesPerSource = clamp(
       options?.maxArticlesPerSource ?? DEFAULT_MAX_ARTICLES_PER_SOURCE,
@@ -2179,8 +2194,10 @@ export const runEnrichmentBatch = async (
     const provenanceMap = await recoverUpstreamProvenanceBatch(diversified);
 
     const outcomes: ArticleEnrichmentOutcome[] = [];
+    const persistResult = createEmptyEnrichmentBatchPersistResult();
     const attemptMarkerIds: string[] = [];
     const sourceCooldown = new SourceCooldownTracker();
+    let claimSkipped = 0;
 
     for (const article of diversified) {
       // Skip articles from sources in cooldown
@@ -2188,10 +2205,33 @@ export const runEnrichmentBatch = async (
         sourceCooldown.incrementSkip(article.sourceId);
         continue;
       }
+
+      // Claim leases use the wall clock at the instant this article is
+      // claimed. Do not reuse the batch's deterministic content timestamp.
+      const leaseNow = new Date();
+      const claim = await claimEnrichmentArticle(
+        article.id,
+        pipelineRun.id,
+        leaseNow,
+        undefined,
+        article.enrichmentAttemptCount,
+        article.enrichmentStatus,
+      );
+      if (!claim) {
+        claimSkipped += 1;
+        await logAgentScan({
+          sourceId: article.sourceId,
+          categoryId: article.categoryId || undefined,
+          status: "ARTICLE_CONTENT_ENRICHMENT_CLAIM_SKIPPED",
+          executionTimeMs: 0,
+          errorLog: `Article ${article.id} is already owned by another Agent 3 worker.`,
+        }).catch(() => {});
+        continue;
+      }
       const provenance =
         provenanceMap.get(article.id) ?? buildArticleProvenance(article);
-      const attemptNumber = article.enrichmentAttemptCount + 1;
-      const attemptStartedAt = now.toISOString();
+      const attemptNumber = claim.attemptNumber;
+      const attemptStartedAt = claim.claimedAt.toISOString();
 
       // Emit a lightweight attempt marker before running extraction.
       // Non-fatal: if the marker fails, we still proceed with the outcome.
@@ -2282,9 +2322,19 @@ export const runEnrichmentBatch = async (
       }
 
       outcomes.push(outcome);
-    }
 
-    const persistResult = await persistEnrichmentBatch(outcomes, pipelineRun.id);
+      // Persist this article before claiming or extracting the next one. This
+      // keeps the claim lifetime bounded by one article's work rather than the
+      // entire batch and preserves the token/CAS protections in the persistence
+      // transaction. A per-article result is merged into the existing batch
+      // aggregate so PipelineRun and return-value semantics remain unchanged.
+      const articlePersistResult = await persistEnrichmentBatch(
+        [outcome],
+        pipelineRun.id,
+        new Map([[article.id, claim.token]]),
+      );
+      mergeEnrichmentBatchPersistResult(persistResult, articlePersistResult);
+    }
 
     // Single PipelineRun update: finalize status + counts AND set the canonical
     // enrichment summary in one write. We avoid finalizePipelineRun here because
@@ -2302,14 +2352,16 @@ export const runEnrichmentBatch = async (
       data: {
         status: persistResult.failed > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
         finishedAt: new Date(),
-        targetCount: articles.length,
-        candidatesFound: articles.length,
+        targetCount: outcomes.length,
+        candidatesFound: outcomes.length,
         inserted: persistResult.byKind.SUCCESS,
         skipped: persistResult.byKind.SKIPPED,
         failed: persistResult.failed + persistResult.byKind.RETRYABLE_FAILURE,
         artifactCount: attemptMarkerIds.length + persistResult.artifactIds.length,
-        summary: buildEnrichmentRunSummary(persistResult, diversified.length, {
+        summary: buildEnrichmentRunSummary(persistResult, outcomes.length, {
           durationMs: Date.now() - startedAt,
+          claimSkipped,
+          expiredClaimsRecovered,
           agent3SourceCooldowns: sourceCooldown.getEntries().length > 0 ? sourceCooldown.getEntries() : undefined,
           browserFallbackStats: browserFallbackEnabled
             ? {
@@ -2350,7 +2402,9 @@ export const runEnrichmentBatch = async (
     const cooldowns = sourceCooldown.getEntries();
     return {
       pipelineRunId: pipelineRun.id,
-      articleCount: diversified.length,
+      articleCount: outcomes.length,
+      claimSkipped,
+      expiredClaimsRecovered,
       persist: persistResult,
       optionsUsed: {
         includeEnriched,

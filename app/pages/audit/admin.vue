@@ -303,16 +303,16 @@
               v-for="item in agent1Summary.recentSourceOutcomes"
               :key="`${item.status}-${item.sourceId || item.createdAt}`"
               class="rounded-xl border px-3 py-2"
-              :class="item.resultType === 'failed' ? 'border-rose-500/10 bg-rose-500/5' : 'border-emerald-500/10 bg-emerald-500/5'"
+              :class="item.resultType === 'failed' ? 'border-rose-500/10 bg-rose-500/5' : item.resultType === 'rate_limited' ? 'border-amber-500/15 bg-amber-500/5' : 'border-emerald-500/10 bg-emerald-500/5'"
             >
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-2">
                     <span
                       class="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider"
-                      :class="item.resultType === 'failed' ? 'bg-rose-500/15 text-rose-200' : 'bg-emerald-500/15 text-emerald-200'"
+                      :class="item.resultType === 'failed' ? 'bg-rose-500/15 text-rose-200' : item.resultType === 'rate_limited' ? 'bg-amber-500/15 text-amber-200' : 'bg-emerald-500/15 text-emerald-200'"
                     >
-                      {{ item.resultType === 'pass' ? 'pass' : item.resultType === 'rss_active_no_new_articles' ? 'rss active / no new articles' : item.resultType === 'handoff' ? 'handoff' : 'failed' }}
+                      {{ item.resultType === 'pass' ? 'pass' : item.resultType === 'rss_active_no_new_articles' ? 'rss active / no new articles' : item.resultType === 'rate_limited' ? 'rate limited / deferred' : item.resultType === 'handoff' ? 'handoff' : 'failed' }}
                     </span>
                     <span class="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">{{ item.targetType }}</span>
                     <span v-if="item.sourceId" class="text-[10px] text-on-surface-variant">src: {{ item.sourceId.slice(0, 8) }}...</span>
@@ -323,7 +323,7 @@
                       <span class="font-semibold text-on-surface-variant">Source Url:</span>
                       {{ item.sourceUrl || item.sourceId || "unknown target" }}
                     </p>
-                    <p v-if="(item.passed || item.rssActive) && item.feedUrl" class="truncate">
+                    <p v-if="(item.passed || item.rssActive || item.rateLimited) && item.feedUrl" class="truncate">
                       <span class="font-semibold text-on-surface-variant">RSS Url:</span>
                       {{ item.rssUrl || item.feedUrl }}
                     </p>
@@ -334,7 +334,7 @@
                     <span>skipped: <strong>{{ item.skipped }}</strong></span>
                     <span v-if="(item.urlPolicyRejected ?? 0) > 0" class="text-amber-300">non-article URL: <strong>{{ item.urlPolicyRejected }}</strong></span>
                   </div>
-                  <p v-else class="mt-1 line-clamp-2 text-[10px] text-rose-100/80">
+                  <p v-else class="mt-1 line-clamp-2 text-[10px]" :class="item.rateLimited ? 'text-amber-100/80' : 'text-rose-100/80'">
                     {{ item.failureReason }}
                   </p>
                 </div>
@@ -2531,6 +2531,8 @@ const agent1RunSummary = ref<{
     passed: boolean;
     handedToAgent2: boolean;
     rssActive: boolean;
+    rateLimited: boolean;
+    retryAt: string | null;
     sourceUrl: string | null;
     candidates: number;
     inserted: number;
@@ -2641,7 +2643,9 @@ const agent1Summary = computed(() => {
     recentSourceOutcomes: agent1RunSummary.value.items.map((item) => ({
       ...item,
       targetType: item.categoryId ? "category" : "source",
-      resultType: item.rssActive
+      resultType: item.rateLimited
+        ? "rate_limited"
+        : item.rssActive
         ? "rss_active_no_new_articles"
         : item.passed
           ? "pass"

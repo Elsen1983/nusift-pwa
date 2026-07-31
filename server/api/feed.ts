@@ -1,5 +1,10 @@
 import { prisma } from "../utils/prisma";
 import { requireUserId } from "../utils/require-user";
+import {
+  buildUserFeedPublicationWhere,
+  isEffectivelyPublishableArticle,
+} from "../utils/news-pipeline/publication-gate";
+import { buildSubscriptionArticleScope, getSubscriptionScope } from "../utils/subscription-scope";
 
 const toSourceLabel = (frontPageUrl: string) => {
   try {
@@ -33,30 +38,23 @@ export default defineEventHandler(async (event) => {
     },
   });
 
-  const sourceIds = user?.sourceSubscriptions.map((subscription) => subscription.sourceId) || [];
-  const categoryIds = user?.categorySubscriptions.map((subscription) => subscription.categoryId) || [];
-  const categoryPathUrls =
-    user?.categorySubscriptions
-      .map((subscription) => subscription.category?.pathUrl)
-      .filter((pathUrl): pathUrl is string => Boolean(pathUrl)) || [];
+  const scope = getSubscriptionScope(
+    user?.sourceSubscriptions || [],
+    user?.categorySubscriptions || [],
+  );
+  const subscriptionPredicates = buildSubscriptionArticleScope(scope);
 
-  if (sourceIds.length === 0 && categoryIds.length === 0 && categoryPathUrls.length === 0) {
+  if (subscriptionPredicates.length === 0) {
     return [];
   }
 
   const articles = await prisma.article.findMany({
     where: {
-      OR: [
-        sourceIds.length > 0 ? { sourceId: { in: sourceIds } } : undefined,
-        categoryIds.length > 0 ? { categoryId: { in: categoryIds } } : undefined,
-        categoryPathUrls.length > 0
-          ? {
-              category: {
-                pathUrl: { in: categoryPathUrls },
-              },
-            }
-          : undefined,
-      ].filter(Boolean) as any,
+      // User-feed publication boundary: only rows that completed Agent 3
+      // successfully and have durable, minimally complete content are visible.
+      // Candidates/failures remain available to admin and diagnostic paths.
+      ...buildUserFeedPublicationWhere(),
+      OR: subscriptionPredicates,
     },
     orderBy: [{ date: "desc" }, { id: "desc" }],
     select: {
@@ -84,7 +82,12 @@ export default defineEventHandler(async (event) => {
     },
   });
 
-  return articles.map((article) => ({
+  return articles
+    // Defense in depth for legacy rows containing null/blank values despite
+    // the durable publication fields. The DB predicate remains the primary
+    // publication gate; this protects the API if old data is malformed.
+    .filter(isEffectivelyPublishableArticle)
+    .map((article) => ({
     id: article.id,
     title: article.title,
     source: article.source.mediaName || toSourceLabel(article.source.frontPageUrl),

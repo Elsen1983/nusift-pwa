@@ -85,6 +85,13 @@ enum NotificationScheduleSlot {
   EVENING
 }
 
+enum PublicationStatus {
+  CANDIDATE
+  PROCESSING
+  PUBLISHED
+  REJECTED
+}
+
 enum UserRole {
   USER
   ADMIN
@@ -402,6 +409,11 @@ model Article {
   enrichmentMethod       String?  // e.g. "http-meta", "http-dom", "none"
   enrichmentConfidence   Float?   // 0..1 extraction confidence
   enrichmentOutcome      Json?    // canonical ArticleEnrichmentOutcome summary (serialized via enrichment.ts)
+  enrichmentClaim        ArticleEnrichmentClaim?
+
+  publicationStatus PublicationStatus @default(CANDIDATE)
+  publicationStage  String?
+  publicationReadyAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -414,6 +426,22 @@ model Article {
   @@index([date])
   // Supports Agent 2 batch selection: fresh + not-yet-enriched / retryable
   @@index([enrichmentStatus, date])
+  @@index([publicationStatus, publicationReadyAt])
+}
+
+// ANCHOR ARTICLE RATINGS
+model ArticleEnrichmentClaim {
+  articleId     Int      @id
+  article       Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  pipelineRunId String
+  token         String   @unique
+  attemptNumber  Int
+  expectedStatus String
+  claimedAt      DateTime
+  expiresAt     DateTime
+
+  @@index([expiresAt])
+  @@index([pipelineRunId])
 }
 
 // ANCHOR ARTICLE RATINGS

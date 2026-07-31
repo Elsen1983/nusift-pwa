@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../prisma";
 import type { ArticleEnrichmentOutcome, EnrichmentOutcomeKind } from "./enrichment";
 import {
@@ -7,6 +8,10 @@ import {
   serializeOutcomeSummary,
   validateEnrichmentOutcome,
 } from "./enrichment";
+import {
+  buildPublicationGateUpdate,
+  hasUsableAgent3BodyText,
+} from "./publication-gate";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent 3 — Article enrichment persistence wiring (Phase 1)
@@ -94,24 +99,61 @@ export const outcomeKindToArtifact = (
  */
 export const buildArticleEnrichmentUpdate = (
   outcome: ArticleEnrichmentOutcome,
+  options?: {
+    existingBodyText?: string | null;
+    existingTitle?: string | null;
+    existingCanonicalUrl?: string | null;
+  },
 ): Prisma.ArticleUpdateInput => {
   const status = outcomeKindToStatus(outcome.kind);
+  const bodyTextUpdate =
+    outcome.kind === "SUCCESS" &&
+    outcome.fields.bodyText?.chosenFrom === "dom" &&
+    outcome.fields.bodyText.chosenValue
+      ? outcome.fields.bodyText.chosenValue
+      : undefined;
+  // Only values that will actually be durable on Article.bodyText may decide
+  // publication. An arbitrary outcome value marked "unchanged" is evidence,
+  // not a write, and must not be treated as the persisted body.
+  const finalBodyText = bodyTextUpdate ?? options?.existingBodyText ?? null;
   const update: Prisma.ArticleUpdateInput = {
     enrichmentStatus: status,
     enrichmentStartedAt: new Date(outcome.timing.startedAt),
     enrichmentFinishedAt: new Date(outcome.timing.finishedAt),
-    enrichmentAttemptCount: { increment: 1 },
+    // The attempt count is incremented atomically when the claim is acquired.
+    // Final writes must not increment it again, especially after retries.
     enrichmentMethod: outcome.method.method,
     enrichmentConfidence: outcome.quality.confidence,
     enrichmentOutcome: serializeOutcomeSummary(outcome),
+    ...buildPublicationGateUpdate({
+      stage: "agent3",
+      // A SUCCESS kind is not sufficient for publication: the final body that
+      // will be durable on the Article row must pass the same quality boundary
+      // used by feed visibility and reprocessing selection. When no replacement
+      // body is supplied, preserve the existing Article body as the final value.
+      publishable:
+        outcome.kind === "SUCCESS" &&
+        Boolean(options?.existingTitle?.trim()) &&
+        Boolean(options?.existingCanonicalUrl?.trim()) &&
+        hasUsableAgent3BodyText(finalBodyText),
+      nonPublishableStatus:
+        outcome.kind === "PAYWALL_BLOCKED" ||
+        outcome.kind === "CANONICAL_MISMATCH" ||
+        outcome.kind === "LOW_CONTENT_QUALITY" ||
+        outcome.kind === "UNSUPPORTED_STRUCTURE" ||
+        outcome.kind === "HTTP_ACCESS_BLOCKED"
+          ? "REJECTED"
+          : "PROCESSING",
+      completedAt: new Date(outcome.timing.finishedAt),
+    }),
   };
 
   // Phase 2: persist extracted bodyText on SUCCESS when the extractor
   // produced a better value than the existing one.
   if (outcome.kind === "SUCCESS" && outcome.fields.bodyText) {
     const bp = outcome.fields.bodyText;
-    if (bp.chosenFrom === "dom" && bp.chosenValue) {
-      update.bodyText = bp.chosenValue;
+    if (bodyTextUpdate) {
+      update.bodyText = bodyTextUpdate;
     }
   }
 
@@ -224,38 +266,182 @@ export const persistAttemptMarker = async (
   return artifact.id;
 };
 
+export const ENRICHMENT_CLAIM_TTL_MS = 30 * 60 * 1000;
+
+export interface EnrichmentClaim {
+  articleId: number;
+  pipelineRunId: string;
+  token: string;
+  claimedAt: Date;
+  expiresAt: Date;
+  attemptNumber: number;
+}
+
 /**
- * Persist a single canonical enrichment outcome atomically:
- *  1. update the `Article` row with status + summary
- *  2. create a matching `PipelineArtifact` record with the full payload
- *
- * Both writes happen in a single `prisma.$transaction` so an article is never
- * left in a status that has no matching artifact evidence, and vice versa.
- *
- * Returns the created artifact id (null when the article was not found, which
- * is treated as a no-op skip — the caller's selection logic should already
- * guarantee existence, but this keeps persistence safe against races).
+ * Release claims whose lease has expired. This is explicit recovery: an
+ * abandoned worker never makes an article permanently ineligible.
+ */
+export const recoverExpiredEnrichmentClaims = async (
+  now: Date = new Date(),
+): Promise<number> => {
+  const result = await prisma.articleEnrichmentClaim.deleteMany({
+    where: { expiresAt: { lte: now } },
+  });
+  return result.count;
+};
+
+/**
+ * Atomically acquire one article lease. The unique articleId constraint makes
+ * concurrent workers mutually exclusive; the attempt counter increments in
+ * the same transaction as the claim creation.
+ */
+export const claimEnrichmentArticle = async (
+  articleId: number,
+  pipelineRunId: string,
+  now: Date = new Date(),
+  leaseMs: number = ENRICHMENT_CLAIM_TTL_MS,
+  expectedAttemptCount?: number,
+  expectedEnrichmentStatus?: string,
+): Promise<EnrichmentClaim | null> => {
+  const token = randomUUID();
+  const expiresAt = new Date(now.getTime() + leaseMs);
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await tx.articleEnrichmentClaim.deleteMany({
+        where: { articleId, expiresAt: { lte: now } },
+      });
+
+      const current = await tx.article.findUnique({
+        where: { id: articleId },
+        select: { enrichmentAttemptCount: true, enrichmentStatus: true },
+      });
+      // A row can disappear between eligibility selection and claim acquisition.
+      // Treat that as a harmless claim miss; the transaction rolls back any
+      // attempted state change and unrelated database errors remain visible.
+      if (!current) return null;
+
+      const selectedAttemptCount = expectedAttemptCount ?? current.enrichmentAttemptCount;
+      const selectedStatus = expectedEnrichmentStatus ?? current.enrichmentStatus;
+      const updated = await tx.article.updateMany({
+        where: {
+          id: articleId,
+          enrichmentAttemptCount: selectedAttemptCount,
+          enrichmentStatus: selectedStatus,
+        },
+        data: { enrichmentAttemptCount: { increment: 1 } },
+      });
+      // A stale selection snapshot is also a claim miss. Returning null keeps
+      // the CAS failure distinct from a real database error.
+      if (updated.count !== 1) return null;
+
+      const claim = await tx.articleEnrichmentClaim.create({
+        data: {
+          articleId,
+          pipelineRunId,
+          token,
+          attemptNumber: selectedAttemptCount + 1,
+          expectedStatus: selectedStatus,
+          claimedAt: now,
+          expiresAt,
+        },
+      });
+      return { ...claim };
+    });
+  } catch (error: any) {
+    // P2002 means another worker owns the unique article claim. The
+    // transaction returns null for row disappearance/CAS misses; every other
+    // database error remains visible to the caller.
+    if (error?.code === "P2002") return null;
+    throw error;
+  }
+};
+
+/**
+ * Persist one outcome only while the matching, unexpired claim is owned.
+ * Claim deletion, Article update, and artifact creation are one transaction:
+ * a lost/stale worker performs none of the final writes.
  */
 export const persistEnrichmentOutcome = async (
   outcome: ArticleEnrichmentOutcome,
   pipelineRunId: string,
-): Promise<{ artifactId: string | null; applied: boolean }> => {
-  // prisma.$transaction with an array runs both writes in order inside one
-  // transaction. If the article id does not exist, Prisma throws P2025
-  // (record not found); callers (persistEnrichmentBatch) wrap in try/catch.
-  const [, artifact] = await prisma.$transaction([
-    prisma.article.update({
+  claimToken: string,
+  now: Date = new Date(),
+): Promise<{ artifactId: string | null; applied: boolean; claimLost: boolean }> => {
+  return prisma.$transaction(async (tx) => {
+    const claim = await tx.articleEnrichmentClaim.findUnique({
+      where: { token: claimToken },
+      select: {
+        articleId: true,
+        pipelineRunId: true,
+        token: true,
+        attemptNumber: true,
+        expectedStatus: true,
+        expiresAt: true,
+      },
+    });
+    if (
+      !claim ||
+      claim.articleId !== outcome.articleId ||
+      claim.pipelineRunId !== pipelineRunId ||
+      claim.expiresAt <= now
+    ) {
+      return { artifactId: null, applied: false, claimLost: true };
+    }
+
+    // Consume the lease first. DELETE takes a row lock, so expiry recovery or
+    // a new claimant cannot interleave with the CAS and final writes below.
+    const currentArticle = await tx.article.findUnique({
       where: { id: outcome.articleId },
-      data: buildArticleEnrichmentUpdate(outcome),
-      select: { id: true },
-    }),
-    prisma.pipelineArtifact.create({
+      select: { bodyText: true, title: true, canonicalUrl: true },
+    });
+    if (!currentArticle) {
+      return { artifactId: null, applied: false, claimLost: true };
+    }
+
+    const released = await tx.articleEnrichmentClaim.deleteMany({
+      where: {
+        articleId: claim.articleId,
+        pipelineRunId: claim.pipelineRunId,
+        token: claim.token,
+        expiresAt: { gt: now },
+      },
+    });
+    if (released.count !== 1) {
+      return { artifactId: null, applied: false, claimLost: true };
+    }
+
+    const updated = await tx.article.updateMany({
+      where: {
+        id: outcome.articleId,
+        enrichmentAttemptCount: claim.attemptNumber,
+        ...(claim.expectedStatus !== null
+          ? { enrichmentStatus: claim.expectedStatus }
+          : {}),
+        // The publication decision is based on the transaction read above.
+        // Include those values in the CAS so a concurrent metadata/body change
+        // cannot be overwritten or cause a stale worker to publish.
+        title: currentArticle.title,
+        canonicalUrl: currentArticle.canonicalUrl,
+        bodyText: currentArticle.bodyText,
+      },
+      data: buildArticleEnrichmentUpdate(outcome, {
+        existingBodyText: currentArticle.bodyText,
+        existingTitle: currentArticle.title,
+        existingCanonicalUrl: currentArticle.canonicalUrl,
+      }),
+    });
+    if (updated.count !== 1) {
+      return { artifactId: null, applied: false, claimLost: true };
+    }
+
+    const artifact = await tx.pipelineArtifact.create({
       data: buildEnrichmentArtifactCreate(outcome, pipelineRunId),
       select: { id: true },
-    }),
-  ]);
+    });
 
-  return { artifactId: artifact.id, applied: true };
+    return { artifactId: artifact.id, applied: true, claimLost: false };
+  });
 };
 
 /**
@@ -264,8 +450,10 @@ export const persistEnrichmentOutcome = async (
 export interface EnrichmentBatchPersistResult {
   /** Number of outcomes persisted successfully. */
   persisted: number;
-  /** Number of outcomes that failed to persist (e.g. article deleted concurrently). */
+  /** Number of outcomes that failed to persist for a system/database reason. */
   failed: number;
+  /** Number of outcomes discarded because the worker lost its claim. */
+  claimLost: number;
   /** Per-kind counts of persisted outcomes. */
   byKind: Record<EnrichmentOutcomeKind, number>;
   /** Created artifact ids. */
@@ -284,6 +472,28 @@ const emptyByKind = (): Record<EnrichmentOutcomeKind, number> => ({
   HTTP_ACCESS_BLOCKED: 0,
 });
 
+export const createEmptyEnrichmentBatchPersistResult = (): EnrichmentBatchPersistResult => ({
+  persisted: 0,
+  failed: 0,
+  claimLost: 0,
+  byKind: emptyByKind(),
+  artifactIds: [],
+});
+
+/** Add one per-article persistence result to the batch aggregate in place. */
+export const mergeEnrichmentBatchPersistResult = (
+  target: EnrichmentBatchPersistResult,
+  addition: EnrichmentBatchPersistResult,
+): void => {
+  target.persisted += addition.persisted;
+  target.failed += addition.failed;
+  target.claimLost += addition.claimLost;
+  for (const kind of Object.keys(target.byKind) as EnrichmentOutcomeKind[]) {
+    target.byKind[kind] += addition.byKind[kind];
+  }
+  target.artifactIds.push(...addition.artifactIds);
+};
+
 /**
  * Persist a batch of enrichment outcomes sequentially.
  *
@@ -301,20 +511,25 @@ const emptyByKind = (): Record<EnrichmentOutcomeKind, number> => ({
 export const persistEnrichmentBatch = async (
   outcomes: ArticleEnrichmentOutcome[],
   pipelineRunId: string,
+  claimTokens: ReadonlyMap<number, string>,
 ): Promise<EnrichmentBatchPersistResult> => {
-  const result: EnrichmentBatchPersistResult = {
-    persisted: 0,
-    failed: 0,
-    byKind: emptyByKind(),
-    artifactIds: [],
-  };
+  const result = createEmptyEnrichmentBatchPersistResult();
 
   for (const outcome of outcomes) {
+    const claimToken = claimTokens.get(outcome.articleId);
+    if (!claimToken) {
+      result.claimLost += 1;
+      continue;
+    }
     try {
-      const { artifactId } = await persistEnrichmentOutcome(outcome, pipelineRunId);
+      const persisted = await persistEnrichmentOutcome(outcome, pipelineRunId, claimToken);
+      if (persisted.claimLost) {
+        result.claimLost += 1;
+        continue;
+      }
       result.persisted += 1;
       result.byKind[outcome.kind] += 1;
-      if (artifactId) result.artifactIds.push(artifactId);
+      if (persisted.artifactId) result.artifactIds.push(persisted.artifactId);
     } catch {
       // Article may have been deleted concurrently, or a constraint violation.
       // Count as failed and continue — the batch is best-effort.
@@ -365,6 +580,8 @@ export const buildEnrichmentRunSummary = (
       firstFailureAt: string;
       lastFailureAt: string;
     }>;
+    claimSkipped?: number;
+    expiredClaimsRecovered?: number;
   },
 ): Prisma.InputJsonValue =>
   ({
@@ -372,12 +589,15 @@ export const buildEnrichmentRunSummary = (
     articleCount,
     persisted: result.persisted,
     failed: result.failed,
+    claimLost: result.claimLost,
     byKind: result.byKind,
     artifactCount: result.artifactIds.length,
     durationMs: options?.durationMs ?? null,
     ...(options?.optionsUsed ? { optionsUsed: options.optionsUsed } : {}),
     ...(options?.browserFallbackStats ? { browserFallbackStats: options.browserFallbackStats } : {}),
     ...(options?.agent3SourceCooldowns ? { agent3SourceCooldowns: options.agent3SourceCooldowns } : {}),
+    ...(options?.claimSkipped !== undefined ? { claimSkipped: options.claimSkipped } : {}),
+    ...(options?.expiredClaimsRecovered !== undefined ? { expiredClaimsRecovered: options.expiredClaimsRecovered } : {}),
   }) as Prisma.InputJsonValue;
 
 /**
@@ -399,7 +619,14 @@ export const readEnrichmentSummary = (
   confidence: number;
   rejectionCode: string | null;
   extractorVersion: string | null;
-  provenance: { sourceId: string; categoryId: string | null; feedOrigin: string };
+  provenance: {
+    sourceId: string;
+    categoryId: string | null;
+    feedOrigin: string | null;
+    feedUrl: string | null;
+    ingestArtifactId: string | null;
+    ingestPipelineRunId: string | null;
+  };
 } | null => {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const s = raw as Record<string, unknown>;
@@ -426,7 +653,10 @@ export const readEnrichmentSummary = (
     provenance: {
       sourceId: p.sourceId,
       categoryId: typeof p.categoryId === "string" ? p.categoryId : null,
-      feedOrigin: typeof p.feedOrigin === "string" ? p.feedOrigin : "rss",
+      feedOrigin: typeof p.feedOrigin === "string" ? p.feedOrigin : null,
+      feedUrl: typeof p.feedUrl === "string" ? p.feedUrl : null,
+      ingestArtifactId: typeof p.ingestArtifactId === "string" ? p.ingestArtifactId : null,
+      ingestPipelineRunId: typeof p.ingestPipelineRunId === "string" ? p.ingestPipelineRunId : null,
     },
   };
 };

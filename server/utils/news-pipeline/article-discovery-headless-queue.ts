@@ -620,13 +620,9 @@ export async function processArticleDiscoveryHeadlessQueue(
           ? "BROWSER_RUNTIME_UNAVAILABLE"
           : "BROWSER_NO_CANDIDATES";
 
-        if (browserResult.reason === "browser_runtime_unavailable") {
-          browserSkippedUnavailable += 1;
-        } else {
-          browserFailed += 1;
-        }
-
         // Transition from HEADLESS_PROCESSING → final failure status.
+        // Execution-failure counters are updated only after this CAS succeeds;
+        // a lost claim must not be counted as a completed browser outcome.
         // Preserve the same compact browser metadata shape as the success
         // path so the admin normalizer can consume both uniformly.
         const failedFinishedAt = new Date().toISOString();
@@ -634,16 +630,18 @@ export async function processArticleDiscoveryHeadlessQueue(
         const listingRetryAfterAt = isListingPage429
           ? new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString()
           : null;
-        await prisma.pipelineArtifact.updateMany({
-          where: {
-            id: item.id,
-            artifactType: "article_discovery_headless_required",
-            status: "HEADLESS_PROCESSING",
-          },
-          data: {
-            status,
-            errorLog: `Browser fallback failed: ${browserResult.reason}. ${browserResult.diagnostics.blockedReason || ""}`,
-            payload: {
+        let failedTransition: { count: number };
+        try {
+          failedTransition = await prisma.pipelineArtifact.updateMany({
+            where: {
+              id: item.id,
+              artifactType: "article_discovery_headless_required",
+              status: "HEADLESS_PROCESSING",
+            },
+            data: {
+              status,
+              errorLog: `Browser fallback failed: ${browserResult.reason}. ${browserResult.diagnostics.blockedReason || ""}`,
+              payload: {
               ...claimedPayload,
               // ── Compact browser fallback result metadata ──────────────
               browserFallbackRan: true,
@@ -708,11 +706,39 @@ export async function processArticleDiscoveryHeadlessQueue(
                 reason: browserResult.reason,
                 diagnostics: browserResult.diagnostics,
               },
-              resolvedAt: failedFinishedAt,
+              resolvedAt: null,
               processedAt: failedFinishedAt,
             },
           },
         });
+        } catch (error: any) {
+          browserFailed += 1;
+          await logAgentScan({
+            sourceId: item.sourceId,
+            categoryId: item.categoryId || undefined,
+            status: "ARTICLE_DISCOVERY_BROWSER_FAILED",
+            executionTimeMs: browserResult.diagnostics.elapsedMs,
+            errorLog: `Final headless artifact transition failed for ${item.id}; state was not overwritten and no completion side effects were applied. ${error?.message || String(error)}`,
+          }).catch(() => {});
+          continue;
+        }
+
+        if (failedTransition.count === 0) {
+          await logAgentScan({
+            sourceId: item.sourceId,
+            categoryId: item.categoryId || undefined,
+            status: "ARTICLE_DISCOVERY_BROWSER_FAILED",
+            executionTimeMs: browserResult.diagnostics.elapsedMs,
+            errorLog: `Final headless artifact transition conflicted for ${item.id}; state was not overwritten and no completion side effects were applied. Artifact recovery remains responsible for retry.`,
+          }).catch(() => {});
+          continue;
+        }
+
+        if (browserResult.reason === "browser_runtime_unavailable") {
+          browserSkippedUnavailable += 1;
+        } else {
+          browserFailed += 1;
+        }
 
         // ── Listing-page 429: activate host cooldown, skip hard-source profile ──
         if (isListingPage429) {
@@ -1077,34 +1103,36 @@ export async function processArticleDiscoveryHeadlessQueue(
         }
       } catch (error: any) {
         browserError = `Candidate persistence failed: ${error?.message || String(error)}`;
+        // Treat thrown persistence errors exactly like counted failures below:
+        // the discovery audit is retained, but the queue item must be retried.
+        persisted.failed = candidates.length;
         totalFailed += candidates.length;
-        await logAgentScan({
-          sourceId: item.sourceId,
-          categoryId: item.categoryId || undefined,
-          status: "ARTICLE_DISCOVERY_BROWSER_FAILED",
-          executionTimeMs: 0,
-          errorLog: browserError,
-        });
       }
 
-      // Transition from HEADLESS_PROCESSING → final success/failure status.
-      // RESOLVED requires accepted candidates AND candidate persistence to
-      // have been attempted (persistence errors still surface as RESOLVED
-      // when candidates were found, so the marker leaves the active queue;
-      // the persistence error is preserved in browserError for review).
-      const finalStatus = candidates.length > 0 ? "RESOLVED" : "BROWSER_NO_CANDIDATES";
+      // Transition from HEADLESS_PROCESSING → durable success or retryable state.
+      // RESOLVED is only valid after every accepted candidate was persisted or
+      // idempotently skipped. Any counted/thrown persistence failure returns the
+      // marker to PENDING_HEADLESS so a later run can retry safely.
+      const persistenceSucceeded = persisted.failed === 0;
+      const finalStatus = candidates.length === 0
+        ? "BROWSER_NO_CANDIDATES"
+        : persistenceSucceeded
+          ? "RESOLVED"
+          : "PENDING_HEADLESS";
       const finishedAt = new Date().toISOString();
 
-      await prisma.pipelineArtifact.updateMany({
-        where: {
-          id: item.id,
-          artifactType: "article_discovery_headless_required",
-          status: "HEADLESS_PROCESSING",
-        },
-        data: {
-          status: finalStatus,
-          candidateCount: candidates.length,
-          payload: {
+      let finalTransition: { count: number };
+      try {
+        finalTransition = await prisma.pipelineArtifact.updateMany({
+          where: {
+            id: item.id,
+            artifactType: "article_discovery_headless_required",
+            status: "HEADLESS_PROCESSING",
+          },
+          data: {
+            status: finalStatus,
+            candidateCount: candidates.length,
+            payload: {
             ...claimedPayload,
             // ── Compact browser fallback result metadata ──────────────
             // All fields are compact counts / short strings / short arrays.
@@ -1173,13 +1201,36 @@ export async function processArticleDiscoveryHeadlessQueue(
             // hard-source tooling can consume both with the same code path.
             browserAcceptedOutcomes: acceptedOutcomes,
             browserRejectedOutcomes: rejectedOutcomes,
-            resolvedAt: finishedAt,
+            // A retryable persistence failure is not a successful resolution.
+            resolvedAt: finalStatus === "RESOLVED" ? finishedAt : null,
           },
         },
       });
+      } catch (error: any) {
+        const transitionError = error?.message || String(error);
+        await logAgentScan({
+          sourceId: item.sourceId,
+          categoryId: item.categoryId || undefined,
+          status: "ARTICLE_DISCOVERY_BROWSER_FAILED",
+          executionTimeMs: browserResult.diagnostics.elapsedMs,
+          errorLog: `Final headless artifact transition failed for ${item.id}; state was not overwritten and no success side effects were applied. ${persisted.failed > 0 ? "Candidate persistence failed, but transition to PENDING_HEADLESS was not confirmed. Stale-claim or artifact recovery is required. " : ""}${transitionError}`,
+        }).catch(() => {});
+        continue;
+      }
+
+      if (finalTransition.count === 0) {
+        await logAgentScan({
+          sourceId: item.sourceId,
+          categoryId: item.categoryId || undefined,
+          status: "ARTICLE_DISCOVERY_BROWSER_FAILED",
+          executionTimeMs: browserResult.diagnostics.elapsedMs,
+          errorLog: `Final headless artifact transition conflicted for ${item.id}; state was not overwritten and no completion side effects were applied. ${persisted.failed > 0 ? "Candidate persistence failed, but transition to PENDING_HEADLESS was not confirmed. The transition conflicted and the current artifact state is unknown to this worker; stale-claim or artifact recovery is required. " : ""}Artifact recovery remains responsible for retry.`,
+        }).catch(() => {});
+        continue;
+      }
 
       browserProcessed += 1;
-      if (candidates.length > 0) {
+      if (finalStatus === "RESOLVED") {
         browserResolved += 1;
         if (sourceId) {
           await resolveHardSourceProfilesForTarget({
@@ -1191,7 +1242,7 @@ export async function processArticleDiscoveryHeadlessQueue(
             resolvedPipelineRunId: item.pipelineRunId,
           });
         }
-      } else {
+      } else if (finalStatus === "BROWSER_NO_CANDIDATES") {
         browserNoCandidates += 1;
       }
 
@@ -1234,12 +1285,21 @@ export async function processArticleDiscoveryHeadlessQueue(
         });
       }
 
+      const browserAuditStatus = finalStatus === "RESOLVED"
+        ? "ARTICLE_DISCOVERY_BROWSER_RESOLVED"
+        : "ARTICLE_DISCOVERY_BROWSER_FAILED";
+      const browserAuditOutcome = finalStatus === "RESOLVED"
+        ? `Browser fallback resolved for ${targetUrl}.`
+        : finalStatus === "PENDING_HEADLESS"
+          ? `Candidate persistence failed for ${targetUrl}; artifact remains retryable in PENDING_HEADLESS.`
+          : `Browser fallback found no candidates for ${targetUrl}.`;
+
       await logAgentScan({
         sourceId: item.sourceId,
         categoryId: item.categoryId || undefined,
-        status: candidates.length > 0 ? "ARTICLE_DISCOVERY_BROWSER_RESOLVED" : "ARTICLE_DISCOVERY_BROWSER_FAILED",
+        status: browserAuditStatus,
         executionTimeMs: browserResult.diagnostics.elapsedMs,
-        errorLog: `Browser fallback ${candidates.length > 0 ? "resolved" : "no candidates"} for ${targetUrl}. ` +
+        errorLog: browserAuditOutcome + ` ` +
           `evaluated=${browserOutcomeSummaryCompact.totalEvaluated}, accepted=${candidates.length}, rejected=${browserRejected}, ` +
           `inserted=${persisted.inserted}, skipped=${persisted.skipped}, failed=${persisted.failed}. ` +
           `quality=${browserQualityAssessment.quality}.`,

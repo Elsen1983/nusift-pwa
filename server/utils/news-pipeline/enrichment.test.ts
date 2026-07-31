@@ -479,7 +479,7 @@ describe("validateEnrichmentOutcome robustness", () => {
     expect(outcome!.fields.title?.chosenFrom).toBe("none");
   });
 
-  it("normalizes unknown feedOrigin to rss", () => {
+  it("normalizes unknown feedOrigin to null", () => {
     const parsed = JSON.parse(
       JSON.stringify(
         serializeEnrichmentPayload(
@@ -491,7 +491,7 @@ describe("validateEnrichmentOutcome robustness", () => {
 
     const { valid, outcome } = validateEnrichmentOutcome(parsed);
     expect(valid).toBe(true);
-    expect(outcome!.provenance.feedOrigin).toBe("rss");
+    expect(outcome!.provenance.feedOrigin).toBeNull();
   });
 });
 

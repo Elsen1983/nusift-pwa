@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeSourceIdentityUrl,
+  resolveSourceUrlIdentity,
   sourceIdentityKey,
 } from "./source-url-identity";
 
@@ -29,5 +30,21 @@ describe("source URL identity", () => {
     expect(() => normalizeSourceIdentityUrl("ftp://example.com/feed")).toThrow(
       "Unsupported source URL protocol.",
     );
+  });
+
+  it("classifies origin URLs as roots", () => {
+    expect(resolveSourceUrlIdentity("https://www.example.com/")).toEqual({
+      normalizedUrl: "https://example.com",
+      rootUrl: "https://example.com",
+      isRoot: true,
+    });
+  });
+
+  it("classifies path URLs as categories under the origin root", () => {
+    expect(resolveSourceUrlIdentity("https://WWW.Example.com/category/local-news/")).toEqual({
+      normalizedUrl: "https://example.com/category/local-news",
+      rootUrl: "https://example.com",
+      isRoot: false,
+    });
   });
 });

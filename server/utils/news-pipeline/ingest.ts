@@ -40,6 +40,47 @@ type ParsedFeedEntry = {
 };
 
 const INGEST_HTTP_TIMEOUT_MS = 15_000;
+const DEFAULT_RSS_RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
+const MAX_RSS_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
+const MAX_INLINE_RSS_RATE_LIMIT_RETRY_MS = 2_000;
+
+const getInlineRssRateLimitRetryDelayMs = (response: Pick<Response, "headers">) => {
+  const retryAfter = response.headers.get("retry-after")?.trim();
+  if (!retryAfter) return MAX_INLINE_RSS_RATE_LIMIT_RETRY_MS;
+
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    const delayMs = seconds * 1000;
+    return delayMs <= MAX_INLINE_RSS_RATE_LIMIT_RETRY_MS ? delayMs : null;
+  }
+
+  const retryAtMs = Date.parse(retryAfter);
+  if (!Number.isFinite(retryAtMs)) return null;
+  const delayMs = Math.max(0, retryAtMs - Date.now());
+  return delayMs <= MAX_INLINE_RSS_RATE_LIMIT_RETRY_MS ? delayMs : null;
+};
+
+export const getRssRateLimitRetryAt = (
+  response: Pick<Response, "headers">,
+  nowMs = Date.now(),
+) => {
+  const retryAfter = response.headers.get("retry-after")?.trim();
+  let cooldownMs = DEFAULT_RSS_RATE_LIMIT_COOLDOWN_MS;
+
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      cooldownMs = seconds * 1000;
+    } else {
+      const retryAtMs = Date.parse(retryAfter);
+      if (Number.isFinite(retryAtMs)) {
+        cooldownMs = Math.max(0, retryAtMs - nowMs);
+      }
+    }
+  }
+
+  return new Date(nowMs + Math.min(cooldownMs, MAX_RSS_RATE_LIMIT_COOLDOWN_MS));
+};
 
 const parseRssItems = (xml: string) => {
   const items: ParsedFeedItem[] = [];
@@ -1065,20 +1106,6 @@ const resolveCategoryFeedUrl = async (
         : `No category feed found for ${category.pathUrl} during pipeline ingest. method=${discovery.detection}, confidence=${discovery.scopeConfidence}, score=${discovery.score}${discovery.lastError ? `, lastError=${discovery.lastError}` : ""}`,
     });
 
-    // When Agent 1 successfully discovers and saves a scoped RSS feed,
-    // resolve any stale Agent 2 headless queue artifacts for that target
-    // so they stop cluttering the active queue. Non-fatal — cleanup
-    // failure must not block the ingest result.
-    if (discoveredFeedUrl && isScoped) {
-      await resolveHeadlessMarkersByAgent1Rss({
-        sourceId,
-        categoryId: category.id,
-        targetUrl: category.pathUrl,
-        rssFeedUrl: discoveredFeedUrl,
-        pipelineRunId: pipelineRunId || null,
-      }).catch(() => {});
-    }
-
     return {
       feedUrl: isGeneric ? null : discoveredFeedUrl,
       isScopedFeed: isScoped,
@@ -1395,6 +1422,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             feedProvenance: true,
             discoveryEvidence: true,
             lastRssCheckAt: true,
+            nextRetryAt: true,
           },
         })
       : Promise.resolve(null),
@@ -1419,13 +1447,43 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
     };
   }
 
+  if (category?.nextRetryAt && category.nextRetryAt.getTime() > Date.now()) {
+    await logAgentScan({
+      sourceId,
+      categoryId,
+      status: "A1_TARGET_DEFERRED_RATE_LIMIT",
+      executionTimeMs: Date.now() - startedAt,
+      errorLog: `RSS retry deferred until ${category.nextRetryAt.toISOString()}.`,
+    });
+    return {
+      sourceId,
+      categoryId: categoryId || null,
+      candidates: [],
+      failed: 0,
+      feedUrl: category.rssFeedUrl,
+      feedFormat: null,
+      deferredReason: "rate_limited",
+      retryAt: category.nextRetryAt.toISOString(),
+      skipSummary: emptySkipSummary(),
+      rejectedItems: [],
+    };
+  }
+
   const categoryFeedResolution = await resolveCategoryFeedUrl(sourceId, category);
-  const sourceFeedResolution = await resolveSourceFeedUrl(source);
   const categoryFeedUrl = categoryFeedResolution.feedUrl;
-  const sourceFeedUrl = sourceFeedResolution.feedUrl;
   const isUsingDedicatedCategoryFeed = Boolean(
     categoryId && categoryFeedUrl && categoryFeedResolution.isScopedFeed,
   );
+  // A scoped category feed fully owns this target. Resolving the root source
+  // as well creates unrelated publisher requests immediately before the real
+  // feed fetch and can trigger host-level throttling.
+  const sourceFeedResolution = isUsingDedicatedCategoryFeed
+    ? {
+        feedUrl: null,
+        hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
+      }
+    : await resolveSourceFeedUrl(source);
+  const sourceFeedUrl = sourceFeedResolution.feedUrl;
   const genericFeedDiscovered = Boolean(
     categoryId && categoryFeedResolution.genericFeedDiscovered,
   );
@@ -1454,7 +1512,13 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
 
   const preferredFeedUrl = categoryFeedUrl || sourceFeedUrl || null;
   const preferredFrontPageUrl = category?.pathUrl || source.frontPageUrl;
-  const feedUrls = buildFeedUrlCandidates(preferredFeedUrl, preferredFrontPageUrl);
+  // A verified scoped category feed is authoritative. Do not append generic
+  // origin fallbacks that can hide its real failure and trigger publisher 429s.
+  const feedUrls = buildFeedUrlCandidates(
+    preferredFeedUrl,
+    isUsingDedicatedCategoryFeed ? null : preferredFrontPageUrl,
+  );
+  let rateLimitedRetryAt: Date | null = null;
   try {
     let response: Response | null = null;
     let xml = "";
@@ -1491,18 +1555,51 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
 
     for (const candidateFeedUrl of feedUrls) {
       try {
-        const candidateResponse = await safeFetch(candidateFeedUrl, {
+        const fetchOptions = {
           allowCrossDomainRedirects: true,
           signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
           headers: {
             "User-Agent": "NuSift/1.0 Ingest-Agent",
             Accept: "application/rss+xml, application/xml, text/xml, text/html",
           },
-        });
+        };
+        let candidateResponse = await safeFetch(candidateFeedUrl, fetchOptions);
+
+        if (candidateResponse.status === 429) {
+          const retryDelayMs = getInlineRssRateLimitRetryDelayMs(candidateResponse);
+          if (retryDelayMs !== null) {
+            await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+            candidateResponse = await safeFetch(candidateFeedUrl, {
+              ...fetchOptions,
+              signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
+            });
+          }
+        }
 
         if (!candidateResponse.ok) {
           lastFeedFetchError = `Fetch failed for ${candidateFeedUrl} with HTTP ${candidateResponse.status}.`;
+          if (candidateResponse.status === 429 && categoryId && isUsingDedicatedCategoryFeed) {
+            rateLimitedRetryAt = getRssRateLimitRetryAt(candidateResponse);
+            await prisma.sourceCategory.update({
+              where: { id: categoryId },
+              data: { nextRetryAt: rateLimitedRetryAt },
+            });
+          }
+          await logAgentScan({
+            sourceId,
+            categoryId,
+            status: "FEED_CANDIDATE_FAILED",
+            executionTimeMs: Date.now() - startedAt,
+            errorLog: lastFeedFetchError,
+          });
           continue;
+        }
+
+        if (categoryId && isUsingDedicatedCategoryFeed && category?.nextRetryAt) {
+          await prisma.sourceCategory.update({
+            where: { id: categoryId },
+            data: { nextRetryAt: null },
+          });
         }
 
         const candidateXml = await candidateResponse.text();
@@ -1532,6 +1629,13 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         lastFeedFetchError = `No RSS/Atom items found for ${candidateFeedUrl}.`;
       } catch (error: any) {
         lastFeedFetchError = `${error?.message || String(error)} for ${candidateFeedUrl}`;
+        await logAgentScan({
+          sourceId,
+          categoryId,
+          status: "FEED_CANDIDATE_FAILED",
+          executionTimeMs: Date.now() - startedAt,
+          errorLog: lastFeedFetchError,
+        }).catch(() => {});
       }
     }
 
@@ -1894,6 +1998,17 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       errorLog: `Prepared ${candidates.length} candidate(s). skippedEmptyLink=${skipSummary.emptyLink}, skippedOutOfScope=${skipSummary.outOfScope}, skippedAlreadySeen=${skipSummary.alreadySeenFeedItem}, skippedStale=${skipSummary.staleOrMissingPublishedAt}, rssStaleSkipped=${skipSummary.rssStaleSkipped}, skippedHtmlNonArticle=${skipSummary.htmlFallbackNonArticle}, skippedHtmlStale=${skipSummary.htmlFallbackStale}${skipSummary.urlPolicyRejected ? `, urlPolicyRejected=${skipSummary.urlPolicyRejected}` : ''}.`,
     });
 
+    // A parsed scoped category feed owns this target even when every item was
+    // already known or filtered. Agent 2 must not retry the listing page.
+    if (category && isUsingDedicatedCategoryFeed) {
+      await resolveHeadlessMarkersByAgent1Rss({
+        sourceId,
+        categoryId: category.id,
+        targetUrl: category.pathUrl,
+        rssFeedUrl: feedUrl,
+      }).catch(() => {});
+    }
+
     return {
       sourceId,
       categoryId: categoryId || null,
@@ -1910,12 +2025,16 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
     await logAgentScan({
       sourceId,
       categoryId,
-      status: isSecurityError ? "SOURCE_FETCH_BLOCKED_SECURITY" : "SOURCE_FETCH_EXCEPTION",
+      status: rateLimitedRetryAt
+        ? "SOURCE_FETCH_RATE_LIMITED"
+        : isSecurityError
+          ? "SOURCE_FETCH_BLOCKED_SECURITY"
+          : "SOURCE_FETCH_EXCEPTION",
       executionTimeMs: Date.now() - startedAt,
       errorLog: error?.message || String(error),
     });
 
-    if (sourceFeedUrl && source.frontPageUrl) {
+    if (!isUsingDedicatedCategoryFeed && sourceFeedUrl && source.frontPageUrl) {
       try {
         const htmlResponse = await safeFetch(source.frontPageUrl, {
           signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
@@ -1979,9 +2098,11 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
       sourceId,
       categoryId: categoryId || null,
       candidates: [],
-      failed: 1,
-      feedUrl: source.rssFeedUrl || source.frontPageUrl,
+      failed: rateLimitedRetryAt ? 0 : 1,
+      feedUrl: preferredFeedUrl || preferredFrontPageUrl,
       feedFormat: null,
+      deferredReason: rateLimitedRetryAt ? "rate_limited" : null,
+      retryAt: rateLimitedRetryAt?.toISOString() || null,
       skipSummary: emptySkipSummary(),
       rejectedItems: [],
       hardCaseQueueCandidates,

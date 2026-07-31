@@ -6,7 +6,7 @@ import { prisma } from '../../utils/prisma';
 import { RssStatus } from '@prisma/client';
 import { getImportRssReportPath, loadImportSources, verifyImportedRssFeed } from '../../utils/news-pipeline/import-rss';
 import { logAgentScan } from '../../utils/news-pipeline/log';
-import { normalizeSourceIdentityUrl } from '../../utils/source-url-identity';
+import { resolveSourceUrlIdentity } from '../../utils/source-url-identity';
 
 export default defineEventHandler(async (event) => {
   await requireAdminId(event);
@@ -53,64 +53,92 @@ export default defineEventHandler(async (event) => {
     console.log(`[RSS_REIMPORT] started total=${allSources.length} concurrency=${concurrency}`);
 
     const processSource = async (source: (typeof allSources)[number]) => {
-      const normalizedFrontPageUrl = normalizeSourceIdentityUrl(source.frontPageUrl, { rootOnly: true });
+      const identity = resolveSourceUrlIdentity(source.frontPageUrl);
       const verification = await verifyImportedRssFeed(source.rssFeedUrl || null);
       const verifiedStatus = source.rssFeedUrl ? verification.status : RssStatus.NO_RSS_FOUND;
-      const existing = await prisma.newsSource.findUnique({
-        where: { frontPageUrl: normalizedFrontPageUrl },
-      });
-
-      const mergedData = {
-        isSystemImported: true,
-        mediaName: source.mediaName,
-        mediaType: source.mediaType,
-        language: source.language,
-        location: source.location,
-        countryCode: source.countryCode,
-        continent: source.continent,
-        detailPageUrl: source.detailPageUrl,
-        aboutPageUrl: source.aboutPageUrl,
-        contactPageUrl: source.contactPageUrl,
-        contactName: source.contactName,
-        contactEmail: source.contactEmail,
-        contactPhone: source.contactPhone,
-        rssFeedUrl: source.rssFeedUrl,
-        rssStatus: verifiedStatus,
-        lastRssCheckAt: now,
-        nextRetryAt: verifiedStatus === RssStatus.ACTIVE ? null : existing?.nextRetryAt || null,
-      };
-      const changed =
-        !existing ||
-        existing.mediaName !== mergedData.mediaName ||
-        existing.mediaType !== mergedData.mediaType ||
-        existing.language !== mergedData.language ||
-        existing.location !== mergedData.location ||
-        existing.countryCode !== mergedData.countryCode ||
-        existing.continent !== mergedData.continent ||
-        existing.detailPageUrl !== mergedData.detailPageUrl ||
-        existing.aboutPageUrl !== mergedData.aboutPageUrl ||
-        existing.contactPageUrl !== mergedData.contactPageUrl ||
-        existing.contactName !== mergedData.contactName ||
-        existing.contactEmail !== mergedData.contactEmail ||
-        existing.contactPhone !== mergedData.contactPhone ||
-        existing.rssFeedUrl !== mergedData.rssFeedUrl ||
-        existing.rssStatus !== mergedData.rssStatus ||
-        existing.isSystemImported !== true;
-
-      await prisma.newsSource.upsert({
-        where: { frontPageUrl: normalizedFrontPageUrl },
-        create: {
-          frontPageUrl: normalizedFrontPageUrl,
-          ...mergedData,
-        },
-        update: mergedData,
-      });
-
-      if (existing) {
-        updated += 1;
-        if (changed) metadataPatched += 1;
+      if (identity.isRoot) {
+        const existing = await prisma.newsSource.findUnique({
+          where: { frontPageUrl: identity.rootUrl },
+        });
+        const mergedData = {
+          isSystemImported: true,
+          mediaName: source.mediaName,
+          mediaType: source.mediaType,
+          language: source.language,
+          location: source.location,
+          countryCode: source.countryCode,
+          continent: source.continent,
+          detailPageUrl: source.detailPageUrl,
+          aboutPageUrl: source.aboutPageUrl,
+          contactPageUrl: source.contactPageUrl,
+          contactName: source.contactName,
+          contactEmail: source.contactEmail,
+          contactPhone: source.contactPhone,
+          rssFeedUrl: source.rssFeedUrl,
+          rssStatus: verifiedStatus,
+          lastRssCheckAt: now,
+          nextRetryAt: verifiedStatus === RssStatus.ACTIVE ? null : existing?.nextRetryAt || null,
+        };
+        await prisma.newsSource.upsert({
+          where: { frontPageUrl: identity.rootUrl },
+          create: { frontPageUrl: identity.rootUrl, ...mergedData },
+          update: mergedData,
+        });
+        if (existing) updated += 1;
+        else created += 1;
+        if (!existing || Object.entries(mergedData).some(([key, value]) => existing[key as keyof typeof existing] !== value)) {
+          metadataPatched += 1;
+        }
       } else {
-        created += 1;
+        const rootHostname = new URL(identity.rootUrl).hostname;
+        const root = await prisma.newsSource.upsert({
+          where: { frontPageUrl: identity.rootUrl },
+          create: {
+            frontPageUrl: identity.rootUrl,
+            mediaName: rootHostname,
+            mediaType: source.mediaType,
+            language: source.language,
+            isSystemImported: true,
+            rssStatus: RssStatus.NO_RSS_FOUND,
+          },
+          update: { isSystemImported: true },
+        });
+        const existingCategory = await prisma.sourceCategory.findUnique({
+          where: {
+            newsSourceId_pathUrl: {
+              newsSourceId: root.id,
+              pathUrl: identity.normalizedUrl,
+            },
+          },
+        });
+        const pathName = new URL(identity.normalizedUrl).pathname
+          .replace(/^\/+|\/+$/g, "")
+          .replace(/[/_-]+/g, " ");
+        const categoryData = {
+          name: source.mediaName || pathName || rootHostname,
+          rssFeedUrl: source.rssFeedUrl,
+          rssStatus: verifiedStatus,
+          lastRssCheckAt: now,
+          nextRetryAt: verifiedStatus === RssStatus.ACTIVE ? null : existingCategory?.nextRetryAt || null,
+        };
+        await prisma.sourceCategory.upsert({
+          where: {
+            newsSourceId_pathUrl: {
+              newsSourceId: root.id,
+              pathUrl: identity.normalizedUrl,
+            },
+          },
+          create: {
+            newsSourceId: root.id,
+            pathUrl: identity.normalizedUrl,
+            isUserRequested: false,
+            ...categoryData,
+          },
+          update: categoryData,
+        });
+        if (existingCategory) updated += 1;
+        else created += 1;
+        metadataPatched += 1;
       }
 
       if (verifiedStatus === RssStatus.ACTIVE) verifiedActive += 1;

@@ -718,6 +718,8 @@ export interface IngestResult {
   skipSummary: IngestSkipSummary;
   rejectedItems: IngestRejectedItem[];
   hardCaseQueueCandidates?: HardCaseDiscoveryCandidate[];
+  deferredReason?: "rate_limited" | null;
+  retryAt?: string | null;
 }
 
 export interface PipelineTarget {

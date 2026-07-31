@@ -111,6 +111,8 @@ export async function persistPipelineArtifact(input: {
     failed: input.result.failed,
     feedUrl: input.result.feedUrl || null,
     feedFormat: input.result.feedFormat || null,
+    deferredReason: input.result.deferredReason || null,
+    retryAt: input.result.retryAt || null,
     skipSummary: serializeSkipSummary(input.result.skipSummary),
     rejectedItems: input.result.rejectedItems.map(serializeRejectedItem),
     candidates: input.result.candidates.map(serializeCandidate) as Prisma.InputJsonArray,
@@ -122,7 +124,11 @@ export async function persistPipelineArtifact(input: {
       sourceId: input.result.sourceId,
       categoryId: input.result.categoryId || null,
       artifactType: "rss_candidates",
-      status: input.result.failed > 0 && input.result.candidates.length === 0 ? "FAILED" : "CAPTURED",
+      status: input.result.deferredReason === "rate_limited"
+        ? "DEFERRED_RATE_LIMIT"
+        : input.result.failed > 0 && input.result.candidates.length === 0
+          ? "FAILED"
+          : "CAPTURED",
       candidateCount: input.result.candidates.length,
       payload,
       errorLog:
@@ -152,20 +158,23 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
       });
   const sourceUrl = categoryTarget?.pathUrl || sourceTarget?.frontPageUrl || null;
   const enriched = input.persisted.enriched || 0;
+  const rateLimited = input.result.deferredReason === "rate_limited";
   const passed = input.result.failed === 0 && (input.persisted.inserted > 0 || enriched > 0);
-  const handedToAgent2 = input.result.feedUrl == null && input.result.candidates.length === 0;
+  const handedToAgent2 = !rateLimited && input.result.feedUrl == null && input.result.candidates.length === 0;
   const failureReason = passed
     ? null
     : handedToAgent2
       ? "No usable RSS/feed candidates were produced; target is eligible for Agent 2."
-      : input.result.failed > 0
+      : rateLimited
+        ? `RSS host rate limited Agent 1; retry deferred until ${input.result.retryAt || "the cooldown expires"}.`
+        : input.result.failed > 0
         ? "Agent 1 failed while fetching or parsing this target."
         : "Agent 1 produced no newly inserted articles for this target.";
 
   // Determine RSS-active state: a category target with a scoped RSS feed that
   // parsed successfully but produced zero new inserts is RSS-active, not failed.
   // Must also check failed === 0 so real fetch/parse failures aren't masked as RSS-active.
-  const rssActive = !passed && !handedToAgent2 && input.result.failed === 0 && input.result.feedUrl != null && input.persisted.inserted === 0;
+  const rssActive = !rateLimited && !passed && !handedToAgent2 && input.result.failed === 0 && input.result.feedUrl != null && input.persisted.inserted === 0;
   const rssUrl = input.result.feedUrl || null;
 
   const payload: Prisma.InputJsonObject = {
@@ -177,6 +186,8 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
     passed,
     handedToAgent2,
     rssActive,
+    rateLimited,
+    retryAt: input.result.retryAt || null,
     candidates: input.result.candidates.length,
     inserted: input.persisted.inserted,
     skipped: input.persisted.skipped,
@@ -196,7 +207,15 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
       sourceId: input.result.sourceId,
       categoryId: input.result.categoryId || null,
       artifactType: "agent1_target_outcome",
-      status: passed ? "PASS" : handedToAgent2 ? "HANDOFF_TO_AGENT2" : rssActive ? "RSS_ACTIVE" : "FAILED",
+      status: passed
+        ? "PASS"
+        : rateLimited
+          ? "DEFERRED_RATE_LIMIT"
+          : handedToAgent2
+            ? "HANDOFF_TO_AGENT2"
+            : rssActive
+              ? "RSS_ACTIVE"
+              : "FAILED",
       candidateCount: input.result.candidates.length,
       payload,
       errorLog: passed

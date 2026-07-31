@@ -1,5 +1,10 @@
 import { prisma } from "./prisma";
+import {
+  buildUserFeedPublicationWhere,
+  isEffectivelyPublishableArticle,
+} from "./news-pipeline/publication-gate";
 import { getNotificationPayload, sendPushNotification } from "./push";
+import { buildSubscriptionArticleScope, getSubscriptionScope } from "./subscription-scope";
 
 const slotHours: Record<"MORNING" | "NOON" | "EVENING", number[]> = {
   MORNING: [6, 11],
@@ -29,6 +34,19 @@ export async function sendDueDailyNotifications(now = new Date()) {
         where: { isActive: true },
         select: { endpoint: true, p256dh: true, auth: true, expirationTime: true },
       },
+      sourceSubscriptions: {
+        where: { isActive: true },
+        select: { sourceId: true },
+      },
+      categorySubscriptions: {
+        where: { isActive: true },
+        select: {
+          categoryId: true,
+          category: {
+            select: { pathUrl: true },
+          },
+        },
+      },
     },
   });
 
@@ -50,9 +68,32 @@ export async function sendDueDailyNotifications(now = new Date()) {
 
     if (alreadySentToday) continue;
 
-    const articleCount = await prisma.article.count({
-      where: { createdAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) } },
-    });
+    const scope = getSubscriptionScope(user.sourceSubscriptions, user.categorySubscriptions);
+    const subscriptionPredicates = buildSubscriptionArticleScope(scope);
+    let articleCount = 0;
+    if (subscriptionPredicates.length > 0) {
+      const publicationWhere = {
+        ...buildUserFeedPublicationWhere(),
+        // Keep the centralized publication boundary, but narrow readiness
+        // to the existing daily notification window.
+        publicationReadyAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) },
+        OR: subscriptionPredicates,
+      };
+      const pageSize = 500;
+      let cursor: number | undefined;
+      while (true) {
+        const page = await prisma.article.findMany({
+          where: publicationWhere,
+          select: { id: true, title: true, canonicalUrl: true, bodyText: true },
+          orderBy: { id: "asc" },
+          take: pageSize,
+          ...(cursor === undefined ? {} : { skip: 1, cursor: { id: cursor } }),
+        });
+        articleCount += page.filter(isEffectivelyPublishableArticle).length;
+        if (page.length < pageSize) break;
+        cursor = page[page.length - 1]!.id;
+      }
+    }
 
     const title = "NuSift daily update";
     const body =

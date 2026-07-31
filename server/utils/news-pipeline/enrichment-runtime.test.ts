@@ -1,12 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArticleEnrichmentOutcome, ArticleUpstreamProvenance } from "./enrichment";
 import { AGENT3_EXTRACTOR_VERSION } from "./enrichment";
 
 // ─── Mock prisma ────────────────────────────────────────────────────────────
 const articleFindManyMock = vi.fn();
 const articleUpdateMock = vi.fn();
+const articleUpdateManyMock = vi.fn();
+const articleFindUniqueMock = vi.fn();
 const articleCountMock = vi.fn();
 const artifactCreateMock = vi.fn();
+const claimCreateMock = vi.fn();
+const claimDeleteManyMock = vi.fn();
+const claimFindUniqueMock = vi.fn();
+const claimRows = new Map<string, Record<string, unknown>>();
+const claimDeleteManyDirectMock = vi.fn();
+const transactionMock = vi.fn();
 const artifactFindManyMock = vi.fn();
 const pipelineRunCreateMock = vi.fn();
 const pipelineRunUpdateMock = vi.fn();
@@ -15,11 +23,16 @@ const logAgentScanMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
-    $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
+    $transaction: (...args: any[]) => transactionMock(...args),
     article: {
       findMany: (...args: any[]) => articleFindManyMock(...args),
+      findUnique: (...args: any[]) => articleFindUniqueMock(...args),
       update: (...args: any[]) => articleUpdateMock(...args),
+      updateMany: (...args: any[]) => articleUpdateManyMock(...args),
       count: (...args: any[]) => articleCountMock(...args),
+    },
+    articleEnrichmentClaim: {
+      deleteMany: (...args: any[]) => claimDeleteManyDirectMock(...args),
     },
     pipelineArtifact: {
       create: (...args: any[]) => artifactCreateMock(...args),
@@ -95,6 +108,46 @@ vi.mock("./article-content-browser-extractor", () => ({
   },
 }));
 
+function configureAgent3PrismaMocks(): void {
+  claimRows.clear();
+  claimDeleteManyDirectMock.mockResolvedValue({ count: 0 });
+  claimDeleteManyMock.mockImplementation(async (args: any) => {
+    const token = args?.where?.token as string | undefined;
+    if (!token) return { count: 0 };
+    return { count: claimRows.delete(token) ? 1 : 0 };
+  });
+  claimCreateMock.mockImplementation(async (args: any) => {
+    const row = { ...args.data };
+    claimRows.set(row.token as string, row);
+    return row;
+  });
+  claimFindUniqueMock.mockImplementation(async (args: any) => {
+    const token = args?.where?.token as string | undefined;
+    return token ? claimRows.get(token) ?? null : null;
+  });
+  articleUpdateManyMock.mockResolvedValue({ count: 1 });
+  articleFindUniqueMock.mockResolvedValue({ enrichmentAttemptCount: 1 });
+  transactionMock.mockImplementation(async (callback: any) => callback({
+    article: {
+      findUnique: (...args: any[]) => articleFindUniqueMock(...args),
+      update: (...args: any[]) => articleUpdateMock(...args),
+      updateMany: (...args: any[]) => {
+        const result = articleUpdateManyMock(...args);
+        if (!args[0]?.data?.enrichmentAttemptCount) articleUpdateMock(...args);
+        return result;
+      },
+    },
+    articleEnrichmentClaim: {
+      findUnique: (...args: any[]) => claimFindUniqueMock(...args),
+      deleteMany: (...args: any[]) => claimDeleteManyMock(...args),
+      create: (...args: any[]) => claimCreateMock(...args),
+    },
+    pipelineArtifact: {
+      create: (...args: any[]) => artifactCreateMock(...args),
+    },
+  }));
+}
+
 const asObj = (v: unknown) => v as Record<string, unknown>;
 
 const makeArticle = (overrides: Record<string, unknown> = {}) => ({
@@ -136,6 +189,10 @@ const makeIngestCandidate = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("buildArticleProvenance", () => {
   it("builds upstream provenance from an Article row preserving source/category", async () => {
     const { buildArticleProvenance } = await import("./enrichment-runtime");
@@ -143,16 +200,16 @@ describe("buildArticleProvenance", () => {
 
     expect(provenance.sourceId).toBe("src-1");
     expect(provenance.categoryId).toBe("cat-1");
-    expect(provenance.feedOrigin).toBe("rss"); // conservative default
-    expect(provenance.discoveredFromCategoryFeed).toBe(true);
-    expect(provenance.arrivedViaHardCaseRerun).toBe(false);
+    expect(provenance.feedOrigin).toBeNull();
+    expect(provenance.discoveredFromCategoryFeed).toBeNull();
+    expect(provenance.arrivedViaHardCaseRerun).toBeNull();
     expect(provenance.ingestedAt).toBe("2026-07-15T08:00:00.000Z");
   });
 
   it("sets discoveredFromCategoryFeed=false when categoryId is null", async () => {
     const { buildArticleProvenance } = await import("./enrichment-runtime");
     const provenance = buildArticleProvenance(makeArticle({ categoryId: null }));
-    expect(provenance.discoveredFromCategoryFeed).toBe(false);
+    expect(provenance.discoveredFromCategoryFeed).toBeNull();
     expect(provenance.categoryId).toBeNull();
   });
 });
@@ -215,6 +272,7 @@ describe("stubExtractArticle", () => {
 describe("selectEnrichmentEligibleArticles", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    configureAgent3PrismaMocks();
     articleFindManyMock.mockResolvedValue([makeArticle()]);
   });
 
@@ -251,12 +309,15 @@ describe("selectEnrichmentEligibleArticles", () => {
 describe("recoverUpstreamProvenanceBatch", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    configureAgent3PrismaMocks();
   });
 
   it("recovers precise provenance when Agent 1 ingest artifacts exist", async () => {
     const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
     artifactFindManyMock.mockResolvedValue([
       {
+        id: "ingest-artifact-1",
+        pipelineRunId: "ingest-run-1",
         sourceId: "src-1",
         payload: makeIngestArtifactPayload([
           makeIngestCandidate({ canonicalUrl: "https://example.com/a" }),
@@ -275,8 +336,10 @@ describe("recoverUpstreamProvenanceBatch", () => {
     expect(provenance.sourceId).toBe("src-1");
     expect(provenance.categoryId).toBe("cat-1");
     expect(provenance.ingestedAt).toBe("2026-07-15T08:00:00.000Z");
-    // arrivedViaHardCaseRerun falls back to false in Phase 1
-    expect(provenance.arrivedViaHardCaseRerun).toBe(false);
+    // The artifact proves origin/feed URL, but not hard-case rerun lineage.
+    expect(provenance.arrivedViaHardCaseRerun).toBeNull();
+    expect(provenance.ingestArtifactId).toBe("ingest-artifact-1");
+    expect(provenance.ingestPipelineRunId).toBe("ingest-run-1");
   });
 
   it("searches through multiple artifacts for the matching candidate", async () => {
@@ -309,11 +372,11 @@ describe("recoverUpstreamProvenanceBatch", () => {
     const result = await recoverUpstreamProvenanceBatch([makeArticle()]);
     const provenance = result.get(42)!;
 
-    // Conservative fallback
-    expect(provenance.feedOrigin).toBe("rss");
+    // No matching evidence means origin and route are unknown.
+    expect(provenance.feedOrigin).toBeNull();
     expect(provenance.feedUrl).toBeNull();
-    expect(provenance.discoveredFromCategoryFeed).toBe(true);
-    expect(provenance.arrivedViaHardCaseRerun).toBe(false);
+    expect(provenance.discoveredFromCategoryFeed).toBeNull();
+    expect(provenance.arrivedViaHardCaseRerun).toBeNull();
   });
 
   it("falls back when no candidate matches the article canonicalUrl", async () => {
@@ -329,7 +392,7 @@ describe("recoverUpstreamProvenanceBatch", () => {
 
     const result = await recoverUpstreamProvenanceBatch([makeArticle()]);
     const provenance = result.get(42)!;
-    expect(provenance.feedOrigin).toBe("rss"); // conservative
+    expect(provenance.feedOrigin).toBeNull();
   });
 
   it("falls back when candidate has no provenance object", async () => {
@@ -345,7 +408,7 @@ describe("recoverUpstreamProvenanceBatch", () => {
 
     const result = await recoverUpstreamProvenanceBatch([makeArticle()]);
     const provenance = result.get(42)!;
-    expect(provenance.feedOrigin).toBe("rss"); // conservative (no provenance on candidate)
+    expect(provenance.feedOrigin).toBeNull(); // no provenance on candidate
   });
 
   it("falls back for articles with no canonicalUrl or sourceUrl", async () => {
@@ -361,7 +424,7 @@ describe("recoverUpstreamProvenanceBatch", () => {
       makeArticle({ canonicalUrl: null, sourceUrl: null }),
     ]);
     const provenance = result.get(42)!;
-    expect(provenance.feedOrigin).toBe("rss"); // conservative (no URL to match)
+    expect(provenance.feedOrigin).toBeNull(); // no URL to match
   });
 
   it("falls back when the DB query fails", async () => {
@@ -370,7 +433,7 @@ describe("recoverUpstreamProvenanceBatch", () => {
 
     const result = await recoverUpstreamProvenanceBatch([makeArticle()]);
     const provenance = result.get(42)!;
-    expect(provenance.feedOrigin).toBe("rss"); // conservative fallback
+    expect(provenance.feedOrigin).toBeNull(); // explicit unknown fallback
     expect(provenance.sourceId).toBe("src-1");
   });
 
@@ -381,7 +444,7 @@ describe("recoverUpstreamProvenanceBatch", () => {
     expect(artifactFindManyMock).not.toHaveBeenCalled();
   });
 
-  it("normalizes unknown feedOrigin values to rss", async () => {
+  it("does not invent an origin for unknown feedOrigin values", async () => {
     const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
     artifactFindManyMock.mockResolvedValue([
       {
@@ -399,7 +462,7 @@ describe("recoverUpstreamProvenanceBatch", () => {
     ]);
 
     const result = await recoverUpstreamProvenanceBatch([makeArticle()]);
-    expect(result.get(42)!.feedOrigin).toBe("rss"); // "xml" is not valid
+    expect(result.get(42)!.feedOrigin).toBeNull(); // "xml" is not valid evidence
   });
 
   it("recovers rss feedOrigin correctly", async () => {
@@ -476,7 +539,7 @@ describe("stubExtractArticle with provenanceOverride", () => {
     const { stubExtractArticle } = await import("./enrichment-runtime");
     const outcome = stubExtractArticle(makeArticle());
 
-    expect(outcome.provenance.feedOrigin).toBe("rss");
+    expect(outcome.provenance.feedOrigin).toBeNull();
     expect(outcome.provenance.feedUrl).toBeNull();
   });
 });
@@ -484,6 +547,7 @@ describe("stubExtractArticle with provenanceOverride", () => {
 describe("runEnrichmentBatch", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    configureAgent3PrismaMocks();
     articleFindManyMock.mockResolvedValue([
       makeArticle({ id: 1 }),
       makeArticle({ id: 2, canonicalUrl: null, sourceUrl: null }),
@@ -662,11 +726,12 @@ describe("runEnrichmentBatch", () => {
   it("continues extraction when attempt marker persistence fails", async () => {
     const { runEnrichmentBatch } = await import("./enrichment-runtime");
     // Simulate attempt markers failing but result artifacts succeeding.
-    // Call order: marker-1 (fail), marker-2 (fail), result-1 (ok), result-2 (ok)
+    // Immediate persistence order: marker-1 (fail), result-1 (ok),
+    // marker-2 (fail), result-2 (ok).
     artifactCreateMock
       .mockRejectedValueOnce(new Error("marker failed"))
-      .mockRejectedValueOnce(new Error("marker failed"))
       .mockResolvedValueOnce({ id: "art-1" })
+      .mockRejectedValueOnce(new Error("marker failed"))
       .mockResolvedValueOnce({ id: "art-2" });
 
     const result = await runEnrichmentBatch();
@@ -675,6 +740,129 @@ describe("runEnrichmentBatch", () => {
     expect(result.persist.persisted).toBe(2);
     // 1 SUCCESS (article with URL) + 1 SKIPPED (no URL)
     expect(result.persist.byKind.SUCCESS + result.persist.byKind.SKIPPED).toBe(2);
+  });
+
+  it("persists the first outcome before beginning extraction of the second article", async () => {
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const defaultExtractor = extractArticleContentFromUrlMock.getMockImplementation()!;
+    const events: string[] = [];
+
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({ id: 1 }),
+      makeArticle({ id: 2, canonicalUrl: "https://example.com/b", sourceUrl: "https://example.com/b" }),
+    ]);
+    extractArticleContentFromUrlMock.mockImplementation(async (input: any) => {
+      events.push(`extract-${input.articleId}`);
+      return defaultExtractor(input);
+    });
+    articleUpdateMock.mockImplementation(async (args: any) => {
+      if (args?.where?.id !== undefined) events.push(`persist-${args.where.id}`);
+      return { id: args?.where?.id ?? 0 };
+    });
+
+    const result = await runEnrichmentBatch();
+
+    expect(result.persist.persisted).toBe(2);
+    expect(events.indexOf("persist-1")).toBeGreaterThan(events.indexOf("extract-1"));
+    expect(events.indexOf("persist-1")).toBeLessThan(events.indexOf("extract-2"));
+  });
+
+  it("excludes outcomes from success counters when the runtime loses the claim during persistence", async () => {
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({ id: 1 }),
+      makeArticle({ id: 2, canonicalUrl: "https://example.com/b", sourceUrl: "https://example.com/b" }),
+    ]);
+
+    // Claims are acquired and attempt markers are created, but another worker
+    // owns each claim by the time final Article/artifact persistence runs.
+    claimDeleteManyMock.mockResolvedValue({ count: 0 });
+
+    const result = await runEnrichmentBatch();
+
+    expect(result.articleCount).toBe(2);
+    expect(result.persist.persisted).toBe(0);
+    expect(result.persist.claimLost).toBe(2);
+    expect(result.persist.failed).toBe(0);
+    expect(result.persist.byKind.SUCCESS).toBe(0);
+    expect(result.persist.byKind.SKIPPED).toBe(0);
+    expect(articleUpdateMock).not.toHaveBeenCalled();
+    expect(artifactCreateMock).toHaveBeenCalledTimes(2); // attempt markers only
+  });
+
+  it("uses the current wall clock for recovery and each claim, not options.now", async () => {
+    vi.useFakeTimers();
+    const leaseClock = new Date("2026-07-31T12:00:00.000Z");
+    const historicalContentTime = new Date("2020-01-01T00:00:00.000Z");
+    vi.setSystemTime(leaseClock);
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const defaultExtractor = extractArticleContentFromUrlMock.getMockImplementation()!;
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({ id: 1 }),
+      makeArticle({ id: 2, canonicalUrl: "https://example.com/b", sourceUrl: "https://example.com/b" }),
+    ]);
+    extractArticleContentFromUrlMock.mockImplementation(async (input: any) => {
+      await vi.advanceTimersByTimeAsync(20 * 60 * 1000);
+      return defaultExtractor(input);
+    });
+
+    const result = await runEnrichmentBatch({ now: historicalContentTime });
+
+    expect(result.persist.persisted).toBe(2);
+    expect(claimDeleteManyDirectMock).toHaveBeenCalledWith({
+      where: { expiresAt: { lte: leaseClock } },
+    });
+    const claims = claimCreateMock.mock.calls.map((call: any[]) => call[0].data);
+    expect(claims).toHaveLength(2);
+    expect(claims[0].claimedAt).toEqual(leaseClock);
+    expect(claims[0].claimedAt).not.toEqual(historicalContentTime);
+    expect(claims[1].claimedAt.getTime()).toBeGreaterThan(claims[0].claimedAt.getTime());
+    expect(claims[1].expiresAt.getTime() - claims[1].claimedAt.getTime()).toBe(30 * 60 * 1000);
+  });
+
+  it("keeps both outcomes valid when time advances between extractions", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-31T12:00:00.000Z"));
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const defaultExtractor = extractArticleContentFromUrlMock.getMockImplementation()!;
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({ id: 1 }),
+      makeArticle({ id: 2, canonicalUrl: "https://example.com/b", sourceUrl: "https://example.com/b" }),
+    ]);
+    extractArticleContentFromUrlMock.mockImplementation(async (input: any) => {
+      await vi.advanceTimersByTimeAsync(20 * 60 * 1000);
+      return defaultExtractor(input);
+    });
+
+    const result = await runEnrichmentBatch();
+
+    expect(result.persist.persisted).toBe(2);
+    expect(result.persist.claimLost).toBe(0);
+    expect(result.persist.failed).toBe(0);
+    expect(result.persist.byKind.SUCCESS).toBe(2);
+    const claims = claimCreateMock.mock.calls.map((call: any[]) => call[0].data);
+    expect(claims[1].claimedAt.getTime()).toBeGreaterThan(claims[0].claimedAt.getTime());
+    expect(claims[0].expiresAt.getTime()).toBeGreaterThan(claims[0].claimedAt.getTime());
+    expect(claims[1].expiresAt.getTime()).toBeGreaterThan(claims[1].claimedAt.getTime());
+  });
+
+  it("treats an Article deleted between selection and claim as a harmless batch miss", async () => {
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    articleFindManyMock.mockResolvedValue([makeArticle({ id: 1 })]);
+    articleFindUniqueMock.mockResolvedValue(null);
+
+    const result = await runEnrichmentBatch();
+
+    expect(result.articleCount).toBe(0);
+    expect(result.claimSkipped).toBe(1);
+    expect(result.persist.persisted).toBe(0);
+    expect(result.persist.failed).toBe(0);
+    expect(extractArticleContentFromUrlMock).not.toHaveBeenCalled();
+    expect(pipelineRunUpdateMock).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "COMPLETED" }),
+    }));
   });
 
   it("emits ARTICLE_CONTENT_ENRICHMENT_FAILED and marks PipelineRun FAILED on top-level crash", async () => {
@@ -1608,6 +1796,7 @@ describe("Agent 3 browser fallback integration", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    configureAgent3PrismaMocks();
     articleFindManyMock.mockResolvedValue([makeArticle({ id: 1 })]);
     articleUpdateMock.mockResolvedValue({ id: 0 });
     artifactCreateMock.mockResolvedValue({ id: "art-x" });
@@ -1804,8 +1993,8 @@ describe("Agent 3 browser fallback integration", () => {
     // Previous behavior was 3 attempts (threshold-based), now it's 1 (immediate).
     expect(result.browserFallbackStats?.attempted).toBe(1);
     expect(result.browserFallbackStats?.rateLimited).toBe(1);
-    // but the batch should still process all 3 articles
-    expect(result.articleCount).toBe(3);
+    // Source cooldown stops later claims after the first blocked article.
+    expect(result.articleCount).toBe(1);
   });
 
   it("browser runtime unavailable stops browser fallback for the rest of the batch", async () => {
@@ -2525,6 +2714,7 @@ describe("isRecentlyBlocked", () => {
 describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    configureAgent3PrismaMocks();
   });
 
   it("excludes current-version HTTP 403 ENRICHMENT_FAILED articles by default", async () => {
@@ -2636,6 +2826,7 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
 describe("browser fallback skipped reason in runEnrichmentBatch", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    configureAgent3PrismaMocks();
     articleUpdateMock.mockResolvedValue({ id: 0 });
     artifactCreateMock.mockResolvedValue({ id: "art-x" });
     artifactFindManyMock.mockResolvedValue([]);
@@ -2831,6 +3022,7 @@ describe("extractHostname", () => {
 describe("runEnrichmentBatch with source diversity and cooldown", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    configureAgent3PrismaMocks();
     articleUpdateMock.mockResolvedValue({ id: 0 });
     artifactCreateMock.mockResolvedValue({ id: "art-x" });
     artifactFindManyMock.mockResolvedValue([]);
@@ -2905,8 +3097,9 @@ describe("runEnrichmentBatch with source diversity and cooldown", () => {
     // maxArticlesPerSource=5: only 5 of the 10 blocked articles processed
     const result = await runEnrichmentBatch({ maxArticlesPerSource: 5 });
 
-    // Article count should be 8 (5 from blocked + 3 from good)
-    expect(result.articleCount).toBe(8);
+    // The blocked source enters cooldown after its first failure, so only
+    // 3 blocked attempts plus the 3 good articles reach extraction.
+    expect(result.articleCount).toBe(6);
     // All blocked articles should be HTTP_ACCESS_BLOCKED (403 → HTTP_FORBIDDEN)
     expect(result.persist.byKind.HTTP_ACCESS_BLOCKED).toBeGreaterThanOrEqual(3);
     expect(result.persist.byKind.UNSUPPORTED_STRUCTURE).toBe(0);
@@ -3235,6 +3428,7 @@ describe("HTTP_ACCESS_BLOCKED source cooldown ordering", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    configureAgent3PrismaMocks();
     articleUpdateMock.mockResolvedValue({ id: 0 });
     artifactCreateMock.mockResolvedValue({ id: "art-x" });
     artifactFindManyMock.mockResolvedValue([]);

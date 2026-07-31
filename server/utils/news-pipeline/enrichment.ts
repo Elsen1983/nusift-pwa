@@ -127,21 +127,27 @@ export interface ArticleFieldProvenance {
  * Agent 3 must NOT re-derive or overwrite this; it preserves traceability of
  * where the article came from (feed discovery / hard-case rerun / etc.).
  */
+export type FeedOrigin = "rss" | "atom" | "json" | "html_fallback" | "web_discovery";
+
 export interface ArticleUpstreamProvenance {
   sourceId: string;
   /** Category id when the article was ingested from a category-scoped feed. */
   categoryId?: string | null;
-  /** Feed origin recorded by Agent 1 ingest. */
-  feedOrigin: "rss" | "atom" | "json" | "html_fallback" | "web_discovery";
+  /** Feed origin recorded by Agent 1 ingest; null means the origin is unknown. */
+  feedOrigin: FeedOrigin | null;
   /** Feed URL the article was ingested from, if known. */
   feedUrl?: string | null;
-  /** Whether the article arrived via a scoped category feed. */
-  discoveredFromCategoryFeed?: boolean;
+  /** Whether the article arrived via a scoped category feed; null means unknown. */
+  discoveredFromCategoryFeed?: boolean | null;
   /**
    * Whether the article universe was expanded by an Agent 1 hard-case
-   * discovery + targeted rerun. Preserves the §4.1 traceability requirement.
+   * discovery + targeted rerun; null means unknown.
    */
-  arrivedViaHardCaseRerun?: boolean;
+  arrivedViaHardCaseRerun?: boolean | null;
+  /** Stable Agent 1 artifact reference when provenance was recovered from an artifact. */
+  ingestArtifactId?: string | null;
+  /** Stable Agent 1 pipeline-run reference when provenance was recovered from an artifact. */
+  ingestPipelineRunId?: string | null;
   /** ISO-8601 timestamp of the original Agent 1 ingest. */
   ingestedAt?: string | null;
 }
@@ -442,10 +448,16 @@ export const createEnrichmentOutcome = (
   provenance: {
     sourceId: input.provenance.sourceId,
     categoryId: input.provenance.categoryId ?? null,
-    feedOrigin: input.provenance.feedOrigin,
+    feedOrigin: input.provenance.feedOrigin ?? null,
     feedUrl: input.provenance.feedUrl ?? null,
-    discoveredFromCategoryFeed: input.provenance.discoveredFromCategoryFeed ?? false,
-    arrivedViaHardCaseRerun: input.provenance.arrivedViaHardCaseRerun ?? false,
+    discoveredFromCategoryFeed: input.provenance.discoveredFromCategoryFeed ?? null,
+    arrivedViaHardCaseRerun: input.provenance.arrivedViaHardCaseRerun ?? null,
+    ...(input.provenance.ingestArtifactId !== undefined
+      ? { ingestArtifactId: input.provenance.ingestArtifactId }
+      : {}),
+    ...(input.provenance.ingestPipelineRunId !== undefined
+      ? { ingestPipelineRunId: input.provenance.ingestPipelineRunId }
+      : {}),
     ingestedAt: input.provenance.ingestedAt ?? null,
   },
   method: {
@@ -548,7 +560,10 @@ export const serializeOutcomeSummary = (
     provenance: {
       sourceId: outcome.provenance.sourceId,
       categoryId: outcome.provenance.categoryId,
-      feedOrigin: outcome.provenance.feedOrigin,
+      feedOrigin: outcome.provenance.feedOrigin ?? null,
+      feedUrl: outcome.provenance.feedUrl ?? null,
+      ingestArtifactId: outcome.provenance.ingestArtifactId ?? null,
+      ingestPipelineRunId: outcome.provenance.ingestPipelineRunId ?? null,
     },
   }) as Prisma.InputJsonValue;
 
@@ -652,23 +667,26 @@ const normalizeProvenance = (
     "atom",
     "json",
     "html_fallback",
+    "web_discovery",
   ]);
   if (typeof value.sourceId !== "string") return null;
   return {
     sourceId: value.sourceId,
     categoryId: typeof value.categoryId === "string" ? value.categoryId : null,
-    feedOrigin: validOrigins.has(feedOrigin as string)
+    feedOrigin: typeof feedOrigin === "string" && validOrigins.has(feedOrigin)
       ? (feedOrigin as ArticleUpstreamProvenance["feedOrigin"])
-      : "rss",
+      : null,
     feedUrl: isStringOrNull(value.feedUrl) ? value.feedUrl : null,
     discoveredFromCategoryFeed:
       typeof value.discoveredFromCategoryFeed === "boolean"
         ? value.discoveredFromCategoryFeed
-        : false,
+        : null,
     arrivedViaHardCaseRerun:
       typeof value.arrivedViaHardCaseRerun === "boolean"
         ? value.arrivedViaHardCaseRerun
-        : false,
+        : null,
+    ingestArtifactId: typeof value.ingestArtifactId === "string" ? value.ingestArtifactId : null,
+    ingestPipelineRunId: typeof value.ingestPipelineRunId === "string" ? value.ingestPipelineRunId : null,
     ingestedAt: typeof value.ingestedAt === "string" ? value.ingestedAt : null,
   };
 };

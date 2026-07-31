@@ -46,7 +46,7 @@ describe("createHeadlessQueueArtifactIfAbsent", () => {
 
     expect(result.created).toBe(true);
     expect(lockMock).toHaveBeenCalledWith(
-      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0)) IS NULL AS locked",
       "article-discovery-headless:source-1||https://example.com/news",
     );
     expect(lockMock.mock.invocationCallOrder[0]).toBeLessThan(findManyMock.mock.invocationCallOrder[0]!);

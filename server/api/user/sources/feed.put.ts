@@ -3,6 +3,7 @@ import { prisma } from "../../../utils/prisma";
 import { requireUserId } from "../../../utils/require-user";
 import { verifyImportedRssFeed } from "../../../utils/news-pipeline/import-rss";
 import { getFeedProductivityResetData } from "../../../utils/news-pipeline/feed-productivity";
+import { resolveHeadlessMarkersByAgent1Rss } from "../../../utils/news-pipeline/agent1-rss-cleanup";
 import { runNewsPipeline } from "../../../utils/news-pipeline/orchestrator";
 import { createDiscoveryOutcome, emptyTaxonomyEvidence } from "../../../utils/news-pipeline/types";
 import type { FeedDiscoveryResult } from "../../../utils/news-pipeline/types";
@@ -134,6 +135,10 @@ export default defineEventHandler(async (event) => {
         feedSubmittedByUserId: userId,
         feedSubmittedAt: now,
         ...getFeedProductivityResetData(rootSubscription.newsSource.rssFeedUrl, normalizedFeedUrl),
+        currentFeedProductive: true,
+        consecutiveNonProductiveRuns: 0,
+        lastProductiveFeedUrl: normalizedFeedUrl,
+        lastProductiveAt: now,
       },
     });
 
@@ -154,7 +159,18 @@ export default defineEventHandler(async (event) => {
       feedSubmittedByUserId: userId,
       feedSubmittedAt: now,
       ...getFeedProductivityResetData(categorySubscription!.category.rssFeedUrl, normalizedFeedUrl),
+      currentFeedProductive: true,
+      consecutiveNonProductiveRuns: 0,
+      lastProductiveFeedUrl: normalizedFeedUrl,
+      lastProductiveAt: now,
     },
+  });
+
+  await resolveHeadlessMarkersByAgent1Rss({
+    sourceId: categorySubscription!.category.newsSourceId,
+    categoryId: categorySubscription!.category.id,
+    targetUrl: categorySubscription!.category.pathUrl,
+    rssFeedUrl: normalizedFeedUrl,
   });
 
   if (categorySubscription!.isActive) {

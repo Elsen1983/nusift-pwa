@@ -602,14 +602,20 @@ export const isAgent2EligibleTarget = (input: {
   rssStatus: string;
   currentFeedProductive: boolean;
   consecutiveNonProductiveRuns: number;
+  rssFeedUrl?: string | null;
+  feedProvenance?: string | null;
 }) =>
   input.rssStatus === "NO_RSS_FOUND" ||
-  (input.rssStatus === "ACTIVE" && !input.currentFeedProductive && input.consecutiveNonProductiveRuns >= 2);
+  (input.rssStatus === "ACTIVE" &&
+    !(input.feedProvenance === "USER_SUBMITTED" && input.rssFeedUrl) &&
+    !input.currentFeedProductive &&
+    input.consecutiveNonProductiveRuns >= 2);
 
 export type TargetSkipReason =
   | "not_found_in_db"
   | "missing_target_url"
   | "rss_active_productive"
+  | "rss_active_user_submitted"
   | "rss_active_waiting_for_second_nonproductive_run"
   | "rss_pending_discovery"
   | "unsupported_status"
@@ -626,6 +632,7 @@ const EMPTY_SKIP_REASONS = (): Record<TargetSkipReason, number> => ({
   not_found_in_db: 0,
   missing_target_url: 0,
   rss_active_productive: 0,
+  rss_active_user_submitted: 0,
   rss_active_waiting_for_second_nonproductive_run: 0,
   rss_pending_discovery: 0,
   unsupported_status: 0,
@@ -636,8 +643,13 @@ const classifySkipReason = (input: {
   rssStatus: string;
   currentFeedProductive: boolean;
   consecutiveNonProductiveRuns: number;
+  rssFeedUrl?: string | null;
+  feedProvenance?: string | null;
 }): TargetSkipReason => {
   if (input.rssStatus === "ACTIVE") {
+    if (input.feedProvenance === "USER_SUBMITTED" && input.rssFeedUrl) {
+      return "rss_active_user_submitted";
+    }
     return input.currentFeedProductive
       ? "rss_active_productive"
       : "rss_active_waiting_for_second_nonproductive_run";
@@ -670,6 +682,8 @@ export async function resolveAgent2Targets(input?: {
             frontPageUrl: true,
             mediaName: true,
             rssStatus: true,
+            rssFeedUrl: true,
+            feedProvenance: true,
             currentFeedProductive: true,
             consecutiveNonProductiveRuns: true,
           },
@@ -683,6 +697,8 @@ export async function resolveAgent2Targets(input?: {
             newsSourceId: true,
             pathUrl: true,
             rssStatus: true,
+            rssFeedUrl: true,
+            feedProvenance: true,
             currentFeedProductive: true,
             consecutiveNonProductiveRuns: true,
           },
@@ -1555,13 +1571,27 @@ export async function runArticleDiscoveryBatch(input?: {
         if (queued.created) artifactCount += 1;
       }
 
-      // Resolve stale PENDING_HEADLESS markers when static discovery is now productive.
-      await resolveStaleHeadlessMarkers({ result, artifactId: artifact.id, pipelineRunId: pipelineRun.id });
-
+      // Candidate persistence is the durability boundary for Agent 2 success.
+      // Resolve stale headless markers only after every candidate persistence
+      // attempt has completed without a reported failure. The discovery artifact
+      // remains available for audit even when persistence must be retried.
       const persisted = await persistCandidates(result.candidates);
       inserted += persisted.inserted;
       skipped += persisted.skipped;
       failed += persisted.failed + result.failed;
+
+      if (persisted.failed === 0) {
+        await resolveStaleHeadlessMarkers({ result, artifactId: artifact.id, pipelineRunId: pipelineRun.id });
+      } else {
+        await logAgentScan({
+          sourceId: target.sourceId,
+          categoryId: target.categoryId || undefined,
+          status: "ARTICLE_DISCOVERY_PERSISTENCE_FAILED",
+          executionTimeMs: 0,
+          errorLog: `Candidate persistence reported ${persisted.failed} failure(s) for ${target.targetUrl}; headless markers remain retryable.`,
+        });
+      }
+
       processed += 1;
     } catch (error: any) {
       failed += 1;

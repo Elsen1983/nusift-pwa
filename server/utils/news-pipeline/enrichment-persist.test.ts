@@ -8,16 +8,28 @@ import {
 } from "./enrichment";
 
 // ─── Mock prisma ────────────────────────────────────────────────────────────
-// $transaction with an array is called by persistEnrichmentOutcome.
+// The persistence path uses both array and callback transactions.
 const articleUpdateMock = vi.fn();
+const articleUpdateManyMock = vi.fn();
+const articleFindUniqueMock = vi.fn();
 const artifactCreateMock = vi.fn();
+const claimDeleteManyMock = vi.fn();
+const claimFindUniqueMock = vi.fn();
+const claimCreateMock = vi.fn();
+const claimDeleteManyDirectMock = vi.fn();
 const pipelineArtifactFindManyMock = vi.fn();
+const transactionMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
-    $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
+    $transaction: (...args: any[]) => transactionMock(...args),
     article: {
       update: (...args: any[]) => articleUpdateMock(...args),
+      updateMany: (...args: any[]) => articleUpdateManyMock(...args),
+      findUnique: (...args: any[]) => articleFindUniqueMock(...args),
+    },
+    articleEnrichmentClaim: {
+      deleteMany: (...args: any[]) => claimDeleteManyDirectMock(...args),
     },
     pipelineArtifact: {
       create: (...args: any[]) => artifactCreateMock(...args),
@@ -45,7 +57,7 @@ const makeSuccess = (): ArticleEnrichmentOutcome =>
     quality: { confidence: 0.9, qualityScore: 88, signals: ["has_author"], bodyLength: 1200 },
     fields: {
       title: { raw: "Feed title", chosenValue: "HTML title", chosenFrom: "dom", overrideReason: "richer" },
-      bodyText: { raw: null, chosenValue: "Extracted body...", chosenFrom: "dom", overrideReason: "feed empty" },
+      bodyText: { raw: null, chosenValue: "A".repeat(1200), chosenFrom: "dom", overrideReason: "feed empty" },
     },
   });
 
@@ -99,13 +111,19 @@ describe("buildArticleEnrichmentUpdate", () => {
   it("produces a minimal row update with status, timestamps, method, confidence, summary", async () => {
     const { buildArticleEnrichmentUpdate } = await import("./enrichment-persist");
     const outcome = makeSuccess();
-    const update = buildArticleEnrichmentUpdate(outcome) as Record<string, unknown>;
+    const update = buildArticleEnrichmentUpdate(outcome, {
+      existingTitle: "Published title",
+      existingCanonicalUrl: "https://example.com/a",
+    }) as Record<string, unknown>;
 
     expect(update.enrichmentStatus).toBe("ENRICHED");
     expect(update.enrichmentMethod).toBe("http-dom");
     expect(update.enrichmentConfidence).toBe(0.9);
-    // attempt count increments atomically
-    expect(update.enrichmentAttemptCount).toEqual({ increment: 1 });
+    expect(update.publicationStatus).toBe("PUBLISHED");
+    expect(update.publicationStage).toBe("agent3");
+    expect(update.publicationReadyAt).toEqual(new Date(outcome.timing.finishedAt));
+    // Attempt count increments atomically when the claim is acquired, not on final write.
+    expect(update.enrichmentAttemptCount).toBeUndefined();
     // timestamps come from the outcome timing
     expect(update.enrichmentStartedAt).toBeInstanceOf(Date);
     expect(update.enrichmentFinishedAt).toBeInstanceOf(Date);
@@ -117,6 +135,68 @@ describe("buildArticleEnrichmentUpdate", () => {
     expect(summary.rejectionCode).toBeNull();
     // summary must NOT carry full field provenance
     expect(summary.fields).toBeUndefined();
+  });
+
+  it("derives publication from the body that will actually be durable", async () => {
+    const { buildArticleEnrichmentUpdate } = await import("./enrichment-persist");
+
+    const shortReplacement = buildSuccessOutcome({
+      articleId: 1,
+      provenance: baseProvenance,
+      quality: { bodyLength: 100 },
+      fields: {
+        bodyText: {
+          raw: "A".repeat(900),
+          chosenValue: "B".repeat(100),
+          chosenFrom: "dom",
+          overrideReason: "test replacement",
+        },
+      },
+    });
+    const shortReplacementUpdate = buildArticleEnrichmentUpdate(shortReplacement, {
+      existingBodyText: "A".repeat(900),
+      existingTitle: "Published title",
+      existingCanonicalUrl: "https://example.com/a",
+    }) as Record<string, unknown>;
+    expect(shortReplacementUpdate.bodyText).toBe("B".repeat(100));
+    expect(shortReplacementUpdate.publicationStatus).toBe("PROCESSING");
+    expect(shortReplacementUpdate.publicationReadyAt).toBeNull();
+
+    const unchangedLongValue = buildSuccessOutcome({
+      articleId: 2,
+      provenance: baseProvenance,
+      quality: { bodyLength: 900 },
+      fields: {
+        bodyText: {
+          raw: "C".repeat(900),
+          chosenValue: "C".repeat(900),
+          chosenFrom: "unchanged",
+          overrideReason: "kept existing",
+        },
+      },
+    });
+    const unchangedUpdate = buildArticleEnrichmentUpdate(unchangedLongValue, {
+      existingBodyText: "D".repeat(100),
+      existingTitle: "Published title",
+      existingCanonicalUrl: "https://example.com/a",
+    }) as Record<string, unknown>;
+    expect(unchangedUpdate.bodyText).toBeUndefined();
+    expect(unchangedUpdate.publicationStatus).toBe("PROCESSING");
+    expect(unchangedUpdate.publicationReadyAt).toBeNull();
+
+    const noReplacement = buildSuccessOutcome({
+      articleId: 3,
+      provenance: baseProvenance,
+      quality: { bodyLength: null },
+      fields: {},
+    });
+    const noReplacementUpdate = buildArticleEnrichmentUpdate(noReplacement, {
+      existingBodyText: "E".repeat(100),
+      existingTitle: "Published title",
+      existingCanonicalUrl: "https://example.com/a",
+    }) as Record<string, unknown>;
+    expect(noReplacementUpdate.publicationStatus).toBe("PROCESSING");
+    expect(noReplacementUpdate.publicationReadyAt).toBeNull();
   });
 
   it("derives status from outcomeKindToStatus for each kind", async () => {
@@ -141,6 +221,8 @@ describe("buildArticleEnrichmentUpdate", () => {
       }),
     ) as Record<string, unknown>;
     expect(failed.enrichmentStatus).toBe("ENRICHMENT_FAILED");
+    expect(failed.publicationStatus).toBe("REJECTED");
+    expect(failed.publicationReadyAt).toBeNull();
   });
 
   it("persists blocking metadata in the row summary for progress cooldown checks", async () => {
@@ -243,14 +325,60 @@ describe("persistEnrichmentOutcome", () => {
     vi.resetAllMocks();
     articleUpdateMock.mockResolvedValue({ id: 42 });
     artifactCreateMock.mockResolvedValue({ id: "art-1" });
+    articleUpdateManyMock.mockResolvedValue({ count: 1 });
+    claimDeleteManyMock.mockResolvedValue({ count: 1 });
+    articleFindUniqueMock.mockResolvedValue({
+      bodyText: "A".repeat(1200),
+      title: "Published title",
+      canonicalUrl: "https://example.com/a",
+    });
+    claimFindUniqueMock.mockResolvedValue({
+      articleId: 42,
+      pipelineRunId: "run-1",
+      token: "claim-1",
+      attemptNumber: 1,
+      expectedStatus: "INGESTED",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    claimFindUniqueMock.mockResolvedValue({
+      articleId: 42,
+      pipelineRunId: "run-1",
+      token: "claim-1",
+      attemptNumber: 1,
+      expectedStatus: "INGESTED",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    transactionMock.mockImplementation(async (callback: any) => callback({
+      article: {
+        findUnique: (...args: any[]) => articleFindUniqueMock(...args),
+        update: (...args: any[]) => articleUpdateMock(...args),
+        updateMany: (...args: any[]) => {
+          const result = articleUpdateManyMock(...args);
+          if (!args[0]?.data?.enrichmentAttemptCount) articleUpdateMock(...args);
+          return result;
+        },
+      },
+      articleEnrichmentClaim: {
+        findUnique: (...args: any[]) => claimFindUniqueMock(...args),
+        deleteMany: (...args: any[]) => claimDeleteManyMock(...args),
+        create: (...args: any[]) => claimCreateMock(...args),
+      },
+      pipelineArtifact: {
+        create: (...args: any[]) => artifactCreateMock(...args),
+      },
+    }));
   });
 
-  it("runs article update + artifact create in one transaction and returns the artifact id", async () => {
+  it("runs claim release + article update + artifact create atomically", async () => {
     const { persistEnrichmentOutcome } = await import("./enrichment-persist");
-    const result = await persistEnrichmentOutcome(makeSuccess(), "run-1");
+    const result = await persistEnrichmentOutcome(makeSuccess(), "run-1", "claim-1");
 
     expect(result.artifactId).toBe("art-1");
     expect(result.applied).toBe(true);
+    expect(result.claimLost).toBe(false);
+    expect(claimDeleteManyMock).toHaveBeenCalledWith({
+      where: expect.objectContaining({ articleId: 42, pipelineRunId: "run-1", token: "claim-1" }),
+    });
     expect(articleUpdateMock).toHaveBeenCalledTimes(1);
     expect(artifactCreateMock).toHaveBeenCalledTimes(1);
 
@@ -264,13 +392,178 @@ describe("persistEnrichmentOutcome", () => {
     expect(createArgs.data.pipelineRunId).toBe("run-1");
     expect(createArgs.data.artifactType).toBe("article_enrichment_result");
   });
+
+  it("does not write the row or artifact after a stale worker loses its claim", async () => {
+    claimDeleteManyMock.mockResolvedValueOnce({ count: 0 });
+    const { persistEnrichmentOutcome } = await import("./enrichment-persist");
+
+    const result = await persistEnrichmentOutcome(makeSuccess(), "run-1", "stale-token");
+
+    expect(result).toEqual({ artifactId: null, applied: false, claimLost: true });
+    expect(articleUpdateMock).not.toHaveBeenCalled();
+    expect(artifactCreateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("claimEnrichmentArticle and recovery", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    claimDeleteManyMock.mockResolvedValue({ count: 0 });
+    claimDeleteManyDirectMock.mockResolvedValue({ count: 2 });
+    claimFindUniqueMock.mockResolvedValue({
+      articleId: 42,
+      pipelineRunId: "run-1",
+      token: "claim-1",
+      attemptNumber: 1,
+      expectedStatus: "INGESTED",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    claimCreateMock.mockImplementation(async (args: any) => ({
+      ...args.data,
+      attemptNumber: args.data.attemptNumber,
+    }));
+    articleUpdateManyMock.mockResolvedValue({ count: 1 });
+    articleFindUniqueMock.mockResolvedValue({
+      bodyText: "A".repeat(1200),
+      title: "Published title",
+      canonicalUrl: "https://example.com/a",
+    });
+    articleFindUniqueMock.mockResolvedValue({ enrichmentAttemptCount: 0, enrichmentStatus: "INGESTED" });
+    claimFindUniqueMock.mockImplementation(async (args: any) => ({
+      articleId: 42,
+      pipelineRunId: "run-1",
+      token: args?.where?.token ?? "claim-1",
+      attemptNumber: 1,
+      expectedStatus: "INGESTED",
+      expiresAt: new Date(Date.now() + 60_000),
+    }));
+    transactionMock.mockImplementation(async (callback: any) => callback({
+      article: {
+        updateMany: (...args: any[]) => articleUpdateManyMock(...args),
+        findUnique: (...args: any[]) => articleFindUniqueMock(...args),
+      },
+      articleEnrichmentClaim: {
+        findUnique: (...args: any[]) => claimFindUniqueMock(...args),
+        deleteMany: (...args: any[]) => claimDeleteManyMock(...args),
+        create: (...args: any[]) => claimCreateMock(...args),
+      },
+    }));
+  });
+
+  it("allows only one concurrent owner through the unique claim", async () => {
+    const { claimEnrichmentArticle } = await import("./enrichment-persist");
+    claimCreateMock
+      .mockResolvedValueOnce({ articleId: 42, pipelineRunId: "run-1", token: "one", attemptNumber: 1, expectedStatus: "INGESTED", claimedAt: new Date(), expiresAt: new Date(Date.now() + 1000) })
+      .mockRejectedValueOnce(Object.assign(new Error("unique claim"), { code: "P2002" }));
+
+    const first = await claimEnrichmentArticle(42, "run-1");
+    const second = await claimEnrichmentArticle(42, "run-2");
+
+    expect(first?.articleId).toBe(42);
+    expect(second).toBeNull();
+    expect(first?.attemptNumber).toBe(1);
+    expect(claimCreateMock.mock.calls[0]![0].data).toEqual(expect.objectContaining({
+      attemptNumber: 1,
+      expectedStatus: "INGESTED",
+    }));
+  });
+
+  it("returns a harmless claim miss when the Article disappears", async () => {
+    const { claimEnrichmentArticle } = await import("./enrichment-persist");
+    articleFindUniqueMock.mockResolvedValueOnce(null);
+
+    await expect(claimEnrichmentArticle(42, "run-missing")).resolves.toBeNull();
+    expect(claimCreateMock).not.toHaveBeenCalled();
+    expect(articleUpdateManyMock).not.toHaveBeenCalled();
+  });
+
+  it("does not hide an unrelated database error during claim acquisition", async () => {
+    const { claimEnrichmentArticle } = await import("./enrichment-persist");
+    articleFindUniqueMock.mockRejectedValueOnce(new Error("database connection lost"));
+
+    await expect(claimEnrichmentArticle(42, "run-db-error")).rejects.toThrow("database connection lost");
+    expect(claimCreateMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale selection snapshot without incrementing the attempt", async () => {
+    const { claimEnrichmentArticle } = await import("./enrichment-persist");
+    articleUpdateManyMock.mockResolvedValueOnce({ count: 0 });
+
+    const result = await claimEnrichmentArticle(42, "run-stale", new Date(), undefined, 0, "INGESTED");
+
+    expect(result).toBeNull();
+    expect(claimCreateMock).not.toHaveBeenCalled();
+    expect(articleUpdateManyMock).toHaveBeenCalledWith({
+      where: { id: 42, enrichmentAttemptCount: 0, enrichmentStatus: "INGESTED" },
+      data: { enrichmentAttemptCount: { increment: 1 } },
+    });
+  });
+
+  it("rejects final persistence when the Article CAS no longer matches", async () => {
+    const { persistEnrichmentOutcome } = await import("./enrichment-persist");
+    articleUpdateManyMock.mockResolvedValueOnce({ count: 0 });
+
+    const result = await persistEnrichmentOutcome(makeSuccess(), "run-1", "claim-1");
+
+    expect(result).toEqual({ artifactId: null, applied: false, claimLost: true });
+    expect(artifactCreateMock).not.toHaveBeenCalled();
+  });
+
+  it("releases expired claims explicitly and permits a later claim", async () => {
+    const { claimEnrichmentArticle, recoverExpiredEnrichmentClaims } = await import("./enrichment-persist");
+    const now = new Date("2026-07-31T12:00:00.000Z");
+
+    await expect(recoverExpiredEnrichmentClaims(now)).resolves.toBe(2);
+    expect(claimDeleteManyDirectMock).toHaveBeenCalledWith({ where: { expiresAt: { lte: now } } });
+
+    const recovered = await claimEnrichmentArticle(42, "run-recovery", now);
+    expect(recovered).not.toBeNull();
+    expect(recovered?.pipelineRunId).toBe("run-recovery");
+    expect(recovered?.attemptNumber).toBe(1);
+  });
 });
 
 describe("persistEnrichmentBatch", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     articleUpdateMock.mockResolvedValue({ id: 0 });
+    articleUpdateManyMock.mockResolvedValue({ count: 1 });
+    articleFindUniqueMock.mockResolvedValue({
+      bodyText: "A".repeat(1200),
+      title: "Published title",
+      canonicalUrl: "https://example.com/a",
+    });
     artifactCreateMock.mockResolvedValue({ id: "" });
+    claimFindUniqueMock.mockImplementation(async (args: any) => {
+      const token = String(args?.where?.token ?? "claim-42");
+      const articleId = Number(token.replace(/^claim-/, "")) || 42;
+      return {
+        articleId,
+        pipelineRunId: "run-1",
+        token,
+        attemptNumber: 1,
+        expectedStatus: "INGESTED",
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+    });
+    transactionMock.mockImplementation(async (callback: any) => callback({
+      article: {
+        findUnique: (...args: any[]) => articleFindUniqueMock(...args),
+        update: (...args: any[]) => articleUpdateMock(...args),
+        updateMany: (...args: any[]) => {
+          const result = articleUpdateManyMock(...args);
+          if (!args[0]?.data?.enrichmentAttemptCount) articleUpdateMock(...args);
+          return result;
+        },
+      },
+      articleEnrichmentClaim: {
+        findUnique: (...args: any[]) => claimFindUniqueMock(...args),
+        deleteMany: (...args: any[]) => claimDeleteManyMock(...args),
+        create: (...args: any[]) => claimCreateMock(...args),
+      },
+      pipelineArtifact: { create: (...args: any[]) => artifactCreateMock(...args) },
+    }));
+    claimDeleteManyMock.mockResolvedValue({ count: 1 });
   });
 
   it("persists each outcome and aggregates byKind counts", async () => {
@@ -286,10 +579,15 @@ describe("persistEnrichmentBatch", () => {
       .mockResolvedValueOnce({ id: "art-b" })
       .mockResolvedValueOnce({ id: "art-c" });
 
-    const result = await persistEnrichmentBatch(outcomes, "run-1");
+    const result = await persistEnrichmentBatch(
+      outcomes,
+      "run-1",
+      new Map([[42, "claim-42"], [2, "claim-2"], [3, "claim-3"]]),
+    );
 
     expect(result.persisted).toBe(3);
     expect(result.failed).toBe(0);
+    expect(result.claimLost).toBe(0);
     expect(result.byKind.SUCCESS).toBe(1);
     expect(result.byKind.SKIPPED).toBe(1);
     expect(result.byKind.HEADLESS_REQUIRED).toBe(1);
@@ -298,8 +596,8 @@ describe("persistEnrichmentBatch", () => {
 
   it("counts a persist failure without throwing (best-effort batch)", async () => {
     const { persistEnrichmentBatch } = await import("./enrichment-persist");
-    articleUpdateMock
-      .mockResolvedValueOnce({ id: 42 })
+    articleUpdateManyMock
+      .mockResolvedValueOnce({ count: 1 })
       .mockRejectedValueOnce(new Error("P2025 record not found"));
 
     const outcomes: ArticleEnrichmentOutcome[] = [
@@ -307,10 +605,15 @@ describe("persistEnrichmentBatch", () => {
       buildSkippedOutcome({ articleId: 99, provenance: baseProvenance, reasonCode: "ALREADY_ENRICHED" }),
     ];
 
-    const result = await persistEnrichmentBatch(outcomes, "run-1");
+    const result = await persistEnrichmentBatch(
+      outcomes,
+      "run-1",
+      new Map([[42, "claim-42"], [99, "claim-99"]]),
+    );
 
     expect(result.persisted).toBe(1);
     expect(result.failed).toBe(1);
+    expect(result.claimLost).toBe(0);
     expect(result.byKind.SUCCESS).toBe(1);
     expect(result.byKind.SKIPPED).toBe(0);
   });
@@ -324,6 +627,7 @@ describe("buildEnrichmentRunSummary", () => {
         {
           persisted: 2,
           failed: 1,
+          claimLost: 0,
           byKind: {
             SUCCESS: 1,
             SKIPPED: 1,
@@ -445,7 +749,7 @@ describe("readEnrichmentSummary", () => {
     ).toBeNull(); // missing sourceId
   });
 
-  it("normalizes missing optional fields to safe defaults", async () => {
+  it("preserves unknown optional provenance fields as null", async () => {
     const { readEnrichmentSummary } = await import("./enrichment-persist");
     const summary = readEnrichmentSummary({
       kind: "SUCCESS",
@@ -455,6 +759,6 @@ describe("readEnrichmentSummary", () => {
     expect(summary!.confidence).toBe(0);
     expect(summary!.rejectionCode).toBeNull();
     expect(summary!.provenance.categoryId).toBeNull();
-    expect(summary!.provenance.feedOrigin).toBe("rss");
+    expect(summary!.provenance.feedOrigin).toBeNull();
   });
 });

@@ -325,6 +325,25 @@ describe("persistAgent1TargetOutcomeArtifact – errorLog consistency", () => {
     );
   });
 
+  it("persists publisher rate limits as deferred instead of failed", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-1",
+      result: makeResult({
+        feedFormat: null,
+        deferredReason: "rate_limited",
+        retryAt: "2026-07-31T13:30:00.000Z",
+      }),
+      persisted: makePersisted({ inserted: 0 }),
+    });
+
+    const data = prismaCreateMock.mock.calls[0]![0].data;
+    expect(data.status).toBe("DEFERRED_RATE_LIMIT");
+    expect(data.payload.rateLimited).toBe(true);
+    expect(data.payload.handedToAgent2).toBe(false);
+    expect(data.errorLog).toContain("retry deferred until");
+  });
+
   it("sets errorLog to fetch/parse failure reason for FAILED status", async () => {
     const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
     await persistAgent1TargetOutcomeArtifact({

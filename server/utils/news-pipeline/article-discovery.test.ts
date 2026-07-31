@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const safeFetchMock = vi.hoisted(() => vi.fn());
 const prismaArtifactCreateMock = vi.hoisted(() => vi.fn());
@@ -69,6 +69,8 @@ const makeResponse = (body: string, ok = true) => ({
 
 describe("article-discovery", () => {
   beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-30T12:00:00.000Z"));
     safeFetchMock.mockReset();
     prismaArtifactCreateMock.mockReset();
     prismaArtifactCreateManyMock.mockReset();
@@ -86,6 +88,10 @@ describe("article-discovery", () => {
     prismaSourceCategoryFindManyMock.mockResolvedValue([]);
     resolveHardSourceProfilesForTargetMock.mockResolvedValue(0);
     logAgentScanMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   // ── Target resolution diagnostics tests ──────────────────────────────
@@ -235,6 +241,18 @@ describe("article-discovery", () => {
         consecutiveNonProductiveRuns: 3,
       }),
     ).toBe(true);
+
+    // A user-submitted feed was verified before persistence. Transient fetch
+    // failures must remain owned by Agent 1 rather than trigger HTML discovery.
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "ACTIVE",
+        rssFeedUrl: "https://feeds.example.com/category/news",
+        feedProvenance: "USER_SUBMITTED",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 10,
+      }),
+    ).toBe(false);
 
     // ACTIVE + not productive + only 1 → NOT eligible (two-run rule preserved)
     expect(
@@ -1409,6 +1427,18 @@ describe("article-discovery", () => {
     // The batch should succeed
     expect(result.result.inserted).toBe(2);
 
+    // Candidate persistence is the durability boundary: marker resolution must
+    // query/update only after persistence has completed successfully.
+    const persistCallOrder = (persistCandidates as any).mock.invocationCallOrder[0];
+    const markerQueryIndex = prismaArtifactFindManyMock.mock.calls.findIndex((call: any[]) =>
+      call[0]?.where?.artifactType === "article_discovery_headless_required" &&
+      call[0]?.where?.status === "PENDING_HEADLESS",
+    );
+    expect(markerQueryIndex).toBeGreaterThanOrEqual(0);
+    const markerQueryOrder = prismaArtifactFindManyMock.mock.invocationCallOrder[markerQueryIndex];
+    expect(markerQueryOrder).toBeDefined();
+    expect(persistCallOrder).toBeLessThan(markerQueryOrder!);
+
     // The marker resolution should have queried for PENDING_HEADLESS markers
     const findManyCalls = prismaArtifactFindManyMock.mock.calls;
     const markerQuery = findManyCalls.find((call: any[]) =>
@@ -1437,6 +1467,73 @@ describe("article-discovery", () => {
       resolvedReason: "Agent 2 static discovery became productive",
       resolvedPipelineRunId: "run-1",
     });
+  });
+
+  it("does not resolve markers when candidate persistence reports a failure", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-1", categoryId: null },
+    ]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-1",
+        frontPageUrl: "https://example.com/",
+        mediaName: "Example",
+        rssStatus: "NO_RSS_FOUND",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-1" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 0, skipped: 0, failed: 2 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+    prismaArtifactFindManyMock.mockResolvedValue([
+      {
+        id: "marker-1",
+        payload: { targetUrl: "https://example.com/", sourceId: "src-1" },
+      },
+    ]);
+
+    const listing = `
+      <html><body>
+        <article><a href="/news/2026/07/16/story-a">Story A title long enough</a></article>
+        <article><a href="/news/2026/07/16/story-b">Story B title long enough</a></article>
+      </body></html>
+    `;
+    const article = (title: string) => `
+      <html><head>
+        <title>${title}</title>
+        <meta property="article:published_time" content="2026-07-24T09:00:00Z" />
+      </head><body><p>${title} body</p></body></html>
+    `;
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url.includes("story-a")) return makeResponse(article("Story A title long enough"));
+      if (url.includes("story-b")) return makeResponse(article("Story B title long enough"));
+      return makeResponse("", false);
+    });
+
+    const result = await runArticleDiscoveryBatch();
+
+    expect(result.result.failed).toBe(2);
+    expect(prismaArtifactUpdateMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "RESOLVED_BY_STATIC_DISCOVERY" }),
+      }),
+    );
+    const markerQuery = prismaArtifactFindManyMock.mock.calls.find((call: any[]) =>
+      call[0]?.where?.artifactType === "article_discovery_headless_required" &&
+      call[0]?.where?.status === "PENDING_HEADLESS",
+    );
+    expect(markerQuery).toBeUndefined();
+    expect(logAgentScanMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: "ARTICLE_DISCOVERY_PERSISTENCE_FAILED",
+    }));
   });
 
   it("does not resolve markers when static discovery is not productive", async () => {

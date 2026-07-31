@@ -28,6 +28,15 @@ export type RunNewsPipelineOptions = {
   runAgent2Afterwards?: boolean;
 };
 
+export const isOperationalFeedResult = (result: {
+  failed: number;
+  feedUrl?: string | null;
+  feedFormat?: string | null;
+}) =>
+  result.failed === 0 &&
+  Boolean(result.feedUrl) &&
+  (result.feedFormat === "rss" || result.feedFormat === "atom" || result.feedFormat === "json");
+
 /**
  * Legacy full-pipeline entry point.
  *
@@ -102,7 +111,7 @@ export async function runNewsPipeline(
         sourceId: target.sourceId,
         categoryId: target.categoryId || undefined,
         feedUrl: result.feedUrl || null,
-        productive: persisted.inserted > 0 || persisted.enriched > 0,
+        productive: isOperationalFeedResult(result),
         shouldTrackFeedProductivity:
           Boolean(result.feedUrl) && result.feedFormat !== "html_fallback",
       });
@@ -418,7 +427,7 @@ export async function runAgent1Batch(input?: {
         sourceId: target.sourceId,
         categoryId: target.categoryId || undefined,
         feedUrl: result.feedUrl || null,
-        productive: persisted.inserted > 0 || persisted.enriched > 0,
+        productive: isOperationalFeedResult(result),
         shouldTrackFeedProductivity:
           Boolean(result.feedUrl) && result.feedFormat !== "html_fallback",
       });

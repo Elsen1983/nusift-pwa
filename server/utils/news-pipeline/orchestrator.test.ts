@@ -126,6 +126,15 @@ describe("orchestrator – Agent 1 / Agent 2 split", () => {
     expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
   });
 
+  it("treats a parsed feed as operational without requiring new inserts", async () => {
+    const { isOperationalFeedResult } = await import("./orchestrator");
+
+    expect(isOperationalFeedResult({ failed: 0, feedUrl: "https://example.com/rss", feedFormat: "rss" })).toBe(true);
+    expect(isOperationalFeedResult({ failed: 0, feedUrl: "https://example.com/feed", feedFormat: "atom" })).toBe(true);
+    expect(isOperationalFeedResult({ failed: 0, feedUrl: "https://example.com", feedFormat: "html_fallback" })).toBe(false);
+    expect(isOperationalFeedResult({ failed: 1, feedUrl: "https://example.com/rss", feedFormat: "rss" })).toBe(false);
+  });
+
   // ── runAgent2Afterwards: true ─────────────────────────────────────────
 
   it("calls runArticleDiscoveryBatch when runAgent2Afterwards=true (global)", async () => {

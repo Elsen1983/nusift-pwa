@@ -209,6 +209,20 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     return mod.processArticleDiscoveryHeadlessQueue;
   }
 
+  function expectUnconfirmedPersistenceFailureAudit() {
+    const failedLogs = logAgentScanMock.mock.calls.filter(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED",
+    );
+    const auditText = failedLogs.map((call: any[]) => String(call[0]?.errorLog)).join("\n");
+
+    expect(auditText).toContain("Candidate persistence failed, but transition to PENDING_HEADLESS was not confirmed.");
+    expect(auditText).not.toContain("remains retryable");
+    expect(auditText).not.toContain("retryable in PENDING_HEADLESS");
+    expect(logAgentScanMock.mock.calls.filter(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_RESOLVED",
+    )).toHaveLength(0);
+  }
+
   // ── env disabled → no browser run, BROWSER_FALLBACK_DISABLED ───────────
 
   it("marks artifact as BROWSER_FALLBACK_DISABLED when env flag is off", async () => {
@@ -298,6 +312,87 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     expect(finalCall.data.status).toBe("BROWSER_RUNTIME_UNAVAILABLE");
     expect(finalCall.data.payload.browserFallbackRan).toBe(true);
     expect(finalCall.data.payload.browserError).toContain("browser_runtime_unavailable");
+  });
+
+  it("does not report a browser failure completion when a non-OK final transition loses its claim", async () => {
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: false,
+      reason: "browser_runtime_unavailable",
+      links: [],
+      diagnostics: {
+        pageTitle: null,
+        linkCount: 0,
+        articleLikeLinkCount: 0,
+        blockedReason: "Playwright not installed",
+        browserRuntimeAvailable: false,
+        elapsedMs: 5,
+      },
+    });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserResolved).toBe(0);
+      expect(result.browserNoCandidates).toBe(0);
+      expect(result.browserProcessed).toBe(0);
+      expect(result.browserSkippedUnavailable).toBe(0);
+      expect(result.browserFailed).toBe(0);
+    }
+    expect(createOrUpdateHardSourceProfileMock).not.toHaveBeenCalled();
+    expect(logAgentScanMock.mock.calls.some(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_RESOLVED" ||
+        call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_RATE_LIMITED",
+    )).toBe(false);
+    expect(logAgentScanMock.mock.calls.some(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED" &&
+        String(call[0]?.errorLog).includes("transition conflicted"),
+    )).toBe(true);
+  });
+
+  it("does not report a browser failure completion when a non-OK final transition throws", async () => {
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockRejectedValueOnce(new Error("artifact update unavailable"));
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: false,
+      reason: "browser_error",
+      links: [],
+      diagnostics: {
+        pageTitle: null,
+        linkCount: 0,
+        articleLikeLinkCount: 0,
+        blockedReason: "navigation failed",
+        browserRuntimeAvailable: true,
+        elapsedMs: 5,
+      },
+    });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserResolved).toBe(0);
+      expect(result.browserNoCandidates).toBe(0);
+      expect(result.browserProcessed).toBe(0);
+      expect(result.browserFailed).toBe(1);
+    }
+    expect(createOrUpdateHardSourceProfileMock).not.toHaveBeenCalled();
+    expect(logAgentScanMock.mock.calls.some(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_RESOLVED",
+    )).toBe(false);
+    expect(logAgentScanMock.mock.calls.some(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED" &&
+        String(call[0]?.errorLog).includes("artifact update unavailable") &&
+        String(call[0]?.errorLog).includes("state was not overwritten"),
+    )).toBe(true);
   });
 
   // ── browser returns links → candidates evaluated and persisted ────────
@@ -420,9 +515,272 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const finalCall = updateManyMock.mock.calls[1]![0];
     expect(finalCall.data.status).toBe("RESOLVED");
     expect(finalCall.data.candidateCount).toBe(1);
+    expect(resolveHardSourceProfilesForTargetMock).toHaveBeenCalledTimes(1);
+    expect(logAgentScanMock.mock.calls.some(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_RESOLVED" &&
+        String(call[0]?.errorLog).includes("resolved"),
+    )).toBe(true);
   });
 
   // ── no accepted candidates → BROWSER_NO_CANDIDATES status ──────────────
+
+  it("keeps the marker retryable when candidate persistence reports a failure", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/persistence-failure";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockResolvedValue({ inserted: 0, skipped: 0, failed: 1 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserResolved).toBe(0);
+      expect(result.browserNoCandidates).toBe(0);
+      expect(result.browserCandidatesPersisted?.failed).toBe(1);
+    }
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
+    expect(finalCall.data.payload.browserAccepted).toBe(1);
+    expect(finalCall.data.payload.browserFailed).toBe(1);
+    expect(finalCall.data.payload.resolvedAt).toBeNull();
+
+    const resolvedLogs = logAgentScanMock.mock.calls.filter(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_RESOLVED",
+    );
+    expect(resolvedLogs).toHaveLength(0);
+    const retryableFailureLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED" &&
+        String(call[0]?.errorLog).includes("persistence failed") &&
+        String(call[0]?.errorLog).includes("remains retryable"),
+    );
+    expect(retryableFailureLog).toBeDefined();
+  });
+
+  it("keeps the marker retryable when candidate persistence throws", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/persistence-throw";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockRejectedValueOnce(new Error("database unavailable"));
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserResolved).toBe(0);
+      expect(result.browserNoCandidates).toBe(0);
+      expect(result.browserCandidatesPersisted?.failed).toBe(1);
+    }
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
+    expect(finalCall.data.payload.browserError).toContain("database unavailable");
+    expect(finalCall.data.payload.resolvedAt).toBeNull();
+
+    const resolvedLogs = logAgentScanMock.mock.calls.filter(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_RESOLVED",
+    );
+    expect(resolvedLogs).toHaveLength(0);
+    const retryableFailureLog = logAgentScanMock.mock.calls.find(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED" &&
+        String(call[0]?.errorLog).includes("persistence failed") &&
+        String(call[0]?.errorLog).includes("remains retryable"),
+    );
+    expect(retryableFailureLog).toBeDefined();
+  });
+
+  it("does not claim retryability when counted persistence fails and the final transition throws", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/persistence-counted-transition-throw";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockRejectedValueOnce(new Error("final artifact update unavailable"));
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockResolvedValueOnce({ inserted: 0, skipped: 0, failed: 1 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserProcessed).toBe(0);
+      expect(result.browserResolved).toBe(0);
+    }
+    expect(resolveHardSourceProfilesForTargetMock).not.toHaveBeenCalled();
+    expectUnconfirmedPersistenceFailureAudit();
+    const auditText = logAgentScanMock.mock.calls
+      .filter((call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED")
+      .map((call: any[]) => String(call[0]?.errorLog))
+      .join("\\n");
+    expect(auditText).toContain("Stale-claim or artifact recovery is required.");
+    expect(auditText).toContain("final artifact update unavailable");
+  });
+
+  it("does not claim retryability when counted persistence fails and the final transition conflicts", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/persistence-counted-transition-conflict";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockResolvedValueOnce({ inserted: 0, skipped: 0, failed: 1 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserProcessed).toBe(0);
+      expect(result.browserResolved).toBe(0);
+    }
+    expect(resolveHardSourceProfilesForTargetMock).not.toHaveBeenCalled();
+    expectUnconfirmedPersistenceFailureAudit();
+    const auditText = logAgentScanMock.mock.calls
+      .filter((call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED")
+      .map((call: any[]) => String(call[0]?.errorLog))
+      .join("\\n");
+    expect(auditText).toContain("current artifact state is unknown to this worker");
+    expect(auditText).toContain("stale-claim or artifact recovery is required");
+  });
+
+  it("does not claim retryability when thrown persistence fails and the final transition throws", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/persistence-thrown-transition-throw";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockRejectedValueOnce(new Error("final artifact update unavailable"));
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockRejectedValueOnce(new Error("candidate insert unavailable"));
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserProcessed).toBe(0);
+      expect(result.browserResolved).toBe(0);
+    }
+    expect(resolveHardSourceProfilesForTargetMock).not.toHaveBeenCalled();
+    expectUnconfirmedPersistenceFailureAudit();
+    const auditText = logAgentScanMock.mock.calls
+      .filter((call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED")
+      .map((call: any[]) => String(call[0]?.errorLog))
+      .join("\\n");
+    expect(auditText).toContain("Stale-claim or artifact recovery is required.");
+    expect(auditText).toContain("final artifact update unavailable");
+  });
+
+  it("does not report completion when the final artifact transition loses its claim", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/transition-conflict";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserResolved).toBe(0);
+      expect(result.browserNoCandidates).toBe(0);
+      expect(result.browserProcessed).toBe(0);
+    }
+    expect(resolveHardSourceProfilesForTargetMock).not.toHaveBeenCalled();
+    expect(logAgentScanMock.mock.calls.some(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_RESOLVED",
+    )).toBe(false);
+    expect(logAgentScanMock.mock.calls.some(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED" &&
+        String(call[0]?.errorLog).includes("transition conflicted") &&
+        String(call[0]?.errorLog).includes("no completion side effects"),
+    )).toBe(true);
+  });
+
+  it("does not report completion when the final artifact transition throws", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/transition-error";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockRejectedValueOnce(new Error("artifact update unavailable"));
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(articleUrl)]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeAcceptedEvaluation(articleUrl));
+    persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserResolved).toBe(0);
+      expect(result.browserNoCandidates).toBe(0);
+      expect(result.browserProcessed).toBe(0);
+    }
+    expect(resolveHardSourceProfilesForTargetMock).not.toHaveBeenCalled();
+    expect(logAgentScanMock.mock.calls.some(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_RESOLVED",
+    )).toBe(false);
+    expect(logAgentScanMock.mock.calls.some(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED" &&
+        String(call[0]?.errorLog).includes("artifact update unavailable") &&
+        String(call[0]?.errorLog).includes("state was not overwritten"),
+    )).toBe(true);
+  });
+
+  it("does not report no-candidate completion when its final transition loses its claim", async () => {
+    const link = "https://example.com/news/old-story";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([makeBrowserLink(link)]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
+      makeRejectedEvaluation(link, "rejected_stale", "stale"),
+    );
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserResolved).toBe(0);
+      expect(result.browserNoCandidates).toBe(0);
+      expect(result.browserProcessed).toBe(0);
+    }
+    expect(createOrUpdateHardSourceProfileMock).not.toHaveBeenCalled();
+    expect(logAgentScanMock.mock.calls.some(
+      (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED" &&
+        String(call[0]?.errorLog).includes("transition conflicted"),
+    )).toBe(true);
+  });
 
   it("marks as BROWSER_NO_CANDIDATES when all links are rejected", async () => {
     const link1 = "https://example.com/news/old-story";

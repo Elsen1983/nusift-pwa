@@ -82,6 +82,8 @@ export default defineEventHandler(async (event) => {
         passed: readBoolean(payload.passed),
         handedToAgent2: readBoolean(payload.handedToAgent2),
         rssActive: readBoolean(payload.rssActive),
+        rateLimited: readBoolean(payload.rateLimited),
+        retryAt: readString(payload.retryAt),
         sourceUrl: readString(payload.sourceUrl),
         candidates: readNumber(payload.candidates),
         inserted: readNumber(payload.inserted),

@@ -82,6 +82,30 @@ describe("persistCandidates", () => {
     expect(result).toEqual({ inserted: 0, skipped: 1, failed: 0, enriched: 1 });
   });
 
+  it("does not create a duplicate when the same candidate is persisted on retry", async () => {
+    prismaFindManyMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 303,
+          rssGuid: "guid-1",
+          canonicalUrl: "https://example.com/articles/1",
+          contentHash: "hash-1",
+          categoryId: null,
+          tags: [],
+        },
+      ]);
+    prismaCreateManyMock.mockResolvedValue({ count: 1 });
+
+    const { persistCandidates } = await import("./ingest");
+    const firstAttempt = await persistCandidates([makeCandidate()]);
+    const retryAttempt = await persistCandidates([makeCandidate()]);
+
+    expect(firstAttempt).toEqual({ inserted: 1, skipped: 0, failed: 0, enriched: 0 });
+    expect(retryAttempt).toEqual({ inserted: 0, skipped: 1, failed: 0, enriched: 0 });
+    expect(prismaCreateManyMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not overwrite an existing category assignment on duplicate articles", async () => {
     prismaFindManyMock.mockResolvedValue([
       {
