@@ -45,11 +45,14 @@ export type DailyPipelineWorkflowResult = {
   notificationsProcessed: number;
 };
 
-async function acquireDailyPipelineLock(input: DailyPipelineWorkflowInput) {
+export async function acquireDailyPipelineLock(input: DailyPipelineWorkflowInput) {
   "use step";
 
   return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(734821, 120026)`;
+    // PostgreSQL returns void here, which Prisma's driver adapter cannot decode.
+    await tx.$queryRaw<Array<{ lock: string }>>`
+      SELECT pg_advisory_xact_lock(734821, 120026)::text AS lock
+    `;
     const staleBefore = new Date(Date.now() - LOCK_STALE_AFTER_MS);
     const active = await tx.pipelineRun.findFirst({
       where: { status: LOCK_STATUS, updatedAt: { gte: staleBefore } },

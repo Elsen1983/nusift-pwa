@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   updateMany: vi.fn(),
+  transaction: vi.fn(),
+  queryRaw: vi.fn(),
+  findFirst: vi.fn(),
+  create: vi.fn(),
   agent1: vi.fn(),
   agent2: vi.fn(),
   headless: vi.fn(),
@@ -11,7 +15,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../utils/prisma", () => ({
-  prisma: { pipelineRun: { updateMany: mocks.updateMany } },
+  prisma: {
+    $transaction: mocks.transaction,
+    pipelineRun: { updateMany: mocks.updateMany },
+  },
 }));
 vi.mock("../utils/news-pipeline/orchestrator", () => ({ runAgent1Batch: mocks.agent1 }));
 vi.mock("../utils/news-pipeline/article-discovery", () => ({ runArticleDiscoveryBatch: mocks.agent2 }));
@@ -27,13 +34,39 @@ vi.mock("../utils/news-pipeline/enrichment-runtime", () => ({
 }));
 vi.mock("../utils/notification-sender", () => ({ sendDueDailyNotifications: vi.fn() }));
 
-import { DAILY_PIPELINE_STAGES, runDailyPipelineStageBatch } from "./daily-news-pipeline";
+import {
+  acquireDailyPipelineLock,
+  DAILY_PIPELINE_STAGES,
+  runDailyPipelineStageBatch,
+} from "./daily-news-pipeline";
 
 describe("daily news pipeline stage batches", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.updateMany.mockResolvedValue({ count: 1 });
     mocks.browserEnabled.mockReturnValue(true);
+    mocks.transaction.mockImplementation((callback) => callback({
+      $queryRaw: mocks.queryRaw,
+      pipelineRun: {
+        findFirst: mocks.findFirst,
+        updateMany: mocks.updateMany,
+        create: mocks.create,
+      },
+    }));
+  });
+
+  it("casts the PostgreSQL advisory lock result away from void", async () => {
+    mocks.queryRaw.mockResolvedValue([{ lock: "" }]);
+    mocks.findFirst.mockResolvedValue(null);
+    mocks.create.mockResolvedValue({ id: "orchestration-1" });
+
+    await expect(acquireDailyPipelineLock({
+      orchestrationId: "workflow-1",
+      triggeredAt: "2026-08-01T12:24:00.000Z",
+    })).resolves.toEqual({ acquired: true, orchestrationRunId: "orchestration-1" });
+
+    const sql = mocks.queryRaw.mock.calls[0]![0].join(" ");
+    expect(sql).toContain("pg_advisory_xact_lock(734821, 120026)::text");
   });
 
   it("uses the extensible ordered stage registry", () => {
