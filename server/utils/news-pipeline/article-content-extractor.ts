@@ -23,6 +23,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { safeFetch } from "../ssrf-guard";
+import { loadJsdom } from "./jsdom-runtime";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -1421,7 +1422,7 @@ async function extractReadabilityBodyText(
   let domWindow: { close(): void } | null = null;
   try {
     const [{ JSDOM }, { Readability }] = await Promise.all([
-      import("jsdom"),
+      loadJsdom(),
       import("@mozilla/readability"),
     ]);
     const dom = new JSDOM(html, {
@@ -2062,7 +2063,7 @@ export async function extractArticleContentFromHtml(
   let doc: Document;
   let domWindow: { close(): void } | null = null;
   try {
-    const { JSDOM } = await import("jsdom");
+    const { JSDOM } = await loadJsdom();
     const dom = new JSDOM(html, {
       url: resolvedUrl,
       contentType: "text/html",

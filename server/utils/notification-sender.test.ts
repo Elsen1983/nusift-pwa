@@ -64,8 +64,8 @@ describe("sendDueDailyNotifications", () => {
       ["MORNING"],
     );
 
-    expect(result).toEqual([{ userId: "morning-user", sent: 0 }]);
-    expect(notificationCreateMock).toHaveBeenCalledTimes(1);
+    expect(result).toEqual([]);
+    expect(notificationCreateMock).not.toHaveBeenCalled();
     expect(userFindManyMock).toHaveBeenCalledWith(expect.objectContaining({
       where: { notificationScheduleSlot: { in: ["MORNING"] } },
     }));
@@ -215,7 +215,7 @@ describe("sendDueDailyNotifications", () => {
     expect(notificationCreateMock.mock.calls[0]![0].data.body).toContain("1 new articles");
   });
 
-  it("does not count global articles for a user without active subscriptions", async () => {
+  it("does not send an empty digest to a user without active subscriptions", async () => {
     userFindManyMock.mockResolvedValue([{
       id: "user-1",
       email: "one@example.com",
@@ -230,7 +230,7 @@ describe("sendDueDailyNotifications", () => {
     await sendDueDailyNotifications(new Date("2026-07-31T08:00:00.000Z"));
 
     expect(articleFindManyMock).not.toHaveBeenCalled();
-    expect(notificationCreateMock.mock.calls[0]![0].data.body).toBe("Your daily news update is ready.");
+    expect(notificationCreateMock).not.toHaveBeenCalled();
   });
 
   it("counts a category-path match when the subscribed category id has drifted", async () => {

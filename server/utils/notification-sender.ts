@@ -105,11 +105,12 @@ export async function sendDueDailyNotifications(
       }
     }
 
+    // A digest represents newly published content, not merely a completed
+    // pipeline run. Do not create an inbox/push notification with an empty feed.
+    if (articleCount === 0) continue;
+
     const title = "NuSift daily update";
-    const body =
-      articleCount > 0
-        ? `${articleCount} new articles are ready in your feed.`
-        : "Your daily news update is ready.";
+    const body = `${articleCount} new articles are ready in your feed.`;
     const url = "/dashboard";
     const payload = getNotificationPayload(title, body, url, "DAILY_DIGEST", {
       articleCount,

@@ -1250,8 +1250,8 @@ describe("getAgent3Progress", () => {
         return Promise.resolve([]); // No non-retryable failures
       }
       return Promise.resolve([
-        { id: 1, bodyText: "A".repeat(600), enrichmentOutcome: { extractorVersion: "a3-browser-fallback-v1" } },
-        { id: 2, bodyText: "B".repeat(600), enrichmentOutcome: { extractorVersion: "a3-browser-fallback-v1" } },
+        { id: 1, bodyText: "A".repeat(600), enrichmentOutcome: { extractorVersion: "a3-serverless-jsdom-v2" } },
+        { id: 2, bodyText: "B".repeat(600), enrichmentOutcome: { extractorVersion: "a3-serverless-jsdom-v2" } },
         { id: 3, bodyText: "C".repeat(600), enrichmentOutcome: { extractorVersion: "old-version" } },
       ]);
     });
@@ -1285,9 +1285,9 @@ describe("getAgent3Progress", () => {
         return Promise.resolve([]); // No non-retryable failures
       }
       return Promise.resolve([
-        { id: 1, bodyText: "A".repeat(600), enrichmentOutcome: { extractorVersion: "a3-browser-fallback-v1" } },
+        { id: 1, bodyText: "A".repeat(600), enrichmentOutcome: { extractorVersion: "a3-serverless-jsdom-v2" } },
         { id: 2, bodyText: "B".repeat(600), enrichmentOutcome: { extractorVersion: "old-version" } },
-        { id: 3, bodyText: "short", enrichmentOutcome: { extractorVersion: "a3-browser-fallback-v1" } },
+        { id: 3, bodyText: "short", enrichmentOutcome: { extractorVersion: "a3-serverless-jsdom-v2" } },
       ]);
     });
     pipelineRunFindFirstMock.mockResolvedValue(null);
@@ -1424,7 +1424,7 @@ describe("needsAgent3CurrentVersionReprocess", () => {
       sourceUrl: "https://example.com/2", title: "Test", bodyText: "B".repeat(600),
       publishedAt: new Date(), isPaywall: false, createdAt: new Date(),
       enrichmentStatus: "ENRICHED", enrichmentAttemptCount: 1,
-      enrichmentOutcome: { schemaVersion: 1, extractorVersion: "a3-browser-fallback-v1", kind: "SUCCESS" },
+      enrichmentOutcome: { schemaVersion: 1, extractorVersion: "a3-serverless-jsdom-v2", kind: "SUCCESS" },
     }]);
     const { selectEnrichmentEligibleArticles } = await import("./enrichment-runtime");
     const articles = await selectEnrichmentEligibleArticles(new Date(), 50, { includeEnriched: true });
@@ -1441,7 +1441,7 @@ describe("needsAgent3CurrentVersionReprocess", () => {
       sourceUrl: "https://example.com/3", title: "Test", bodyText: "short",
       publishedAt: new Date(), isPaywall: false, createdAt: new Date(),
       enrichmentStatus: "ENRICHED", enrichmentAttemptCount: 1,
-      enrichmentOutcome: { schemaVersion: 1, extractorVersion: "a3-browser-fallback-v1", kind: "SUCCESS" },
+      enrichmentOutcome: { schemaVersion: 1, extractorVersion: "a3-serverless-jsdom-v2", kind: "SUCCESS" },
     }]);
     const { selectEnrichmentEligibleArticles } = await import("./enrichment-runtime");
     const articles = await selectEnrichmentEligibleArticles(new Date(), 50, { includeEnriched: true });
@@ -1473,7 +1473,7 @@ describe("needsAgent3CurrentVersionReprocess", () => {
     // Simulate successful enrichment: article now has current version + good body
     enrichedArticles = [{
       id: 10, bodyText: "A".repeat(600),
-      enrichmentOutcome: { schemaVersion: 1, extractorVersion: "a3-browser-fallback-v1" },
+      enrichmentOutcome: { schemaVersion: 1, extractorVersion: "a3-serverless-jsdom-v2" },
     }];
     articleFindManyMock.mockImplementation(() => Promise.resolve(enrichedArticles));
     callIndex = 0; // reset count mock
@@ -1493,7 +1493,7 @@ describe("needsAgent3CurrentVersionReprocess", () => {
       sourceUrl: "https://example.com/5", title: "Test", bodyText: "E".repeat(600),
       publishedAt: new Date(), isPaywall: false, createdAt: new Date(),
       enrichmentStatus: "ENRICHED", enrichmentAttemptCount: 1,
-      enrichmentOutcome: { schemaVersion: 1, extractorVersion: "a3-browser-fallback-v1", kind: "SUCCESS" },
+      enrichmentOutcome: { schemaVersion: 1, extractorVersion: "a3-serverless-jsdom-v2", kind: "SUCCESS" },
     }]);
     const { selectEnrichmentEligibleArticles } = await import("./enrichment-runtime");
     const articles = await selectEnrichmentEligibleArticles(new Date(), 50, { includeEnriched: true });
@@ -1549,7 +1549,7 @@ describe("getAgent3Progress paged scanning", () => {
     const currentArticles = Array.from({ length: 75 }, (_, i) => ({
       id: i + 1,
       bodyText: `Good article body ${i + 1} `.repeat(80),
-      enrichmentOutcome: { extractorVersion: "a3-browser-fallback-v1" },
+      enrichmentOutcome: { extractorVersion: "a3-serverless-jsdom-v2" },
     }));
 
     let callIndex = 0;
@@ -1584,7 +1584,7 @@ describe("getAgent3Progress paged scanning", () => {
       })),
       ...Array.from({ length: 20 }, (_, i) => ({
         id: i + 31, bodyText: `Body ${i + 31} `.repeat(80),
-        enrichmentOutcome: { extractorVersion: "a3-browser-fallback-v1" },
+        enrichmentOutcome: { extractorVersion: "a3-serverless-jsdom-v2" },
       })),
       ...Array.from({ length: 5 }, (_, i) => ({
         id: i + 51, bodyText: `Body ${i + 51} `.repeat(80),
@@ -1592,11 +1592,11 @@ describe("getAgent3Progress paged scanning", () => {
       })),
       ...Array.from({ length: 15 }, (_, i) => ({
         id: i + 56, bodyText: `Body ${i + 56} `.repeat(80),
-        enrichmentOutcome: { extractorVersion: "a3-browser-fallback-v1" },
+        enrichmentOutcome: { extractorVersion: "a3-serverless-jsdom-v2" },
       })),
       ...Array.from({ length: 5 }, (_, i) => ({
         id: i + 71, bodyText: "short",
-        enrichmentOutcome: { extractorVersion: "a3-browser-fallback-v1" },
+        enrichmentOutcome: { extractorVersion: "a3-serverless-jsdom-v2" },
       })),
     ];
 
@@ -2150,7 +2150,7 @@ describe("Agent 3 browser fallback integration", () => {
     );
     expect(successArtifact).toBeDefined();
     const payload = asObj((successArtifact![0].data as Record<string, unknown>).payload);
-    expect(payload.extractorVersion).toBe("a3-browser-fallback-v1");
+    expect(payload.extractorVersion).toBe("a3-serverless-jsdom-v2");
     // Method should be browser-dom
     expect(asObj(payload.method).method).toBe("browser-dom");
     // Browser fallback metadata should be present
@@ -2566,7 +2566,7 @@ describe("isRecentlyBlocked", () => {
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         rejection: { code: "UNKNOWN", detail: "[http_error] HTTP 403 Forbidden", httpStatus: 403 },
       },
       enrichmentFinishedAt: finishedAt,
@@ -2581,7 +2581,7 @@ describe("isRecentlyBlocked", () => {
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         rejection: { code: "UNKNOWN", detail: "[http_error] HTTP 403 Forbidden", httpStatus: 403 },
       },
       enrichmentFinishedAt: finishedAt,
@@ -2595,7 +2595,7 @@ describe("isRecentlyBlocked", () => {
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         rejection: { code: "UNKNOWN", detail: "[http_error] HTTP 429 Too Many Requests", httpStatus: 429 },
       },
       enrichmentFinishedAt: finishedAt,
@@ -2610,7 +2610,7 @@ describe("isRecentlyBlocked", () => {
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         rejection: { code: "UNKNOWN", detail: "[http_error] HTTP 429", httpStatus: 429 },
       },
       enrichmentFinishedAt: finishedAt,
@@ -2624,7 +2624,7 @@ describe("isRecentlyBlocked", () => {
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         rejection: { code: "UNKNOWN", detail: "[http_error] HTTP 403", httpStatus: 403 },
         browserFallback: { runtimeUnavailable: true, rateLimited: false },
       },
@@ -2637,7 +2637,7 @@ describe("isRecentlyBlocked", () => {
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHED",
       enrichmentOutcome: {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         rejection: { code: "UNKNOWN", detail: "[http_error] HTTP 403", httpStatus: 403 },
       },
       enrichmentFinishedAt: new Date(),
@@ -2649,7 +2649,7 @@ describe("isRecentlyBlocked", () => {
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         rejectionCode: "UNKNOWN",
         rejectionHttpStatus: 429,
         rejectionDetail: "[http_error] HTTP 429",
@@ -2667,7 +2667,7 @@ describe("isRecentlyBlocked", () => {
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         kind: "HTTP_ACCESS_BLOCKED",
         rejectionCode: "HTTP_FORBIDDEN",
         rejectionHttpStatus: 403,
@@ -2684,7 +2684,7 @@ describe("isRecentlyBlocked", () => {
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         kind: "HTTP_ACCESS_BLOCKED",
         rejectionCode: "HTTP_FORBIDDEN",
         rejectionHttpStatus: 429,
@@ -2703,7 +2703,7 @@ describe("isRecentlyBlocked", () => {
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         kind: "HTTP_ACCESS_BLOCKED",
         rejectionCode: "HTTP_FORBIDDEN",
         rejectionHttpStatus: 403,
@@ -2729,7 +2729,7 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
         id: 2,
         enrichmentStatus: "ENRICHMENT_FAILED",
         enrichmentOutcome: {
-          extractorVersion: "a3-browser-fallback-v1",
+          extractorVersion: "a3-serverless-jsdom-v2",
           kind: "HTTP_ACCESS_BLOCKED",
           rejectionCode: "HTTP_FORBIDDEN",
           rejection: { code: "HTTP_FORBIDDEN", detail: "[http_error] HTTP 403", httpStatus: 403 },
@@ -2758,7 +2758,7 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
         canonicalUrl: "https://blocked.example/failed",
         enrichmentStatus: "ENRICHMENT_FAILED",
         enrichmentOutcome: {
-          extractorVersion: "a3-browser-fallback-v1",
+          extractorVersion: "a3-serverless-jsdom-v2",
           kind: "HTTP_ACCESS_BLOCKED",
           rejectionCode: "HTTP_FORBIDDEN",
           rejection: { code: "HTTP_FORBIDDEN", detail: "[http_error] HTTP 403", httpStatus: 403 },
@@ -2786,7 +2786,7 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
         id: 2,
         enrichmentStatus: "ENRICHMENT_FAILED",
         enrichmentOutcome: {
-          extractorVersion: "a3-browser-fallback-v1",
+          extractorVersion: "a3-serverless-jsdom-v2",
           kind: "HTTP_ACCESS_BLOCKED",
           rejectionCode: "HTTP_FORBIDDEN",
           rejection: { code: "HTTP_FORBIDDEN", detail: "[http_error] HTTP 403", httpStatus: 403 },
@@ -2809,7 +2809,7 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
         id: 2,
         enrichmentStatus: "ENRICHMENT_FAILED",
         enrichmentOutcome: {
-          extractorVersion: "a3-browser-fallback-v1",
+          extractorVersion: "a3-serverless-jsdom-v2",
           kind: "HTTP_ACCESS_BLOCKED",
           rejectionCode: "HTTP_FORBIDDEN",
           rejection: { code: "HTTP_FORBIDDEN", detail: "[http_error] HTTP 403", httpStatus: 403 },
@@ -3546,7 +3546,7 @@ describe("HTTP_ACCESS_BLOCKED source cooldown ordering", () => {
     // ran and the outcome was persisted via serializeOutcomeSummary.    // Realistic scenario: static fetch got 403, browser got 429.
       // classifyHttpAccessBlocked updates httpStatus to 429 AND detail from "HTTP 403" to "HTTP 429".
       const summaryLike = {
-        extractorVersion: "a3-browser-fallback-v1",
+        extractorVersion: "a3-serverless-jsdom-v2",
         kind: "HTTP_ACCESS_BLOCKED",
         rejectionCode: "HTTP_FORBIDDEN",
         rejectionHttpStatus: 429,
