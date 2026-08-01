@@ -24,13 +24,23 @@ type StageBatchResult = {
   processed: number;
   remaining: number;
   complete: boolean;
+  succeeded?: number;
+  failedRetryable?: number;
+  deferred?: number;
+  quarantined?: number;
+  readyNew?: number;
+  readyRetry?: number;
+  retryableNow?: number;
+  nextRetryAt?: string | null;
 };
 
 const LOCK_STATUS = "DAILY_PIPELINE_WORKFLOW_RUNNING";
 const LOCK_STALE_AFTER_MS = 22 * 60 * 60 * 1000;
-const MAX_BATCHES_BEFORE_BACKOFF = 20;
+const MAX_BATCHES_BEFORE_YIELD = 20;
+const FAIRNESS_YIELD = "1m";
 const STAGNANT_BATCHES_BEFORE_BACKOFF = 3;
 const STAGNANT_BACKOFF = "30m";
+const MAX_STAGNANT_BACKOFFS = 1;
 
 export type DailyPipelineWorkflowInput = {
   orchestrationId: string;
@@ -44,6 +54,20 @@ export type DailyPipelineWorkflowResult = {
   completedStages: DailyPipelineStage[];
   notificationsProcessed: number;
 };
+
+export function decideStageLoopWait(input: {
+  batchesSinceYield: number;
+  stagnantBatches: number;
+  stagnantBackoffs: number;
+}): "fairness_yield" | "stagnant_backoff" | "fail" | null {
+  if (input.stagnantBatches >= STAGNANT_BATCHES_BEFORE_BACKOFF) {
+    return input.stagnantBackoffs >= MAX_STAGNANT_BACKOFFS
+      ? "fail"
+      : "stagnant_backoff";
+  }
+  if (input.batchesSinceYield >= MAX_BATCHES_BEFORE_YIELD) return "fairness_yield";
+  return null;
+}
 
 export async function acquireDailyPipelineLock(input: DailyPipelineWorkflowInput) {
   "use step";
@@ -136,9 +160,27 @@ export async function runDailyPipelineStageBatch(
     includeEnriched: false,
     forceReprocess: false,
     browserFallback: false,
+    pipelineRunId: orchestrationRunId,
   });
-  const progress = await getAgent3Progress({ includeEnriched: false, forceReprocess: false });
-  return { stage, processed: result.articleCount, remaining: progress.retryableNow, complete: progress.retryableNow === 0 };
+  const progress = await getAgent3Progress({
+    includeEnriched: false,
+    forceReprocess: false,
+    pipelineRunId: orchestrationRunId,
+  });
+  return {
+    stage,
+    processed: result.articleCount,
+    succeeded: result.persist?.byKind?.SUCCESS ?? 0,
+    failedRetryable: result.persist?.byKind?.RETRYABLE_FAILURE ?? 0,
+    deferred: progress.deferred,
+    quarantined: progress.quarantined,
+    readyNew: progress.readyNew,
+    readyRetry: progress.readyRetry,
+    retryableNow: progress.retryableNow,
+    nextRetryAt: progress.nextRetryAt,
+    remaining: progress.retryableNow,
+    complete: progress.retryableNow === 0,
+  };
 }
 
 async function getDailyNotificationSchedule() {
@@ -203,26 +245,47 @@ export async function runDailyNewsPipelineWorkflow(
   try {
     for (const stage of DAILY_PIPELINE_STAGES) {
       let previousRemaining: number | null = null;
-      let batchesSinceBackoff = 0;
+      let batchesSinceYield = 0;
       let stagnantBatches = 0;
+      let stagnantBackoffs = 0;
 
       while (true) {
         const batch = await runDailyPipelineStageBatch(lock.orchestrationRunId, stage);
         if (batch.complete) break;
-        batchesSinceBackoff += 1;
+        batchesSinceYield += 1;
 
+        const priorRemaining = previousRemaining;
         const stagnant = batch.processed === 0 ||
-          (previousRemaining !== null && batch.remaining >= previousRemaining);
+          (priorRemaining !== null && batch.remaining >= priorRemaining);
         stagnantBatches = stagnant ? stagnantBatches + 1 : 0;
         previousRemaining = batch.remaining;
 
-        if (
-          stagnantBatches >= STAGNANT_BATCHES_BEFORE_BACKOFF ||
-          batchesSinceBackoff >= MAX_BATCHES_BEFORE_BACKOFF
-        ) {
-          await sleep(STAGNANT_BACKOFF);
-          batchesSinceBackoff = 0;
-          stagnantBatches = 0;
+        const waitAction = decideStageLoopWait({
+          batchesSinceYield,
+          stagnantBatches,
+          stagnantBackoffs,
+        });
+        if (waitAction === "fail" || waitAction === "stagnant_backoff") {
+          if (stage !== "agent3" && waitAction === "stagnant_backoff") {
+            await sleep(STAGNANT_BACKOFF);
+            stagnantBackoffs += 1;
+            batchesSinceYield = 0;
+            stagnantBatches = 0;
+            continue;
+          }
+          throw new FatalError(
+            `${stage} made no progress: ` +
+            `previousRemaining=${priorRemaining ?? "null"}, ` +
+            `currentRemaining=${batch.remaining}, processed=${batch.processed}, ` +
+            `readyNew=${batch.readyNew ?? "n/a"}, readyRetry=${batch.readyRetry ?? "n/a"}, ` +
+            `retryableNow=${batch.retryableNow ?? batch.remaining}, ` +
+            `deferred=${batch.deferred ?? "n/a"}, quarantined=${batch.quarantined ?? "n/a"}, ` +
+            `nextRetryAt=${batch.nextRetryAt ?? "null"}. Manual diagnosis required.`,
+          );
+        }
+        if (waitAction === "fairness_yield") {
+          await sleep(FAIRNESS_YIELD);
+          batchesSinceYield = 0;
         }
       }
       completedStages.push(stage);

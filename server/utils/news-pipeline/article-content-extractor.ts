@@ -194,6 +194,7 @@ export interface ArticleContentExtractionFail {
   confidence: number;
   qualitySignals: string[];
   diagnostics: ExtractionDiagnostics;
+  retryAfterAt?: string | null;
 }
 
 export interface ExtractArticleContentInput {
@@ -281,6 +282,7 @@ interface FetchResult {
   resolvedUrl: string;
   fetchMs: number;
   error?: string;
+  retryAfterAt?: string | null;
 }
 
 async function fetchArticleHtml(url: string): Promise<FetchResult> {
@@ -321,6 +323,7 @@ async function fetchArticleHtml(url: string): Promise<FetchResult> {
       resolvedUrl,
       fetchMs: Date.now() - startedAt,
       error: `HTTP ${statusCode}`,
+      retryAfterAt: parseRetryAfter(response.headers.get("retry-after")),
     };
   }
 
@@ -2348,6 +2351,9 @@ export async function extractArticleContentFromUrl(
       fetchResult.statusCode || null,
       reason,
       fetchResult.error || "Fetch failed",
+      [],
+      undefined,
+      fetchResult.retryAfterAt,
     );
   }
 
@@ -2363,6 +2369,15 @@ export async function extractArticleContentFromUrl(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+function parseRetryAfter(raw: string | null): string | null {
+  if (!raw) return null;
+  const seconds = Number(raw.trim());
+  const timestamp = Number.isFinite(seconds)
+    ? Date.now() + Math.max(0, seconds) * 1000
+    : Date.parse(raw);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
 
 function categorizeFetchError(result: FetchResult): ArticleContentExtractionFail["rejectedReason"] {
   if (result.error?.includes("SSRF")) return "fetch_failed";
@@ -2381,6 +2396,7 @@ function fail(
   detail: string,
   qualitySignals: string[] = [],
   diagnostics?: Partial<ExtractionDiagnostics>,
+  retryAfterAt?: string | null,
 ): ArticleContentExtractionFail {
   return {
     ok: false,
@@ -2392,5 +2408,6 @@ function fail(
     confidence: 0,
     qualitySignals,
     diagnostics: { ...emptyDiagnostics(), ...diagnostics },
+    retryAfterAt: retryAfterAt ?? null,
   };
 }

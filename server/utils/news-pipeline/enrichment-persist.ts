@@ -51,8 +51,8 @@ export type EnrichmentArtifactType = (typeof ENRICHMENT_ARTIFACT_TYPES)[number];
  * - RETRYABLE_FAILURE/terminal failures → `article_enrichment_rejection` (FAILED)
  * - HEADLESS_REQUIRED → `article_headless_queue_candidate` (PENDING_HEADLESS)
  *
- * `article_enrichment_attempt` is reserved for a future Phase 2 per-attempt
- * "started" marker and is not produced here yet.
+ * `article_enrichment_attempt` is emitted separately when a durable claim is
+ * acquired, before the final outcome is persisted.
  */
 export const outcomeKindToArtifact = (
   kind: EnrichmentOutcomeKind,

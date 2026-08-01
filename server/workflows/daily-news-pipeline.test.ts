@@ -37,6 +37,7 @@ vi.mock("../utils/notification-sender", () => ({ sendDueDailyNotifications: vi.f
 import {
   acquireDailyPipelineLock,
   DAILY_PIPELINE_STAGES,
+  decideStageLoopWait,
   runDailyPipelineStageBatch,
 } from "./daily-news-pipeline";
 
@@ -76,6 +77,30 @@ describe("daily news pipeline stage batches", () => {
       "agent2-headless",
       "agent3",
     ]);
+  });
+
+  it("uses a short fairness yield after 20 productive batches", () => {
+    expect(decideStageLoopWait({
+      batchesSinceYield: 20,
+      stagnantBatches: 0,
+      stagnantBackoffs: 0,
+    })).toBe("fairness_yield");
+  });
+
+  it("uses one long backoff for genuine stagnation", () => {
+    expect(decideStageLoopWait({
+      batchesSinceYield: 3,
+      stagnantBatches: 3,
+      stagnantBackoffs: 0,
+    })).toBe("stagnant_backoff");
+  });
+
+  it("fails instead of entering repeated long sleep cycles", () => {
+    expect(decideStageLoopWait({
+      batchesSinceYield: 3,
+      stagnantBatches: 3,
+      stagnantBackoffs: 1,
+    })).toBe("fail");
   });
 
   it("runs Agent 1 with the production bounded batch contract", async () => {
@@ -133,6 +158,26 @@ describe("daily news pipeline stage batches", () => {
       includeEnriched: false,
       forceReprocess: false,
       browserFallback: false,
+      pipelineRunId: "orchestration-1",
+    });
+  });
+
+  it("completes Agent 3 when only deferred work remains", async () => {
+    mocks.agent3.mockResolvedValue({ articleCount: 0, persist: { byKind: {} } });
+    mocks.agent3Progress.mockResolvedValue({
+      readyNew: 0,
+      readyRetry: 0,
+      retryableNow: 0,
+      deferred: 12,
+      quarantined: 3,
+      nextRetryAt: "2026-08-02T10:00:00.000Z",
+    });
+
+    await expect(runDailyPipelineStageBatch("orchestration-1", "agent3")).resolves.toMatchObject({
+      remaining: 0,
+      deferred: 12,
+      quarantined: 3,
+      complete: true,
     });
   });
 });

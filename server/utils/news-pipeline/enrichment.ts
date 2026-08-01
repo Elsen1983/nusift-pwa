@@ -75,6 +75,8 @@ export interface EnrichmentRejectionReason {
   detail?: string | null;
   /** HTTP status code when the rejection was HTTP-driven. */
   httpStatus?: number | null;
+  /** Actual bounded retry time when upstream supplied one. */
+  retryAfterAt?: string | null;
 }
 
 /**
@@ -325,6 +327,22 @@ export interface BrowserFallbackRunStats {
   rateLimited: number;
 }
 
+export interface Agent3RetryDiagnostics {
+  disposition: "READY_NEW" | "READY_RETRY" | "DEFERRED" | "QUARANTINED" | "NON_RETRYABLE";
+  reasonCode: string | null;
+  attemptNumber: number;
+  retryAfter: string | null;
+  articleId: number;
+  sourceId: string;
+  hostname: string;
+  pipelineRunId: string | null;
+  browserFallbackCouldHelp: boolean;
+  evidenceSummary: string;
+  httpStatus?: number | null;
+  extractorVersion?: string;
+  previousAttemptAt?: string | null;
+}
+
 export interface ArticleEnrichmentOutcome {
   /** Schema version for forward-compatible deserialization. */
   schemaVersion: 1;
@@ -354,6 +372,8 @@ export interface ArticleEnrichmentOutcome {
   rejectionDiagnostics?: RejectionDiagnostics;
   /** Browser fallback metadata, present when browser fallback was attempted. */
   browserFallback?: BrowserFallbackMetadata;
+  /** Compact, bounded queue disposition persisted on deferred/quarantined outcomes. */
+  retryDiagnostics?: Agent3RetryDiagnostics;
 }
 
 // ─── Constants / validation sets ─────────────────────────────────────────────
@@ -518,6 +538,7 @@ export const serializeEnrichmentPayload = (
     error: outcome.error,
     rejectionDiagnostics: outcome.rejectionDiagnostics ?? null,
     browserFallback: outcome.browserFallback ?? null,
+    retryDiagnostics: outcome.retryDiagnostics ?? null,
     // The nested generic FieldProvenance<T> types prevent a direct
     // Prisma.InputJsonValue assertion (TS2352). Double-cast through
     // `unknown` is safe here: every value is JSON-primitive-compatible
@@ -546,6 +567,7 @@ export const serializeOutcomeSummary = (
     rejectionCode: outcome.rejection?.code ?? null,
     rejectionHttpStatus: outcome.rejection?.httpStatus ?? null,
     rejectionDetail: outcome.rejection?.detail ?? null,
+    retryAfterAt: outcome.rejection?.retryAfterAt ?? null,
     browserFallback: outcome.browserFallback
       ? {
           attempted: outcome.browserFallback.attempted,
@@ -652,8 +674,8 @@ const normalizeRejection = (
       ? (code as EnrichmentRejectionReason["code"])
       : "UNKNOWN",
     detail: typeof value.detail === "string" ? value.detail : null,
-    httpStatus:
-      typeof value.httpStatus === "number" ? value.httpStatus : null,
+    httpStatus: typeof value.httpStatus === "number" ? value.httpStatus : null,
+    retryAfterAt: typeof value.retryAfterAt === "string" ? value.retryAfterAt : null,
   };
 };
 
@@ -940,6 +962,7 @@ export const buildFailureOutcome = (input: {
       code: input.reason.code,
       detail: input.reason.detail ?? null,
       httpStatus: input.httpStatus ?? input.reason.httpStatus ?? null,
+      retryAfterAt: input.reason.retryAfterAt ?? null,
     },
     error: input.error ?? null,
   });

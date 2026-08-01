@@ -37,8 +37,17 @@ import {
   extractArticleContentWithBrowser,
   isBrowserFallbackEligibleForFailure,
 } from "./article-content-browser-extractor";
-import type { BrowserFallbackMetadata, BrowserFallbackRunStats, BrowserDiagnostics, BrowserFallbackSkippedReason } from "./enrichment";
+import type { Agent3RetryDiagnostics, BrowserFallbackMetadata, BrowserFallbackRunStats, BrowserDiagnostics, BrowserFallbackSkippedReason } from "./enrichment";
 import { hasUsableAgent3BodyText } from "./publication-gate";
+import {
+  decideAgent3RetryDisposition,
+  getAgent3AttemptNumber,
+  getAgent3RetryAfter,
+  getAgent3Tier,
+  isAgent3RetryableNow,
+  MAX_AUTOMATIC_AGENT3_ATTEMPTS,
+} from "./agent3-retry-policy";
+import type { Agent3RetryDisposition } from "./agent3-retry-policy";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent 3 — Article enrichment runtime batch path (Phase 2)
@@ -196,47 +205,13 @@ export function needsAgent3CurrentVersionReprocess(article: {
 export function isAgent3FailureRetryableNow(
   article: {
     enrichmentStatus: string | null;
+    enrichmentAttemptCount?: number | null;
     enrichmentOutcome?: unknown;
     enrichmentFinishedAt?: Date | null;
   },
   now: Date = new Date(),
 ): boolean {
-  const status = article.enrichmentStatus;
-  // INGESTED articles haven't been tried — always eligible
-  if (status === "INGESTED") return true;
-  // Only ENRICHMENT_FAILED articles are subject to retry logic
-  if (status !== "ENRICHMENT_FAILED") return false;
-
-  const outcome = article.enrichmentOutcome as Record<string, unknown> | null | undefined;
-  // No outcome metadata (legacy/old rows) — allow retry
-  if (!outcome || typeof outcome !== "object") return true;
-
-  // Different extractor version — always retryable (version bump)
-  const version = typeof outcome.extractorVersion === "string" ? outcome.extractorVersion : null;
-  if (version !== AGENT3_EXTRACTOR_VERSION) return true;
-
-  // Current extractor version — check if the failure is transient/retryable
-  const kind = typeof outcome.kind === "string" ? outcome.kind : null;
-
-  // HTTP_ACCESS_BLOCKED is always retryable — cooldown exclusion is handled
-  // separately by isRecentlyBlocked/recentlyBlocked in selection and progress.
-  // This avoids double-counting in progress: eligibleNow subtracts non-retryable
-  // and retryableNow subtracts recentlyBlocked. If HTTP_ACCESS_BLOCKED were in
-  // both sets, the article would be subtracted twice.
-  if (kind === "HTTP_ACCESS_BLOCKED") {
-    return true;
-  }
-
-  // FETCH_TIMEOUT and RETRYABLE_FAILURE are transient — always retryable
-  if (kind === "RETRYABLE_FAILURE") return true;
-
-  const rejectionCode = typeof outcome.rejectionCode === "string" ? outcome.rejectionCode : null;
-  if (rejectionCode === "FETCH_TIMEOUT") return true;
-
-  // All other current-version failures are permanent
-  // (LOW_CONTENT_QUALITY, UNSUPPORTED_STRUCTURE, PAYWALL_BLOCKED,
-  //  CANONICAL_MISMATCH, HEADLESS_REQUIRED, UNKNOWN, etc.)
-  return false;
+  return isAgent3RetryableNow({ ...article, now, ignoreCooldown: true });
 }
 
 /**
@@ -280,6 +255,8 @@ export interface EnrichmentSelectionOptions {
   articleIds?: number[];
   /** Filter to specific source IDs. */
   sourceIds?: string[];
+  /** Durable Agent 3 run whose attempt artifacts must be excluded. */
+  pipelineRunId?: string;
 }
 
 const ENRICHMENT_ARTICLE_SELECT = {
@@ -297,11 +274,14 @@ const ENRICHMENT_ARTICLE_SELECT = {
   enrichmentAttemptCount: true,
   enrichmentFinishedAt: true,
   enrichmentOutcome: true,
+  enrichmentClaim: true,
 } satisfies Prisma.ArticleSelect;
 
 type RecentBlockState = {
   articleIds: ReadonlySet<number>;
   hostnames: ReadonlySet<string>;
+  retryAfterByArticleId: ReadonlyMap<number, string>;
+  retryAfterByHostname: ReadonlyMap<string, string>;
 };
 
 function articleHostname(article: Pick<EnrichmentEligibleArticle, "canonicalUrl" | "sourceUrl">): string {
@@ -311,7 +291,7 @@ function articleHostname(article: Pick<EnrichmentEligibleArticle, "canonicalUrl"
 }
 
 function isBlockedByRecentBlockState(
-  article: EnrichmentEligibleArticle,
+  article: Pick<EnrichmentEligibleArticle, "id" | "canonicalUrl" | "sourceUrl">,
   state: RecentBlockState,
 ): boolean {
   if (state.articleIds.has(article.id)) return true;
@@ -378,6 +358,8 @@ async function scanRecentBlockState(
 ): Promise<RecentBlockState> {
   const articleIds = new Set<number>();
   const hostnames = new Set<string>();
+  const retryAfterByArticleId = new Map<number, string>();
+  const retryAfterByHostname = new Map<string, string>();
   let cursor: number | undefined;
   let scanned = 0;
 
@@ -403,17 +385,27 @@ async function scanRecentBlockState(
     for (const article of page) {
       if (!isRecentlyBlocked(article, now)) continue;
       articleIds.add(article.id);
+      const retryAfter = getAgent3RetryAfter({ ...article, now });
+      if (retryAfter) retryAfterByArticleId.set(article.id, retryAfter);
       const hostname = extractHostname(article.canonicalUrl) !== "unknown"
         ? extractHostname(article.canonicalUrl)
         : extractHostname(article.sourceUrl);
-      if (hostname !== "unknown") hostnames.add(hostname);
+      if (hostname !== "unknown") {
+        hostnames.add(hostname);
+        if (retryAfter) {
+          const current = retryAfterByHostname.get(hostname);
+          if (!current || Date.parse(retryAfter) > Date.parse(current)) {
+            retryAfterByHostname.set(hostname, retryAfter);
+          }
+        }
+      }
     }
 
     cursor = page[page.length - 1]!.id;
     if (page.length < PROGRESS_SCAN_PAGE_SIZE) break;
   }
 
-  return { articleIds, hostnames };
+  return { articleIds, hostnames, retryAfterByArticleId, retryAfterByHostname };
 }
 
 async function countBlockedEligibleArticles(
@@ -456,6 +448,44 @@ async function countBlockedEligibleArticles(
   return count;
 }
 
+async function readAttemptedArticleIds(pipelineRunId: string): Promise<ReadonlySet<number>> {
+  const attempted = new Set<number>();
+  const artifacts = await prisma.pipelineArtifact.findMany({
+    where: { pipelineRunId, artifactType: "article_enrichment_attempt", status: "ATTEMPTED" },
+    select: { payload: true },
+    take: 10_000,
+  });
+  for (const artifact of artifacts) {
+    const payload = artifact.payload as Record<string, unknown>;
+    if (typeof payload?.articleId === "number") attempted.add(payload.articleId);
+  }
+  return attempted;
+}
+
+function compareAgent3QueueArticles(
+  a: EnrichmentEligibleArticle,
+  b: EnrichmentEligibleArticle,
+): number {
+  const tierRank: Record<string, number> = {
+    NEW: 0,
+    RETRY_1: 1,
+    RETRY_2: 2,
+    LEGACY: 3,
+    DEFERRED: 4,
+    QUARANTINED: 5,
+    NON_RETRYABLE: 6,
+  };
+  const aRank = tierRank[getAgent3Tier(a)] ?? 99;
+  const bRank = tierRank[getAgent3Tier(b)] ?? 99;
+  if (aRank !== bRank) return aRank - bRank;
+  const attempt = getAgent3AttemptNumber(a) - getAgent3AttemptNumber(b);
+  if (attempt !== 0) return attempt;
+  const aFinished = a.enrichmentFinishedAt?.getTime() ?? Number.POSITIVE_INFINITY;
+  const bFinished = b.enrichmentFinishedAt?.getTime() ?? Number.POSITIVE_INFINITY;
+  if (aFinished !== bFinished) return aFinished - bFinished;
+  return a.id - b.id;
+}
+
 export const selectEnrichmentEligibleArticles = async (
   now: Date = new Date(),
   limit: number = MAX_ARTICLES_PER_RUN,
@@ -465,6 +495,7 @@ export const selectEnrichmentEligibleArticles = async (
   const includeRecentlyBlocked = options?.includeRecentlyBlocked ?? false;
   const articleIds = options?.articleIds;
   const sourceIds = options?.sourceIds;
+  const pipelineRunId = options?.pipelineRunId;
 
   // When explicit articleIds are provided, bypass freshness cutoff
   // (admin re-run mode: process specific articles regardless of age).
@@ -497,48 +528,118 @@ export const selectEnrichmentEligibleArticles = async (
 
   const recentBlockState = shouldApplyRecentBlockFilter
     ? await scanRecentBlockState(where, now)
-    : { articleIds: new Set<number>(), hostnames: new Set<string>() };
+    : {
+        articleIds: new Set<number>(),
+        hostnames: new Set<string>(),
+        retryAfterByArticleId: new Map<number, string>(),
+        retryAfterByHostname: new Map<string, string>(),
+      };
+  const sameRunArticleIds = pipelineRunId
+    ? await readAttemptedArticleIds(pipelineRunId)
+    : new Set<number>();
+  const enrichedFallbackRows: EnrichmentEligibleArticle[] = [];
 
-  // Over-fetch to compensate for non-retryable exclusion, so we still fill batches.
-  const fetchLimit = shouldApplyRetryableFilter ? targetLimit * 3 : targetLimit;
+  const explicitlyTargeted = Boolean(hasExplicitArticleIds);
+  const acceptsArticle = (article: EnrichmentEligibleArticle): boolean => {
+    if (sameRunArticleIds.has(article.id)) return false;
+    if (shouldApplyRecentBlockFilter && isBlockedByRecentBlockState(article, recentBlockState)) return false;
+    const disposition = decideAgent3RetryDisposition({
+      ...article,
+      now,
+      forceReprocess,
+      explicitlyTargeted,
+      ignoreCooldown: forceReprocess || explicitlyTargeted || includeRecentlyBlocked,
+    });
+    return shouldApplyRetryableFilter
+      ? disposition.state === "READY_NEW" || disposition.state === "READY_RETRY"
+      : explicitlyTargeted || forceReprocess
+        ? disposition.state !== "DEFERRED"
+        : disposition.state === "READY_NEW" || disposition.state === "READY_RETRY";
+  };
 
-  const articles = await prisma.article.findMany({
-    where: {
-      ...where,
-      enrichmentStatus: { in: ["INGESTED", "ENRICHMENT_FAILED"] },
-    },
-    select: ENRICHMENT_ARTICLE_SELECT,
-    orderBy: [{ date: "desc" }, { id: "desc" }],
-    take: fetchLimit,
-  });
+  // Automatic selection is intentionally tiered. Each query is completed
+  // before the next tier is consulted, so a retry cannot displace NEW work.
+  const fetchTier = async (
+    status: "INGESTED" | "ENRICHMENT_FAILED",
+    attemptCount?: number | number[],
+  ): Promise<EnrichmentEligibleArticle[]> => {
+    const attemptFilter = attemptCount === undefined
+      ? {}
+      : { enrichmentAttemptCount: Array.isArray(attemptCount) ? { in: attemptCount } : attemptCount };
+    const selected: EnrichmentEligibleArticle[] = [];
+    const pageSize = Math.max(targetLimit * 3, 50);
+    let cursor: number | undefined;
+    let scanned = 0;
 
-  // Filter out recently-blocked articles (cross-run retry loop prevention).
-  // Explicit articleIds bypass this filter (admin targeting specific articles).
-  let filtered = shouldApplyRecentBlockFilter
-    ? articles.filter((a) => !isBlockedByRecentBlockState(a, recentBlockState))
-    : articles;
+    while (selected.length < targetLimit && scanned < PROGRESS_SCAN_SAFETY_CAP) {
+      const rows = await prisma.article.findMany({
+        where: {
+          ...where,
+          enrichmentStatus: status,
+          ...attemptFilter,
+          enrichmentClaim: null,
+        },
+        select: ENRICHMENT_ARTICLE_SELECT,
+        orderBy: [{ enrichmentAttemptCount: "asc" }, { enrichmentFinishedAt: "asc" }, { id: "asc" }],
+        take: pageSize,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      });
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      scanned += rows.length;
+      if (includeEnriched) {
+        enrichedFallbackRows.push(...rows.filter((article) => article.enrichmentStatus === "ENRICHED"));
+      }
+      selected.push(...rows
+        .filter((article) => article.enrichmentStatus === status)
+        .filter((article) => attemptCount === undefined || (Array.isArray(attemptCount)
+          ? attemptCount.includes(article.enrichmentAttemptCount)
+          : article.enrichmentAttemptCount === attemptCount))
+        .filter(acceptsArticle));
+      const nextCursor = rows[rows.length - 1]!.id;
+      if (cursor === nextCursor || rows.length < pageSize) break;
+      cursor = nextCursor;
+    }
 
-  // Filter out non-retryable current-version failures in normal runs.
-  // forceReprocess and explicit articleIds override this (admin/manual rerun).
+    return selected.sort(compareAgent3QueueArticles).slice(0, targetLimit);
+  };
+
+  let filtered: EnrichmentEligibleArticle[] = [];
   if (shouldApplyRetryableFilter) {
-    filtered = filtered.filter((a) => isAgent3FailureRetryableNow(a, now));
+    filtered = await fetchTier("INGESTED");
+    if (filtered.length < targetLimit) {
+      // One bounded query for all retry candidates, followed by policy sorting.
+      // The comparator preserves RETRY_1 before RETRY_2 and keeps legacy rows
+      // after both explicit retry tiers.
+      filtered.push(...(await fetchTier("ENRICHMENT_FAILED", [0, 1, 2]))
+        .slice(0, targetLimit - filtered.length));
+    }
+  } else {
+    filtered = (await prisma.article.findMany({
+      where: {
+        ...where,
+        enrichmentStatus: { in: ["INGESTED", "ENRICHMENT_FAILED"] },
+        enrichmentClaim: null,
+      },
+      select: ENRICHMENT_ARTICLE_SELECT,
+      orderBy: [{ enrichmentAttemptCount: "asc" }, { enrichmentFinishedAt: "asc" }, { id: "asc" }],
+      take: targetLimit,
+    })).filter(acceptsArticle).sort(compareAgent3QueueArticles);
   }
 
-  // Trim to target limit after filtering
-  if (filtered.length > targetLimit) {
-    filtered = filtered.slice(0, targetLimit);
-  }
+  filtered = filtered.slice(0, targetLimit);
 
   if (!includeEnriched || filtered.length >= targetLimit) {
     return filtered;
   }
 
-  const enrichedArticles = await scanEnrichedArticlesForSelection(where, targetLimit - filtered.length);
-  // Also filter recently-blocked from the enriched scan results
-  const filteredEnriched = shouldApplyRecentBlockFilter
-    ? enrichedArticles.filter((a) => !isBlockedByRecentBlockState(a, recentBlockState))
-    : enrichedArticles;
-  return [...filtered, ...filteredEnriched];
+  const enrichedArticles = enrichedFallbackRows.length > 0
+    ? enrichedFallbackRows
+    : await scanEnrichedArticlesForSelection(where, targetLimit - filtered.length);
+  const filteredEnriched = enrichedArticles
+    .filter((a) => needsAgent3CurrentVersionReprocess(a))
+    .filter((a) => !sameRunArticleIds.has(a.id))
+    .filter((a) => !shouldApplyRecentBlockFilter || !isBlockedByRecentBlockState(a, recentBlockState));
+  return [...filtered, ...filteredEnriched].sort(compareAgent3QueueArticles).slice(0, targetLimit);
 };
 
 /**
@@ -1113,6 +1214,7 @@ export const extractAndBuildArticleOutcome = async (
       code: rejectionCode,
       detail: `[${result.rejectedReason}] ${result.detail}`,
       httpStatus: result.statusCode,
+      retryAfterAt: result.retryAfterAt,
     },
     retryable,
     method: { method: result.method !== "none" ? result.method : "http-dom" },
@@ -1641,9 +1743,20 @@ export const stubExtractArticle = (
  * Used by the admin UI to show how many articles still need review.
  */
 export interface Agent3Progress {
+  /** Immediately actionable NEW + retry-tier articles. */
+  readyNew: number;
+  readyRetry: number;
+  /** Alias retained for existing callers: readyNew + readyRetry. */
+  retryableNow: number;
+  deferred: number;
+  nextRetryAt: string | null;
+  quarantined: number;
+  nonRetryable: number;
+  inProgress: number;
+  totalOutstanding: number;
+  exhaustedAttempts: number;
   eligibleNow: number;
   recentlyBlocked: number;
-  retryableNow: number;
   /** Current-version permanent failures that won't be retried until extractor version changes or force reprocess. */
   nonRetryableCurrentVersionFailures: number;
   totalInScope: number;
@@ -1704,6 +1817,7 @@ export interface Agent3ProgressOptions {
   forceReprocess?: boolean;
   sourceIds?: string[];
   articleIds?: number[];
+  pipelineRunId?: string;
 }
 
 /**
@@ -1730,8 +1844,24 @@ const PROGRESS_SCAN_SAFETY_CAP = 20_000;
 async function scanNonRetryableFailures(
   baseWhere: Record<string, unknown>,
   now: Date,
-): Promise<{ count: number; scanned: number; truncated: boolean }> {
+  excludedArticleIds: ReadonlySet<number> = new Set(),
+  blockState?: RecentBlockState,
+): Promise<{
+  count: number;
+  readyRetry: number;
+  deferred: number;
+  exhaustedAttempts: number;
+  nonRetryable: number;
+  nextRetryAt: string | null;
+  scanned: number;
+  truncated: boolean;
+}> {
   let count = 0;
+  let readyRetry = 0;
+  let deferred = 0;
+  let exhaustedAttempts = 0;
+  let nonRetryable = 0;
+  let nextRetryAt: string | null = null;
   let scanned = 0;
   let cursor: number | undefined;
 
@@ -1742,7 +1872,11 @@ async function scanNonRetryableFailures(
         id: true,
         enrichmentOutcome: true,
         enrichmentFinishedAt: true,
+        enrichmentAttemptCount: true,
         enrichmentStatus: true,
+        enrichmentClaim: true,
+        canonicalUrl: true,
+        sourceUrl: true,
       },
       take: PROGRESS_SCAN_PAGE_SIZE,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
@@ -1753,7 +1887,32 @@ async function scanNonRetryableFailures(
     scanned += page.length;
 
     for (const article of page) {
-      if (!isAgent3FailureRetryableNow(article, now)) {
+      if (excludedArticleIds.has(article.id)) continue;
+      if (article.enrichmentClaim) continue;
+      if (blockState && isBlockedByRecentBlockState(article, blockState)) {
+        deferred++;
+        const hostname = articleHostname(article);
+        const retryAfter = blockState.retryAfterByArticleId.get(article.id)
+          ?? blockState.retryAfterByHostname.get(hostname);
+        if (retryAfter && (!nextRetryAt || Date.parse(retryAfter) < Date.parse(nextRetryAt))) {
+          nextRetryAt = retryAfter;
+        }
+        continue;
+      }
+      const disposition = decideAgent3RetryDisposition({ ...article, now });
+      if (disposition.state === "READY_RETRY") readyRetry++;
+      if (disposition.state === "DEFERRED") {
+        deferred++;
+        if (!nextRetryAt || Date.parse(disposition.retryAfter) < Date.parse(nextRetryAt)) {
+          nextRetryAt = disposition.retryAfter;
+        }
+      }
+      if (disposition.state === "QUARANTINED") {
+        exhaustedAttempts++;
+        count++;
+      }
+      if (disposition.state === "NON_RETRYABLE") {
+        nonRetryable++;
         count++;
       }
     }
@@ -1772,7 +1931,7 @@ async function scanNonRetryableFailures(
     truncated = moreExist > 0;
   }
 
-  return { count, scanned, truncated };
+  return { count, readyRetry, deferred, exhaustedAttempts, nonRetryable, nextRetryAt, scanned, truncated };
 }
 
 /**
@@ -1782,6 +1941,50 @@ async function scanNonRetryableFailures(
  * Returns accurate counts without the MAX_ARTICLES_PER_RUN cap.
  * Uses bounded page queries (500 at a time) for DB efficiency.
  */
+async function scanReadyNewArticles(
+  baseWhere: Record<string, unknown>,
+  now: Date,
+  excludedArticleIds: ReadonlySet<number>,
+  blockState: RecentBlockState,
+): Promise<{ ready: number; deferred: number }> {
+  let ready = 0;
+  let deferred = 0;
+  let scanned = 0;
+  let cursor: number | undefined;
+
+  while (scanned < PROGRESS_SCAN_SAFETY_CAP) {
+    const page = await prisma.article.findMany({
+      where: { ...baseWhere, enrichmentStatus: "INGESTED", enrichmentClaim: null },
+      select: {
+        id: true,
+        enrichmentStatus: true,
+        enrichmentAttemptCount: true,
+        enrichmentFinishedAt: true,
+        enrichmentOutcome: true,
+        canonicalUrl: true,
+        sourceUrl: true,
+      },
+      take: PROGRESS_SCAN_PAGE_SIZE,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      orderBy: { id: "asc" },
+    });
+    if (!Array.isArray(page) || page.length === 0) break;
+    scanned += page.length;
+    for (const article of page) {
+      if (excludedArticleIds.has(article.id)) continue;
+      if (isBlockedByRecentBlockState(article, blockState)) {
+        deferred++;
+        continue;
+      }
+      if (decideAgent3RetryDisposition({ ...article, now }).state === "READY_NEW") ready++;
+    }
+    cursor = page[page.length - 1]!.id;
+    if (page.length < PROGRESS_SCAN_PAGE_SIZE) break;
+  }
+
+  return { ready, deferred };
+}
+
 async function scanEnrichedArticleVersions(
   enrichedWhere: Record<string, unknown>,
 ): Promise<{ needsReprocess: number; currentComplete: number; scanned: number; truncated: boolean }> {
@@ -1852,6 +2055,7 @@ export const getAgent3Progress = async (
   const forceReprocess = options?.forceReprocess ?? false;
   const articleIds = options?.articleIds;
   const sourceIds = options?.sourceIds;
+  const pipelineRunId = options?.pipelineRunId;
 
   // When explicit articleIds are provided, bypass freshness cutoff
   const cutoff = articleIds && articleIds.length > 0 ? undefined : getArticleRetentionCutoff(now);
@@ -1866,18 +2070,56 @@ export const getAgent3Progress = async (
 
   // Run count queries and enriched article scan in parallel.
   // The scan pages through all ENRICHED articles for accurate version-aware counts.
-  const [totalInScope, needingInitialEnrichment, enrichedInScope, failedRetryable, enrichedScan, nonRetryableScan] = await Promise.all([
+  const sameRunArticleIds = pipelineRunId
+    ? await readAttemptedArticleIds(pipelineRunId)
+    : new Set<number>();
+  const [totalInScope, needingInitialEnrichment, enrichedInScope, failedRetryable, enrichedScan] = await Promise.all([
     prisma.article.count({ where: baseWhere }),
-    prisma.article.count({ where: { ...baseWhere, enrichmentStatus: { in: ["INGESTED", "ENRICHMENT_FAILED"] } } }),
+    prisma.article.count({ where: { ...baseWhere, enrichmentStatus: { in: ["INGESTED", "ENRICHMENT_FAILED"] }, enrichmentClaim: null } }),
     prisma.article.count({ where: enrichedWhere }),
-    prisma.article.count({ where: { ...baseWhere, enrichmentStatus: "ENRICHMENT_FAILED" } }),
+    prisma.article.count({ where: { ...baseWhere, enrichmentStatus: "ENRICHMENT_FAILED", enrichmentClaim: null } }),
     scanEnrichedArticleVersions(enrichedWhere),
-    scanNonRetryableFailures(baseWhere, now),
   ]);
 
   const needsCurrentVersionReprocess = enrichedScan.needsReprocess;
   const currentVersionComplete = enrichedScan.currentComplete;
-  const nonRetryableCurrentVersionFailures = nonRetryableScan.count;
+  const recentBlockState = await scanRecentBlockState(baseWhere, now);
+  const nonRetryableScan = await scanNonRetryableFailures(
+    baseWhere,
+    now,
+    sameRunArticleIds,
+    recentBlockState,
+  );
+  const nonRetryableCurrentVersionFailures = nonRetryableScan.nonRetryable;
+
+  // Recently-blocked is host-aware: once a current-version 403/429/runtime
+  // block is observed, other eligible articles on the same hostname are also
+  // excluded until the cooldown expires.
+  const recentlyBlockedCount = await countBlockedEligibleArticles(
+    baseWhere,
+    includeEnriched,
+    recentBlockState,
+  );
+
+  // `needingInitialEnrichment` is INGESTED + ENRICHMENT_FAILED and the
+  // separate failed count makes this an exact INGESTED count without a broad
+  // status subtraction from policy dispositions.
+  const readyNewScan = await scanReadyNewArticles(
+    baseWhere,
+    now,
+    sameRunArticleIds,
+    recentBlockState,
+  );
+  const readyNew = readyNewScan.ready;
+  const readyRetry = nonRetryableScan.readyRetry;
+  const deferred = nonRetryableScan.deferred + readyNewScan.deferred;
+  const quarantined = nonRetryableScan.exhaustedAttempts;
+  const nonRetryable = nonRetryableScan.nonRetryable;
+  const inProgress = await prisma.articleEnrichmentClaim.count({
+    where: { expiresAt: { gt: now }, article: baseWhere },
+  });
+  const totalOutstanding = readyNew + readyRetry + deferred + quarantined + nonRetryable + inProgress;
+  const nextRetryAt = nonRetryableScan.nextRetryAt;
 
   // eligibleNow: same semantics as selectEnrichmentEligibleArticles (before recently-blocked filter)
   // Excludes non-retryable current-version failures (permanent extraction failures)
@@ -1887,19 +2129,11 @@ export const getAgent3Progress = async (
     : needingInitialEnrichment;
   const eligibleNow = Math.max(0, rawEligibleNow - nonRetryableCurrentVersionFailures);
 
-  // Recently-blocked is host-aware: once a current-version 403/429/runtime
-  // block is observed, other eligible articles on the same hostname are also
-  // excluded until the cooldown expires.
-  const recentBlockState = await scanRecentBlockState(baseWhere, now);
-  const recentlyBlockedCount = await countBlockedEligibleArticles(
-    baseWhere,
-    includeEnriched,
-    recentBlockState,
-  );
-
   // retryableNow: articles we can actually process right now
   // (excluding both recently-blocked AND non-retryable current-version failures)
-  const retryableNow = Math.max(0, eligibleNow - recentlyBlockedCount);
+  // This is the queue contract: blocked, deferred, quarantined, permanent,
+  // and same-run attempted failures are not actionable in this run.
+  const retryableNow = readyNew + readyRetry;
 
   // Find the latest Agent 3 enrichment PipelineRun
   let latestRun: Agent3Progress["latestRun"] = null;
@@ -2038,8 +2272,20 @@ export const getAgent3Progress = async (
   // remainingAfterLatestRun: recompute current eligible count
   // This is simply eligibleNow, since failed/rejected rows remain eligible
   // for retry and reprocessing handles already-enriched rows.
-  const remainingAfterLatestRun = retryableNow;
-    return {
+  // Legacy dashboard field: preserve the broader eligible queue count. The
+  // durable workflow uses retryableNow, whose contract is exactly readyNew +
+  // readyRetry and excludes deferred/quarantined/permanent rows.
+  const remainingAfterLatestRun = eligibleNow;
+  return {
+      readyNew,
+      readyRetry,
+      deferred,
+      nextRetryAt,
+      quarantined,
+      nonRetryable,
+      inProgress,
+      totalOutstanding,
+      exhaustedAttempts: quarantined,
       eligibleNow,
       recentlyBlocked: recentlyBlockedCount,
       retryableNow,
@@ -2087,6 +2333,8 @@ export interface EnrichmentBatchOptions {
   browserTimeoutMs?: number;
   /** Maximum articles from a single source per batch (default 5, clamp 1..25). */
   maxArticlesPerSource?: number;
+  /** Existing durable PipelineRun to use for same-run attempt artifacts. */
+  pipelineRunId?: string;
 }
 
 /**
@@ -2150,9 +2398,12 @@ export const runEnrichmentBatch = async (
   };
 
   let pipelineRun: { id: string } | null = null;
+  const ownsPipelineRun = !options?.pipelineRunId;
 
   try {
-    pipelineRun = await createPipelineRun(0);
+    pipelineRun = options?.pipelineRunId
+      ? { id: options.pipelineRunId }
+      : await createPipelineRun(0);
 
     await logAgentScan({
       status: "ARTICLE_CONTENT_ENRICHMENT_STARTED",
@@ -2180,6 +2431,7 @@ export const runEnrichmentBatch = async (
         forceReprocess,
         articleIds: options?.articleIds,
         sourceIds: options?.sourceIds,
+        pipelineRunId: pipelineRun.id,
       },
     );
 
@@ -2280,6 +2532,51 @@ export const runEnrichmentBatch = async (
       // cooldown tracker must see 429 (immediate cooldown) not 403 (threshold).
       classifyHttpAccessBlocked(outcome);
 
+      // Persist compact diagnostics on deferred/quarantined/permanent outcomes.
+      // The full extraction payload remains bounded by the existing serializer;
+      // this summary adds the queue decision needed by admin/workflow tooling.
+      const retryDisposition = decideAgent3RetryDisposition({
+        enrichmentStatus: "ENRICHMENT_FAILED",
+        enrichmentAttemptCount: attemptNumber,
+        enrichmentFinishedAt: new Date(outcome.timing.finishedAt),
+        enrichmentOutcome: outcome,
+        now,
+        forceReprocess,
+        explicitlyTargeted: Boolean(options?.articleIds?.length),
+      });
+      if (
+        outcome.kind !== "SUCCESS" &&
+        outcome.kind !== "SKIPPED" &&
+        (retryDisposition.state === "DEFERRED" ||
+          retryDisposition.state === "QUARANTINED" ||
+          retryDisposition.state === "NON_RETRYABLE")
+      ) {
+        const detail = outcome.rejection?.detail ?? outcome.error ?? "";
+        const browserFallbackCouldHelp =
+          outcome.browserFallback?.runtimeUnavailable === true ||
+          outcome.browserFallback?.browserFallbackSkippedReason === "browser_disabled" ||
+          outcome.kind === "HEADLESS_REQUIRED";
+        outcome.retryDiagnostics = {
+          disposition: retryDisposition.state,
+          reasonCode: retryDisposition.reasonCode,
+          attemptNumber,
+          retryAfter: retryDisposition.state === "DEFERRED" ? retryDisposition.retryAfter : null,
+          articleId: article.id,
+          sourceId: article.sourceId,
+          hostname: extractHostname(article.canonicalUrl || article.sourceUrl),
+          pipelineRunId: pipelineRun.id,
+          browserFallbackCouldHelp,
+          evidenceSummary: JSON.stringify({
+            kind: outcome.kind,
+            rejectionCode: outcome.rejection?.code ?? null,
+            detail: detail.slice(0, 240),
+          }).slice(0, 512),
+          httpStatus: outcome.rejection?.httpStatus ?? outcome.browserFallback?.statusCode ?? null,
+          extractorVersion: AGENT3_EXTRACTOR_VERSION,
+          previousAttemptAt: article.enrichmentFinishedAt?.toISOString() ?? null,
+        };
+      }
+
       // Track source cooldown: if this outcome is a block-type failure,
       // record it on the cooldown tracker. If the source hits the threshold,
       // subsequent articles from the same source will be skipped.
@@ -2347,10 +2644,41 @@ export const runEnrichmentBatch = async (
     // = articles eligible for enrichment, inserted = successfully enriched).
     // These are the best available fits in the shared run-tracking schema; the
     // canonical per-kind breakdown lives in the `summary` JSON below.
-    await prisma.pipelineRun.update({
-      where: { id: pipelineRun.id },
-      data: {
-        status: persistResult.failed > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
+    const finalSummary = buildEnrichmentRunSummary(persistResult, outcomes.length, {
+      durationMs: Date.now() - startedAt,
+      claimSkipped,
+      expiredClaimsRecovered,
+      agent3SourceCooldowns: sourceCooldown.getEntries().length > 0 ? sourceCooldown.getEntries() : undefined,
+      browserFallbackStats: browserFallbackEnabled
+        ? {
+            enabled: true,
+            ...browserStats,
+            stoppedReason:
+              browserStats.runtimeUnavailable > 0
+                ? "runtime_unavailable"
+                : browserStats.rateLimited >= 3
+                  ? "rate_limited"
+                  : browserFallbackMaxAttempts > 0 && browserStats.attempted >= browserFallbackMaxAttempts
+                    ? "max_attempts"
+                    : null,
+          }
+        : undefined,
+      optionsUsed: {
+        browserFallback: browserFallbackEnabled,
+        browserFallbackMaxAttempts,
+        browserTimeoutMs,
+        includeEnriched,
+        forceReprocess,
+        maxArticles: maxArticles ?? MAX_ARTICLES_PER_RUN,
+        maxArticlesPerSource,
+      },
+    });
+
+    if (ownsPipelineRun) {
+      await prisma.pipelineRun.update({
+        where: { id: pipelineRun.id },
+        data: {
+          status: persistResult.failed > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
         finishedAt: new Date(),
         targetCount: outcomes.length,
         candidatesFound: outcomes.length,
@@ -2358,37 +2686,50 @@ export const runEnrichmentBatch = async (
         skipped: persistResult.byKind.SKIPPED,
         failed: persistResult.failed + persistResult.byKind.RETRYABLE_FAILURE,
         artifactCount: attemptMarkerIds.length + persistResult.artifactIds.length,
-        summary: buildEnrichmentRunSummary(persistResult, outcomes.length, {
-          durationMs: Date.now() - startedAt,
-          claimSkipped,
-          expiredClaimsRecovered,
-          agent3SourceCooldowns: sourceCooldown.getEntries().length > 0 ? sourceCooldown.getEntries() : undefined,
-          browserFallbackStats: browserFallbackEnabled
-            ? {
-                enabled: true,
-                ...browserStats,
-                stoppedReason:
-                  browserStats.runtimeUnavailable > 0
-                    ? "runtime_unavailable"
-                    : browserStats.rateLimited >= 3
-                      ? "rate_limited"
-                      : browserFallbackMaxAttempts > 0 && browserStats.attempted >= browserFallbackMaxAttempts
-                        ? "max_attempts"
-                        : null,
-              }
-            : undefined,
-          optionsUsed: {
-            browserFallback: browserFallbackEnabled,
-            browserFallbackMaxAttempts,
-            browserTimeoutMs,
-            includeEnriched,
-            forceReprocess,
-            maxArticles: maxArticles ?? MAX_ARTICLES_PER_RUN,
-            maxArticlesPerSource,
-          },
-        }),
+        summary: finalSummary,
       },
     });
+    } else {
+      // The daily workflow owns this PipelineRun as its lock record. Persist a
+      // compact Agent 3 diagnostic artifact instead of replacing that lock's
+      // orchestration summary with an enrichment summary.
+      const postBatchProgress = await getAgent3Progress({
+        now,
+        includeEnriched,
+        forceReprocess,
+        sourceIds: options?.sourceIds,
+        articleIds: options?.articleIds,
+        pipelineRunId: pipelineRun.id,
+      });
+      await prisma.pipelineArtifact.create({
+        data: {
+          pipelineRunId: pipelineRun.id,
+          sourceId: null,
+          categoryId: null,
+          artifactType: "agent3_progress_diagnostic",
+          status: "CAPTURED",
+          candidateCount: outcomes.length,
+          payload: {
+            schemaVersion: 1,
+            stage: "agent3",
+            articleCount: outcomes.length,
+            persisted: persistResult.persisted,
+            succeeded: persistResult.byKind.SUCCESS,
+            failedRetryable: persistResult.byKind.RETRYABLE_FAILURE,
+            deferred: postBatchProgress.deferred,
+            quarantined: postBatchProgress.quarantined,
+            retryableNow: postBatchProgress.retryableNow,
+            readyNew: postBatchProgress.readyNew,
+            readyRetry: postBatchProgress.readyRetry,
+            nextRetryAt: postBatchProgress.nextRetryAt,
+            nonRetryable: postBatchProgress.nonRetryable,
+            inProgress: postBatchProgress.inProgress,
+            pipelineRunId: pipelineRun.id,
+          },
+          errorLog: null,
+        },
+      });
+    }
 
     const browserLog = browserFallbackEnabled
       ? ` browser=[attempted=${browserStats.attempted},succeeded=${browserStats.succeeded},failed=${browserStats.failed},runtimeUnavailable=${browserStats.runtimeUnavailable},rateLimited=${browserStats.rateLimited}]`

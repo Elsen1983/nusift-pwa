@@ -14,6 +14,7 @@ const claimDeleteManyMock = vi.fn();
 const claimFindUniqueMock = vi.fn();
 const claimRows = new Map<string, Record<string, unknown>>();
 const claimDeleteManyDirectMock = vi.fn();
+const claimCountMock = vi.fn();
 const transactionMock = vi.fn();
 const artifactFindManyMock = vi.fn();
 const pipelineRunCreateMock = vi.fn();
@@ -33,6 +34,7 @@ vi.mock("../prisma", () => ({
     },
     articleEnrichmentClaim: {
       deleteMany: (...args: any[]) => claimDeleteManyDirectMock(...args),
+      count: (...args: any[]) => claimCountMock(...args),
     },
     pipelineArtifact: {
       create: (...args: any[]) => artifactCreateMock(...args),
@@ -111,6 +113,7 @@ vi.mock("./article-content-browser-extractor", () => ({
 function configureAgent3PrismaMocks(): void {
   claimRows.clear();
   claimDeleteManyDirectMock.mockResolvedValue({ count: 0 });
+  claimCountMock.mockResolvedValue(0);
   claimDeleteManyMock.mockImplementation(async (args: any) => {
     const token = args?.where?.token as string | undefined;
     if (!token) return { count: 0 };
@@ -282,7 +285,7 @@ describe("selectEnrichmentEligibleArticles", () => {
     const articles = await selectEnrichmentEligibleArticles(now);
 
     expect(articles).toHaveLength(1);
-    expect(articleFindManyMock).toHaveBeenCalledTimes(2);
+    expect(articleFindManyMock).toHaveBeenCalledTimes(3);
     const args = articleFindManyMock.mock.calls[1]![0];
 
     // cutoff is 7 days before now
@@ -291,10 +294,8 @@ describe("selectEnrichmentEligibleArticles", () => {
       now.getTime() - 7 * 24 * 60 * 60 * 1000,
     );
 
-    // eligible statuses
-    expect(args.where.enrichmentStatus.in).toEqual(["INGESTED", "ENRICHMENT_FAILED"]);
-
-    // capped at MAX_ARTICLES_PER_RUN * 3 (over-fetch for retryable filtering)
+    // NEW is queried before retry tiers.
+    expect(args.where.enrichmentStatus).toBe("INGESTED");
     expect(args.take).toBe(MAX_ARTICLES_PER_RUN * 3);
   });
 
@@ -1641,10 +1642,11 @@ describe("getAgent3Progress paged scanning", () => {
 
     // Should return at most 10 (the limit passed), not all 100
     expect(articles.length).toBeLessThanOrEqual(10);
-    // Verify findMany was called with take: 10
+    // Verify findMany was called with take: 10 (the limit is still enforced).
     expect(articleFindManyMock).toHaveBeenCalledTimes(2);
-    // Over-fetch by 3x for retryable filtering
-    expect(articleFindManyMock.mock.calls[1]![0].take).toBe(30);
+    // The selector uses a bounded page floor so filtered rows can be scanned
+    // without letting lower tiers displace NEW work.
+    expect(articleFindManyMock.mock.calls[1]![0].take).toBe(50);
   });
 
   it("progressTruncated=true when safety cap is hit", async () => {
@@ -4049,6 +4051,13 @@ describe("getAgent3Progress with non-retryable counts", () => {
       return Promise.resolve(0);
     });
     articleFindManyMock.mockImplementation((args: any) => {
+      if (args?.where?.enrichmentStatus === "INGESTED") {
+        return Promise.resolve([
+          { id: 1, enrichmentStatus: "INGESTED", enrichmentAttemptCount: 0, enrichmentOutcome: null, canonicalUrl: "https://new.example/1", sourceUrl: null },
+          { id: 2, enrichmentStatus: "INGESTED", enrichmentAttemptCount: 0, enrichmentOutcome: null, canonicalUrl: "https://new.example/2", sourceUrl: null },
+          { id: 3, enrichmentStatus: "INGESTED", enrichmentAttemptCount: 0, enrichmentOutcome: null, canonicalUrl: "https://new.example/3", sourceUrl: null },
+        ]);
+      }
       if (args?.where?.enrichmentStatus === "ENRICHMENT_FAILED") {
         // All 5 are non-retryable (no HTTP_ACCESS_BLOCKED)
         return Promise.resolve([
@@ -4066,6 +4075,7 @@ describe("getAgent3Progress with non-retryable counts", () => {
 
     // 5 non-retryable out of 8 total needing initial enrichment
     // eligibleNow = 8 - 5 = 3
+    // HEADLESS_REQUIRED is not actionable in the normal browser-disabled path.
     expect(progress.nonRetryableCurrentVersionFailures).toBe(5);
     expect(progress.eligibleNow).toBe(3);
     // No recently-blocked items (no HTTP_ACCESS_BLOCKED)
@@ -4089,17 +4099,24 @@ describe("getAgent3Progress with non-retryable counts", () => {
       { id: 10, enrichmentStatus: "ENRICHMENT_FAILED", enrichmentOutcome: { extractorVersion: AGENT3_EXTRACTOR_VERSION, kind: "LOW_CONTENT_QUALITY" }, enrichmentFinishedAt: null },
       { id: 11, enrichmentStatus: "ENRICHMENT_FAILED", enrichmentOutcome: { extractorVersion: AGENT3_EXTRACTOR_VERSION, kind: "UNSUPPORTED_STRUCTURE" }, enrichmentFinishedAt: null },
       // 1 recently blocked (403, 30 min ago — inside 24h cooldown)
-      { id: 12, enrichmentStatus: "ENRICHMENT_FAILED", enrichmentOutcome: { extractorVersion: AGENT3_EXTRACTOR_VERSION, kind: "HTTP_ACCESS_BLOCKED", rejectionCode: "HTTP_FORBIDDEN", rejectionHttpStatus: 403 }, enrichmentFinishedAt: new Date("2026-07-29T11:30:00Z") },
+      { id: 12, enrichmentStatus: "ENRICHMENT_FAILED", canonicalUrl: "https://blocked.example/failure", sourceUrl: null, enrichmentOutcome: { extractorVersion: AGENT3_EXTRACTOR_VERSION, kind: "HTTP_ACCESS_BLOCKED", rejectionCode: "HTTP_FORBIDDEN", rejectionHttpStatus: 403 }, enrichmentFinishedAt: new Date("2026-07-29T11:30:00Z") },
       // 1 HTTP_ACCESS_BLOCKED 429 outside cooldown (finished 2h ago)
       { id: 13, enrichmentStatus: "ENRICHMENT_FAILED", enrichmentOutcome: { extractorVersion: AGENT3_EXTRACTOR_VERSION, kind: "HTTP_ACCESS_BLOCKED", rejectionCode: "HTTP_FORBIDDEN", rejectionHttpStatus: 429 }, enrichmentFinishedAt: new Date("2026-07-29T10:00:00Z") },
     ];
+    const ingestedArticles = [
+      { id: 1, enrichmentStatus: "INGESTED", enrichmentAttemptCount: 0, enrichmentOutcome: null, canonicalUrl: "https://blocked.example/new", sourceUrl: null },
+      { id: 2, enrichmentStatus: "INGESTED", enrichmentAttemptCount: 0, enrichmentOutcome: null, canonicalUrl: "https://open.example/new", sourceUrl: null },
+    ];
     articleFindManyMock.mockImplementation((args: any) => {
+      if (args?.where?.enrichmentStatus === "INGESTED") {
+        return Promise.resolve(ingestedArticles);
+      }
       if (args?.where?.enrichmentStatus === "ENRICHMENT_FAILED") {
         return Promise.resolve(failedArticles2);
       }
       // countBlockedEligibleArticles queries with { in: [...] }
       if (args?.where?.enrichmentStatus?.in) {
-        return Promise.resolve(failedArticles2);
+        return Promise.resolve([...failedArticles2, ...ingestedArticles]);
       }
       return Promise.resolve([]);
     });
@@ -4116,7 +4133,10 @@ describe("getAgent3Progress with non-retryable counts", () => {
     // recentlyBlocked: article 12 (403, 30 min ago → inside 24h cooldown) + host exclusion
     expect(progress.recentlyBlocked).toBeGreaterThanOrEqual(1);
 
-    // retryableNow = eligibleNow - recentlyBlocked (no overlap with nonRetryable)
-    expect(progress.retryableNow).toBe(progress.eligibleNow - progress.recentlyBlocked);
+    // Only the open-host NEW article and the expired-429 retry are actionable.
+    expect(progress.retryableNow).toBe(2);
+    expect(progress.readyNew).toBe(1);
+    expect(progress.readyRetry).toBe(1);
+    expect(progress.deferred).toBe(2);
   });
 });
