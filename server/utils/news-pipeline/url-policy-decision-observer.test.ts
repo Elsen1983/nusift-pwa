@@ -131,9 +131,19 @@ describe("observeUrlPolicyDecisions", () => {
 
   it("is side-effect-free (pure function, no I/O)", () => {
     const input = { url: "https://www.bbc.com/news/articles/c1234567890o" };
+    const inputBefore = structuredClone(input);
     const first = observeUrlPolicyDecisions(input);
     const second = observeUrlPolicyDecisions(input);
-    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+
+    expect(input).toEqual(inputBefore);
+    expect({ ...first.production, createdAt: undefined }).toEqual({
+      ...second.production,
+      createdAt: undefined,
+    });
+    expect({ ...first.candidate, createdAt: undefined }).toEqual({
+      ...second.candidate,
+      createdAt: undefined,
+    });
   });
 });
 

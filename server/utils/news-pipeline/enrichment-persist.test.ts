@@ -236,6 +236,7 @@ describe("buildArticleEnrichmentUpdate", () => {
     outcome.browserFallback = {
       attempted: true,
       succeeded: false,
+      staticStatusCode: null,
       staticRejectedReason: "http_error",
       staticMethod: "http-dom",
       method: "browser-dom",

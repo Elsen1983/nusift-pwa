@@ -23,6 +23,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { safeFetch } from "../ssrf-guard";
+import type { StageBatchProbe } from "./stage-telemetry";
 import { loadJsdom } from "./jsdom-runtime";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -204,6 +205,8 @@ export interface ExtractArticleContentInput {
   existingTitle: string;
   existingBodyText?: string | null;
   now?: Date;
+  /** Observation-only operation probe; redirects count as one logical attempt. */
+  telemetry?: StageBatchProbe;
 }
 
 /** Compact summary of a candidate container for diagnostics. */
@@ -281,13 +284,11 @@ interface FetchResult {
   statusCode: number;
   contentType: string | null;
   resolvedUrl: string;
-  fetchMs: number;
   error?: string;
   retryAfterAt?: string | null;
 }
 
-async function fetchArticleHtml(url: string): Promise<FetchResult> {
-  const startedAt = Date.now();
+async function fetchArticleHtml(url: string, telemetry?: StageBatchProbe): Promise<FetchResult> {
   let response: Response;
 
   try {
@@ -297,6 +298,7 @@ async function fetchArticleHtml(url: string): Promise<FetchResult> {
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      telemetry,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -306,7 +308,7 @@ async function fetchArticleHtml(url: string): Promise<FetchResult> {
       statusCode: 0,
       contentType: null,
       resolvedUrl: url,
-      fetchMs: Date.now() - startedAt,
+
       error: `Fetch failed: ${message}`,
     };
   }
@@ -322,7 +324,7 @@ async function fetchArticleHtml(url: string): Promise<FetchResult> {
       statusCode,
       contentType,
       resolvedUrl,
-      fetchMs: Date.now() - startedAt,
+
       error: `HTTP ${statusCode}`,
       retryAfterAt: parseRetryAfter(response.headers.get("retry-after")),
     };
@@ -347,7 +349,7 @@ async function fetchArticleHtml(url: string): Promise<FetchResult> {
       statusCode,
       contentType,
       resolvedUrl,
-      fetchMs: Date.now() - startedAt,
+
       error: `Body read failed: ${message}`,
     };
   }
@@ -360,7 +362,7 @@ async function fetchArticleHtml(url: string): Promise<FetchResult> {
       statusCode,
       contentType,
       resolvedUrl,
-      fetchMs: Date.now() - startedAt,
+
       error: `Non-HTML content-type: ${contentType}`,
     };
   }
@@ -371,7 +373,7 @@ async function fetchArticleHtml(url: string): Promise<FetchResult> {
     statusCode,
     contentType,
     resolvedUrl,
-    fetchMs: Date.now() - startedAt,
+
   };
 }
 
@@ -2342,7 +2344,7 @@ export async function extractArticleContentFromUrl(
   }
 
   // Step 1: Fetch HTML
-  const fetchResult = await fetchArticleHtml(articleUrl);
+  const fetchResult = await fetchArticleHtml(articleUrl, input.telemetry);
 
   if (!fetchResult.ok || !fetchResult.html) {
     const reason = categorizeFetchError(fetchResult);
@@ -2358,15 +2360,21 @@ export async function extractArticleContentFromUrl(
     );
   }
 
-  // Delegate to shared extraction pipeline
-  return extractArticleContentFromHtml({
-    html: fetchResult.html,
+  // DOM parsing, Readability, candidate scoring, and quality evaluation are
+  // processing/extraction time, separate from the HTTP request above.
+  const html = fetchResult.html;
+  if (!html) {
+    return fail("none", fetchResult.resolvedUrl, fetchResult.statusCode || null, "empty_html", "Fetched HTML was empty.");
+  }
+  const extract = () => extractArticleContentFromHtml({
+    html,
     resolvedUrl: fetchResult.resolvedUrl,
     statusCode: fetchResult.statusCode,
     existingTitle,
     existingBodyText,
     method: "http-dom",
   });
+  return input.telemetry ? input.telemetry.timed("extraction", extract) : extract();
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

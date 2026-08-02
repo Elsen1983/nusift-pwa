@@ -582,6 +582,8 @@ export const buildEnrichmentRunSummary = (
     }>;
     claimSkipped?: number;
     expiredClaimsRecovered?: number;
+    /** Per-outcome HTTP evidence from the enrichment runtime. */
+    httpEvidence?: Record<string, number>;
   },
 ): Prisma.InputJsonValue =>
   ({
@@ -598,6 +600,7 @@ export const buildEnrichmentRunSummary = (
     ...(options?.agent3SourceCooldowns ? { agent3SourceCooldowns: options.agent3SourceCooldowns } : {}),
     ...(options?.claimSkipped !== undefined ? { claimSkipped: options.claimSkipped } : {}),
     ...(options?.expiredClaimsRecovered !== undefined ? { expiredClaimsRecovered: options.expiredClaimsRecovered } : {}),
+    ...(options?.httpEvidence ? { httpEvidence: { ...options.httpEvidence } } : {}),
   }) as Prisma.InputJsonValue;
 
 /**

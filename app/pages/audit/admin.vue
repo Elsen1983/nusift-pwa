@@ -43,10 +43,54 @@
         </p>
       </section>
 
-      <section
-        v-else
-        class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4 space-y-5"
-      >
+      <template v-else>
+        <section
+          v-if="showFullDevTools"
+          class="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 px-4 py-4 shadow-lg shadow-cyan-950/10"
+        >
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="material-symbols-outlined text-[19px] text-cyan-300">monitoring</span>
+              <h2 class="font-headline text-base font-bold text-on-surface">Daily pipeline telemetry</h2>
+              <span v-if="dailyPipelineTelemetry.run" class="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider" :class="dailyPipelineTelemetry.run.status.includes('FAILED') || dailyPipelineTelemetry.run.status.includes('STALE') ? 'bg-rose-500/15 text-rose-200' : dailyPipelineTelemetry.run.status.includes('RUNNING') ? 'bg-amber-500/15 text-amber-200' : 'bg-emerald-500/15 text-emerald-200'">
+                {{ dailyPipelineTelemetry.run.status.replace('DAILY_PIPELINE_WORKFLOW_', '') }}
+              </span>
+            </div>
+            <p class="mt-1 text-xs text-on-surface-variant">Observation-only stage timing and concurrency diagnostics. Refreshes with the existing guarded admin poll.</p>
+          </div>
+          <button @click="loadDailyPipelineTelemetry" :disabled="dailyPipelineTelemetry.loading" class="rounded-lg border border-cyan-400/20 bg-cyan-400/10 px-3 py-1.5 text-xs font-bold text-cyan-100 transition-colors hover:bg-cyan-400/20 disabled:opacity-60">
+            {{ dailyPipelineTelemetry.loading ? 'Loading...' : 'Refresh' }}
+          </button>
+        </div>
+        <p v-if="dailyPipelineTelemetry.loading && !dailyPipelineTelemetry.loaded" class="mt-4 text-xs text-on-surface-variant">Loading the latest workflow run...</p>
+        <p v-else-if="dailyPipelineTelemetry.error" class="mt-4 rounded-lg border border-rose-400/20 bg-rose-500/5 px-3 py-2 text-xs text-rose-200">{{ dailyPipelineTelemetry.error }}</p>
+        <p v-else-if="dailyPipelineTelemetry.loaded && !dailyPipelineTelemetry.run" class="mt-4 text-xs text-on-surface-variant">No daily pipeline workflow telemetry is available yet.</p>
+        <div v-else-if="dailyPipelineTelemetry.run" class="mt-4 space-y-3">
+          <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div class="rounded-lg bg-surface-container/70 px-3 py-2"><div class="text-[9px] uppercase tracking-wider text-on-surface-variant">Workflow</div><div class="mt-1 text-xs font-bold text-on-surface">{{ formatTelemetryMs(dailyPipelineTelemetry.run.workflowDurationMs) }}</div></div>
+            <div class="rounded-lg bg-surface-container/70 px-3 py-2"><div class="text-[9px] uppercase tracking-wider text-on-surface-variant">Slowest stage</div><div class="mt-1 text-xs font-bold text-cyan-200">{{ dailyPipelineTelemetry.slowestStage || '—' }}</div></div>
+            <div class="rounded-lg bg-surface-container/70 px-3 py-2"><div class="text-[9px] uppercase tracking-wider text-on-surface-variant">Batches</div><div class="mt-1 text-xs font-bold text-on-surface">{{ dailyPipelineTelemetry.batches.length }}<span v-if="dailyPipelineTelemetry.pagination.truncated" class="ml-1 text-amber-200">+</span></div></div>
+            <div class="rounded-lg bg-surface-container/70 px-3 py-2"><div class="text-[9px] uppercase tracking-wider text-on-surface-variant">Notifications</div><div class="mt-1 text-xs font-bold text-on-surface">{{ formatTelemetryMs(dailyPipelineTelemetry.run.notificationsDurationMs) }}</div></div>
+          </div>
+          <div class="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-on-surface-variant">
+            <span>processed targets/articles: <strong class="text-on-surface">{{ telemetryProcessed }}</strong></span><span>succeeded targets/articles: <strong class="text-emerald-300">{{ telemetrySucceeded }}</strong></span><span>retryable failed: {{ telemetryCount('failedRetryable') }}</span><span>permanent failed: {{ telemetryCount('failedPermanent') }}</span><span>skipped: {{ telemetryCount('skipped') }}</span><span>deferred: {{ telemetryCount('deferred') }}</span><span>quarantined: {{ telemetryCount('quarantined') }}</span><span>claim lost: {{ telemetryCount('claimLost') }}</span><span>persistence failed: {{ telemetryCount('persistenceFailed') }}</span><span>logical request: {{ formatTelemetryMs(telemetryDuration('logicalRequestDurationMs')) }}</span><span>extraction: {{ formatTelemetryMs(telemetryDuration('extractionDurationMs')) }}</span><span>browser: {{ formatTelemetryMs(telemetryDuration('browserDurationMs')) }}</span><span>persistence: {{ formatTelemetryMs(telemetryDuration('persistenceDurationMs')) }}</span><span>sleep: {{ formatTelemetryMs(telemetryDuration('sleepDurationMs')) }}</span><span>403 denied: {{ telemetryCount('accessDenied403') }}</span><span>403 limit: {{ telemetryCount('rateLimited403') }}</span><span>429: <strong class="text-amber-200">{{ telemetryCount('rateLimited429') }}</strong></span><span>timeouts: {{ telemetryCount('timedOut') }}</span>
+          </div>
+          <div class="space-y-2">
+            <div v-for="stage in dailyPipelineTelemetry.stageTimings" :key="stage.stage" class="rounded-lg border border-outline-variant/15 bg-surface-container/50 px-3 py-2">
+              <div class="flex flex-wrap items-center justify-between gap-2"><span class="text-xs font-bold text-on-surface">{{ stage.stage }}</span><span class="text-[10px] text-on-surface-variant">{{ formatTelemetryMs(stage.durationMs) }} · {{ stage.batches }} batch{{ stage.batches === 1 ? '' : 'es' }}</span></div>
+              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-on-surface-variant"><span>processed targets/articles {{ stage.processed }} / succeeded {{ stage.succeeded }}</span><span>failed {{ stage.failedRetryable }} retryable · {{ stage.failedPermanent }} permanent · skipped {{ stage.skipped }}</span><span>deferred {{ stage.deferred }} · quarantined {{ stage.quarantined }} · claim lost {{ stage.claimLost || 0 }} · persistence failed {{ stage.persistenceFailed || 0 }}</span><span>batch size {{ stage.batchSizeLimit }} / concurrency {{ stage.concurrencyLimit }} / peak {{ stage.peakConcurrency }}</span><span>logical request {{ formatTelemetryMs(stage.logicalRequestDurationMs) }} · extraction {{ formatTelemetryMs(stage.extractionDurationMs) }} · browser {{ formatTelemetryMs(stage.browserDurationMs) }} · persistence {{ formatTelemetryMs(stage.persistenceDurationMs) }} · sleep {{ formatTelemetryMs(stage.sleepDurationMs) }}</span><span>remaining {{ stage.remainingBefore ?? '—' }} → {{ stage.remainingAfter ?? '—' }}</span><span>403 denied {{ stage.accessDenied403 }} · 403 limit {{ stage.rateLimited403 }} · 429 {{ stage.rateLimited429 }}</span><span v-if="stage.productivity && Object.keys(stage.productivity).length > 0" class="text-cyan-200">productivity counters are separate</span><span v-if="stage.latestNoProgressReason" class="text-rose-200">no progress: {{ stage.latestNoProgressReason }}</span></div>
+            </div>
+          </div>
+          <p v-if="dailyPipelineTelemetry.pagination.truncated" class="rounded-lg border border-amber-400/20 bg-amber-500/5 px-3 py-2 text-[10px] font-medium text-amber-200">Data truncated: showing the first 200 valid telemetry batches.</p>
+          <p v-if="dailyPipelineTelemetry.latestNoProgressReason" class="rounded-lg border border-rose-400/20 bg-rose-500/5 px-3 py-2 text-[10px] text-rose-200">Latest no-progress reason: {{ dailyPipelineTelemetry.latestNoProgressReason }}</p>
+          <p v-if="dailyPipelineTelemetry.stale" class="text-[10px] text-amber-200">This run is stale or has not completed recently.</p>
+        </div>
+        </section>
+
+        <section
+          class="rounded-2xl border border-outline-variant/20 bg-surface-container-high px-5 py-4 space-y-5"
+        >
         <div v-if="false && showFullDevTools">
           <div class="flex items-center justify-between gap-3">
             <div>
@@ -2164,7 +2208,8 @@
           </div>
         </div>
 
-      </section>
+        </section>
+      </template>
     </main>
   </div>
 </template>
@@ -2251,6 +2296,7 @@ const agent3Progress = ref<{
   remainingAfterLatestRun: number;
 } | null>(null);
 const agent3ProgressLoading = ref(false);
+const dailyPipelineTelemetry = ref<any>({ loading: false, loaded: false, error: null, run: null, stageTimings: [], batches: [], pagination: { truncated: false } });
 const agent3RejectionLoading = ref(false);
 const agent3RejectionFilter = ref<string>("all");
 const agent3RejectionScope = ref<string>("latest_run");
@@ -2601,6 +2647,17 @@ const toastIcon = computed(() => (toast.value.type === "success" ? "check_circle
 const isAdminUser = computed(() => authStore.user?.isAdmin === true || authStore.user?.role === "ADMIN");
 const showAdminPipelinePanel = computed(() => canAccessDevPanel.value);
 const showFullDevTools = computed(() => canAccessDevPanel.value && canUseFullDevTools.value);
+const formatTelemetryMs = (ms: number | null | undefined) => {
+  const value = Number.isFinite(ms) ? Math.max(0, Number(ms)) : 0;
+  if (value < 1000) return `${Math.round(value)}ms`;
+  if (value < 60000) return `${(value / 1000).toFixed(1)}s`;
+  return `${(value / 60000).toFixed(1)}m`;
+};
+const telemetryProcessed = computed(() => dailyPipelineTelemetry.value.stageTimings.reduce((sum: number, stage: any) => sum + (stage.processed || 0), 0));
+const telemetrySucceeded = computed(() => dailyPipelineTelemetry.value.stageTimings.reduce((sum: number, stage: any) => sum + (stage.succeeded || 0), 0));
+const telemetryDuration = (key: string) => dailyPipelineTelemetry.value.stageTimings.reduce((sum: number, stage: any) => sum + (stage[key] || 0), 0);
+const telemetryCount = (key: string) => dailyPipelineTelemetry.value.stageTimings.reduce((sum: number, stage: any) => sum + (stage[key] || 0), 0);
+const dailyTelemetrySlowestStage = computed(() => [...dailyPipelineTelemetry.value.stageTimings].sort((a: any, b: any) => (b.durationMs || 0) - (a.durationMs || 0))[0]?.stage || null);
 const agent2BatchDisabledReason = computed(() => {
   if (isArticleDiscoveryRunning.value) return null;
   if (agent1Progress.value != null && agent1Progress.value.remainingEligible > 0) {
@@ -2977,6 +3034,20 @@ const loadAgent2Health = async () => {
   }
 };
 
+const loadDailyPipelineTelemetry = async () => {
+  if (!showFullDevTools.value || dailyPipelineTelemetry.value.loading) return;
+  dailyPipelineTelemetry.value.loading = true;
+  dailyPipelineTelemetry.value.error = null;
+  try {
+    const response = await $api<any>("/api/dev/daily-pipeline-telemetry");
+    dailyPipelineTelemetry.value = { ...response, loading: false, loaded: true, slowestStage: response.stageTimings?.slice().sort((a: any, b: any) => (b.durationMs || 0) - (a.durationMs || 0))[0]?.stage || null, stale: response.run?.status === "DAILY_PIPELINE_WORKFLOW_STALE" };
+  } catch (error: any) {
+    dailyPipelineTelemetry.value.loading = false;
+    dailyPipelineTelemetry.value.loaded = true;
+    dailyPipelineTelemetry.value.error = error?.statusMessage || error?.message || "Telemetry unavailable.";
+  }
+};
+
 const refreshDevPanel = async () => {
   if (!showFullDevTools.value || devPanelRefreshInFlight) return;
   devPanelRefreshInFlight = true;
@@ -3002,6 +3073,7 @@ const refreshDevPanel = async () => {
       loadAgent2Health(),
       loadAgent3Progress(),
       loadAgent3RejectionDiagnostics(),
+      loadDailyPipelineTelemetry(),
     ]);
   } catch (error) {
     console.error("Failed to refresh admin panel:", error);

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArticleEnrichmentOutcome, ArticleUpstreamProvenance } from "./enrichment";
 import { AGENT3_EXTRACTOR_VERSION } from "./enrichment";
+import { collectAgent3HttpEvidence } from "./enrichment-runtime";
 
 // ─── Mock prisma ────────────────────────────────────────────────────────────
 const articleFindManyMock = vi.fn();
@@ -4138,5 +4139,54 @@ describe("getAgent3Progress with non-retryable counts", () => {
     expect(progress.readyNew).toBe(1);
     expect(progress.readyRetry).toBe(1);
     expect(progress.deferred).toBe(2);
+  });
+});
+
+describe("collectAgent3HttpEvidence", () => {
+  const outcomeWith = (browserFallback: Record<string, unknown> | null, staticStatus = 200) => ({
+    browserFallback,
+    rejection: { httpStatus: staticStatus },
+  }) as unknown as ArticleEnrichmentOutcome;
+
+  it("counts static 403 and browser 429 exactly once each", () => {
+    expect(collectAgent3HttpEvidence(outcomeWith({
+      attempted: true,
+      staticStatusCode: 403,
+      statusCode: 429,
+    }))).toMatchObject({
+      static403: 1,
+      browser429: 1,
+      accessDenied403: 1,
+      rateLimited429: 1,
+      rateLimited403: 0,
+    });
+  });
+
+  it("preserves static 429 evidence when browser extraction succeeds", () => {
+    expect(collectAgent3HttpEvidence(outcomeWith({
+      attempted: true,
+      succeeded: true,
+      staticStatusCode: 429,
+      statusCode: 200,
+    }))).toMatchObject({
+      static429: 1,
+      browser429: 0,
+      rateLimited429: 1,
+      accessDenied403: 0,
+    });
+  });
+
+  it("treats generic static and browser 403 responses as access denied, not rate limits", () => {
+    expect(collectAgent3HttpEvidence(outcomeWith({
+      attempted: true,
+      staticStatusCode: 403,
+      statusCode: 403,
+    }))).toMatchObject({
+      static403: 1,
+      browser403: 1,
+      accessDenied403: 2,
+      rateLimited403: 0,
+      rateLimited429: 0,
+    });
   });
 });

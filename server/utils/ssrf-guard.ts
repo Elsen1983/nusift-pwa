@@ -176,7 +176,22 @@ export async function resolveAndValidate(hostname: string): Promise<string[]> {
 /*  SAFE FETCH (SSRF-resistant)                                        */
 /* ------------------------------------------------------------------ */
 
+export interface SafeFetchTelemetry {
+  /** One logical safeFetch invocation, including all internally validated redirects. */
+  recordNetworkRequest(count?: number): void
+  /** Start/end hook for the complete logical invocation, including failures. */
+  beginLogicalRequest?(): () => void
+  /** Duration of the complete logical invocation, including failures. */
+  recordLogicalRequestDuration?(ms: number): void
+  /** Legacy hook retained for callers that still distinguish generic fetch timing. */
+  recordFetch?(ms: number): void
+  /** Optional timeout counter; failures remain visible without changing behavior. */
+  recordTimeout?(): void
+}
+
 export interface SafeFetchOptions extends RequestInit {
+  /** Optional observation-only telemetry; omitted callers retain existing behavior. */
+  telemetry?: SafeFetchTelemetry
   /**
    * Allow raw IP address literals in the URL (default: false).
    *
@@ -201,12 +216,13 @@ export interface SafeFetchOptions extends RequestInit {
  * Returns the Response object of the final destination.
  * Throws SSRFError on any security violation.
  */
-export async function safeFetch(
+async function safeFetchCore(
   url: string,
   fetchOptions: SafeFetchOptions = {},
   maxRedirects: number = MAX_REDIRECTS,
 ): Promise<Response> {
-  const { allowIp, allowCrossDomainRedirects, ...nativeOptions } = fetchOptions
+  const { allowIp, allowCrossDomainRedirects, telemetry, ...nativeOptions } = fetchOptions
+  let logicalRequestRecorded = false
 
   // --- Initial URL validation ---
   let originalUrl: URL
@@ -249,6 +265,12 @@ export async function safeFetch(
     }
 
     // --- Make the request with redirect: 'manual' ---
+    // Count only once, immediately before the first actual transport attempt.
+    // Internal redirect hops remain part of this one logical safeFetch call.
+    if (!logicalRequestRecorded) {
+      telemetry?.recordNetworkRequest()
+      logicalRequestRecorded = true
+    }
     const response = await fetch(currentUrl, {
       ...nativeOptions,
       redirect: 'manual',
@@ -311,6 +333,38 @@ export async function safeFetch(
   }
 
   throw new SSRFError('Too many redirects')
+}
+
+/**
+ * Count one logical request per invocation. Redirect hops are intentionally
+ * included in that invocation rather than counted as separate requests;
+ * this rule is shared by Agent 1 telemetry and tests. Duration is retained
+ * for successful, rejected, and thrown invocations.
+ */
+export async function safeFetch(
+  url: string,
+  fetchOptions: SafeFetchOptions = {},
+  maxRedirects: number = MAX_REDIRECTS,
+): Promise<Response> {
+  const telemetry = fetchOptions.telemetry;
+  const endLogicalRequest = telemetry?.beginLogicalRequest?.();
+  const startedAt = Date.now();
+  try {
+    return await safeFetchCore(url, fetchOptions, maxRedirects);
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "";
+    const message = error instanceof Error ? error.message : String(error);
+    if (/timeout|timed out|abort/i.test(`${name} ${message}`)) telemetry?.recordTimeout?.();
+    throw error;
+  } finally {
+    if (endLogicalRequest) {
+      endLogicalRequest();
+    } else {
+      const elapsedMs = Date.now() - startedAt;
+      if (telemetry?.recordLogicalRequestDuration) telemetry.recordLogicalRequestDuration(elapsedMs);
+      else telemetry?.recordFetch?.(elapsedMs);
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ */

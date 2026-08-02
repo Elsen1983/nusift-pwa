@@ -26,6 +26,10 @@ import {
 } from "./host-cooldown-evidence";
 import { createOrUpdateHardSourceProfile, resolveHardSourceProfilesForTarget } from "./hard-source-profile";
 import { lookupActiveDiscoveryProfile } from "./agent2-discovery-profile";
+import {
+  createNoopStageBatchProbe,
+  type StageBatchProbe,
+} from "./stage-telemetry";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 25;
@@ -38,6 +42,8 @@ type HeadlessQueueInput = {
   limit?: number;
   dryRun?: boolean;
   runBrowser?: boolean;
+  /** Operation-level stage telemetry probe (optional, no-op by default). */
+  telemetry?: StageBatchProbe;
 };
 
 type HeadlessQueueArtifact = {
@@ -85,6 +91,30 @@ type HeadlessQueueProcessResult = {
   browserCooldownSkipped?: number;
   skippedDuplicateTarget?: number;
   browserAttemptedTargets?: number;
+  /** Authoritative count of pending headless artifacts after this processing pass. */
+  remainingEligible?: number;
+  /** Selected queue-item disposition buckets; mutually exclusive. */
+  targetDispositions: {
+    succeeded: number;
+    failedRetryable: number;
+    failedPermanent: number;
+    skipped: number;
+    deferred: number;
+    quarantined: number;
+    claimLost: number;
+    persistenceFailed: number;
+  };
+  selectedQueueItems: number;
+  /** Browser/link/candidate productivity, separate from queue-item dispositions. */
+  productivity: {
+    rawLinks: number;
+    evaluatedCandidates: number;
+    acceptedCandidates: number;
+    rejectedCandidates: number;
+    insertedCandidates: number;
+    skippedCandidates: number;
+    candidatePersistenceFailures: number;
+  };
   browserCandidatesPersisted?: { inserted: number; skipped: number; failed: number };
 };
 
@@ -214,6 +244,7 @@ async function checkBrowserCooldown(
 export async function processArticleDiscoveryHeadlessQueue(
   input?: HeadlessQueueInput,
 ): Promise<HeadlessQueueResult> {
+  const probe = input?.telemetry ?? createNoopStageBatchProbe();
   const runBrowser = input?.runBrowser === true;
   const maxLimit = runBrowser ? MAX_BROWSER_LIMIT : MAX_LIMIT;
   const limit = Math.min(Math.max(input?.limit ?? DEFAULT_LIMIT, 1), maxLimit);
@@ -349,6 +380,17 @@ export async function processArticleDiscoveryHeadlessQueue(
   let totalInserted = 0;
   let totalSkipped = 0;
   let totalFailed = 0;
+  let dispositionSucceeded = 0;
+  let dispositionFailedRetryable = 0;
+  let dispositionFailedPermanent = 0;
+  let dispositionSkipped = 0;
+  let dispositionDeferred = 0;
+  let dispositionClaimLost = 0;
+  let dispositionPersistenceFailed = 0;
+  let rawLinks = 0;
+  let evaluatedCandidates = 0;
+  let acceptedCandidates = 0;
+  let rejectedCandidates = 0;
 
   for (const item of items) {
     const validation = isValidHeadlessArtifact(item.payload);
@@ -368,8 +410,10 @@ export async function processArticleDiscoveryHeadlessQueue(
       });
       if (count === 0) {
         skippedAlreadyClaimed += 1;
+        dispositionClaimLost += 1;
       } else {
         skippedInvalid += 1;
+        dispositionFailedPermanent += 1;
         updatedArtifactIds.push(item.id);
       }
       continue;
@@ -387,6 +431,7 @@ export async function processArticleDiscoveryHeadlessQueue(
       if (targetKey) {
         if (inRunProcessedKeys.has(targetKey)) {
           skippedDuplicateTarget += 1;
+          dispositionSkipped += 1;
           continue;
         }
         inRunProcessedKeys.add(targetKey);
@@ -403,6 +448,7 @@ export async function processArticleDiscoveryHeadlessQueue(
       const hostCooldown = hostname ? inRunHostCooldown.get(hostname) : null;
       if (hostCooldown && Date.parse(hostCooldown.retryAfterAt) > Date.now()) {
         browserCooldownSkipped += 1;
+        dispositionDeferred += 1;
         // Update payload with cooldown metadata but keep PENDING_HEADLESS.
         await prisma.pipelineArtifact.updateMany({
           where: {
@@ -446,7 +492,9 @@ export async function processArticleDiscoveryHeadlessQueue(
         });
         if (count === 0) {
           skippedAlreadyClaimed += 1;
+          dispositionClaimLost += 1;
         } else {
+          dispositionSkipped += 1;
           updatedArtifactIds.push(item.id);
           // Persist a hard-source profile for disabled-browser targets.
           if (sourceId) {
@@ -505,10 +553,12 @@ export async function processArticleDiscoveryHeadlessQueue(
 
         if (cooldownUpdate.count === 0) {
           // Another worker claimed this artifact between the cooldown check and
-          // the payload update. Count as race-skipped, not as cooldown-skipped.
+          // the payload update. Count as claim-lost, not as deferred.
           skippedAlreadyClaimed += 1;
+          dispositionClaimLost += 1;
         } else {
           browserCooldownSkipped += 1;
+          dispositionDeferred += 1;
         }
 
         // Do NOT count toward updatedArtifactIds or browserAttemptedTargets —
@@ -545,6 +595,7 @@ export async function processArticleDiscoveryHeadlessQueue(
 
       if (claimed.count === 0) {
         skippedAlreadyClaimed += 1;
+        dispositionClaimLost += 1;
         // Do NOT increment browserAttemptedTargets — the claim failed.
         await logAgentScan({
           sourceId: item.sourceId,
@@ -575,6 +626,9 @@ export async function processArticleDiscoveryHeadlessQueue(
       };
 
       let browserResult;
+      probe.recordBrowserAttempt();
+      probe.recordNetworkRequest();
+      const browserStartedAt = Date.now();
       try {
         browserResult = await discoverArticleLinksWithBrowser({
           targetUrl,
@@ -599,10 +653,14 @@ export async function processArticleDiscoveryHeadlessQueue(
         };
       }
 
+      probe.recordBrowser(Date.now() - browserStartedAt);
+
       // ── Detect listing-page 429 early (used in both failure and success paths) ──
       const isListingPage429 =
         browserResult.reason === "http_error" &&
         /\b429\b/.test(browserResult.diagnostics.blockedReason || "");
+      rawLinks += browserResult.rawLinkCount ?? browserResult.diagnostics.linkCount ?? 0;
+      if (isListingPage429) probe.recordRateLimited(429);
 
       if (!browserResult.ok) {
         // Semantics note: the spec defines BROWSER_NO_CANDIDATES as "browser
@@ -736,8 +794,10 @@ export async function processArticleDiscoveryHeadlessQueue(
 
         if (browserResult.reason === "browser_runtime_unavailable") {
           browserSkippedUnavailable += 1;
+          dispositionFailedPermanent += 1;
         } else {
           browserFailed += 1;
+          dispositionFailedRetryable += 1;
         }
 
         // ── Listing-page 429: activate host cooldown, skip hard-source profile ──
@@ -752,6 +812,7 @@ export async function processArticleDiscoveryHeadlessQueue(
                 rateLimitedAt: listingRateLimitedAt,
                 reason: "http_429",
               });
+              probe.recordHostCooldown();
             }
           } catch { /* invalid URL */ }
           await logAgentScan({
@@ -904,6 +965,7 @@ export async function processArticleDiscoveryHeadlessQueue(
             sourceId: sourceId!,
             categoryId: item.categoryId,
             listingDateFallbackRaw,
+            telemetry: probe,
           });
 
           // Weak-date diagnostic: if rejected for missing date but otherwise
@@ -935,6 +997,9 @@ export async function processArticleDiscoveryHeadlessQueue(
               totalDetailEvaluations += 1;
               browserDetailRecoveryReasons.push(evaluation.outcome.status);
 
+              probe.recordBrowserAttempt();
+              probe.recordNetworkRequest();
+              const detailBrowserStartedAt = Date.now();
               const detailEval = await evaluateArticleLinkCandidateWithBrowser({
                 articleUrl: link.url,
                 sourcePageUrl: `browser:${link.url}`,
@@ -944,6 +1009,7 @@ export async function processArticleDiscoveryHeadlessQueue(
                 listingDateFallbackRaw,
               });
 
+              probe.recordBrowser(Date.now() - detailBrowserStartedAt);
               browserDetailEvaluated += 1;
 
               if (detailEval.accepted) {
@@ -1061,6 +1127,9 @@ export async function processArticleDiscoveryHeadlessQueue(
       }
 
       const browserOutcomeSummary = tracker.getSummary();
+      evaluatedCandidates += browserOutcomeSummary.totalEvaluated;
+      acceptedCandidates += browserOutcomeSummary.accepted;
+      rejectedCandidates += browserOutcomeSummary.rejected;
       const acceptedOutcomes = tracker.getAccepted();
       const rejectedOutcomes = tracker.getRejected();
 
@@ -1093,27 +1162,29 @@ export async function processArticleDiscoveryHeadlessQueue(
       // Persist accepted candidates through the same persistence path as
       // static Agent 2. Persistence failure does NOT discard the audit data —
       // we still record the browser result so the admin can see what happened.
-      let persisted = { inserted: 0, skipped: 0, failed: 0 };
-      try {
-        if (candidates.length > 0) {
-          persisted = await persistCandidates(candidates);
-          totalInserted += persisted.inserted;
-          totalSkipped += persisted.skipped;
-          totalFailed += persisted.failed;
-        }
-      } catch (error: any) {
-        browserError = `Candidate persistence failed: ${error?.message || String(error)}`;
-        // Treat thrown persistence errors exactly like counted failures below:
-        // the discovery audit is retained, but the queue item must be retried.
-        persisted.failed = candidates.length;
-        totalFailed += candidates.length;
+    let persisted = { inserted: 0, skipped: 0, failed: 0 };
+    try {
+      if (candidates.length > 0) {
+        persisted = await probe.timed("persistence", () => persistCandidates(candidates));
+        probe.recordDbOperation();
+        totalInserted += persisted.inserted;
+        totalSkipped += persisted.skipped;
+        totalFailed += persisted.failed;
       }
+    } catch (error: any) {
+      browserError = `Candidate persistence failed: ${error?.message || String(error)}`;
+      // Treat thrown persistence errors exactly like counted failures below:
+      // the discovery audit is retained, but the queue item must be retried.
+      persisted.failed = candidates.length;
+      totalFailed += candidates.length;
+    }
 
       // Transition from HEADLESS_PROCESSING → durable success or retryable state.
       // RESOLVED is only valid after every accepted candidate was persisted or
       // idempotently skipped. Any counted/thrown persistence failure returns the
       // marker to PENDING_HEADLESS so a later run can retry safely.
       const persistenceSucceeded = persisted.failed === 0;
+      if (persisted.failed > 0) dispositionPersistenceFailed += 1;
       const finalStatus = candidates.length === 0
         ? "BROWSER_NO_CANDIDATES"
         : persistenceSucceeded
@@ -1205,10 +1276,10 @@ export async function processArticleDiscoveryHeadlessQueue(
             resolvedAt: finalStatus === "RESOLVED" ? finishedAt : null,
           },
         },
-      });
-      } catch (error: any) {
-        const transitionError = error?.message || String(error);
-        await logAgentScan({
+      });        } catch (error: any) {
+          dispositionClaimLost += 1;
+          const transitionError = error?.message || String(error);
+          await logAgentScan({
           sourceId: item.sourceId,
           categoryId: item.categoryId || undefined,
           status: "ARTICLE_DISCOVERY_BROWSER_FAILED",
@@ -1219,6 +1290,7 @@ export async function processArticleDiscoveryHeadlessQueue(
       }
 
       if (finalTransition.count === 0) {
+        dispositionClaimLost += 1;
         await logAgentScan({
           sourceId: item.sourceId,
           categoryId: item.categoryId || undefined,
@@ -1232,6 +1304,7 @@ export async function processArticleDiscoveryHeadlessQueue(
       browserProcessed += 1;
       if (finalStatus === "RESOLVED") {
         browserResolved += 1;
+        dispositionSucceeded += 1;
         if (sourceId) {
           await resolveHardSourceProfilesForTarget({
             sourceId,
@@ -1244,6 +1317,9 @@ export async function processArticleDiscoveryHeadlessQueue(
         }
       } else if (finalStatus === "BROWSER_NO_CANDIDATES") {
         browserNoCandidates += 1;
+        dispositionFailedPermanent += 1;
+      } else if (finalStatus === "PENDING_HEADLESS") {
+        dispositionDeferred += 1;
       }
 
       // Do NOT create a hard-source profile when the browser was rate-limited
@@ -1327,10 +1403,12 @@ export async function processArticleDiscoveryHeadlessQueue(
 
     if (count === 0) {
       skippedAlreadyClaimed += 1;
+      dispositionClaimLost += 1;
       continue;
     }
 
     processed += 1;
+    dispositionSkipped += 1;
     updatedArtifactIds.push(item.id);
 
     await logAgentScan({
@@ -1349,12 +1427,48 @@ export async function processArticleDiscoveryHeadlessQueue(
       (runBrowser ? ` browser: attempted=${browserAttemptedTargets}, processed=${browserProcessed}, disabled=${browserSkippedDisabled}, unavailable=${browserSkippedUnavailable}, failed=${browserFailed}, candidates=${browserCandidatesFound}, cooldownSkipped=${browserCooldownSkipped}, inserted=${totalInserted}.` : ""),
   });
 
+  // Read the durable queue state after all compare-and-set transitions. This
+  // is the authoritative actionable remainder for the shared headless queue,
+  // intentionally global across pipeline runs because queue artifacts are
+  // claimed from one durable work pool. It must not be inferred from the
+  // requested browser limit or the number of attempted targets.
+  const remainingEligible = await prisma.pipelineArtifact.count({
+    where: {
+      artifactType: "article_discovery_headless_required",
+      status: "PENDING_HEADLESS",
+    },
+  });
+  probe.recordDbOperation();
+
   const result: HeadlessQueueProcessResult = {
     dryRun: false,
     processed: processed + browserProcessed,
     skippedInvalid,
     skippedAlreadyClaimed,
     updatedArtifactIds,
+    remainingEligible,
+    targetDispositions: {
+      succeeded: dispositionSucceeded,
+      failedRetryable: dispositionFailedRetryable,
+      failedPermanent: dispositionFailedPermanent,
+      skipped: dispositionSkipped,
+      deferred: dispositionDeferred,
+      quarantined: 0,
+      claimLost: dispositionClaimLost,
+      persistenceFailed: dispositionPersistenceFailed,
+    },
+    selectedQueueItems: dispositionSucceeded + dispositionFailedRetryable +
+      dispositionFailedPermanent + dispositionSkipped + dispositionDeferred +
+      dispositionClaimLost + dispositionPersistenceFailed,
+    productivity: {
+      rawLinks,
+      evaluatedCandidates,
+      acceptedCandidates,
+      rejectedCandidates,
+      insertedCandidates: totalInserted,
+      skippedCandidates: totalSkipped,
+      candidatePersistenceFailures: totalFailed,
+    },
   };
 
   if (runBrowser) {

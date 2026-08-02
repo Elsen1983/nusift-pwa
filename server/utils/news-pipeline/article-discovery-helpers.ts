@@ -18,6 +18,14 @@ import {
 } from "./article-retention-policy";
 import { isLikelyArticleUrl } from "./article-url-policy";
 import { observeAndLogUrlPolicyDecisions } from "./url-policy-decision-observer";
+import type { StageBatchProbe } from "./stage-telemetry";
+
+/** Agent 2 counts one logical request per safeFetch call; redirects remain one logical request. */
+export type DiscoveryNetworkTelemetry = Pick<
+  StageBatchProbe,
+  "recordNetworkRequest" | "recordLogicalRequestDuration" | "recordTimeout"
+>;
+
 
 const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
 
@@ -105,18 +113,24 @@ export type SitemapEntry = {
  * Fetch a URL and return the text body, or null on any failure.
  * Respects same-domain policy relative to the target origin.
  */
-const safeFetchText = async (url: string, targetOrigin: string): Promise<string | null> => {
+const safeFetchText = async (
+  url: string,
+  targetOrigin: string,
+  telemetry?: DiscoveryNetworkTelemetry,
+): Promise<string | null> => {
   try {
     const urlObj = new URL(url);
     const targetObj = new URL(targetOrigin);
-    if (urlObj.hostname.replace(/^www\./, "") !== targetObj.hostname.replace(/^www\./, "")) {
+    if (urlObj.hostname.replace(/^www\\./, "") !== targetObj.hostname.replace(/^www\\./, "")) {
       return null;
     }
-    const response = await safeFetch(url, {
+    return await safeFetch(url, {
       headers: { "User-Agent": USER_AGENT, Accept: "application/xml, text/xml, text/plain" },
+      telemetry,
+    }).then(async (response) => {
+      if (!response.ok) return null;
+      return await response.text();
     });
-    if (!response.ok) return null;
-    return await response.text();
   } catch {
     return null;
   }
@@ -192,7 +206,10 @@ const extractRobotsSitemaps = (robotsTxt: string): string[] => {
  * 4. Extract article-like URLs from all sitemaps
  * 5. Return bounded list of sitemap entries
  */
-export async function discoverSitemapUrls(targetUrl: string): Promise<SitemapEntry[]> {
+export async function discoverSitemapUrls(
+  targetUrl: string,
+  telemetry?: DiscoveryNetworkTelemetry,
+): Promise<SitemapEntry[]> {
   const origin = new URL(targetUrl).origin;
   const allEntries: SitemapEntry[] = [];
   const seenUrls = new Set<string>();
@@ -205,7 +222,7 @@ export async function discoverSitemapUrls(targetUrl: string): Promise<SitemapEnt
   }
 
   // Also try robots.txt for sitemap references
-  const robotsTxt = await safeFetchText(`${origin}/robots.txt`, origin);
+  const robotsTxt = await safeFetchText(`${origin}/robots.txt`, origin, telemetry);
   if (robotsTxt) {
     for (const sitemapUrl of extractRobotsSitemaps(robotsTxt)) {
       if (!sitemapCandidates.includes(sitemapUrl)) {
@@ -225,7 +242,7 @@ export async function discoverSitemapUrls(targetUrl: string): Promise<SitemapEnt
     visitedSitemaps.add(normalized);
     processedCount += 1;
 
-    const xml = await safeFetchText(sitemapUrl, origin);
+    const xml = await safeFetchText(sitemapUrl, origin, telemetry);
     if (!xml) continue;
 
     if (isSitemapIndex(xml)) {
@@ -1433,6 +1450,7 @@ export async function evaluateArticleLinkCandidate(input: {
   categoryId?: string | null;
   freshnessMs?: number;
   listingDateFallbackRaw?: string | null;
+  telemetry?: DiscoveryNetworkTelemetry;
 }): Promise<EvaluateArticleLinkResult> {
   const { articleUrl, sourcePageUrl, targetUrl, sourceId } = input;
 
@@ -1441,6 +1459,7 @@ export async function evaluateArticleLinkCandidate(input: {
       "User-Agent": "NuSift/1.0 Agent2-Discovery",
       Accept: "text/html,application/xhtml+xml",
     },
+    telemetry: input.telemetry,
   }).catch(() => null);
 
   if (!response || !response.ok) {

@@ -5,7 +5,7 @@
  * that don't require network access. The async resolveAndValidate / safeFetch
  * functions are tested via integration in the actual API endpoints.
  */
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { isBlockedIp, validateHostname, sanitiseHostnameForApi, SSRFError, safeFetch } from './ssrf-guard'
 import { validatePushEndpoint, assertValidPushEndpoint, mapSubscriptionFromBody } from './push'
 
@@ -270,6 +270,73 @@ describe('sanitiseHostnameForApi', () => {
 /* ================================================================== */
 /*  safeFetch â€“ protocol & redirect validation (URL-level tests)       */
 /* ================================================================== */
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('safeFetch â€“ telemetry semantics', () => {
+  it('counts one successful logical request', async () => {
+    const telemetry = {
+      recordNetworkRequest: vi.fn(),
+      recordFetch: vi.fn(),
+      recordTimeout: vi.fn(),
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('ok', { status: 200 })));
+
+    await expect(safeFetch('http://8.8.8.8/article', { allowIp: true, telemetry })).resolves.toBeInstanceOf(Response);
+
+    expect(telemetry.recordNetworkRequest).toHaveBeenCalledTimes(1);
+    expect(telemetry.recordFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains duration and counts one logical request when transport fails', async () => {
+    const telemetry = {
+      recordNetworkRequest: vi.fn(),
+      recordFetch: vi.fn(),
+      recordTimeout: vi.fn(),
+    };
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection reset')));
+
+    await expect(safeFetch('http://8.8.8.8/article', { allowIp: true, telemetry })).rejects.toThrow('connection reset');
+
+    expect(telemetry.recordNetworkRequest).toHaveBeenCalledTimes(1);
+    expect(telemetry.recordFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a multi-hop redirect chain as one logical request', async () => {
+    const telemetry = {
+      recordNetworkRequest: vi.fn(),
+      recordFetch: vi.fn(),
+      recordTimeout: vi.fn(),
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: '/step-2' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 301, headers: { location: '/final' } }))
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(safeFetch('http://8.8.8.8/start', { allowIp: true, telemetry })).resolves.toBeInstanceOf(Response);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(telemetry.recordNetworkRequest).toHaveBeenCalledTimes(1);
+    expect(telemetry.recordFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count a policy-rejected URL as a network request and retains timing', async () => {
+    const telemetry = {
+      recordNetworkRequest: vi.fn(),
+      recordFetch: vi.fn(),
+      recordTimeout: vi.fn(),
+    };
+
+    await expect(safeFetch('http://localhost:3000', { telemetry })).rejects.toThrow(SSRFError);
+
+    expect(telemetry.recordNetworkRequest).not.toHaveBeenCalled();
+    expect(telemetry.recordFetch).toHaveBeenCalledTimes(1);
+    expect(telemetry.recordFetch).toHaveBeenCalledWith(expect.any(Number));
+  });
+});
 
 describe('safeFetch â€“ protocol enforcement', () => {
   // These tests validate the URL parsing logic, not actual network calls.

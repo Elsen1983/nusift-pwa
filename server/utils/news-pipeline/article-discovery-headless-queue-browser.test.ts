@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
-const findManyMock = vi.fn();
-const updateManyMock = vi.fn();
-const logAgentScanMock = vi.fn();
+const findManyMock = vi.fn();  const updateManyMock = vi.fn();
+  const countMock = vi.fn();
+  const logAgentScanMock = vi.fn();
 const isBrowserFallbackEnabledMock = vi.fn();
 const discoverArticleLinksWithBrowserMock = vi.fn();
 const evaluateArticleLinkCandidateMock = vi.fn();
@@ -17,8 +17,8 @@ const loadPersistedHostCooldownsMock = vi.fn();
 vi.mock("../prisma", () => ({
   prisma: {
     pipelineArtifact: {
-      findMany: (...args: any[]) => findManyMock(...args),
-      updateMany: (...args: any[]) => updateManyMock(...args),
+      findMany: (...args: any[]) => findManyMock(...args),        updateMany: (...args: any[]) => updateManyMock(...args),
+        count: (...args: any[]) => countMock(...args),
     },
   },
 }));

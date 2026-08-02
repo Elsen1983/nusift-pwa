@@ -17,6 +17,10 @@ import {
 } from "./targets";
 import type { PipelineResult, PipelineTarget } from "./types";
 import { readBoundedNumber } from "./parse-bounded-number";
+import {
+  createNoopStageBatchProbe,
+  type StageBatchProbe,
+} from "./stage-telemetry";
 
 export type RunNewsPipelineOptions = {
   /**
@@ -184,6 +188,24 @@ export type Agent1BatchResult = {
     failed: number;
     artifactCount: number;
   };
+  /** Selected target disposition counts; these are the Agent 1 telemetry source of truth. */
+  targetDispositions: {
+    succeeded: number;
+    failedRetryable: number;
+    failedPermanent: number;
+    skipped: number;
+    deferred: number;
+    quarantined: number;
+    persistenceFailed: number;
+  };
+  selectedTargets: number;
+  /** Article-level productivity, intentionally separate from target dispositions. */
+  productivity: {
+    candidateArticlesFound: number;
+    articlesInserted: number;
+    articlesSkipped: number;
+    articlePersistenceFailures: number;
+  };
   deferredTargets: Array<{
     sourceId: string;
     categoryId: string | null;
@@ -322,7 +344,10 @@ export async function runAgent1Batch(input?: {
   maxTargets?: number;
   timeBudgetMs?: number;
   minRemainingMs?: number;
+  /** Operation-level stage telemetry probe (optional, no-op by default). */
+  telemetry?: StageBatchProbe;
 }): Promise<Agent1BatchResult> {
+  const probe = input?.telemetry ?? createNoopStageBatchProbe();
   const maxTargets = readBoundedNumber(input?.maxTargets, 5, 1, 50);
   const timeBudgetMs = readBoundedNumber(input?.timeBudgetMs, 240_000, 10_000, 600_000);
   const minRemainingMs = readBoundedNumber(input?.minRemainingMs, 30_000, 5_000, 120_000);
@@ -346,6 +371,15 @@ export async function runAgent1Batch(input?: {
       stoppedReason: "no_targets",
       durationMs: Date.now() - startedAt,
       result: { candidates: 0, inserted: 0, skipped: 0, failed: 0, artifactCount: 0 },
+      targetDispositions: {
+        succeeded: 0, failedRetryable: 0, failedPermanent: 0, skipped: 0,
+        deferred: 0, quarantined: 0, persistenceFailed: 0,
+      },
+      selectedTargets: 0,
+      productivity: {
+        candidateArticlesFound: 0, articlesInserted: 0, articlesSkipped: 0,
+        articlePersistenceFailures: 0,
+      },
       deferredTargets: [],
     };
   }
@@ -364,6 +398,9 @@ export async function runAgent1Batch(input?: {
   let failed = 0;
   let artifactCount = 0;
   let processed = 0;
+  let targetSucceeded = 0;
+  let targetFailedRetryable = 0;
+  let targetPersistenceFailed = 0;
   let stoppedReason: Agent1BatchStoppedReason = "completed";
 
   for (let i = 0; i < resolvedTargets.length; i++) {
@@ -381,8 +418,9 @@ export async function runAgent1Batch(input?: {
       stoppedReason = "time_budget";
       break;
     }
-
     const targetStartedAt = Date.now();
+    let ingestCompleted = false;
+    let targetDisposition: "succeeded" | "failedRetryable" | "persistenceFailed" = "failedRetryable";
     try {
       await logAgentScan({
         sourceId: target.sourceId,
@@ -392,17 +430,32 @@ export async function runAgent1Batch(input?: {
         errorLog: `Agent 1 target started. runId=${pipelineRun.id}, position=${i + 1}/${resolvedTargets.length}.`,
       });
 
-      const result = await ingestSource(target.sourceId, target.categoryId || undefined);
+      // Preserve the legacy two-argument call shape when no telemetry probe
+      // was supplied. Production workflow runs pass the probe explicitly; old
+      // callers and mocks remain behaviorally/API compatible.
+      const result = input?.telemetry
+        ? await ingestSource(target.sourceId, target.categoryId || undefined, probe)
+        : await ingestSource(target.sourceId, target.categoryId || undefined);
+      ingestCompleted = true;
+      targetDisposition = result.deferredReason === "rate_limited" || result.failed > 0
+        ? "failedRetryable"
+        : "succeeded";
+      if (result.deferredReason === "rate_limited") {
+        // RSS host rate limited this target (Retry-After style deferral).
+        probe.recordRateLimited(429);
+      }
       candidatesFound += result.candidates.length;
-      await persistPipelineArtifact({
+      await probe.timed("persistence", () => persistPipelineArtifact({
         pipelineRunId: pipelineRun.id,
         result,
-      });
+      }));
+      probe.recordDbOperation();
       artifactCount += 1;
-      const hardCaseArtifactCount = await persistHardCaseDiscoveryArtifacts({
+      const hardCaseArtifactCount = await probe.timed("persistence", () => persistHardCaseDiscoveryArtifacts({
         pipelineRunId: pipelineRun.id,
         result,
-      });
+      }));
+      probe.recordDbOperation();
       artifactCount += hardCaseArtifactCount;
       if (hardCaseArtifactCount > 0) {
         await logAgentScan({
@@ -413,25 +466,32 @@ export async function runAgent1Batch(input?: {
           errorLog: `Queued ${hardCaseArtifactCount} hard-case discovery target(s) for later headless processing. runId=${pipelineRun.id}.`,
         });
       }
-      const persisted = await persistCandidates(result.candidates);
+      const persisted = await probe.timed("persistence", () => persistCandidates(result.candidates));
+      probe.recordDbOperation();
       inserted += persisted.inserted;
       skipped += persisted.skipped;
       failed += persisted.failed + result.failed;
-      await persistAgent1TargetOutcomeArtifact({
+      if (persisted.failed > 0) targetDisposition = "persistenceFailed";
+      await probe.timed("persistence", () => persistAgent1TargetOutcomeArtifact({
         pipelineRunId: pipelineRun.id,
         result,
         persisted,
-      });
+      }));
+      probe.recordDbOperation();
       artifactCount += 1;
-      await markFeedRunOutcome({
+      await probe.timed("persistence", () => markFeedRunOutcome({
         sourceId: target.sourceId,
         categoryId: target.categoryId || undefined,
         feedUrl: result.feedUrl || null,
         productive: isOperationalFeedResult(result),
         shouldTrackFeedProductivity:
           Boolean(result.feedUrl) && result.feedFormat !== "html_fallback",
-      });
+      }));
+      probe.recordDbOperation();
       processed += 1;
+      if (targetDisposition === "succeeded") targetSucceeded += 1;
+      else if (targetDisposition === "persistenceFailed") targetPersistenceFailed += 1;
+      else targetFailedRetryable += 1;
       await logAgentScan({
         sourceId: target.sourceId,
         categoryId: target.categoryId || undefined,
@@ -441,6 +501,8 @@ export async function runAgent1Batch(input?: {
       });
     } catch (error: any) {
       failed += 1;
+      if (ingestCompleted) targetPersistenceFailed += 1;
+      else targetFailedRetryable += 1;
       processed += 1;
       await logAgentScan({
         sourceId: target.sourceId,
@@ -488,6 +550,7 @@ export async function runAgent1Batch(input?: {
         errorLog: `Deferred target ${target.sourceId}${target.categoryId ? `/${target.categoryId}` : ""}. reason=${stoppedReason}, position=${position + 1}/${deferredCount}.`,
       })),
     });
+    probe.recordDbOperation();
     artifactCount += deferredCount;
 
     await logAgentScan({
@@ -536,6 +599,22 @@ export async function runAgent1Batch(input?: {
       skipped,
       failed,
       artifactCount,
+    },
+    targetDispositions: {
+      succeeded: targetSucceeded,
+      failedRetryable: targetFailedRetryable,
+      failedPermanent: 0,
+      skipped: 0,
+      deferred: deferredCount,
+      quarantined: 0,
+      persistenceFailed: targetPersistenceFailed,
+    },
+    selectedTargets: resolvedTargets.length,
+    productivity: {
+      candidateArticlesFound: candidatesFound,
+      articlesInserted: inserted,
+      articlesSkipped: skipped,
+      articlePersistenceFailures: targetPersistenceFailed,
     },
     deferredTargets: deferredTargets.map((t) => ({
       sourceId: t.sourceId,

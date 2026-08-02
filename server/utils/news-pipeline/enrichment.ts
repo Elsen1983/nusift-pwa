@@ -287,6 +287,8 @@ export type BrowserFallbackSkippedReason =
   | "recently_blocked";
 
 export interface BrowserFallbackMetadata {
+  /** Static HTTP status retained even when browser fallback runs or succeeds. */
+  staticStatusCode: number | null;
   /** Whether browser fallback was attempted. */
   attempted: boolean;
   /** Whether browser fallback succeeded (produced usable content). */

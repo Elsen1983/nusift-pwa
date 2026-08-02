@@ -48,6 +48,10 @@ import {
   MAX_AUTOMATIC_AGENT3_ATTEMPTS,
 } from "./agent3-retry-policy";
 import type { Agent3RetryDisposition } from "./agent3-retry-policy";
+import {
+  createNoopStageBatchProbe,
+  type StageBatchProbe,
+} from "./stage-telemetry";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent 3 — Article enrichment runtime batch path (Phase 2)
@@ -1137,6 +1141,7 @@ export const extractAndBuildArticleOutcome = async (
   provenanceOverride?: ArticleUpstreamProvenance,
   forceReprocess: boolean = false,
   browserFallback?: BrowserFallbackConfig,
+  telemetry?: StageBatchProbe,
 ): Promise<ArticleEnrichmentOutcome> => {
   const provenance = provenanceOverride ?? buildArticleProvenance(article);
   const articleUrl = article.canonicalUrl || article.sourceUrl || null;
@@ -1167,6 +1172,7 @@ export const extractAndBuildArticleOutcome = async (
       existingTitle: article.title,
       existingBodyText: article.bodyText,
       now,
+      telemetry,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1236,7 +1242,12 @@ export const extractAndBuildArticleOutcome = async (
     );
   } else if (browserFallback && isBrowserFallbackEligibleForFailure(result)) {
     // Browser fallback is available and the failure is eligible — attempt it
-    const browserResult = await attemptBrowserFallback(article, browserFallback.timeoutMs);
+    telemetry?.recordBrowserAttempt();
+    telemetry?.recordNetworkRequest();
+    const browserTask = () => attemptBrowserFallback(article, browserFallback.timeoutMs);
+    const browserResult = telemetry
+      ? await telemetry.timed("browser", browserTask)
+      : await browserTask();
 
     if (browserResult.ok) {
       // Browser fallback succeeded — build success outcome using shared helper
@@ -1245,6 +1256,7 @@ export const extractAndBuildArticleOutcome = async (
       outcome.browserFallback = {
         attempted: true,
         succeeded: true,
+        staticStatusCode: result.statusCode ?? null,
         staticRejectedReason: result.rejectedReason,
         staticMethod: result.method !== "none" ? result.method : null,
         method: browserResult.method,
@@ -1281,6 +1293,74 @@ export const extractAndBuildArticleOutcome = async (
  * static-only and the post-browser-fallback paths. Modifies the
  * outcome in place.
  */
+const emptyAgent3HttpEvidence = (): Agent3HttpEvidenceSummary => ({
+  static403: 0,
+  static429: 0,
+  browser403: 0,
+  browser429: 0,
+  accessDenied403: 0,
+  rateLimited403: 0,
+  rateLimited429: 0,
+});
+
+/**
+ * Extract HTTP evidence from one outcome before effective-status mutation.
+ * Static and browser statuses are separate events; a static 403 followed by a
+ * browser 429 therefore contributes once to each event bucket. A generic 403
+ * is access denied, never a rate limit, unless a future explicit evidence field
+ * says otherwise.
+ */
+export function collectAgent3HttpEvidence(
+  outcome: ArticleEnrichmentOutcome,
+): Agent3HttpEvidenceSummary {
+  const evidence = emptyAgent3HttpEvidence();
+  const browser = outcome.browserFallback;
+  const staticStatus = browser?.staticStatusCode ?? outcome.rejection?.httpStatus ?? null;
+  const browserStatus = browser?.attempted ? browser.statusCode : null;
+
+  if (staticStatus === 403) {
+    evidence.static403 = 1;
+    evidence.accessDenied403 += 1;
+  } else if (staticStatus === 429) {
+    evidence.static429 = 1;
+    evidence.rateLimited429 += 1;
+  }
+
+  if (browserStatus === 403) {
+    evidence.browser403 = 1;
+    evidence.accessDenied403 += 1;
+  } else if (browserStatus === 429) {
+    evidence.browser429 = 1;
+    evidence.rateLimited429 += 1;
+  }
+
+  return evidence;
+}
+
+const mergeAgent3HttpEvidence = (
+  target: Agent3HttpEvidenceSummary,
+  addition: Agent3HttpEvidenceSummary,
+): void => {
+  for (const key of Object.keys(target) as Array<keyof Agent3HttpEvidenceSummary>) {
+    target[key] += addition[key];
+  }
+};
+
+const recordAgent3HttpEvidence = (
+  probe: StageBatchProbe,
+  evidence: Agent3HttpEvidenceSummary,
+): void => {
+  if (evidence.accessDenied403 > 0) {
+    for (let i = 0; i < evidence.accessDenied403; i += 1) probe.recordAccessDenied403();
+  }
+  if (evidence.rateLimited403 > 0) {
+    for (let i = 0; i < evidence.rateLimited403; i += 1) probe.recordRateLimited(403);
+  }
+  if (evidence.rateLimited429 > 0) {
+    for (let i = 0; i < evidence.rateLimited429; i += 1) probe.recordRateLimited(429);
+  }
+};
+
 function classifyHttpAccessBlocked(outcome: ArticleEnrichmentOutcome): void {
   const rejection = outcome.rejection;
   const httpStatus = outcome.browserFallback?.statusCode
@@ -1418,6 +1498,7 @@ function buildBrowserFallbackMetadata(
   return {
     attempted: true,
     succeeded: browserResult.ok,
+    staticStatusCode: staticResult.statusCode ?? null,
     staticRejectedReason: staticResult.rejectedReason,
     staticMethod: staticResult.method !== "none" ? staticResult.method : null,
     method: browserResult.method || null,
@@ -1442,6 +1523,7 @@ function buildBrowserFallbackSkippedMetadata(
   return {
     attempted: false,
     succeeded: false,
+    staticStatusCode: staticResult.statusCode ?? null,
     staticRejectedReason: staticResult.rejectedReason,
     staticMethod: staticResult.method !== "none" ? staticResult.method : null,
     method: null,
@@ -2335,11 +2417,30 @@ export interface EnrichmentBatchOptions {
   maxArticlesPerSource?: number;
   /** Existing durable PipelineRun to use for same-run attempt artifacts. */
   pipelineRunId?: string;
+  /** Operation-level stage telemetry probe (optional, no-op by default). */
+  telemetry?: StageBatchProbe;
 }
 
 /**
  * Result of a full Agent 3 enrichment batch run.
  */
+export interface Agent3HttpEvidenceSummary {
+  /** Distinct static HTTP 403 events observed across outcomes. */
+  static403: number;
+  /** Distinct static HTTP 429 events observed across outcomes. */
+  static429: number;
+  /** Distinct browser HTTP 403 events observed across outcomes. */
+  browser403: number;
+  /** Distinct browser HTTP 429 events observed across outcomes. */
+  browser429: number;
+  /** Generic 403 access-denial events (static and browser combined). */
+  accessDenied403: number;
+  /** Explicitly rate-limited 403 events; generic HTTP 403 never enters this bucket. */
+  rateLimited403: number;
+  /** HTTP 429 events (static and browser combined). */
+  rateLimited429: number;
+}
+
 export interface EnrichmentRunResult {
   pipelineRunId: string;
   /** Number of articles durably claimed and processed by this worker. */
@@ -2349,6 +2450,8 @@ export interface EnrichmentRunResult {
   /** Number of expired leases released before selection. */
   expiredClaimsRecovered: number;
   persist: EnrichmentBatchPersistResult;
+  /** Per-outcome HTTP evidence; never reconstructed from aggregate counters. */
+  httpEvidence: Agent3HttpEvidenceSummary;
   optionsUsed: {
     includeEnriched: boolean;
     forceReprocess: boolean;
@@ -2378,6 +2481,7 @@ const clamp = (value: number, min: number, max: number) =>
 export const runEnrichmentBatch = async (
   options?: EnrichmentBatchOptions,
 ): Promise<EnrichmentRunResult> => {
+  const probe = options?.telemetry ?? createNoopStageBatchProbe();
   const now = options?.now ?? new Date();
   const forceReprocess = options?.forceReprocess ?? false;
   const includeEnriched = options?.includeEnriched ?? false;
@@ -2415,6 +2519,7 @@ export const runEnrichmentBatch = async (
     // recovery must use the current wall clock so a historical run timestamp
     // cannot preserve or delete claims incorrectly.
     const expiredClaimsRecovered = await recoverExpiredEnrichmentClaims(new Date());
+    probe.recordDbOperation();
 
     // Source diversity: cap articles per source and round-robin across sources
     const maxArticlesPerSource = clamp(
@@ -2446,6 +2551,7 @@ export const runEnrichmentBatch = async (
     const provenanceMap = await recoverUpstreamProvenanceBatch(diversified);
 
     const outcomes: ArticleEnrichmentOutcome[] = [];
+    const httpEvidence = emptyAgent3HttpEvidence();
     const persistResult = createEmptyEnrichmentBatchPersistResult();
     const attemptMarkerIds: string[] = [];
     const sourceCooldown = new SourceCooldownTracker();
@@ -2469,6 +2575,7 @@ export const runEnrichmentBatch = async (
         article.enrichmentAttemptCount,
         article.enrichmentStatus,
       );
+      probe.recordDbOperation();
       if (!claim) {
         claimSkipped += 1;
         await logAgentScan({
@@ -2496,6 +2603,7 @@ export const runEnrichmentBatch = async (
           article.sourceId,
           article.categoryId,
         );
+        probe.recordDbOperation();
         attemptMarkerIds.push(markerId);
       } catch {
         // Attempt marker failure is non-fatal; the final result artifact is
@@ -2518,14 +2626,26 @@ export const runEnrichmentBatch = async (
       } else {
         browserConfig = { timeoutMs: browserTimeoutMs };
       }
+      // The extractor owns mutually-exclusive fetch/extraction timing and
+      // records both phases in finally-safe probe.timed() boundaries. Do not
+      // wrap the whole extractor here as fetch; it also parses/scorers content
+      // and may run browser fallback.
       const outcome = await extractAndBuildArticleOutcome(
         article,
         now,
         provenance,
         forceReprocess,
         browserConfig,
+        probe,
       );
-
+      if (outcome.browserFallback?.attempted && !browserConfig) probe.recordBrowserAttempt();
+      // Derive and record evidence from this individual outcome before
+      // classifyHttpAccessBlocked() can replace the effective rejection status.
+      // The aggregate is a sum of these per-outcome events, never an input to
+      // article classification. Static 403 + browser 429 records both once.
+      const outcomeHttpEvidence = collectAgent3HttpEvidence(outcome);
+      mergeAgent3HttpEvidence(httpEvidence, outcomeHttpEvidence);
+      recordAgent3HttpEvidence(probe, outcomeHttpEvidence);
       // Classify HTTP access blocked BEFORE source cooldown tracking so the
       // cooldown tracker uses the final effective status code. For example,
       // if static extraction got 403 but browser fallback got 429, the
@@ -2592,10 +2712,11 @@ export const runEnrichmentBatch = async (
           outcome.browserFallback?.runtimeUnavailable ||
           (outcome.browserFallback?.browserRejectedReason === "browser_runtime_unavailable"),
         );
-        sourceCooldown.recordFailure(
+        const newlyCooledDown = sourceCooldown.recordFailure(
           article.sourceId, hostname,
           rejectedReason, statusCode, runtimeUnavailable,
         );
+        if (newlyCooledDown) probe.recordHostCooldown();
       } else if (outcome.kind === "SUCCESS") {
         sourceCooldown.recordSuccess(article.sourceId);
       }
@@ -2625,11 +2746,12 @@ export const runEnrichmentBatch = async (
       // entire batch and preserves the token/CAS protections in the persistence
       // transaction. A per-article result is merged into the existing batch
       // aggregate so PipelineRun and return-value semantics remain unchanged.
-      const articlePersistResult = await persistEnrichmentBatch(
+      const articlePersistResult = await probe.timed("persistence", () => persistEnrichmentBatch(
         [outcome],
-        pipelineRun.id,
+        pipelineRun!.id,
         new Map([[article.id, claim.token]]),
-      );
+      ));
+      probe.recordDbOperation();
       mergeEnrichmentBatchPersistResult(persistResult, articlePersistResult);
     }
 
@@ -2672,6 +2794,7 @@ export const runEnrichmentBatch = async (
         maxArticles: maxArticles ?? MAX_ARTICLES_PER_RUN,
         maxArticlesPerSource,
       },
+      httpEvidence: { ...httpEvidence },
     });
 
     if (ownsPipelineRun) {
@@ -2725,6 +2848,7 @@ export const runEnrichmentBatch = async (
             nonRetryable: postBatchProgress.nonRetryable,
             inProgress: postBatchProgress.inProgress,
             pipelineRunId: pipelineRun.id,
+            httpEvidence: { ...httpEvidence },
           },
           errorLog: null,
         },
@@ -2747,6 +2871,7 @@ export const runEnrichmentBatch = async (
       claimSkipped,
       expiredClaimsRecovered,
       persist: persistResult,
+      httpEvidence,
       optionsUsed: {
         includeEnriched,
         forceReprocess,

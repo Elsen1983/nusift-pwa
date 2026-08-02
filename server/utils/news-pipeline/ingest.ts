@@ -22,6 +22,7 @@ import { discoverFeedForUrl, hasQueryScopedCategoryTokens } from "./feed-discove
 import { resolveHeadlessMarkersByAgent1Rss } from "./agent1-rss-cleanup";
 import { classifyArticleUrl } from "./article-url-policy";
 import { observeAndLogUrlPolicyDecisions } from "./url-policy-decision-observer";
+import type { StageBatchProbe } from "./stage-telemetry";
 
 type ParsedFeedItem = {
   title: string;
@@ -487,7 +488,11 @@ const extractPageMetadata = (html: string) => {
   };
 };
 
-const resolvePublishedAtForFeedItem = async (rawPubDate: string, canonicalUrl: string) => {
+const resolvePublishedAtForFeedItem = async (
+  rawPubDate: string,
+  canonicalUrl: string,
+  telemetry?: StageBatchProbe,
+) => {
   const directDate = toDate(rawPubDate);
   if (directDate) {
     return directDate;
@@ -500,6 +505,7 @@ const resolvePublishedAtForFeedItem = async (rawPubDate: string, canonicalUrl: s
         "User-Agent": "NuSift/1.0 Ingest-Agent",
         Accept: "text/html,application/xhtml+xml",
       },
+      telemetry,
     });
 
     if (!response.ok) {
@@ -558,6 +564,7 @@ const extractHtmlCandidates = async (
   sourceUrl: string,
   sourceId: string,
   categoryPathUrl?: string | null,
+  telemetry?: StageBatchProbe,
 ) => {
   const candidates: IngestCandidate[] = [];
   const seen = new Set<string>();
@@ -602,6 +609,7 @@ const extractHtmlCandidates = async (
         "User-Agent": "NuSift/1.0 Ingest-Agent",
         Accept: "text/html,application/xhtml+xml",
       },
+      telemetry,
     }).catch(() => null);
 
     if (!detailResponse || !detailResponse.ok) continue;
@@ -1018,6 +1026,7 @@ const resolveCategoryFeedUrl = async (
   // Currently not available in ingestSource's scope (pipelineRunId is created at pipeline
   // level, not passed into ingestSource). Left as undefined for forward-compatibility.
   pipelineRunId?: string | null,
+  telemetry?: StageBatchProbe,
 ) => {
   // When the category already has a feed URL, check if it's genuinely scoped.
   // If evidence says "generic", re-run discovery to allow re-evaluation (self-healing
@@ -1055,6 +1064,7 @@ const resolveCategoryFeedUrl = async (
       existingFeedUrl: category.rssFeedUrl,
       userAgent: "NuSift/1.0 Ingest-Agent",
       preferScopedDirectFeed: true,
+      telemetry,
     });
     const discoveredFeedUrl = discovery.feedUrl;
     const isScoped = discoveredFeedUrl
@@ -1187,6 +1197,7 @@ const resolveSourceFeedUrl = async (
     rssFeedUrl: string | null;
     rssStatus?: string | null;
   },
+  telemetry?: StageBatchProbe,
 ) => {
   if (source.rssFeedUrl && source.rssStatus !== "NO_RSS_FOUND") {
     return {
@@ -1200,6 +1211,7 @@ const resolveSourceFeedUrl = async (
       pageUrl: source.frontPageUrl,
       existingFeedUrl: source.rssFeedUrl,
       userAgent: "NuSift/1.0 Ingest-Agent",
+      telemetry,
     });
     const discoveredFeedUrl = discovery.feedUrl;
 
@@ -1399,7 +1411,11 @@ const markCategoryAsNoRssFound = async (
   }
 };
 
-export async function ingestSource(sourceId: string, categoryId?: string): Promise<IngestResult> {
+export async function ingestSource(
+  sourceId: string,
+  categoryId?: string,
+  telemetry?: StageBatchProbe,
+): Promise<IngestResult> {
   const startedAt = Date.now();
   const [source, category] = await Promise.all([
     prisma.newsSource.findUnique({
@@ -1469,7 +1485,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
     };
   }
 
-  const categoryFeedResolution = await resolveCategoryFeedUrl(sourceId, category);
+  const categoryFeedResolution = await resolveCategoryFeedUrl(sourceId, category, undefined, telemetry);
   const categoryFeedUrl = categoryFeedResolution.feedUrl;
   const isUsingDedicatedCategoryFeed = Boolean(
     categoryId && categoryFeedUrl && categoryFeedResolution.isScopedFeed,
@@ -1482,7 +1498,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         feedUrl: null,
         hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
       }
-    : await resolveSourceFeedUrl(source);
+    : await resolveSourceFeedUrl(source, telemetry);
   const sourceFeedUrl = sourceFeedResolution.feedUrl;
   const genericFeedDiscovered = Boolean(
     categoryId && categoryFeedResolution.genericFeedDiscovered,
@@ -1562,6 +1578,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             "User-Agent": "NuSift/1.0 Ingest-Agent",
             Accept: "application/rss+xml, application/xml, text/xml, text/html",
           },
+          telemetry,
         };
         let candidateResponse = await safeFetch(candidateFeedUrl, fetchOptions);
 
@@ -1572,6 +1589,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             candidateResponse = await safeFetch(candidateFeedUrl, {
               ...fetchOptions,
               signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
+              telemetry,
             });
           }
         }
@@ -1806,7 +1824,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
         continue;
       }
 
-      const publishedAt = await resolvePublishedAtForFeedItem(item.pubDate, canonicalUrl);
+      const publishedAt = await resolvePublishedAtForFeedItem(item.pubDate, canonicalUrl, telemetry);
       if (!publishedAt) {
         // Missing or invalid date — preserve existing behavior: skip.
         skipSummary.staleOrMissingPublishedAt += 1;
@@ -1895,6 +1913,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
                 "User-Agent": "NuSift/1.0 Ingest-Agent",
                 Accept: "text/html,application/xhtml+xml",
               },
+              telemetry,
             });
 
         if (!htmlResponse.ok) {
@@ -1931,6 +1950,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
           preferredFrontPageUrl,
           source.id,
           category?.pathUrl && !isUsingDedicatedCategoryFeed ? category.pathUrl : null,
+          telemetry,
         );
         skipSummary.outOfScope += htmlFallback.skipSummary.outOfScope;
         skipSummary.htmlFallbackNonArticle += htmlFallback.skipSummary.htmlFallbackNonArticle;
@@ -2042,6 +2062,7 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             "User-Agent": "NuSift/1.0 Ingest-Agent",
             Accept: "text/html,application/xhtml+xml",
           },
+          telemetry,
         });
 
         if (htmlResponse.ok) {
@@ -2050,6 +2071,8 @@ export async function ingestSource(sourceId: string, categoryId?: string): Promi
             html,
             source.frontPageUrl,
             source.id,
+            undefined,
+            telemetry,
           );
           if (htmlFallback.candidates.length > 0) {
             await logAgentScan({

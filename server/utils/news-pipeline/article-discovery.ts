@@ -27,10 +27,15 @@ import {
   type ArticleDiscoveryQualityAssessment,
   type ArticleDiscoverySourceKind,
   type JsonLdArticle,
+  type DiscoveryNetworkTelemetry,
 } from "./article-discovery-helpers";
 import { Prisma } from "@prisma/client";
 import { isLikelyArticleUrl } from "./article-url-policy";
 import type { IngestCandidate, IngestRejectedItem, IngestSkipSummary, PipelineResult } from "./types";
+import {
+  createNoopStageBatchProbe,
+  type StageBatchProbe,
+} from "./stage-telemetry";
 
 // DISCOVERY_FRESHNESS_MS re-exported from article-discovery-helpers for backward compat
 const MAX_LISTING_PAGES = 3;
@@ -360,6 +365,7 @@ const crawlListingPages = async (
   targetUrl: string,
   categoryPathUrl?: string | null,
   deniedPathPrefixes?: string[] | null,
+  telemetry?: DiscoveryNetworkTelemetry,
 ) => {
   const visitedPages: string[] = [];
   const diagnostics: ListingFetchDiagnostic[] = [];
@@ -381,6 +387,7 @@ const crawlListingPages = async (
           "User-Agent": USER_AGENT,
           Accept: "text/html,application/xhtml+xml",
         },
+        telemetry,
       });
     } catch (error: any) {
       diagnostics.push({
@@ -522,7 +529,11 @@ const discoverArticleCandidatesForPage = async (
   target: ArticleDiscoveryTarget,
   skipSummary: IngestSkipSummary,
   rejectedItems: IngestRejectedItem[],
-  overrides?: { freshnessMs?: number; deniedPathPrefixes?: string[] | null },
+  overrides?: {
+    freshnessMs?: number;
+    deniedPathPrefixes?: string[] | null;
+    telemetry?: DiscoveryNetworkTelemetry;
+  },
 ): Promise<CandidateEvaluationResult> => {
   const { url: articleUrl, sourcePageUrl } = articleLink;
 
@@ -554,6 +565,7 @@ const discoverArticleCandidatesForPage = async (
     sourceId: target.sourceId,
     categoryId: target.categoryId,
     freshnessMs: overrides?.freshnessMs,
+    telemetry: overrides?.telemetry,
   });
 
   if (!result.accepted) {
@@ -987,7 +999,10 @@ export async function persistArticleDiscoveryArtifact(input: {
   });
 }
 
-export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget): Promise<ArticleDiscoveryResult> {
+export async function discoverArticlesFromTarget(
+  target: ArticleDiscoveryTarget,
+  telemetry?: DiscoveryNetworkTelemetry,
+): Promise<ArticleDiscoveryResult> {
   const skipSummary = emptySkipSummary();
   const rejectedItems: IngestRejectedItem[] = [];
   const pagesVisited: string[] = [];
@@ -1045,10 +1060,11 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
       target.targetUrl,
       effectiveCategoryPathUrl,
       deniedPathPrefixes,
+      telemetry,
     ).catch((error: any) => {
       throw new Error(`Article discovery fetch failed: ${error?.message || String(error)}`);
     }),
-    discoverSitemapUrls(target.targetUrl).catch(() => []),
+    discoverSitemapUrls(target.targetUrl, telemetry).catch(() => []),
   ]);
 
   const targetPageJsonLd = listing.firstPageHtml
@@ -1102,6 +1118,7 @@ export async function discoverArticlesFromTarget(target: ArticleDiscoveryTarget)
           // 7-day retention window is enforced for all candidates. allowWeakPublishedAt
           // (the browser-only flag) still handles missing-date acceptance independently.
           ...(deniedPathPrefixes && deniedPathPrefixes.length > 0 ? { deniedPathPrefixes } : {}),
+          telemetry,
         },
       );
 
@@ -1362,10 +1379,34 @@ export type Agent2BatchResult = {
   stoppedReason: Agent2BatchStoppedReason;
   /** Number of targets actually processed in this run. */
   processed: number;
+  /** Authoritative count of processed targets with no discovery/persistence failure. */
+  succeeded: number;
   /** Number of targets deferred due to budget/limit constraints. */
   deferred: number;
   /** Number of targets remaining in the active bounded batch cycle. */
   remainingEligible: number;
+  /** Mutually exclusive selected-target disposition buckets. */
+  targetDispositions: {
+    succeeded: number;
+    failedRetryable: number;
+    failedPermanent: number;
+    skipped: number;
+    deferred: number;
+    quarantined: number;
+    claimLost: number;
+    persistenceFailed: number;
+  };
+  selectedTargets: number;
+  /** Candidate/link productivity, separate from target dispositions. */
+  productivity: {
+    rawLinks: number;
+    evaluatedCandidates: number;
+    acceptedCandidates: number;
+    rejectedCandidates: number;
+    insertedCandidates: number;
+    skippedCandidates: number;
+    candidatePersistenceFailures: number;
+  };
 };
 
 const readPayloadRecord = (payload: Prisma.JsonValue | null): Record<string, unknown> | null =>
@@ -1482,7 +1523,10 @@ export async function runArticleDiscoveryBatch(input?: {
    * Default: 30000 (30 seconds).
    */
   minRemainingMs?: number;
+  /** Operation-level stage telemetry probe (optional, no-op by default). */
+  telemetry?: StageBatchProbe;
 }): Promise<Agent2BatchResult> {
+  const probe = input?.telemetry ?? createNoopStageBatchProbe();
   const maxTargets = input?.maxTargets ?? 5;
   const timeBudgetMs = input?.timeBudgetMs ?? 240_000;
   const minRemainingMs = input?.minRemainingMs ?? 30_000;
@@ -1504,8 +1548,19 @@ export async function runArticleDiscoveryBatch(input?: {
       result: { sourcesScanned: 0, candidatesFound: 0, inserted: 0, skipped: 0, failed: 0, artifactCount: 0 },
       stoppedReason: "no_targets",
       processed: 0,
+      succeeded: 0,
       deferred: 0,
       remainingEligible: 0,
+      targetDispositions: {
+        succeeded: 0, failedRetryable: 0, failedPermanent: 0, skipped: 0,
+        deferred: 0, quarantined: 0, claimLost: 0, persistenceFailed: 0,
+      },
+      selectedTargets: 0,
+      productivity: {
+        rawLinks: 0, evaluatedCandidates: 0, acceptedCandidates: 0,
+        rejectedCandidates: 0, insertedCandidates: 0, skippedCandidates: 0,
+        candidatePersistenceFailures: 0,
+      },
     } as Agent2BatchResult;
   }
 
@@ -1523,6 +1578,13 @@ export async function runArticleDiscoveryBatch(input?: {
   let failed = 0;
   let artifactCount = 0;
   let processed = 0;
+  let succeeded = 0;
+  let targetFailedRetryable = 0;
+  let targetPersistenceFailed = 0;
+  let rawLinks = 0;
+  let evaluatedCandidates = 0;
+  let acceptedCandidates = 0;
+  let rejectedCandidates = 0;
   let stoppedReason: Agent2BatchStoppedReason = "completed";
 
   for (let i = 0; i < targets.length; i++) {
@@ -1542,14 +1604,31 @@ export async function runArticleDiscoveryBatch(input?: {
     }
 
     try {
-      const result = await discoverArticlesFromTarget(target);
+      const result = await discoverArticlesFromTarget(target, probe);
+      for (const diagnostic of result.listingDiagnostics) {
+        if (diagnostic.status === 403) probe.recordAccessDenied403();
+        if (diagnostic.status === 429) probe.recordRateLimited(429);
+        // Only count fetch failures whose evidence mentions a timeout/abort;
+        // DNS/connection errors are not timeouts.
+        if (
+          diagnostic.reason === "fetch_failed" &&
+          diagnostic.hints.some((hint) => /timeout|timed out|abort/i.test(hint))
+        ) {
+          probe.recordTimeout();
+        }
+      }
+      rawLinks += result.listingDiagnostics.reduce((sum, diagnostic) => sum + diagnostic.rawLinkCount, 0);
+      evaluatedCandidates += result.outcomeSummary.totalEvaluated;
+      acceptedCandidates += result.candidates.length;
+      rejectedCandidates += result.outcomeSummary.rejected;
       candidatesFound += result.candidates.length;
-      const artifact = await persistArticleDiscoveryArtifact({ pipelineRunId: pipelineRun.id, result });
+      const artifact = await probe.timed("persistence", () => persistArticleDiscoveryArtifact({ pipelineRunId: pipelineRun.id, result }));
+      probe.recordDbOperation();
       artifactCount += 1;
 
       // Persist escalation marker artifact when static discovery is insufficient.
       if (result.qualityAssessment.shouldEscalateToHeadless) {
-        const queued = await createHeadlessQueueArtifactIfAbsent({
+        const queued = await probe.timed("persistence", () => createHeadlessQueueArtifactIfAbsent({
           pipelineRunId: pipelineRun.id,
           sourceId: target.sourceId,
           categoryId: target.categoryId || null,
@@ -1567,7 +1646,7 @@ export async function runArticleDiscoveryBatch(input?: {
               discoverySources: result.discoverySources,
               createdAt: new Date().toISOString(),
           },
-        });
+        }));
         if (queued.created) artifactCount += 1;
       }
 
@@ -1575,13 +1654,15 @@ export async function runArticleDiscoveryBatch(input?: {
       // Resolve stale headless markers only after every candidate persistence
       // attempt has completed without a reported failure. The discovery artifact
       // remains available for audit even when persistence must be retried.
-      const persisted = await persistCandidates(result.candidates);
+      const persisted = await probe.timed("persistence", () => persistCandidates(result.candidates));
+      probe.recordDbOperation();
       inserted += persisted.inserted;
       skipped += persisted.skipped;
       failed += persisted.failed + result.failed;
 
       if (persisted.failed === 0) {
-        await resolveStaleHeadlessMarkers({ result, artifactId: artifact.id, pipelineRunId: pipelineRun.id });
+        await probe.timed("persistence", () => resolveStaleHeadlessMarkers({ result, artifactId: artifact.id, pipelineRunId: pipelineRun.id }));
+        probe.recordDbOperation();
       } else {
         await logAgentScan({
           sourceId: target.sourceId,
@@ -1593,8 +1674,14 @@ export async function runArticleDiscoveryBatch(input?: {
       }
 
       processed += 1;
+      if (persisted.failed > 0) targetPersistenceFailed += 1;
+      else if (result.failed > 0) targetFailedRetryable += 1;
+      else {
+        succeeded += 1;
+      }
     } catch (error: any) {
       failed += 1;
+      targetFailedRetryable += 1;
       processed += 1;
       await logAgentScan({
         sourceId: target.sourceId,
@@ -1644,6 +1731,7 @@ export async function runArticleDiscoveryBatch(input?: {
         errorLog: `Deferred target ${target.targetUrl}. reason=${stoppedReason}, position=${position + 1}/${deferredCount}.`,
       })),
     });
+    probe.recordDbOperation();
     artifactCount += deferredCount;
 
     await logAgentScan({
@@ -1688,8 +1776,29 @@ export async function runArticleDiscoveryBatch(input?: {
     result,
     stoppedReason,
     processed,
+    succeeded,
     deferred: deferredCount,
     remainingEligible,
+    targetDispositions: {
+      succeeded,
+      failedRetryable: targetFailedRetryable,
+      failedPermanent: 0,
+      skipped: 0,
+      deferred: deferredCount,
+      quarantined: 0,
+      claimLost: 0,
+      persistenceFailed: targetPersistenceFailed,
+    },
+    selectedTargets: processed + deferredCount,
+    productivity: {
+      rawLinks,
+      evaluatedCandidates,
+      acceptedCandidates,
+      rejectedCandidates,
+      insertedCandidates: inserted,
+      skippedCandidates: skipped,
+      candidatePersistenceFailures: targetPersistenceFailed,
+    },
   };
 }
 

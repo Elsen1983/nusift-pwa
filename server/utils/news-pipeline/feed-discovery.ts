@@ -1,4 +1,5 @@
 import { safeFetch } from "../ssrf-guard";
+import type { StageBatchProbe } from "./stage-telemetry";
 import { buildFeedUrlCandidates } from "./import-rss";
 import type { FeedDiscoveryResult, ScopeMatch, TaxonomyEvidence } from "./types";
 import * as isoCountryPackage from "i18n-iso-countries";
@@ -750,7 +751,7 @@ export const buildCandidatesFromSitemapUrl = (sitemapUrl: string) => {
 };
 
 const collectSitemapFeedCandidates = async (
-  input: { pageUrl: string; userAgent: string; acceptLanguage?: string; preferScopedDirectFeed?: boolean },
+  input: { pageUrl: string; userAgent: string; acceptLanguage?: string; preferScopedDirectFeed?: boolean; telemetry?: StageBatchProbe },
   seenAcceptedCanonicalKeys: Set<string>,
 ) => {
   const acceptedCandidates: FeedCandidate[] = [];
@@ -777,6 +778,7 @@ const collectSitemapFeedCandidates = async (
           Accept: "text/plain, application/xml, text/xml, text/html, */*",
           ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
         },
+        telemetry: input.telemetry,
       });
       if (!response.ok) continue;
       const body = await response.text();
@@ -802,6 +804,7 @@ const collectSitemapFeedCandidates = async (
           Accept: "application/xml, text/xml, text/plain, */*",
           ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
         },
+        telemetry: input.telemetry,
       });
       if (!response.ok) continue;
       const body = await response.text();
@@ -2357,6 +2360,7 @@ export const verifyFeedCandidate = async (
   input: {
     userAgent: string;
     acceptLanguage?: string;
+    telemetry?: StageBatchProbe;
   },
 ) => {
   const response = await safeFetch(candidateUrl, {
@@ -2367,6 +2371,7 @@ export const verifyFeedCandidate = async (
       Accept: "application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, text/html,application/xhtml+xml",
       ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
     },
+    telemetry: input.telemetry,
   });
 
   if (!response.ok) {
@@ -2396,6 +2401,7 @@ export async function discoverFeedForUrl(input: {
   userAgent: string;
   acceptLanguage?: string;
   preferScopedDirectFeed?: boolean;
+  telemetry?: StageBatchProbe;
 }): Promise<FeedDiscoveryResult> {
   let lastError = "No feed candidates succeeded.";
   const candidateUrls = buildScopedFeedCandidates(input.pageUrl, input.existingFeedUrl || null);
@@ -2454,6 +2460,7 @@ export async function discoverFeedForUrl(input: {
         Accept: "application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, text/html,application/xhtml+xml",
         ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
       },
+      telemetry: input.telemetry,
     });
 
     if (headResponse.ok) {
@@ -2507,6 +2514,7 @@ export async function discoverFeedForUrl(input: {
           Accept: "application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, text/html,application/xhtml+xml",
           ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
         },
+        telemetry: input.telemetry,
       });
 
       if (!response.ok) {
@@ -2762,6 +2770,7 @@ export async function discoverFeedForUrl(input: {
             Accept: "text/html, application/xml, text/xml, */*",
             ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
           },
+          telemetry: input.telemetry,
         });
 
         if (dirResponse.ok) {

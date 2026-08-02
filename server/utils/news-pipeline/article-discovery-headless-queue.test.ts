@@ -2,14 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const findManyMock = vi.fn();
 const updateMock = vi.fn();
+const countMock = vi.fn();
 const logAgentScanMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
     pipelineArtifact: {
       findMany: (...args: any[]) => findManyMock(...args),
-      update: (...args: any[]) => updateMock(...args),
-      updateMany: (...args: any[]) => updateMock(...args),
+      update: (...args: any[]) => updateMock(...args),        updateMany: (...args: any[]) => updateMock(...args),
+        count: (...args: any[]) => countMock(...args),
     },
   },
 }));
@@ -40,9 +41,10 @@ const makeArtifact = (overrides: Record<string, unknown> = {}) => ({
 
 describe("processArticleDiscoveryHeadlessQueue", () => {
   beforeEach(() => {
-    findManyMock.mockReset();
-    updateMock.mockReset();
-    logAgentScanMock.mockReset();
+    findManyMock.mockReset();      updateMock.mockReset();
+      countMock.mockReset();
+      countMock.mockResolvedValue(0);
+      logAgentScanMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
   });
 
@@ -419,9 +421,10 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
 
 describe("recoverStaleArticleDiscoveryHeadlessProcessing", () => {
   beforeEach(() => {
-    findManyMock.mockReset();
-    updateMock.mockReset();
-    logAgentScanMock.mockReset();
+    findManyMock.mockReset();      updateMock.mockReset();
+      countMock.mockReset();
+      countMock.mockResolvedValue(0);
+      logAgentScanMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
   });
 
