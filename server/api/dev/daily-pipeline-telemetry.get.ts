@@ -1,7 +1,13 @@
 import { requireAdminId } from "../../utils/require-admin";
 import { assertRateLimit } from "../../utils/rate-limit";
 import { prisma } from "../../utils/prisma";
-import { boundText, clampCount, clampDuration, type StageBatchTelemetry } from "../../utils/news-pipeline/stage-telemetry";
+import {
+  boundText,
+  clampCount,
+  clampDuration,
+  summarizeStageTimings,
+  type StageBatchTelemetry,
+} from "../../utils/news-pipeline/stage-telemetry";
 
 const DAILY_STATUSES = [
   "DAILY_PIPELINE_WORKFLOW_RUNNING",
@@ -119,6 +125,7 @@ const normalizeBatch = (artifact: {
     status: boundText(artifact.status, 80) ?? "UNKNOWN",
     stage,
     batchSeq: clampCount(batchSeq),
+    durationMs: clampDuration(numberOr(raw?.durationMs)),
     processed: clampCount(numberOr(raw?.processed, artifact.candidateCount)),
     succeeded: clampCount(numberOr(raw?.succeeded)),
     failedRetryable: clampCount(numberOr(raw?.failedRetryable)),
@@ -193,7 +200,7 @@ export default defineEventHandler(async (event) => {
     return { ok: true, run: null, stageTimings: [], batches: [], pagination: { truncated: false, totalReturned: 0, limit: BATCH_LIMIT } };
   }
 
-  const stageTimings = Array.isArray(summary.stageTimings)
+  const durableStageTimings = Array.isArray(summary.stageTimings)
     ? summary.stageTimings.map(normalizeStageTiming).filter((item): item is JsonRecord => item !== null)
     : [];
 
@@ -211,6 +218,16 @@ export default defineEventHandler(async (event) => {
     .map((artifact) => normalizeBatch(artifact, latestRun.id))
     .filter((item): item is JsonRecord => item !== null)
     .reverse();
+
+  // RUNNING workflows do not have their final summary yet. Build a bounded
+  // live summary from the already persisted batch artifacts so the admin panel
+  // remains useful while the workflow is active.
+  const liveStageTimings = summarizeStageTimings(
+    batches as unknown as StageBatchTelemetry[],
+  ).map(normalizeStageTiming).filter((item): item is JsonRecord => item !== null);
+  const stageTimings = durableStageTimings.length > 0
+    ? durableStageTimings
+    : liveStageTimings;
 
   // The durable stage summary is not subject to the 200-artifact page limit,
   // so it is the source of truth for the latest no-progress reason. A failed

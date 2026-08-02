@@ -27,8 +27,6 @@ async function recordStageBatchNoProgress(
     reason,
   });
 }
-import type { DailyNotificationSlot } from "../utils/notification-sender";
-
 export const DAILY_PIPELINE_STAGES = [
   "agent1",
   "agent2-static",
@@ -430,33 +428,6 @@ export async function runDailyPipelineStageBatch(
   }
 }
 
-async function getDailyNotificationSchedule() {
-  "use step";
-  const now = new Date();
-  const slots: Array<{ slot: DailyNotificationSlot; hour: number }> = [
-    { slot: "MORNING", hour: 6 },
-    { slot: "NOON", hour: 12 },
-    { slot: "EVENING", hour: 18 },
-  ];
-  return slots.map(({ slot, hour }) => {
-    const scheduledAt = new Date(now);
-    scheduledAt.setHours(hour, 0, 0, 0);
-    return { slot, scheduledAt: scheduledAt.toISOString() };
-  });
-}
-
-async function sendTerminalStageNotifications(
-  orchestrationRunId: string,
-  slot: DailyNotificationSlot,
-) {
-  "use step";
-  await heartbeatOrchestration(orchestrationRunId, "agent3");
-  const { sendDueDailyNotifications } =
-    await import("../utils/notification-sender");
-  const results = await sendDueDailyNotifications(new Date(), [slot]);
-  return results.length;
-}
-
 async function finishDailyPipeline(
   orchestrationRunId: string,
   status: "COMPLETED" | "FAILED",
@@ -585,17 +556,11 @@ export async function runDailyNewsPipelineWorkflow(
 
     const stageTimings = summarizeStageTimings(stageTelemetry);
 
-    let notificationsProcessed = 0;
-    const notificationsStartedAt = Date.now();
-    const notificationSchedule = await getDailyNotificationSchedule();
-    for (const notification of notificationSchedule) {
-      await sleep(new Date(notification.scheduledAt));
-      notificationsProcessed += await sendTerminalStageNotifications(
-        lock.orchestrationRunId,
-        notification.slot,
-      );
-    }
-    const notificationsDurationMs = Date.now() - notificationsStartedAt;
+    // Digest delivery has its own scheduled endpoint. Keeping future delivery
+    // sleeps out of this workflow releases the pipeline lock immediately after
+    // the terminal processing stage completes.
+    const notificationsProcessed = 0;
+    const notificationsDurationMs = 0;
     await finishDailyPipeline(
       lock.orchestrationRunId,
       "COMPLETED",

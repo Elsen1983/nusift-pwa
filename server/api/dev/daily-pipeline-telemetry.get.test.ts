@@ -193,4 +193,61 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
     expect(result.run!.error).toContain("Manual diagnosis required");
     expect(result.batches).toEqual([]);
   });
+
+  it("builds live stage timings from batch artifacts while the workflow is running", async () => {
+    mockPipelineRunFindFirst.mockResolvedValue({
+      id: "run-live",
+      status: "DAILY_PIPELINE_WORKFLOW_RUNNING",
+      createdAt: "2026-08-02T12:00:00Z",
+      finishedAt: null,
+      summary: {
+        kind: "daily_news_pipeline_workflow",
+        completedStages: ["agent1", "agent2-static"],
+        stageTimings: [],
+        notificationsDurationMs: 0,
+      },
+    });
+    mockPipelineArtifactFindMany.mockResolvedValue([
+      {
+        id: "live-agent3-1",
+        createdAt: "2026-08-02T13:02:55Z",
+        status: "CAPTURED",
+        candidateCount: 5,
+        payload: {
+          schemaVersion: 1,
+          artifactKind: "stage_batch_telemetry",
+          orchestrationRunId: "run-live",
+          stage: "agent3",
+          batchSeq: 1,
+          durationMs: 17676,
+          processed: 5,
+          succeeded: 0,
+          failedPermanent: 5,
+          networkRequests: 5,
+          logicalRequestDurationMs: 1855,
+          extractionMs: 1,
+          persistenceMs: 3124,
+          batchSizeLimit: 10,
+          concurrencyLimit: 1,
+          peakConcurrency: 1,
+          complete: true,
+        },
+        errorLog: null,
+      },
+    ]);
+
+    const handler = await loadHandler();
+    const result = await handler({ query: {} } as any);
+
+    expect(result.stageTimings).toHaveLength(1);
+    expect(result.stageTimings[0]).toMatchObject({
+      stage: "agent3",
+      batches: 1,
+      durationMs: 17676,
+      processed: 5,
+      failedPermanent: 5,
+      logicalRequestDurationMs: 1855,
+      persistenceDurationMs: 3124,
+    });
+  });
 });

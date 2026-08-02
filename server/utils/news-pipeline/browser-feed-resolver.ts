@@ -30,6 +30,7 @@
  * Playwright is opt-in and only attempted when PLAYWRIGHT_ENABLED=true.
  */
 import { safeFetch } from "../ssrf-guard";
+import { loadJsdom } from "./jsdom-runtime";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -366,7 +367,7 @@ export async function resolveWithJsdom(input: {
   }
 
   try {
-    const { JSDOM } = await import("jsdom");
+    const { JSDOM } = await loadJsdom();
     const dom = new JSDOM(html, {
       url: input.pageUrl,
       contentType: "text/html",

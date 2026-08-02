@@ -1963,7 +1963,7 @@ describe("text normalization helpers", () => {
     const { extractMeaningfulParagraphs } = await import("./article-content-extractor");
 
     // Create a minimal DOM-like element with mix of short and long paragraphs
-    const { JSDOM } = await import("jsdom");
+    const { JSDOM } = await import("./jsdom-runtime").then((module) => module.loadJsdom());
     const dom = new JSDOM(`<div>
       <p>Hi</p>
       <p>This is a meaningful paragraph that should be extracted because it has enough words and characters to pass the filter.</p>

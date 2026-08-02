@@ -2080,7 +2080,7 @@ export async function extractArticleContentFromHtml(
       resolvedUrl,
       statusCode,
       "parse_error",
-      `jsdom parse failed: ${message}`,
+      `DOM parse failed: ${message}`,
     );
   }
 

@@ -219,7 +219,7 @@ export interface ExtractionQuality {
  *
  * Stable string — do not include timestamps.
  */
-export const AGENT3_EXTRACTOR_VERSION = "a3-serverless-jsdom-v3";
+export const AGENT3_EXTRACTOR_VERSION = "a3-serverless-linkedom-v4";
 
 /**
  * Compact extraction diagnostics stored on rejection artifacts.
