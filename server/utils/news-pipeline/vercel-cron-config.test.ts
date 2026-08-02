@@ -4,6 +4,11 @@ import cronConfig from "../../../vercel.json";
 describe("vercel.json cron schedule", () => {
   const crons = cronConfig.crons;
 
+  it("stays within Vercel Hobby cron limits", () => {
+    expect(crons).toHaveLength(2);
+    expect(crons.every((cron) => !cron.schedule.includes(","))).toBe(true);
+  });
+
   it("starts exactly one durable daily news pipeline", () => {
     const pipelineSlots = crons.filter((cron) => cron.path.includes("run-daily-pipeline"));
     expect(pipelineSlots).toEqual([{
