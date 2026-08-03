@@ -36,6 +36,7 @@ import {
   createNoopStageBatchProbe,
   type StageBatchProbe,
 } from "./stage-telemetry";
+import { evaluateRssOwnedTargetForAgent2 } from "./rss-owned-target";
 
 // DISCOVERY_FRESHNESS_MS re-exported from article-discovery-helpers for backward compat
 const MAX_LISTING_PAGES = 3;
@@ -51,7 +52,21 @@ export type ArticleDiscoveryTarget = {
   rssStatus: string;
   currentFeedProductive: boolean;
   consecutiveNonProductiveRuns: number;
+  /** Persisted category/source discovery evidence, when available. */
+  scopeMatches?: boolean;
   mediaName: string;
+};
+
+const readScopeMatch = (evidence: unknown): boolean | undefined => {
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return undefined;
+  const record = evidence as Record<string, unknown>;
+  const outcome = record.outcome && typeof record.outcome === "object" && !Array.isArray(record.outcome)
+    ? record.outcome as Record<string, unknown>
+    : null;
+  const value = outcome?.scopeMatch ?? record.scopeMatch;
+  if (value === "exact" || value === "probable") return true;
+  if (value === "generic" || value === "unrelated") return false;
+  return undefined;
 };
 
 const agent2TargetKey = (input: {
@@ -616,18 +631,50 @@ export const isAgent2EligibleTarget = (input: {
   consecutiveNonProductiveRuns: number;
   rssFeedUrl?: string | null;
   feedProvenance?: string | null;
-}) =>
-  input.rssStatus === "NO_RSS_FOUND" ||
-  (input.rssStatus === "ACTIVE" &&
-    !(input.feedProvenance === "USER_SUBMITTED" && input.rssFeedUrl) &&
-    !input.currentFeedProductive &&
-    input.consecutiveNonProductiveRuns >= 2);
+  scopeMatches?: boolean;
+  /** Explicit admin request: bypass the RSS-owned skip for these targets. */
+  bypassRssOwned?: boolean;
+}): boolean => {
+  // An explicit admin request escalates the target directly, bypassing the
+  // RSS-owned skip and the normal cooldown rules for that target.
+  if (input.bypassRssOwned) return true;
+
+  // RSS-owned targets (valid trusted feed: USER_SUBMITTED / ADMIN_CONFIRMED)
+  // follow the bounded escalation rules and skip routine Agent 2 discovery
+  // while valid. A temporary feed failure never immediately removes ownership.
+  const rssOwned = evaluateRssOwnedTargetForAgent2({
+    rssStatus: input.rssStatus,
+    rssFeedUrl: input.rssFeedUrl,
+    feedProvenance: input.feedProvenance,
+    currentFeedProductive: input.currentFeedProductive,
+    consecutiveNonProductiveRuns: input.consecutiveNonProductiveRuns,
+    scopeMatches: input.scopeMatches,
+  });
+  if (rssOwned.rssOwned) {
+    return rssOwned.eligibleForAgent2;
+  }
+
+  // Non-RSS-owned targets: normal eligibility rules.
+  if (input.rssStatus === "NO_RSS_FOUND") return true;
+  if (input.rssStatus === "FAILED") {
+    // Invalid feed — escalate once there is at least one confirmed
+    // non-productive run (bounded evidence; a single transient failure is not
+    // enough to send the target to Agent 2).
+    return (input.consecutiveNonProductiveRuns ?? 0) >= 1;
+  }
+  if (input.rssStatus === "DOMAIN_DEAD") return true;
+  if (input.rssStatus === "ACTIVE") {
+    return !input.currentFeedProductive && (input.consecutiveNonProductiveRuns ?? 0) >= 2;
+  }
+  return false;
+};
 
 export type TargetSkipReason =
   | "not_found_in_db"
   | "missing_target_url"
   | "rss_active_productive"
-  | "rss_active_user_submitted"
+  | "rss_owned_productive"
+  | "rss_owned_waiting_evidence"
   | "rss_active_waiting_for_second_nonproductive_run"
   | "rss_pending_discovery"
   | "unsupported_status"
@@ -644,7 +691,8 @@ const EMPTY_SKIP_REASONS = (): Record<TargetSkipReason, number> => ({
   not_found_in_db: 0,
   missing_target_url: 0,
   rss_active_productive: 0,
-  rss_active_user_submitted: 0,
+  rss_owned_productive: 0,
+  rss_owned_waiting_evidence: 0,
   rss_active_waiting_for_second_nonproductive_run: 0,
   rss_pending_discovery: 0,
   unsupported_status: 0,
@@ -657,11 +705,26 @@ const classifySkipReason = (input: {
   consecutiveNonProductiveRuns: number;
   rssFeedUrl?: string | null;
   feedProvenance?: string | null;
+  scopeMatches?: boolean;
+  bypassRssOwned?: boolean;
 }): TargetSkipReason => {
+  const rssOwned = input.bypassRssOwned
+    ? { rssOwned: false as const, eligibleForAgent2: true as const, reason: "not_rss_owned" as const }
+    : evaluateRssOwnedTargetForAgent2({
+        rssStatus: input.rssStatus,
+        rssFeedUrl: input.rssFeedUrl,
+        feedProvenance: input.feedProvenance,
+        currentFeedProductive: input.currentFeedProductive,
+        consecutiveNonProductiveRuns: input.consecutiveNonProductiveRuns,
+        scopeMatches: input.scopeMatches,
+      });
+  if (rssOwned.rssOwned) {
+    if (rssOwned.eligibleForAgent2) return "unsupported_status"; // unreachable: eligible targets are not skipped
+    if (rssOwned.reason === "rss_owned_productive") return "rss_owned_productive";
+    if (rssOwned.reason === "rss_owned_waiting_evidence") return "rss_owned_waiting_evidence";
+    return "rss_owned_waiting_evidence";
+  }
   if (input.rssStatus === "ACTIVE") {
-    if (input.feedProvenance === "USER_SUBMITTED" && input.rssFeedUrl) {
-      return "rss_active_user_submitted";
-    }
     return input.currentFeedProductive
       ? "rss_active_productive"
       : "rss_active_waiting_for_second_nonproductive_run";
@@ -675,6 +738,8 @@ const classifySkipReason = (input: {
 export async function resolveAgent2Targets(input?: {
   sourceIds?: string[];
   categoryIds?: string[];
+  /** Explicit admin request: bypass the RSS-owned skip for requested targets. */
+  bypassRssOwned?: boolean;
 }): Promise<{ targets: ArticleDiscoveryTarget[]; diagnostics: TargetResolutionDiagnostics }> {
   const activeTargets = await resolveActivePipelineTargets();
   const targetKeys = new Set(activeTargets.map((target) => `${target.sourceId}|${target.categoryId || ""}`));
@@ -698,6 +763,7 @@ export async function resolveAgent2Targets(input?: {
             feedProvenance: true,
             currentFeedProductive: true,
             consecutiveNonProductiveRuns: true,
+            discoveryEvidence: true,
           },
         })
       : Promise.resolve([]),
@@ -713,6 +779,7 @@ export async function resolveAgent2Targets(input?: {
             feedProvenance: true,
             currentFeedProductive: true,
             consecutiveNonProductiveRuns: true,
+            discoveryEvidence: true,
           },
         })
       : Promise.resolve([]),
@@ -723,6 +790,7 @@ export async function resolveAgent2Targets(input?: {
 
   const targets: ArticleDiscoveryTarget[] = [];
   const skippedReasons = EMPTY_SKIP_REASONS();
+  const escalationReasons: Record<string, number> = {};
   const skippedSamples: Array<{
     sourceId: string;
     categoryId: string | null;
@@ -784,7 +852,20 @@ export async function resolveAgent2Targets(input?: {
         }
         continue;
       }
-      const categorySkipReason = isAgent2EligibleTarget(category) ? null /* eligible */ : classifySkipReason(category);
+      const categoryEvaluation = evaluateRssOwnedTargetForAgent2({
+        rssStatus: category.rssStatus,
+        rssFeedUrl: category.rssFeedUrl,
+        feedProvenance: category.feedProvenance,
+        currentFeedProductive: category.currentFeedProductive,
+        consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
+        scopeMatches: readScopeMatch(category.discoveryEvidence),
+      });
+      if (categoryEvaluation.rssOwned && categoryEvaluation.eligibleForAgent2) {
+        escalationReasons[categoryEvaluation.reason] = (escalationReasons[categoryEvaluation.reason] || 0) + 1;
+      }
+      const categorySkipReason = isAgent2EligibleTarget({ ...category, bypassRssOwned: input?.bypassRssOwned })
+        ? null /* eligible */
+        : classifySkipReason({ ...category, bypassRssOwned: input?.bypassRssOwned });
       if (categoryAuditEntries.length < MAX_CATEGORY_AUDIT) {
         categoryAuditEntries.push({
           sourceId: target.sourceId,
@@ -807,8 +888,8 @@ export async function resolveAgent2Targets(input?: {
             targetUrl: category.pathUrl,
             rssStatus: category.rssStatus,
             currentFeedProductive: category.currentFeedProductive,
-            consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
-            skipReason: categorySkipReason,
+        consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
+        skipReason: categorySkipReason,
           });
         }
         continue;
@@ -821,6 +902,7 @@ export async function resolveAgent2Targets(input?: {
         rssStatus: category.rssStatus,
         currentFeedProductive: category.currentFeedProductive,
         consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
+        scopeMatches: readScopeMatch(category.discoveryEvidence),
         mediaName: source.mediaName,
       });
     } else {
@@ -829,8 +911,19 @@ export async function resolveAgent2Targets(input?: {
         skippedReasons.not_found_in_db += 1;
         continue;
       }
-      if (!isAgent2EligibleTarget(source)) {
-        const reason = classifySkipReason(source);
+      const sourceEvaluation = evaluateRssOwnedTargetForAgent2({
+        rssStatus: source.rssStatus,
+        rssFeedUrl: source.rssFeedUrl,
+        feedProvenance: source.feedProvenance,
+        currentFeedProductive: source.currentFeedProductive,
+        consecutiveNonProductiveRuns: source.consecutiveNonProductiveRuns,
+        scopeMatches: readScopeMatch(source.discoveryEvidence),
+      });
+      if (sourceEvaluation.rssOwned && sourceEvaluation.eligibleForAgent2) {
+        escalationReasons[sourceEvaluation.reason] = (escalationReasons[sourceEvaluation.reason] || 0) + 1;
+      }
+      if (!isAgent2EligibleTarget({ ...source, bypassRssOwned: input?.bypassRssOwned })) {
+        const reason = classifySkipReason({ ...source, bypassRssOwned: input?.bypassRssOwned });
         skippedReasons[reason] += 1;
         if (skippedSamples.length < MAX_SKIP_SAMPLES) {
           skippedSamples.push({
@@ -853,6 +946,7 @@ export async function resolveAgent2Targets(input?: {
         rssStatus: source.rssStatus,
         currentFeedProductive: source.currentFeedProductive,
         consecutiveNonProductiveRuns: source.consecutiveNonProductiveRuns,
+        scopeMatches: readScopeMatch(source.discoveryEvidence),
         mediaName: source.mediaName,
       });
     }
@@ -868,7 +962,7 @@ export async function resolveAgent2Targets(input?: {
     executionTimeMs: 0,
     errorLog: `targets=${targets.length}, skipped=${skipped}, total=${activeTargets.length}. ` +
       `categories={total=${categoryTotal}, eligible=${categoryEligible}, skipped=${categorySkipped}}. ` +
-      `reasons=${JSON.stringify(skippedReasons)}`,
+      `reasons=${JSON.stringify(skippedReasons)}, escalations=${JSON.stringify(escalationReasons)}`,
   });
 
   // Capped per-target skip diagnostics for debugging specific missing targets.
@@ -1505,6 +1599,11 @@ async function prioritizeDeferredTargets(
 export async function runArticleDiscoveryBatch(input?: {
   sourceIds?: string[];
   categoryIds?: string[];
+  /**
+   * Explicit admin request: bypass the RSS-owned skip for the requested
+   * targets. Routine pipeline runs never set this.
+   */
+  bypassRssOwned?: boolean;
   /**
    * Maximum number of targets to process in this batch.
    * Default: 5. Set higher for dedicated Agent 2 cron slots.

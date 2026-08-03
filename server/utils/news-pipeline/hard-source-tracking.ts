@@ -27,6 +27,7 @@
 
 import { prisma } from "../prisma";
 import { stableTargetKey, normalizeTargetUrl } from "./text";
+import { classifyBrowserFailureOrigin } from "./failure-origin";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -76,7 +77,14 @@ export type HardSourceReport = {
    * rate-limit, not a permanent discovery failure.
    */
   cooldownOnlyCount: number;
-  /** Total targets with any evidence (hard-sources + cooldown-only + non-qualifying). */
+  /**
+   * Targets whose latest browser outcome was a platform/runtime or
+   * configuration failure (BROWSER_RUNTIME_UNAVAILABLE / FALLBACK_DISABLED).
+   * These provide no publisher evidence and are never hard sources, but they
+   * remain visible here for admin diagnostics.
+   */
+  runtimeFailureOnlyCount: number;
+  /** Total targets with any evidence (hard-sources + cooldown-only + runtime + non-qualifying). */
   evidenceTargetCount: number;
   /** Targets that qualify as hard sources (same as hardSources.length). */
   qualifyingHardSourceCount: number;
@@ -464,6 +472,7 @@ export async function buildHardSourceReport(input?: {
 
   const hardSources: HardSourceEntry[] = [];
   let cooldownOnlyCount = 0;
+  let runtimeFailureOnlyCount = 0;
   let evidenceTargetCount = 0;
   let resolvedOrProductiveCount = 0;
   const nowMs = Date.now();
@@ -518,6 +527,16 @@ export async function buildHardSourceReport(input?: {
       continue;
     }
 
+    // Platform/runtime and configuration failures (BROWSER_RUNTIME_UNAVAILABLE,
+    // BROWSER_FALLBACK_DISABLED) provide no evidence about the publisher and
+    // must never produce or strengthen a hard-source profile — even when the
+    // static side also failed. They stay visible in this bounded bucket.
+    const browserOrigin = classifyBrowserFailureOrigin(target.lastBrowserStatus);
+    if (browserOrigin === "platform_runtime_failure" || browserOrigin === "configuration_failure") {
+      runtimeFailureOnlyCount += 1;
+      continue;
+    }
+
     // A static target counts as failed only when it is failed/blocked, OR
     // weak WITH escalation. Weak-without-escalation targets are stable and
     // are NOT hard sources per the spec ("weak with escalation").
@@ -569,6 +588,7 @@ export async function buildHardSourceReport(input?: {
     hardSources,
     total: hardSources.length,
     cooldownOnlyCount,
+    runtimeFailureOnlyCount,
     evidenceTargetCount,
     qualifyingHardSourceCount: hardSources.length,
     resolvedOrProductiveCount,

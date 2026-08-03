@@ -440,7 +440,7 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
     expect(report.hardSources).toEqual([]);
   });
 
-  it("runtime unavailable → recommended action is run_browser, not AI inspection", async () => {
+  it("runtime unavailable is NOT a hard source — counted separately as runtime evidence", async () => {
     // Desc ordering: browser (newer) comes before static (older).
     findManyMock.mockResolvedValue([
       makeBrowserArtifact({
@@ -459,9 +459,35 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
     const fn = await loadFn();
     const report = await fn();
 
+    // Platform/runtime failures provide no publisher evidence: even a static
+    // failure combined with a runtime-unavailable browser must NOT produce a
+    // hard-source profile. It stays visible in its own bounded bucket.
+    expect(report.total).toBe(0);
+    expect(report.hardSources).toEqual([]);
+    expect(report.runtimeFailureOnlyCount).toBe(1);
+  });
+
+  it("genuine static failure + genuine browser no-candidates creates a hard source", async () => {
+    findManyMock.mockResolvedValue([
+      makeBrowserArtifact({
+        sourceId: "src-genuine",
+        targetUrl: "https://genuine.com/news",
+        status: "BROWSER_NO_CANDIDATES",
+        accepted: 0,
+      }),
+      makeStaticArtifact({
+        sourceId: "src-genuine",
+        targetUrl: "https://genuine.com/news",
+        quality: "failed",
+      }),
+    ]);
+
+    const fn = await loadFn();
+    const report = await fn();
+
     expect(report.total).toBe(1);
-    expect(report.hardSources[0]?.recommendedNextAction).toBe("run_browser");
-    expect(report.hardSources[0]?.recommendedNextAction).not.toBe("ai_inspection_candidate");
+    expect(report.hardSources[0]?.recommendedNextAction).toBe("ai_inspection_candidate");
+    expect(report.runtimeFailureOnlyCount).toBe(0);
   });
 
   it("weak static WITHOUT escalation is NOT a hard source (spec: 'weak with escalation')", async () => {

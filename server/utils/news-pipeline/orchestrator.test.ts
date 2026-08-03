@@ -385,8 +385,8 @@ describe("orchestrator – runAgent1Batch", () => {
     expect(result.deferred).toBe(0);
     expect(result.remainingEligible).toBe(0);
     expect(result.stoppedReason).toBe("completed");
-    expect(ingestSourceMock).toHaveBeenNthCalledWith(1, "src-3", undefined);
-    expect(ingestSourceMock).toHaveBeenNthCalledWith(2, "src-4", undefined);
+    expect(ingestSourceMock).toHaveBeenNthCalledWith(1, "src-3", undefined, undefined, expect.any(String));
+    expect(ingestSourceMock).toHaveBeenNthCalledWith(2, "src-4", undefined, undefined, expect.any(String));
   });
 
   it("failures count as processed and do not abort the batch", async () => {
@@ -443,7 +443,7 @@ describe("orchestrator – runAgent1Batch", () => {
 
     // Should use hydratePipelineTargets path (calls sourceCategory.findMany)
     expect(result.processed).toBeGreaterThanOrEqual(1);
-    expect(ingestSourceMock).toHaveBeenCalledWith("src-1", undefined);
+    expect(ingestSourceMock).toHaveBeenCalledWith("src-1", undefined, undefined, expect.any(String));
   });
 
   it("clamps maxTargets to [1, 50] range", async () => {

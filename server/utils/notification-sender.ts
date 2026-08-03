@@ -20,10 +20,33 @@ function isWithinSlot(slot: "MORNING" | "NOON" | "EVENING", now = new Date()) {
   return hour >= start! && hour <= end!;
 }
 
-export async function sendDueDailyNotifications(
+export type DailyNotificationRunStats = {
+  usersProcessed: number;
+  pushesSent: number;
+  skippedEmpty: number;
+  lastError: string | null;
+};
+
+export type DailyNotificationRunResult = {
+  results: Array<{ userId: string; sent: number }>;
+  stats: DailyNotificationRunStats;
+};
+
+/**
+ * Core daily-digest sender with run statistics.
+ *
+ * `skippedEmpty` counts users whose schedule slot matched but who had no
+ * newly published articles in scope — these deliberately produce no
+ * notification ("0 news" digests are never sent).
+ *
+ * `sendDueDailyNotifications` keeps its original return contract for the
+ * legacy endpoint; callers that need empty-skip observability use the
+ * internal variant through the durable notification workflow.
+ */
+export async function sendDueDailyNotificationsInternal(
   now = new Date(),
   requestedSlots?: DailyNotificationSlot[],
-) {
+): Promise<DailyNotificationRunResult> {
   const selectedSlots = requestedSlots?.length ? new Set(requestedSlots) : null;
   const users = await prisma.user.findMany({
     where: {
@@ -57,6 +80,8 @@ export async function sendDueDailyNotifications(
   });
 
   const results: Array<{ userId: string; sent: number }> = [];
+  let skippedEmpty = 0;
+  let lastError: string | null = null;
 
   for (const user of users) {
     if (selectedSlots) {
@@ -107,7 +132,10 @@ export async function sendDueDailyNotifications(
 
     // A digest represents newly published content, not merely a completed
     // pipeline run. Do not create an inbox/push notification with an empty feed.
-    if (articleCount === 0) continue;
+    if (articleCount === 0) {
+      skippedEmpty += 1;
+      continue;
+    }
 
     const title = "NuSift daily update";
     const body = `${articleCount} new articles are ready in your feed.`;
@@ -138,22 +166,43 @@ export async function sendDueDailyNotifications(
       }
     }
 
-    await prisma.notification.create({
-      data: {
-        userId: user.id,
-        type: "DAILY_DIGEST",
-        title,
-        body,
-        url,
-        payload: payload as any,
-        status: sentCount > 0 ? "SENT" : "FAILED",
-        sentAt: sentCount > 0 ? new Date() : null,
-      },
-    });
+    try {
+      await prisma.notification.create({
+        data: {
+          userId: user.id,
+          type: "DAILY_DIGEST",
+          title,
+          body,
+          url,
+          payload: payload as any,
+          status: sentCount > 0 ? "SENT" : "FAILED",
+          sentAt: sentCount > 0 ? new Date() : null,
+        },
+      });
+    } catch (error: any) {
+      lastError = error?.message ? String(error.message).slice(0, 300) : "notification persistence failed";
+      continue;
+    }
 
     results.push({ userId: user.id, sent: sentCount });
   }
 
+  return {
+    results,
+    stats: {
+      usersProcessed: results.length,
+      pushesSent: results.reduce((sum, result) => sum + result.sent, 0),
+      skippedEmpty,
+      lastError,
+    },
+  };
+}
+
+export async function sendDueDailyNotifications(
+  now = new Date(),
+  requestedSlots?: DailyNotificationSlot[],
+): Promise<Array<{ userId: string; sent: number }>> {
+  const { results } = await sendDueDailyNotificationsInternal(now, requestedSlots);
   return results;
 }
 

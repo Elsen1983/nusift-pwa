@@ -200,6 +200,43 @@ describe("article-discovery", () => {
     expect(diagnostics.skippedReasons.requested_filter_excluded).toBe(1);
   });
 
+  it("explicit admin request bypasses the RSS-owned skip", async () => {
+    const { resolveAgent2Targets } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+
+    (resolveActivePipelineTargets as any).mockResolvedValue([
+      { sourceId: "src-owned", categoryId: null },
+    ]);
+    // Valid trusted RSS feed — normally skipped for routine Agent 2.
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      {
+        id: "src-owned",
+        frontPageUrl: "https://owned.com",
+        mediaName: "Owned",
+        rssStatus: "ACTIVE",
+        rssFeedUrl: "https://feeds.example.com/rss",
+        feedProvenance: "USER_SUBMITTED",
+        currentFeedProductive: true,
+        consecutiveNonProductiveRuns: 0,
+      },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+
+    // Routine resolution: RSS-owned target is skipped.
+    const routine = await resolveAgent2Targets();
+    expect(routine.targets).toHaveLength(0);
+    expect(routine.diagnostics.skippedReasons.rss_owned_productive).toBe(1);
+
+    // Explicit admin request (bypassRssOwned): target becomes eligible.
+    const explicit = await resolveAgent2Targets({
+      sourceIds: ["src-owned"],
+      bypassRssOwned: true,
+    });
+    expect(explicit.targets).toHaveLength(1);
+    expect(explicit.targets[0]?.sourceId).toBe("src-owned");
+    expect(explicit.diagnostics.skippedReasons.rss_owned_productive).toBe(0);
+  });
+
   it("marks only the expected Agent 2 feed states as eligible", async () => {
     const { isAgent2EligibleTarget } = await import("./article-discovery");
 
@@ -242,17 +279,78 @@ describe("article-discovery", () => {
       }),
     ).toBe(true);
 
-    // A user-submitted feed was verified before persistence. Transient fetch
-    // failures must remain owned by Agent 1 rather than trigger HTML discovery.
+    // RSS-owned targets (USER_SUBMITTED / ADMIN_CONFIRMED) skip routine Agent 2
+    // while valid. A productive trusted feed is never eligible; a temporary
+    // failure (below the documented threshold) keeps ownership; only repeated
+    // confirmed non-productivity escalates the target.
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "ACTIVE",
+        rssFeedUrl: "https://feeds.example.com/category/news",
+        feedProvenance: "USER_SUBMITTED",
+        currentFeedProductive: true,
+        consecutiveNonProductiveRuns: 10,
+      }),
+    ).toBe(false);
     expect(
       isAgent2EligibleTarget({
         rssStatus: "ACTIVE",
         rssFeedUrl: "https://feeds.example.com/category/news",
         feedProvenance: "USER_SUBMITTED",
         currentFeedProductive: false,
-        consecutiveNonProductiveRuns: 10,
+        consecutiveNonProductiveRuns: 1,
       }),
     ).toBe(false);
+    // Repeatedly non-productive under the documented threshold → escalation.
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "ACTIVE",
+        rssFeedUrl: "https://feeds.example.com/category/news",
+        feedProvenance: "USER_SUBMITTED",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 2,
+      }),
+    ).toBe(true);
+    // ADMIN_CONFIRMED trusted feeds follow the same ownership rules.
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "ACTIVE",
+        rssFeedUrl: "https://feeds.example.com/rss",
+        feedProvenance: "ADMIN_CONFIRMED",
+        currentFeedProductive: true,
+        consecutiveNonProductiveRuns: 0,
+      }),
+    ).toBe(false);
+    // Invalid (FAILED) trusted feed escalates only after a confirmed
+    // non-productive run; a single transient failure keeps ownership.
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "FAILED",
+        rssFeedUrl: "https://feeds.example.com/rss",
+        feedProvenance: "ADMIN_CONFIRMED",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      }),
+    ).toBe(false);
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "FAILED",
+        rssFeedUrl: "https://feeds.example.com/rss",
+        feedProvenance: "ADMIN_CONFIRMED",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 1,
+      }),
+    ).toBe(true);
+    // Permanently unreachable (DOMAIN_DEAD) trusted feed escalates.
+    expect(
+      isAgent2EligibleTarget({
+        rssStatus: "DOMAIN_DEAD",
+        rssFeedUrl: "https://feeds.example.com/rss",
+        feedProvenance: "USER_SUBMITTED",
+        currentFeedProductive: false,
+        consecutiveNonProductiveRuns: 0,
+      }),
+    ).toBe(true);
 
     // ACTIVE + not productive + only 1 → NOT eligible (two-run rule preserved)
     expect(

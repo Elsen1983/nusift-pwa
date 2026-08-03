@@ -31,6 +31,15 @@ import type {
   PublishedAtSource,
 } from "./article-discovery-helpers";
 import { normalizeUrl } from "./text";
+import {
+  isAgent2BrowserFallbackEnabledFlag,
+  launchHeadlessBrowser,
+  setBrowserLauncherForTest,
+  setServerlessChromiumImporterForTest,
+  type BrowserLaunchResult,
+  type BrowserRuntimeSelection,
+  type ExecutableResolutionResult,
+} from "./browser-runtime";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -98,7 +107,7 @@ export type BrowserArticleLinkResult = {
  * Check if the Agent 2 browser fallback is enabled via environment flag.
  */
 export function isBrowserFallbackEnabled(): boolean {
-  return (process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK || "").trim().toLowerCase() === "true";
+  return isAgent2BrowserFallbackEnabledFlag();
 }
 
 // ─── Link Extraction from Rendered DOM ──────────────────────────────────────
@@ -633,78 +642,109 @@ function scoreAndFilterBrowserLinks(
 
 // ─── Playwright Loader (lazy) ───────────────────────────────────────────────
 
+/**
+ * Test injection API retained for existing tests. It bridges the historical
+ * specifier-keyed importer into the shared browser-runtime module's test
+ * hooks, so no test relies on the removed full-`playwright` fallback.
+ */
 type OptionalDependencyImporter = (specifier: string) => Promise<any>;
 
-const hiddenDynamicImporter = new Function(
-  "specifier",
-  "return import(specifier)",
-) as OptionalDependencyImporter;
-
-async function defaultOptionalDependencyImporter(specifier: string): Promise<any> {
-  if (specifier === "playwright-core") {
-    return await import("playwright-core");
-  }
-  if (specifier === "@sparticuz/chromium") {
-    return await import("@sparticuz/chromium");
-  }
-
-  return await hiddenDynamicImporter(specifier);
-}
-
-let importOptionalDependency = defaultOptionalDependencyImporter;
+const testImporterBridge = async (
+  importer: OptionalDependencyImporter,
+  specifier: string,
+): Promise<any> => {
+  const mod = await importer(specifier);
+  return mod?.default ?? mod;
+};
 
 export function setArticleDiscoveryBrowserImporterForTest(
   importer: OptionalDependencyImporter | null,
 ) {
-  importOptionalDependency = importer ?? defaultOptionalDependencyImporter;
+  if (!importer) {
+    setServerlessChromiumImporterForTest(null);
+    setBrowserLauncherForTest(null);
+    return;
+  }
+
+  setServerlessChromiumImporterForTest(async () => {
+    const mod = await importer("@sparticuz/chromium");
+    return mod?.default ?? mod;
+  });
+  setBrowserLauncherForTest(
+    async (
+      selection: BrowserRuntimeSelection,
+      executable: ExecutableResolutionResult,
+    ): Promise<BrowserLaunchResult> => {
+      try {
+        if (executable.kind === "serverless-chromium" && executable.executablePath) {
+          const playwrightCore = await testImporterBridge(importer, "playwright-core");
+          const serverlessChromium = await testImporterBridge(importer, "@sparticuz/chromium");
+          const browser = await playwrightCore.chromium.launch({
+            args: serverlessChromium.args,
+            executablePath: executable.executablePath,
+            headless: serverlessChromium.headless ?? true,
+          });
+          return {
+            browser,
+            classification: "browser_runtime_available",
+            kind: "serverless-chromium",
+            blockedReason: null,
+          };
+        }
+        if (executable.kind === "system-chrome" || executable.kind === "custom-executable") {
+          const playwrightCore = await testImporterBridge(importer, "playwright-core");
+          const browser = await playwrightCore.chromium.launch({ headless: true });
+          return {
+            browser,
+            classification: "browser_runtime_available",
+            kind: executable.kind,
+            blockedReason: null,
+          };
+        }
+        return {
+          browser: null,
+          classification: "browser_runtime_unavailable",
+          kind: "unavailable",
+          blockedReason: executable.reason ?? "no browser runtime selected",
+        };
+      } catch (error) {
+        // A launch failure is a runtime problem, never a fake success. The
+        // diagnostic keeps the historical "playwright" label for the
+        // local/system-Chrome path (the launch runs through playwright-core).
+        const label = executable.kind === "system-chrome" ? "playwright" : executable.kind;
+        return {
+          browser: null,
+          classification: "browser_runtime_unavailable",
+          kind: executable.kind,
+          blockedReason: `${label}: ${getErrorMessage(error)}`,
+        };
+      }
+    },
+  );
 }
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export async function launchBrowser(): Promise<{ browser: any | null; blockedReason?: string }> {
-  const errors: string[] = [];
-
-  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
-    try {
-      const [playwrightCoreModule, chromiumModule] = await Promise.all([
-        importOptionalDependency("playwright-core"),
-        importOptionalDependency("@sparticuz/chromium"),
-      ]);
-      const playwrightCore = playwrightCoreModule.default ?? playwrightCoreModule;
-      const serverlessChromium = chromiumModule.default ?? chromiumModule;
-      const executablePath = await serverlessChromium.executablePath();
-
-      return {
-        browser: await playwrightCore.chromium.launch({
-          args: serverlessChromium.args,
-          defaultViewport: serverlessChromium.defaultViewport,
-          executablePath,
-          headless: serverlessChromium.headless ?? true,
-        }),
-      };
-    } catch (error) {
-      errors.push(`serverless chromium: ${getErrorMessage(error)}`);
-      // Fall through to the regular Playwright runtime. This keeps local/dev installs working
-      // and preserves the existing runtime-unavailable result when no browser can launch.
-    }
-  }
-
-  try {
-    const playwright = await importOptionalDependency("playwright");
-    return {
-      browser: await playwright.chromium.launch({ headless: true }),
-    };
-  } catch (error) {
-    errors.push(`playwright: ${getErrorMessage(error)}`);
-    return {
-      browser: null,
-      blockedReason: errors.length > 0
-        ? `Browser launch failed (${errors.join("; ")})`
-        : "Playwright is not installed or could not be launched",
-    };
-  }
+/**
+ * Launch the headless browser through the shared Vercel-compatible runtime.
+ *
+ * Never falls back to the full `playwright` package (it is not installed) and
+ * never fabricates a successful result: a missing runtime is classified as
+ * BROWSER_RUNTIME_UNAVAILABLE (a platform failure, not a publisher outcome).
+ */
+export async function launchBrowser(): Promise<{
+  browser: any | null;
+  blockedReason?: string;
+  viewport?: { width: number; height: number } | null;
+}> {
+  const result = await launchHeadlessBrowser();
+  return {
+    browser: result.browser,
+    blockedReason: result.blockedReason ?? undefined,
+    viewport: result.viewport ?? null,
+  };
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -754,8 +794,8 @@ export async function discoverArticleLinksWithBrowser(input: {
   }
 
   // Launch browser
-  const launchResult = await launchBrowser();
-  const browser = launchResult.browser;
+  const launchResult = await launchBrowser();  const browser = launchResult.browser;
+
   if (!browser) {
     return {
       ok: false,
@@ -780,6 +820,7 @@ export async function discoverArticleLinksWithBrowser(input: {
   try {
     const context = await browser.newContext({
       userAgent: BROWSER_USER_AGENT,
+      ...(launchResult.viewport ? { viewport: launchResult.viewport } : {}),
     });
     const page = await context.newPage();
 
@@ -1200,14 +1241,17 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
     return reject("fetch_failed", "browser fallback disabled");
   }
 
-  const launchResult = await launchBrowser();
-  const browser = launchResult.browser;
+  const launchResult = await launchBrowser();  const browser = launchResult.browser;
+
   if (!browser) {
     return reject("detail_validation_failed", launchResult.blockedReason || "browser runtime unavailable");
   }
 
   try {
-    const context = await browser.newContext({ userAgent: BROWSER_USER_AGENT });
+    const context = await browser.newContext({
+      userAgent: BROWSER_USER_AGENT,
+      ...(launchResult.viewport ? { viewport: launchResult.viewport } : {}),
+    });
     const page = await context.newPage();
 
     // Block heavy resources just like the listing browser path.

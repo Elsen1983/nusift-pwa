@@ -447,18 +447,13 @@ async function probeCommonFeedPaths(
 
 // ─── Playwright Resolver (dev/local only) ───────────────────────────────────
 
-const importOptionalDependency = new Function(
-  "specifier",
-  "return import(specifier)",
-) as (specifier: string) => Promise<any>;
-
 /**
- * Attempt to resolve feeds using Playwright for full JS rendering.
- * Returns null if Playwright is not available or execution fails.
+ * Attempt to resolve feeds using a headless browser for full JS rendering.
+ * Returns null if the browser runtime is unavailable or execution fails.
  *
- * This path is designed for dev/local environments where Playwright
- * can be installed with browser binaries. In production (e.g., Vercel),
- * the jsdom path is used instead.
+ * Uses the shared Vercel-compatible browser runtime (playwright-core only —
+ * the full `playwright` package is not a dependency). In production
+ * (e.g., Vercel), the jsdom path is used instead.
  */
 export async function resolveWithPlaywright(input: {
   pageUrl: string;
@@ -469,11 +464,16 @@ export async function resolveWithPlaywright(input: {
   }
 
   try {
-    const playwright = await importOptionalDependency("playwright");
-    const browser = await playwright.chromium.launch({ headless: true });
+    const { launchHeadlessBrowser } = await import("./browser-runtime");
+    const launchResult = await launchHeadlessBrowser();
+    const browser = launchResult.browser;
+    if (!browser) {
+      return null;
+    }
     try {
       const context = await browser.newContext({
         userAgent: BROWSER_USER_AGENT,
+        ...(launchResult.viewport ? { viewport: launchResult.viewport } : {}),
       });
       const page = await context.newPage();
 

@@ -20,7 +20,7 @@ import { classifyArticleUrl } from "./article-url-policy";
 export const CURRENT_PRODUCTION_URL_POLICY_VERSION = "url-policy-2026-07-prod";
 
 /** The version string for the candidate (next-gen) URL policy. */
-export const CANDIDATE_URL_POLICY_VERSION = "url-policy-2026-08-candidate-v2";
+export const CANDIDATE_URL_POLICY_VERSION = "url-policy-2026-08-candidate-v3-media-program";
 
 /** The dataset version for the first URL evaluation dataset. */
 export const URL_EVALUATION_DATASET_VERSION = "url-eval-2026-08-v1";
@@ -58,6 +58,13 @@ export type DatasetSplit = "tuning" | "holdout";
 /**
  * A single labelled URL in the evaluation dataset.
  */
+export type CandidateUrlEvidence = {
+  /** Optional bounded page metadata used only by the candidate SHADOW policy. */
+  structuredDataTypes?: string[];
+  hasArticleMetadata?: boolean;
+  hasPlayerOnlyMetadata?: boolean;
+};
+
 export type UrlEvaluationLabel = {
   url: string;
   sourceId?: string;
@@ -74,6 +81,7 @@ export type UrlEvaluationLabel = {
   labelVersion: number;
   labelledAt: string;
   labelledBy: string;
+  candidateEvidence?: CandidateUrlEvidence;
 };
 
 /**
@@ -128,6 +136,7 @@ export type UrlPolicyEvaluationInput = {
   agent?: AgentName | null;
   stage?: string;
   discoveryMethod?: string | null;
+  candidateEvidence?: CandidateUrlEvidence;
 };
 
 // ─── Centralized expectedAcceptanceClass Mapping ────────────────────────────
@@ -303,7 +312,7 @@ function L(
   expectedType: ExpectedUrlType,
   opts: Partial<Pick<UrlEvaluationLabel,
     "sourceId" | "discoveryMethod" | "extractionExpected" | "expectedLanguage" |
-    "expectedPublishedDate" | "notes" | "categoryId"
+    "expectedPublishedDate" | "notes" | "categoryId" | "candidateEvidence"
   >> = {},
 ): UrlEvaluationLabel {
   return {
@@ -406,8 +415,12 @@ export function createTuningDataset(): UrlEvaluationDataset {
       L("https://example.com/video/breaking-news-live-stream", "MEDIA", { discoveryMethod: "BROWSER" }),
       L("https://www.bbc.com/sounds/play/p0abc123", "MEDIA", { sourceId: "bbc-com", discoveryMethod: "RSS" }),
       L("https://example.com/embed/98765432", "MEDIA", { discoveryMethod: "STATIC_LISTING" }),
-      L("https://example.com/listen/special-investigation-podcast", "MEDIA", { discoveryMethod: "RSS" }),
-      L("https://example.com/player/documentary-series", "MEDIA", { discoveryMethod: "STATIC_LISTING" }),
+      L("https://example.com/listen/special-investigation-podcast", "MEDIA", { discoveryMethod: "RSS", candidateEvidence: { hasArticleMetadata: false, hasPlayerOnlyMetadata: true, structuredDataTypes: ["AudioObject"] } }),
+      L("https://example.com/player/documentary-series", "MEDIA", { discoveryMethod: "STATIC_LISTING", candidateEvidence: { hasArticleMetadata: false, hasPlayerOnlyMetadata: true, structuredDataTypes: ["VideoObject"] } }),
+      L("https://example.com/programmes/morning-briefing", "MEDIA", { discoveryMethod: "RSS", candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["BroadcastEvent"] } }),
+      L("https://example.com/podcast/episodes/season-two-finale", "MEDIA", { discoveryMethod: "RSS", candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["PodcastEpisode"] } }),
+      L("https://example.com/radio/programmes/weekly-review", "MEDIA", { discoveryMethod: "RSS", candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["RadioEpisode"] } }),
+      L("https://example.com/video/2026/07/29/investigation-article-text", "ARTICLE", { discoveryMethod: "RSS", extractionExpected: true, notes: "Media route but genuine text article metadata preserves acceptance", candidateEvidence: { hasArticleMetadata: true, structuredDataTypes: ["Article", "VideoObject"] } }),
       // ── Liveblog (should accept) ──────────────────────────────────
       L("https://example.com/liveblog/2026/07/29/election-results-updates", "LIVEBLOG", { discoveryMethod: "RSS", extractionExpected: true }),
       L("https://www.bbc.com/news/liveblog/uk-politics-2026-07-29", "LIVEBLOG", { sourceId: "bbc-com", discoveryMethod: "RSS", extractionExpected: true }),
@@ -509,7 +522,10 @@ export function createHoldoutDataset(): UrlEvaluationDataset {
       L("https://example.com/clips/highlights-20260729", "MEDIA", { discoveryMethod: "STATIC_LISTING" }),
       L("https://example.com/podcast/true-crime-season-finale", "MEDIA", { discoveryMethod: "RSS" }),
       L("https://www.theguardian.com/news/series/investigation-podcast", "MEDIA", { sourceId: "theguardian-com", discoveryMethod: "RSS" }),
-      L("https://example.com/video/2026/07/30/documentary-premiere", "MEDIA", { discoveryMethod: "BROWSER" }),
+      L("https://example.com/video/2026/07/30/documentary-premiere", "MEDIA", { discoveryMethod: "BROWSER", candidateEvidence: { hasArticleMetadata: false, hasPlayerOnlyMetadata: true, structuredDataTypes: ["VideoObject"] } }),
+      L("https://example.com/schedule/2026/07/30/evening-lineup", "MEDIA", { discoveryMethod: "RSS", candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["BroadcastEvent"] } }),
+      L("https://example.com/radio/programmes/long-form-investigation", "MEDIA", { discoveryMethod: "RSS", candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["RadioEpisode"] } }),
+      L("https://example.com/video/2026/07/30/text-report-from-the-field", "ARTICLE", { discoveryMethod: "RSS", extractionExpected: true, notes: "Genuine text article under a media route", candidateEvidence: { hasArticleMetadata: true, structuredDataTypes: ["Article", "VideoObject"] } }),
       // ── Liveblog (should accept) ──────────────────────────────────
       L("https://example.com/live/2026/07/29/sports-match-updates", "LIVEBLOG", { discoveryMethod: "BROWSER", extractionExpected: true }),
       L("https://www.bbc.com/news/live/world-europe-2026-07-30", "LIVEBLOG", { sourceId: "bbc-com", discoveryMethod: "RSS", extractionExpected: true }),
@@ -587,6 +603,58 @@ export function evaluateProductionUrlPolicy(
  * signal profile is borderline. Uses isCandidateBorderlineAcceptance()
  * which applies genuinely different rules from production.
  */
+const MEDIA_ROUTE_TOKENS = new Set([
+  "radio", "radios", "programme", "programmes", "program", "programs",
+  "episode", "episodes", "podcast", "podcasts", "schedule", "schedules",
+  "archive", "archives", "listing", "listings", "audio", "video", "player",
+  "listen", "broadcast",
+]);
+
+const MEDIA_STRUCTURED_DATA_TYPES = new Set([
+  "RadioEpisode", "PodcastEpisode", "BroadcastEvent", "AudioObject", "VideoObject",
+]);
+
+function evaluateCandidateMediaEvidence(
+  input: UrlPolicyEvaluationInput,
+  signals: string[],
+): { decision: UrlPolicyDecision; reasonCode: string; evidence: Record<string, unknown> } | null {
+  const parsed = new URL(input.url);
+  const segments = parsed.pathname.toLowerCase().split("/").filter(Boolean);
+  const routeTokens = segments.filter((segment) => MEDIA_ROUTE_TOKENS.has(segment.replace(/[-_]/g, "")));
+  const structuredDataTypes = (input.candidateEvidence?.structuredDataTypes ?? [])
+    .filter((type) => typeof type === "string")
+    .map((type) => type.slice(0, 80))
+    .filter((type) => MEDIA_STRUCTURED_DATA_TYPES.has(type));
+  const playerOnly = input.candidateEvidence?.hasPlayerOnlyMetadata === true;
+  const hasArticleMetadata = input.candidateEvidence?.hasArticleMetadata === true;
+  const hasStrongArticleSignal = [
+    "pos:date_path", "pos:long_slug", "pos:article_segment", "pos:article_suffix",
+  ].some((signal) => signals.includes(signal));
+  const strongProgrammeEvidence = routeTokens.length > 0 || structuredDataTypes.length > 0 || playerOnly;
+
+  if (!strongProgrammeEvidence || hasArticleMetadata || hasStrongArticleSignal) return null;
+
+  const noArticleMetadata = input.candidateEvidence?.hasArticleMetadata === false;
+  const reasonCode = noArticleMetadata && (routeTokens.length > 0 || structuredDataTypes.length > 0)
+    ? "programme_media_without_article_metadata"
+    : playerOnly
+      ? "player_only_media_metadata"
+      : "media_programme_route";
+
+  return {
+    decision: noArticleMetadata || playerOnly ? "REJECT" : "UNCERTAIN",
+    reasonCode,
+    evidence: {
+      mediaRouteTokens: routeTokens.slice(0, 8),
+      structuredDataTypes: structuredDataTypes.slice(0, 8),
+      playerOnlyMetadata: playerOnly,
+      articleMetadataPresent: hasArticleMetadata,
+      articleSignals: ["pos:date_path", "pos:long_slug", "pos:article_segment", "pos:article_suffix"]
+        .filter((signal) => signals.includes(signal)),
+    },
+  };
+}
+
 export function evaluateCandidateUrlPolicy(
   input: UrlPolicyEvaluationInput,
 ): UrlPolicyDecisionLog {
@@ -602,9 +670,14 @@ export function evaluateCandidateUrlPolicy(
     reasonCode = result.reason || "unknown_rejection";
     evidence = { signals: result.signals };
   } else {
-    // Production policy accepted — check if the signal profile is weak
-    // enough to warrant UNCERTAIN instead of ACCEPT.
-    if (isCandidateBorderlineAcceptance(result.signals)) {
+    const mediaDecision = evaluateCandidateMediaEvidence(input, result.signals);
+    // Candidate-only media/program evidence remains SHADOW. Strong article
+    // signals or explicit article metadata preserve genuine text articles.
+    if (mediaDecision) {
+      decision = mediaDecision.decision;
+      reasonCode = mediaDecision.reasonCode;
+      evidence = { signals: result.signals, ...mediaDecision.evidence };
+    } else if (isCandidateBorderlineAcceptance(result.signals)) {
       decision = "UNCERTAIN";
       reasonCode = "low_article_url_confidence";
       evidence = {

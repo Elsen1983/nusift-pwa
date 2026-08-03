@@ -82,10 +82,114 @@
               <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-on-surface-variant"><span>processed targets/articles {{ stage.processed }} / succeeded {{ stage.succeeded }}</span><span>failed {{ stage.failedRetryable }} retryable · {{ stage.failedPermanent }} permanent · skipped {{ stage.skipped }}</span><span>deferred {{ stage.deferred }} · quarantined {{ stage.quarantined }} · claim lost {{ stage.claimLost || 0 }} · persistence failed {{ stage.persistenceFailed || 0 }}</span><span>batch size {{ stage.batchSizeLimit }} / concurrency {{ stage.concurrencyLimit }} / peak {{ stage.peakConcurrency }}</span><span>logical request {{ formatTelemetryMs(stage.logicalRequestDurationMs) }} · extraction {{ formatTelemetryMs(stage.extractionDurationMs) }} · browser {{ formatTelemetryMs(stage.browserDurationMs) }} · persistence {{ formatTelemetryMs(stage.persistenceDurationMs) }} · sleep {{ formatTelemetryMs(stage.sleepDurationMs) }}</span><span>remaining {{ stage.remainingBefore ?? '—' }} → {{ stage.remainingAfter ?? '—' }}</span><span>403 denied {{ stage.accessDenied403 }} · 403 limit {{ stage.rateLimited403 }} · 429 {{ stage.rateLimited429 }}</span><span v-if="stage.productivity && Object.keys(stage.productivity).length > 0" class="text-cyan-200">productivity counters are separate</span><span v-if="stage.latestNoProgressReason" class="text-rose-200">no progress: {{ stage.latestNoProgressReason }}</span></div>
             </div>
           </div>
+          <div
+            v-if="dailyPipelineTelemetry.run.completion"
+            class="rounded-xl border border-violet-400/20 bg-violet-500/5 px-3 py-2.5 text-[11px] text-on-surface-variant"
+          >
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="rounded-full bg-violet-400/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-violet-200">
+                Agent 3 completion
+              </span>
+              <strong class="text-on-surface">
+                {{ dailyPipelineTelemetry.run.completion.currentRunDrained ? 'Current orchestration drained' : 'Current orchestration still has actionable work' }}
+              </strong>
+              <span v-if="dailyPipelineTelemetry.run.completion.globallyComplete" class="text-emerald-300">· Globally complete</span>
+            </div>
+            <div class="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
+              <span>future-run eligible: <strong class="text-violet-200">{{ dailyPipelineTelemetry.run.completion.eligibleNextRun }}</strong></span>
+              <span>future-run retryable: <strong class="text-emerald-300">{{ dailyPipelineTelemetry.run.completion.retryableNextRun }}</strong></span>
+              <span v-if="dailyPipelineTelemetry.run.completion.deferred > 0" class="text-amber-200">deferred: {{ dailyPipelineTelemetry.run.completion.deferred }}</span>
+              <span v-if="dailyPipelineTelemetry.run.completion.quarantined > 0" class="text-rose-200">quarantined: {{ dailyPipelineTelemetry.run.completion.quarantined }}</span>
+              <span v-if="dailyPipelineTelemetry.run.completion.nonRetryable > 0" class="text-rose-200">non-retryable: {{ dailyPipelineTelemetry.run.completion.nonRetryable }}</span>
+              <span v-if="dailyPipelineTelemetry.run.completion.nextRetryAt" class="text-amber-200">next retry: {{ formatLogTime(dailyPipelineTelemetry.run.completion.nextRetryAt) }}</span>
+            </div>
+            <p v-if="!dailyPipelineTelemetry.run.completion.globallyComplete && dailyPipelineTelemetry.run.completion.eligibleNextRun > 0" class="mt-1 text-[10px] text-violet-200/80">
+              {{ dailyPipelineTelemetry.run.completion.eligibleNextRun }} articles eligible for a future run; this COMPLETED status describes the current orchestration only.
+            </p>
+          </div>
+          <p v-else-if="dailyPipelineTelemetry.run.status.includes('COMPLETED')" class="rounded-lg border border-amber-400/20 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-200">
+            Completion queue details are not available for this legacy run.
+          </p>
           <p v-if="dailyPipelineTelemetry.pagination.truncated" class="rounded-lg border border-amber-400/20 bg-amber-500/5 px-3 py-2 text-[10px] font-medium text-amber-200">Data truncated: showing the first 200 valid telemetry batches.</p>
           <p v-if="dailyPipelineTelemetry.latestNoProgressReason" class="rounded-lg border border-rose-400/20 bg-rose-500/5 px-3 py-2 text-[10px] text-rose-200">Latest no-progress reason: {{ dailyPipelineTelemetry.latestNoProgressReason }}</p>
           <p v-if="dailyPipelineTelemetry.stale" class="text-[10px] text-amber-200">This run is stale or has not completed recently.</p>
         </div>
+        </section>
+
+        <section
+          v-if="showFullDevTools"
+          class="rounded-2xl border border-violet-500/20 bg-violet-500/5 px-4 py-4"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="font-headline text-sm font-bold text-on-surface">Reliability diagnostics</h2>
+              <p class="mt-1 text-xs text-on-surface-variant">Bounded notification, RSS ownership, redirect, and browser-runtime evidence. Query values and payload bodies are redacted.</p>
+            </div>
+            <button @click="loadReliabilityDiagnostics" :disabled="reliabilityDiagnosticsLoading" class="rounded-lg border border-violet-400/20 bg-violet-400/10 px-3 py-1.5 text-xs font-bold text-violet-100 disabled:opacity-60">{{ reliabilityDiagnosticsLoading ? 'Loading...' : 'Refresh' }}</button>
+          </div>
+          <p v-if="reliabilityDiagnosticsError" class="mt-3 rounded-lg border border-rose-400/20 bg-rose-500/5 px-3 py-2 text-xs text-rose-200">{{ reliabilityDiagnosticsError }}</p>
+          <div v-else-if="reliabilityDiagnosticsLoaded" class="mt-3 space-y-3 text-[10px] text-on-surface-variant">
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div class="rounded-lg bg-surface-container/70 px-3 py-2">
+                <div class="font-bold uppercase tracking-wider text-violet-200">Notification workflow</div>
+                <div v-if="reliabilityDiagnostics.notifications.markers.length === 0" class="mt-1">No marker for the current UTC date.</div>                  <div v-for="marker in reliabilityDiagnostics.notifications.markers.slice(0, 3)" :key="marker.id" class="mt-1 space-y-0.5">
+                  <div class="flex flex-wrap items-center gap-2"><strong class="text-on-surface">{{ marker.dateKey || 'unknown date' }}</strong> · {{ marker.status }} · {{ marker.startState || 'unknown' }} <button v-if="marker.staleLaunching || marker.summary.reconciliationRequired" @click="reconciliationModalMarkerId = marker.id" :disabled="reconciliationLoading" class="rounded border border-amber-400/20 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-bold text-amber-100">{{ reconciliationLoading ? 'Saving...' : 'Acknowledge reconciliation' }}</button></div>
+                  <div>run: {{ marker.workflowRunId || 'not persisted' }} · attempt: {{ marker.launchAttemptId || 'none' }} · external: {{ marker.externalWorkflow ? `${marker.externalWorkflow.exists ? 'known' : 'not found'}${marker.externalWorkflow.status ? ` / ${marker.externalWorkflow.status}` : ''}` : 'inconclusive' }}</div>
+                  <div>slot: {{ marker.summary.currentSlot || '—' }} → {{ marker.summary.nextSlot || '—' }} · users {{ marker.summary.usersProcessed }} · pushes {{ marker.summary.pushesSent }} · empty {{ marker.summary.skippedEmpty }}</div>
+                  <div class="text-[9px] text-violet-200/80">retry-safe {{ marker.summary.retrySafe ? 'yes' : 'no' }} · first slot {{ marker.summary.firstSlotAttempted ? 'attempted' : 'not attempted' }} · delivered {{ marker.summary.deliveryStartedAt || '—' }} · completed {{ (marker.summary.completedSlots || []).join(', ') || 'none' }}</div>
+                  <div v-if="marker.staleLaunching || marker.summary.reconciliationRequired" class="font-bold text-amber-200">Reconciliation required; automatic restart is disabled.</div>
+                  <div v-if="marker.failureReason || marker.summary.lastError" class="text-rose-200">{{ marker.failureReason || marker.summary.lastError }}</div>
+                </div>
+              </div>
+              <div class="rounded-lg bg-surface-container/70 px-3 py-2">
+                <div class="font-bold uppercase tracking-wider text-cyan-200">RSS-owned / browser outcomes</div>
+                <div class="mt-1">RSS skip/escalation reasons:</div>
+                <div class="mt-1 flex flex-wrap gap-1"><span class="rounded bg-surface-container-highest px-1.5 py-0.5">productive skip: {{ reliabilityDiagnostics.rssOwnership.productiveSkip }}</span><span class="rounded bg-surface-container-highest px-1.5 py-0.5">waiting evidence: {{ reliabilityDiagnostics.rssOwnership.waitingForEvidenceSkip }}</span><span class="rounded bg-surface-container-highest px-1.5 py-0.5">invalid escalation: {{ reliabilityDiagnostics.rssOwnership.invalidFeedEscalation }}</span><span class="rounded bg-surface-container-highest px-1.5 py-0.5">scope mismatch: {{ reliabilityDiagnostics.rssOwnership.scopeMismatchEscalation }}</span></div>
+                <div class="mt-2">Browser runtime statuses:</div>
+                <div class="mt-1 flex flex-wrap gap-1"><span v-for="(value, key) in reliabilityDiagnostics.browserStatuses" :key="key" class="rounded bg-surface-container-highest px-1.5 py-0.5">{{ key }}: {{ value }}</span><span v-if="Object.keys(reliabilityDiagnostics.browserStatuses).length === 0">none</span></div>
+                <div class="mt-2 text-cyan-200">Explicit admin bypass: targeted requests only; routine runs never bypass RSS ownership.</div>
+              </div>
+            </div>
+            <div class="rounded-lg bg-surface-container/70 px-3 py-2">
+              <div class="font-bold uppercase tracking-wider text-amber-200">Per-redirect retry state</div>
+              <div v-if="reliabilityDiagnostics.redirects.length === 0" class="mt-1">No recent redirect retry artifacts.</div>
+              <div v-for="redirect in reliabilityDiagnostics.redirects.slice(0, 5)" :key="redirect.id" class="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
+                <span class="truncate">{{ redirect.originalUrl || 'unknown URL' }}</span><span>{{ redirect.failureKind || redirect.status }} · attempts {{ redirect.attemptCount }} · next {{ redirect.nextRetryAt || 'eligible' }}</span>
+              </div>
+            </div>
+          </div>
+          <p v-else class="mt-3 text-xs text-on-surface-variant">Diagnostics not loaded yet.</p>
+          <div v-if="reconciliationModalMarkerId" class="fixed inset-0 z-[130] flex items-center justify-center bg-black/60 px-4" role="dialog" aria-modal="true">
+            <div class="w-full max-w-md rounded-2xl border border-amber-400/20 bg-surface-container-high p-4 shadow-2xl">
+              <h3 class="font-headline text-sm font-bold text-on-surface">Close uncertain notification launch?</h3>
+              <p class="mt-2 text-xs leading-relaxed text-on-surface-variant">This does not start or retry a workflow. Choose acknowledgement to keep it under review, or abandon it to close the marker permanently and prevent duplicate delivery.</p>
+              <div class="mt-3 flex justify-end gap-2"><button @click="reconciliationModalMarkerId = null" class="rounded-lg border border-outline-variant/20 px-3 py-1.5 text-xs text-on-surface-variant">Cancel</button><button @click="reconcileNotificationMarker(reconciliationModalMarkerId, 'acknowledge'); reconciliationModalMarkerId = null" class="rounded-lg bg-amber-400/20 px-3 py-1.5 text-xs font-bold text-amber-100">Keep under review</button><button @click="reconcileNotificationMarker(reconciliationModalMarkerId, 'abandon'); reconciliationModalMarkerId = null" class="rounded-lg bg-rose-400/20 px-3 py-1.5 text-xs font-bold text-rose-100">Abandon / close</button></div>
+            </div>
+          </div>
+          <div class="mt-3 rounded-lg border border-amber-400/15 bg-amber-500/5 px-3 py-2">
+            <label class="block text-[9px] font-bold uppercase tracking-wider text-amber-200">Reconciliation confirmation token</label>
+            <input v-model="reconciliationToken" type="text" autocomplete="off" placeholder="RECONCILE_NOTIFICATION_WORKFLOW_MARKER" class="mt-1 w-full rounded border border-outline-variant/20 bg-surface-container px-2 py-1 text-[10px] text-on-surface" />
+            <p class="mt-1 text-[9px] text-on-surface-variant">Inspection is read-only. Acknowledgement only records that the uncertain external outcome requires review; it never starts a workflow.</p>
+          </div>
+        </section>
+
+        <section
+          v-if="showFullDevTools"
+          class="rounded-2xl border border-rose-500/20 bg-rose-500/5 px-4 py-4"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div><h2 class="font-headline text-sm font-bold text-on-surface">Runtime-only hard-source repair</h2><p class="mt-1 text-xs text-on-surface-variant">Dry-run preview is the default. Writes require the exact confirmation token and only invalidate matching runtime/configuration-only profiles.</p></div>
+            <div class="flex flex-wrap gap-2"><button @click="previewHardSourceRepair" :disabled="hardSourceRepairLoading" class="rounded-lg border border-cyan-400/20 bg-cyan-400/10 px-3 py-1.5 text-xs font-bold text-cyan-100">{{ hardSourceRepairLoading ? 'Loading...' : 'Preview dry-run' }}</button><button @click="hardSourceRepairModalOpen = true" :disabled="hardSourceRepairLoading || hardSourceRepairToken !== 'REPAIR_RUNTIME_ONLY_HARD_SOURCE_PROFILES'" class="rounded-lg border border-rose-400/20 bg-rose-400/10 px-3 py-1.5 text-xs font-bold text-rose-100 disabled:opacity-50">Confirm repair</button></div>
+          </div>
+          <input v-model="hardSourceRepairToken" type="text" autocomplete="off" placeholder="REPAIR_RUNTIME_ONLY_HARD_SOURCE_PROFILES" class="mt-2 w-full rounded border border-outline-variant/20 bg-surface-container px-2 py-1 text-[10px] text-on-surface" />
+          <p v-if="hardSourceRepairError" class="mt-2 text-[10px] text-rose-200">{{ hardSourceRepairError }}</p><p v-if="hardSourceRepairResult" class="mt-2 text-[10px] text-emerald-200">{{ hardSourceRepairResult.dryRun ? 'Dry-run' : 'Repair' }}: scanned {{ hardSourceRepairResult.scanned }}, matched {{ hardSourceRepairResult.matched }}, updated {{ hardSourceRepairResult.updated }}.</p>
+          <div v-if="hardSourceRepairModalOpen" class="fixed inset-0 z-[130] flex items-center justify-center bg-black/60 px-4" role="dialog" aria-modal="true">
+            <div class="w-full max-w-md rounded-2xl border border-rose-400/20 bg-surface-container-high p-4 shadow-2xl">
+              <h3 class="font-headline text-sm font-bold text-on-surface">Confirm runtime-only repair</h3>
+              <p class="mt-2 text-xs leading-relaxed text-on-surface-variant">This guarded action writes only to profiles whose evidence is exclusively runtime/configuration failure. Profiles with genuine publisher evidence are preserved. The exact token is required.</p>
+              <div class="mt-3 flex justify-end gap-2"><button @click="hardSourceRepairModalOpen = false" class="rounded-lg border border-outline-variant/20 px-3 py-1.5 text-xs text-on-surface-variant">Cancel</button><button @click="confirmHardSourceRepair(); hardSourceRepairModalOpen = false" class="rounded-lg bg-rose-400/20 px-3 py-1.5 text-xs font-bold text-rose-100">Confirm destructive repair</button></div>
+            </div>
+          </div>
         </section>
 
         <section
@@ -1020,7 +1124,7 @@
                 Agent 2 hard sources
               </h3>
               <p class="mt-1 text-xs text-on-surface-variant">
-                Targets where static + browser fallback both failed. AI-inspection candidates for future admin-only profile generation.
+                Bounded evidence for static/browser outcomes. Runtime-only failures remain repairable diagnostics, not publisher or AI-inspection evidence.
               </p>
             </div>
             <button
@@ -2527,6 +2631,24 @@ type HardSourceProfileEntry = {
 
 const hardSourceProfiles = ref<HardSourceProfileEntry[]>([]);
 const hardSourceProfilesLoading = ref(false);
+const reliabilityDiagnosticsLoading = ref(false);
+const reconciliationLoading = ref(false);
+const reconciliationModalMarkerId = ref<string | null>(null);
+const reconciliationToken = ref('');
+const hardSourceRepairLoading = ref(false);
+const hardSourceRepairToken = ref('');
+const hardSourceRepairModalOpen = ref(false);
+const hardSourceRepairError = ref<string | null>(null);
+const hardSourceRepairResult = ref<any>(null);
+const reliabilityDiagnosticsLoaded = ref(false);
+const reliabilityDiagnosticsError = ref<string | null>(null);
+const reliabilityDiagnostics = ref<any>({
+  notifications: { markers: [] },
+  redirects: [],
+  rssSkipReasons: {},
+  rssOwnership: { productiveSkip: 0, waitingForEvidenceSkip: 0, invalidFeedEscalation: 0, scopeMismatchEscalation: 0, explicitAdminBypass: 'targeted requests only' },
+  browserStatuses: {},
+});
 
 // Agent 2 health state
 const agent2HealthTargets = ref<Array<{
@@ -2995,6 +3117,49 @@ const loadHardSources = async () => {
     };
   } finally {
     hardSourcesLoading.value = false;
+  }
+};
+
+const reconcileNotificationMarker = async (markerRunId: string, action: 'acknowledge' | 'abandon' = 'acknowledge') => {
+  if (reconciliationToken.value !== 'RECONCILE_NOTIFICATION_WORKFLOW_MARKER') return;
+  reconciliationLoading.value = true;
+  try {
+    await $api('/api/dev/notification-workflow-reconcile', { method: 'POST', body: { markerRunId, confirm: true, confirmation: reconciliationToken.value, action } });
+    await loadReliabilityDiagnostics();
+  } catch (error: any) {
+    reliabilityDiagnosticsError.value = error?.data?.statusMessage || error?.message || 'Reconciliation failed.';
+  } finally { reconciliationLoading.value = false; }
+};
+
+const previewHardSourceRepair = async () => {
+  hardSourceRepairLoading.value = true; hardSourceRepairError.value = null;
+  try {
+    hardSourceRepairResult.value = await $api('/api/dev/hard-source-repair', { method: 'POST', body: { dryRun: true, scanLimit: 200 } });
+  } catch (error: any) { hardSourceRepairError.value = error?.data?.statusMessage || error?.message || 'Preview failed.'; }
+  finally { hardSourceRepairLoading.value = false; }
+};
+
+const confirmHardSourceRepair = async () => {
+  if (hardSourceRepairToken.value !== 'REPAIR_RUNTIME_ONLY_HARD_SOURCE_PROFILES') return;
+  hardSourceRepairLoading.value = true; hardSourceRepairError.value = null;
+  try {
+    hardSourceRepairResult.value = await $api('/api/dev/hard-source-repair', { method: 'POST', body: { dryRun: false, confirmation: hardSourceRepairToken.value, scanLimit: 200 } });
+    await loadHardSourceProfiles();
+  } catch (error: any) { hardSourceRepairError.value = error?.data?.statusMessage || error?.message || 'Repair failed.'; }
+  finally { hardSourceRepairLoading.value = false; }
+};
+
+const loadReliabilityDiagnostics = async () => {
+  if (!showFullDevTools.value) return;
+  reliabilityDiagnosticsLoading.value = true;
+  reliabilityDiagnosticsError.value = null;
+  try {
+    reliabilityDiagnostics.value = await $api('/api/dev/notification-and-redirect-diagnostics');
+    reliabilityDiagnosticsLoaded.value = true;
+  } catch (error: any) {
+    reliabilityDiagnosticsError.value = error?.data?.statusMessage || error?.message || 'Failed to load reliability diagnostics.';
+  } finally {
+    reliabilityDiagnosticsLoading.value = false;
   }
 };
 
@@ -3708,6 +3873,7 @@ const activateDiscoveryProfile = async (profileId: string, mode: "draft" | "acti
     );
     await Promise.all([
       loadHardSourceProfiles(),
+      loadReliabilityDiagnostics(),
       loadAgent2Health(),
       loadAgentLogs(),
     ]);

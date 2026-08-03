@@ -6,11 +6,15 @@ const prismaSourceCategoryFindUniqueMock = vi.hoisted(() => vi.fn());
 const prismaSourceCategoryUpdateMock = vi.hoisted(() => vi.fn());
 const prismaSourceCategoryFindManyMock = vi.hoisted(() => vi.fn());
 const prismaArticleFindManyMock = vi.hoisted(() => vi.fn());
+const prismaArticleFindUniqueMock = vi.hoisted(() => vi.fn());
 const prismaArticleCreateManyMock = vi.hoisted(() => vi.fn());
 const prismaArticleUpdateMock = vi.hoisted(() => vi.fn());
 const prismaTransactionMock = vi.hoisted(() => vi.fn());
 const prismaFeedReviewUpdateManyMock = vi.hoisted(() => vi.fn());
 const prismaNewsSourceUpdateMock = vi.hoisted(() => vi.fn());
+const prismaPipelineArtifactFindManyMock = vi.hoisted(() => vi.fn());
+const prismaPipelineArtifactCreateMock = vi.hoisted(() => vi.fn());
+const prismaPipelineArtifactUpdateManyMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -25,11 +29,17 @@ vi.mock("../prisma", () => ({
     },
     article: {
       findMany: (...args: any[]) => prismaArticleFindManyMock(...args),
+      findUnique: (...args: any[]) => prismaArticleFindUniqueMock(...args),
       createMany: (...args: any[]) => prismaArticleCreateManyMock(...args),
       update: (...args: any[]) => prismaArticleUpdateMock(...args),
     },
     feedReviewRequest: {
       updateMany: (...args: any[]) => prismaFeedReviewUpdateManyMock(...args),
+    },
+    pipelineArtifact: {
+      findMany: (...args: any[]) => prismaPipelineArtifactFindManyMock(...args),
+      create: (...args: any[]) => prismaPipelineArtifactCreateMock(...args),
+      updateMany: (...args: any[]) => prismaPipelineArtifactUpdateManyMock(...args),
     },
     $transaction: (...args: any[]) => prismaTransactionMock(...args),
   },
@@ -37,7 +47,14 @@ vi.mock("../prisma", () => ({
 
 // ── Safe fetch mock ───────────────────────────────────────────────────
 const safeFetchMock = vi.hoisted(() => vi.fn());
-vi.mock("../ssrf-guard", () => ({ safeFetch: safeFetchMock, SSRFError: class SSRFError extends Error {} }));
+// resolveAndValidate / isBlockedIp are re-exported for the safe redirect
+// resolver; keep them hermetic so tests never touch the real DNS resolver.
+vi.mock("../ssrf-guard", () => ({
+  safeFetch: safeFetchMock,
+  SSRFError: class SSRFError extends Error {},
+  resolveAndValidate: async () => [{ address: "93.184.216.34", family: 4 }],
+  isBlockedIp: () => false,
+}));
 
 // ── Log mock ──────────────────────────────────────────────────────────
 const logAgentScanMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -54,6 +71,7 @@ vi.mock("./agent1-rss-cleanup", () => ({
 // ── Discovery mock ────────────────────────────────────────────────────
 const discoverFeedForUrlMock = vi.hoisted(() => vi.fn());
 const hasQueryScopedCategoryTokensMock = vi.hoisted(() => vi.fn().mockReturnValue(false));
+const redirectFetchMock = vi.hoisted(() => vi.fn());
 vi.mock("./feed-discovery", () => ({
   discoverFeedForUrl: discoverFeedForUrlMock,
   hasQueryScopedCategoryTokens: hasQueryScopedCategoryTokensMock,
@@ -1503,5 +1521,161 @@ describe("URL policy integration (Agent 1 RSS ingest path)", () => {
 
     expect(result.candidates.length).toBe(2);
     expect(result.skipSummary.urlPolicyRejected).toBeFalsy();
+  });
+
+  // ── Aggregator redirect resolution (Phase 6) ───────────────────────
+  it("resolves aggregator redirector URLs to the final publisher URL", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    const feed = rssXml([
+      {
+        title: "Aggregated political article with a full-length headline",
+        link: "https://agg.example.com/rd.cfm?id=123",
+        pubDate: freshDate().toISOString(),
+      },
+    ]);
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(feed);
+      return makeResponse("", false);
+    });
+
+    // Redirect chain: aggregator → publisher (global fetch used by the resolver).
+    redirectFetchMock
+      .mockResolvedValueOnce({
+        status: 302,
+        headers: new Headers({ location: "https://publisher.example.com/story/123" }),
+        body: { cancel: () => Promise.resolve() },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        url: "https://publisher.example.com/story/123",
+        headers: new Headers(),
+        body: { cancel: () => Promise.resolve() },
+      });
+    vi.stubGlobal("fetch", redirectFetchMock);
+
+    const result = await ingestSource("src-1");
+    vi.unstubAllGlobals();
+
+    expect(result.candidates.length).toBe(1);
+    expect(result.candidates[0]!.canonicalUrl).toBe("https://publisher.example.com/story/123");
+    expect(result.candidates[0]!.provenance.redirectedFromUrl).toBe("https://agg.example.com/rd.cfm?id=123");
+    expect(result.candidates[0]!.reasoning).toContain("redirected from https://agg.example.com/rd.cfm?id=123");
+  });
+
+  it("rejects redirector URLs that hit a security policy violation", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    const feed = rssXml([
+      {
+        title: "Unsafe aggregator link with a long headline",
+        link: "https://agg.example.com/rd.cfm?id=999",
+        pubDate: freshDate().toISOString(),
+      },
+    ]);
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(feed);
+      return makeResponse("", false);
+    });
+
+    // Redirect to a private/loopback address is a security rejection.
+    redirectFetchMock.mockResolvedValueOnce({
+      status: 302,
+      headers: new Headers({ location: "http://127.0.0.1/admin" }),
+      body: { cancel: () => Promise.resolve() },
+    });
+    vi.stubGlobal("fetch", redirectFetchMock);
+
+    const result = await ingestSource("src-1");
+    vi.unstubAllGlobals();
+
+    expect(result.candidates.length).toBe(0);
+    expect(result.skipSummary.redirectSecurityRejected).toBe(1);
+    const rejected = result.rejectedItems.find((r) => r.reason === "redirect_security_rejected");
+    expect(rejected).toBeDefined();
+  });
+
+  it("does not let one failed redirect entry block a valid sibling from the same feed", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    const feed = rssXml([
+      {
+        title: "Transient redirect failure should be isolated from siblings",
+        link: "https://agg.example.com/rd.cfm?id=failed-entry",
+        pubDate: freshDate().toISOString(),
+      },
+      {
+        title: "Valid sibling article remains eligible for ingestion",
+        link: "https://example.com/news/2026/07/29/valid-sibling-story",
+        pubDate: freshDate().toISOString(),
+      },
+    ]);
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(feed);
+      return makeResponse("", false);
+    });
+
+    prismaPipelineArtifactFindManyMock.mockResolvedValue([]);
+    prismaPipelineArtifactCreateMock.mockResolvedValue({ id: "redirect-artifact-1" });
+    prismaPipelineArtifactUpdateManyMock.mockResolvedValue({ count: 1 });
+    redirectFetchMock.mockRejectedValueOnce(new Error("upstream timeout"));
+    vi.stubGlobal("fetch", redirectFetchMock);
+
+    const result = await ingestSource("src-1", undefined, undefined, "pipeline-run-mixed-feed");
+    vi.unstubAllGlobals();
+
+    expect(result.candidates.map((candidate) => candidate.canonicalUrl)).toEqual([
+      "https://example.com/news/2026/07/29/valid-sibling-story",
+    ]);
+    expect(result.skipSummary.redirectTransientFailed).toBe(1);
+    // The durable artifact is keyed by the failed redirect URL, not the feed
+    // source/category, so the valid sibling cannot inherit its cooldown.
+    expect(prismaArticleFindManyMock).toHaveBeenCalled();
+    expect(prismaPipelineArtifactCreateMock).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        artifactType: "agent1_redirect_retry",
+        sourceId: "src-1",
+        payload: expect.objectContaining({
+          urlHash: expect.any(String),
+          normalizedUrl: expect.not.stringContaining("failed-entry"),
+        }),
+      }),
+    }));
+    expect(result.rejectedItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        reason: "redirect_transient_failure",
+        rawLink: "https://agg.example.com/rd.cfm?id=failed-entry",
+      }),
+    ]));
+  });
+
+  it("keeps ordinary article URLs untouched (no resolution attempted)", async () => {
+    const { ingestSource } = await import("./ingest");
+
+    const feed = rssXml([
+      {
+        title: "Ordinary article with a long descriptive headline here",
+        link: "https://example.com/news/2026/07/29/ordinary-story",
+        pubDate: freshDate().toISOString(),
+      },
+    ]);
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/rss") return makeResponse(feed);
+      return makeResponse("", false);
+    });
+
+    redirectFetchMock.mockClear();
+    vi.stubGlobal("fetch", redirectFetchMock);
+
+    const result = await ingestSource("src-1");
+    vi.unstubAllGlobals();
+
+    expect(result.candidates.length).toBe(1);
+    expect(result.candidates[0]!.canonicalUrl).toBe("https://example.com/news/2026/07/29/ordinary-story");
+    expect(redirectFetchMock).not.toHaveBeenCalled();
   });
 });

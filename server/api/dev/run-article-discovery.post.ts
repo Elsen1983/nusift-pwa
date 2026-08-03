@@ -37,6 +37,9 @@ export default defineEventHandler(async (event) => {
   const result = await runArticleDiscoveryBatch({
     sourceIds,
     categoryIds,
+    // Explicitly requested targets are an explicit admin discovery request:
+    // bypass the RSS-owned skip for exactly those targets.
+    bypassRssOwned: Boolean(sourceIds?.length || categoryIds?.length),
     maxTargets,
     timeBudgetMs,
     minRemainingMs,

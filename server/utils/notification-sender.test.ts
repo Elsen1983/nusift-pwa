@@ -155,6 +155,41 @@ describe("sendDueDailyNotifications", () => {
     expect(notificationCreateMock.mock.calls[1]![0].data.body).toContain("2 new articles");
   });
 
+  it("duplicate workflow executions do not duplicate a per-user/day digest", async () => {
+    userFindManyMock.mockResolvedValue([{
+      id: "user-dedup",
+      email: "dedup@example.com",
+      notificationScheduleSlot: "MORNING",
+      allowBreakingNotifications: true,
+      pushSubscriptions: [],
+      sourceSubscriptions: [{ sourceId: "source-1" }],
+      categorySubscriptions: [],
+    }]);
+    articleFindManyMock.mockResolvedValue([{
+      id: 1,
+      title: "A",
+      canonicalUrl: "https://example.com/a",
+      bodyText: "A".repeat(500),
+    }]);
+    // First execution: no DAILY_DIGEST yet. Replay: already sent today.
+    notificationFindFirstMock.mockResolvedValueOnce(null);
+    notificationFindFirstMock.mockResolvedValueOnce({ id: "digest-1" });
+
+    const { sendDueDailyNotifications } = await import("./notification-sender");
+    const first = await sendDueDailyNotifications(
+      new Date("2026-08-02T08:00:00.000Z"),
+      ["MORNING"],
+    );
+    const replay = await sendDueDailyNotifications(
+      new Date("2026-08-02T09:00:00.000Z"),
+      ["MORNING"],
+    );
+
+    expect(first).toHaveLength(1);
+    expect(replay).toHaveLength(0);
+    expect(notificationCreateMock).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the configured terminal stage in the centralized count predicate", async () => {
     process.env.NUXT_PIPELINE_TERMINAL_STAGE = "agent4";
     userFindManyMock.mockResolvedValue([{

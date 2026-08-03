@@ -80,7 +80,7 @@ export async function runNewsPipeline(
 
   for (const target of resolvedTargets) {
     try {
-      const result = await ingestSource(target.sourceId, target.categoryId || undefined);
+      const result = await ingestSource(target.sourceId, target.categoryId || undefined, undefined, pipelineRun.id);
       candidatesFound += result.candidates.length;
       await persistPipelineArtifact({
         pipelineRunId: pipelineRun.id,
@@ -344,6 +344,8 @@ export async function runAgent1Batch(input?: {
   maxTargets?: number;
   timeBudgetMs?: number;
   minRemainingMs?: number;
+  /** Explicit admin-only reprocessing of terminal redirect URLs. */
+  bypassRedirectTerminal?: boolean;
   /** Operation-level stage telemetry probe (optional, no-op by default). */
   telemetry?: StageBatchProbe;
 }): Promise<Agent1BatchResult> {
@@ -433,9 +435,11 @@ export async function runAgent1Batch(input?: {
       // Preserve the legacy two-argument call shape when no telemetry probe
       // was supplied. Production workflow runs pass the probe explicitly; old
       // callers and mocks remain behaviorally/API compatible.
-      const result = input?.telemetry
-        ? await ingestSource(target.sourceId, target.categoryId || undefined, probe)
-        : await ingestSource(target.sourceId, target.categoryId || undefined);
+      const result = input?.bypassRedirectTerminal
+        ? await ingestSource(target.sourceId, target.categoryId || undefined, input?.telemetry ? probe : undefined, pipelineRun.id, { bypassRedirectTerminal: true })
+        : input?.telemetry
+          ? await ingestSource(target.sourceId, target.categoryId || undefined, probe, pipelineRun.id)
+          : await ingestSource(target.sourceId, target.categoryId || undefined, undefined, pipelineRun.id);
       ingestCompleted = true;
       targetDisposition = result.deferredReason === "rate_limited" || result.failed > 0
         ? "failedRetryable"

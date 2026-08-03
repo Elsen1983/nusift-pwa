@@ -164,6 +164,69 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
     });
   });
 
+  it("exposes the completion summary with bounded counts", async () => {
+    mockPipelineRunFindFirst.mockResolvedValue({
+      id: "run-completion",
+      status: "DAILY_PIPELINE_WORKFLOW_COMPLETED",
+      createdAt: "2026-08-01T10:00:00Z",
+      finishedAt: "2026-08-01T10:42:00Z",
+      summary: {
+        kind: "daily_news_pipeline_workflow",
+        completedStages: ["agent1", "agent2-static", "agent2-headless", "agent3"],
+        stageTimings: [],
+        notificationsDurationMs: 0,
+        completion: {
+          completionReason: "current_orchestration_drained",
+          currentRunDrained: true,
+          globallyComplete: false,
+          eligibleNextRun: 175,
+          retryableNextRun: 71,
+          deferred: 71,
+          quarantined: 23,
+          nonRetryable: 12,
+          nextRetryAt: "2026-08-03T04:00:00.000Z",
+        },
+      },
+    });
+    mockPipelineArtifactFindMany.mockResolvedValue([]);
+
+    const handler = await loadHandler();
+    const result = await handler({ query: {} } as any);
+
+    expect(result.run!.completion).toEqual({
+      completionReason: "current_orchestration_drained",
+      currentRunDrained: true,
+      globallyComplete: false,
+      eligibleNextRun: 175,
+      retryableNextRun: 71,
+      deferred: 71,
+      quarantined: 23,
+      nonRetryable: 12,
+      nextRetryAt: "2026-08-03T04:00:00.000Z",
+    });
+  });
+
+  it("returns null completion for legacy summaries without the new fields", async () => {
+    mockPipelineRunFindFirst.mockResolvedValue({
+      id: "run-legacy",
+      status: "DAILY_PIPELINE_WORKFLOW_COMPLETED",
+      createdAt: "2026-07-01T10:00:00Z",
+      finishedAt: "2026-07-01T10:40:00Z",
+      summary: {
+        kind: "daily_news_pipeline_workflow",
+        completedStages: ["agent1", "agent2-static", "agent3"],
+        stageTimings: [],
+        notificationsDurationMs: 0,
+      },
+    });
+    mockPipelineArtifactFindMany.mockResolvedValue([]);
+
+    const handler = await loadHandler();
+    const result = await handler({ query: {} } as any);
+
+    expect(result.run!.completion).toBeNull();
+  });
+
   it("passes a runId filter through to the query", async () => {
     mockPipelineRunFindFirst.mockResolvedValue({
       id: "run-42",

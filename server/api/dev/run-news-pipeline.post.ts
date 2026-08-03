@@ -27,6 +27,10 @@ export default defineEventHandler(async (event) => {
   const categoryIds = Array.isArray(body?.categoryIds)
     ? body.categoryIds.map(String)
     : undefined;
+  const bypassRedirectTerminal = body?.bypassRedirectTerminal === true;
+  if (bypassRedirectTerminal && body?.confirmation !== "REPROCESS_TERMINAL_REDIRECTS") {
+    throw createError({ statusCode: 400, statusMessage: "Exact terminal redirect reprocess confirmation is required." });
+  }
 
   // Agent 1 only — does NOT trigger Agent 2
   const batchResult = await runAgent1Batch({
@@ -35,6 +39,7 @@ export default defineEventHandler(async (event) => {
     maxTargets,
     timeBudgetMs,
     minRemainingMs,
+    bypassRedirectTerminal,
   });
 
   // Compute Agent 2 eligible count after A1 run.

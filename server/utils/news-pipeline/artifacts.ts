@@ -19,6 +19,7 @@ const serializeCandidateProvenance = (
   discoveredFromCategoryFeed: provenance.discoveredFromCategoryFeed || false,
   sourcePageUrl: provenance.sourcePageUrl || null,
   fetchedAt: provenance.fetchedAt,
+  ...(provenance.redirectedFromUrl ? { redirectedFromUrl: provenance.redirectedFromUrl } : {}),
 });
 
 const serializeCandidate = (candidate: IngestCandidate): Prisma.InputJsonObject => ({
@@ -53,6 +54,13 @@ const serializeSkipSummary = (skipSummary: IngestSkipSummary) => ({
   ...(skipSummary.staleInvalidPublishedAt ? { staleInvalidPublishedAt: skipSummary.staleInvalidPublishedAt } : {}),
   // ── URL policy rejection counter (additive) ──────────────────────
   ...(skipSummary.urlPolicyRejected ? { urlPolicyRejected: skipSummary.urlPolicyRejected } : {}),
+  ...(skipSummary.redirectSecurityRejected ? { redirectSecurityRejected: skipSummary.redirectSecurityRejected } : {}),
+  ...(skipSummary.redirectTransientFailed ? { redirectTransientFailed: skipSummary.redirectTransientFailed } : {}),
+  ...(skipSummary.redirectRateLimited ? { redirectRateLimited: skipSummary.redirectRateLimited } : {}),
+  ...(skipSummary.redirectInvalid ? { redirectInvalid: skipSummary.redirectInvalid } : {}),
+  ...(skipSummary.redirectRetryExhausted ? { redirectRetryExhausted: skipSummary.redirectRetryExhausted } : {}),
+  ...(skipSummary.redirectRetryAt ? { redirectRetryAt: skipSummary.redirectRetryAt } : {}),
+  ...(skipSummary.redirectDuplicateSuppressed ? { redirectDuplicateSuppressed: skipSummary.redirectDuplicateSuppressed } : {}),
 });
 
 const serializeRejectedItem = (item: IngestRejectedItem) => ({
@@ -113,6 +121,7 @@ export async function persistPipelineArtifact(input: {
     feedFormat: input.result.feedFormat || null,
     deferredReason: input.result.deferredReason || null,
     retryAt: input.result.retryAt || null,
+    redirectRetryAt: input.result.skipSummary.redirectRetryAt || null,
     skipSummary: serializeSkipSummary(input.result.skipSummary),
     rejectedItems: input.result.rejectedItems.map(serializeRejectedItem),
     candidates: input.result.candidates.map(serializeCandidate) as Prisma.InputJsonArray,
@@ -124,7 +133,7 @@ export async function persistPipelineArtifact(input: {
       sourceId: input.result.sourceId,
       categoryId: input.result.categoryId || null,
       artifactType: "rss_candidates",
-      status: input.result.deferredReason === "rate_limited"
+      status: input.result.deferredReason === "rate_limited" || input.result.deferredReason === "redirect_retry"
         ? "DEFERRED_RATE_LIMIT"
         : input.result.failed > 0 && input.result.candidates.length === 0
           ? "FAILED"
@@ -159,15 +168,17 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
   const sourceUrl = categoryTarget?.pathUrl || sourceTarget?.frontPageUrl || null;
   const enriched = input.persisted.enriched || 0;
   const rateLimited = input.result.deferredReason === "rate_limited";
+  const redirectDeferred = input.result.deferredReason === "redirect_retry";
   const passed = input.result.failed === 0 && (input.persisted.inserted > 0 || enriched > 0);
   const handedToAgent2 = !rateLimited && input.result.feedUrl == null && input.result.candidates.length === 0;
   const failureReason = passed
     ? null
     : handedToAgent2
-      ? "No usable RSS/feed candidates were produced; target is eligible for Agent 2."
-      : rateLimited
+      ? "No usable RSS/feed candidates were produced; target is eligible for Agent 2."        : rateLimited
         ? `RSS host rate limited Agent 1; retry deferred until ${input.result.retryAt || "the cooldown expires"}.`
-        : input.result.failed > 0
+        : redirectDeferred
+          ? `Redirect resolution deferred until ${input.result.skipSummary.redirectRetryAt || "the cooldown expires"}.`
+          : input.result.failed > 0
         ? "Agent 1 failed while fetching or parsing this target."
         : "Agent 1 produced no newly inserted articles for this target.";
 
@@ -187,7 +198,9 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
     handedToAgent2,
     rssActive,
     rateLimited,
+    redirectDeferred,
     retryAt: input.result.retryAt || null,
+    redirectRetryAt: input.result.skipSummary.redirectRetryAt || null,
     candidates: input.result.candidates.length,
     inserted: input.persisted.inserted,
     skipped: input.persisted.skipped,
@@ -209,7 +222,7 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
       artifactType: "agent1_target_outcome",
       status: passed
         ? "PASS"
-        : rateLimited
+        : rateLimited || redirectDeferred
           ? "DEFERRED_RATE_LIMIT"
           : handedToAgent2
             ? "HANDOFF_TO_AGENT2"

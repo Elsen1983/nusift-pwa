@@ -293,6 +293,8 @@ export interface IngestCandidateProvenance {
   discoveredFromCategoryFeed?: boolean;
   sourcePageUrl?: string | null;
   fetchedAt: string;
+  /** Original discovered URL when the canonical URL was resolved through a redirector. */
+  redirectedFromUrl?: string | null;
 }
 
 export interface IngestRejectedItem {
@@ -304,7 +306,11 @@ export interface IngestRejectedItem {
     | "html_fallback_non_article"
     | "html_fallback_stale"
     | "discovery_profile_denied_path"
-    | "url_policy_rejected";
+    | "url_policy_rejected"
+    | "redirect_security_rejected"
+    | "redirect_transient_failure"
+    | "redirect_rate_limited"
+    | "redirect_invalid";
   rawLink?: string | null;
   canonicalUrl?: string | null;
   title?: string | null;
@@ -329,6 +335,20 @@ export interface IngestSkipSummary {
   staleInvalidPublishedAt?: number;
   /** Rejected by article URL policy (non-article URL: media clip, topic page, etc.). */
   urlPolicyRejected?: number;
+  /** Rejected because the redirector URL chain hit a security policy violation. */
+  redirectSecurityRejected?: number;
+  /** Rejected because the redirector URL chain failed transiently (timeout/network). */
+  redirectTransientFailed?: number;
+  /** Rejected because the redirector URL chain was rate-limited (HTTP 429). */
+  redirectRateLimited?: number;
+  /** Rejected because the redirector URL chain was invalid (loop/too deep/dead). */
+  redirectInvalid?: number;
+  /** Bounded retry timestamp for a transient/rate-limited redirect chain. */
+  redirectRetryAt?: string | null;
+  /** Redirect retry budget was exhausted for the matching URL. */
+  redirectRetryExhausted?: number;
+  /** Number of duplicate redirect URLs suppressed within this ingest run. */
+  redirectDuplicateSuppressed?: number;
 }
 
 export type ScopeMatch = "exact" | "probable" | "generic" | "unrelated";
@@ -718,7 +738,7 @@ export interface IngestResult {
   skipSummary: IngestSkipSummary;
   rejectedItems: IngestRejectedItem[];
   hardCaseQueueCandidates?: HardCaseDiscoveryCandidate[];
-  deferredReason?: "rate_limited" | null;
+  deferredReason?: "rate_limited" | "redirect_retry" | null;
   retryAt?: string | null;
 }
 

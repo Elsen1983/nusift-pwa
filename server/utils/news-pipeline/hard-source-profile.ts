@@ -20,6 +20,7 @@
 
 import { prisma } from "../prisma";
 import { logAgentScan } from "./log";
+import { isGenuineHardSourceEvidence } from "./failure-origin";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -262,6 +263,22 @@ export async function createOrUpdateHardSourceProfile(
   input: CreateHardSourceProfileInput,
 ): Promise<string | null> {
   try {
+    // Platform/runtime failures (BROWSER_RUNTIME_UNAVAILABLE) and configuration
+    // failures (BROWSER_FALLBACK_DISABLED) provide NO evidence about the
+    // publisher. They must never create or strengthen a hard-source profile,
+    // reduce source health, or trigger AI inspection of publisher HTML.
+    if (!isGenuineHardSourceEvidence({
+      staticQuality: input.staticQuality,
+      browserStatus: input.browserStatus,
+    })) {
+      await logAgentScan({
+        status: "HARD_SOURCE_PROFILE_SKIPPED_RUNTIME_EVIDENCE",
+        executionTimeMs: 0,
+        errorLog: `Skipped hard-source profile for ${input.targetUrl}: static=${input.staticQuality}, browser=${input.browserStatus}. Not genuine publisher evidence.`,
+      }).catch(() => {});
+      return null;
+    }
+
     const now = new Date();
     const dedupCutoff = new Date(now.getTime() - DEDUP_TTL_MS);
 

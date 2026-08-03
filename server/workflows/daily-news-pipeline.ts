@@ -5,6 +5,7 @@ import {
   type PipelineStageTimingSummary,
   type StageBatchTelemetry,
 } from "../utils/news-pipeline/stage-telemetry";
+import type { Agent3CompletionSummary } from "../utils/news-pipeline/agent3-completion";
 
 /**
  * Step wrapper for attaching a no-progress reason to the failed batch's
@@ -436,6 +437,7 @@ async function finishDailyPipeline(
     error?: string;
     stageTimings?: PipelineStageTimingSummary[];
     notificationsDurationMs?: number;
+    completion?: Agent3CompletionSummary | null;
   },
 ) {
   "use step";
@@ -450,10 +452,52 @@ async function finishDailyPipeline(
         completedStages,
         stageTimings: options?.stageTimings ?? [],
         notificationsDurationMs: options?.notificationsDurationMs ?? 0,
+        ...(options?.completion ? { completion: options.completion } : {}),
         ...(options?.error ? { error: options.error } : {}),
       },
     },
   });
+}
+
+/**
+ * Compute the Agent 3 completion summary for the just-finished orchestration.
+ *
+ * The future-run progress query deliberately omits the current pipelineRunId
+ * so same-run exclusion never hides eligible/retryable work that only becomes
+ * actionable after this orchestration ends. Observation-only: a failure here
+ * must never fail the workflow or replace its authoritative status.
+ */
+export async function finalizeAgent3CompletionStep(
+  orchestrationRunId: string,
+): Promise<Agent3CompletionSummary | null> {
+  "use step";
+  try {
+    const { getAgent3Progress } =
+      await import("../utils/news-pipeline/enrichment-runtime");
+    const { computeAgent3CompletionSummaryForRun } =
+      await import("../utils/news-pipeline/agent3-completion");
+    const { summary } = await computeAgent3CompletionSummaryForRun(
+      getAgent3Progress,
+      {
+        currentRunOptions: {
+          includeEnriched: false,
+          forceReprocess: false,
+          pipelineRunId: orchestrationRunId,
+        },
+        futureRunOptions: {
+          includeEnriched: false,
+          forceReprocess: false,
+        },
+      },
+    );
+    return summary;
+  } catch (error) {
+    console.error(
+      "[daily-pipeline] Agent 3 completion summary failed; run status unchanged.",
+      error,
+    );
+    return null;
+  }
 }
 
 export async function runDailyNewsPipelineWorkflow(
@@ -556,6 +600,12 @@ export async function runDailyNewsPipelineWorkflow(
 
     const stageTimings = summarizeStageTimings(stageTelemetry);
 
+    // Completion semantics: the workflow reports COMPLETED when the current
+    // orchestration has drained everything actionable inside it. Future-run
+    // work (cooldown-expired retries, newly ingested rows) is recorded in the
+    // completion summary so the admin UI never implies global completeness.
+    const completion = await finalizeAgent3CompletionStep(lock.orchestrationRunId);
+
     // Digest delivery has its own scheduled endpoint. Keeping future delivery
     // sleeps out of this workflow releases the pipeline lock immediately after
     // the terminal processing stage completes.
@@ -568,6 +618,7 @@ export async function runDailyNewsPipelineWorkflow(
       {
         stageTimings,
         notificationsDurationMs,
+        completion,
       },
     );
     return {

@@ -1,6 +1,7 @@
 import { prisma } from "../prisma";
 import { safeFetch } from "../ssrf-guard";
 import { SSRFError } from "../ssrf-guard";
+import { isLikelyRedirectorUrl, resolveSafeRedirectChain } from "../safe-redirect-resolver";
 import { logAgentScan } from "./log";
 import { cleanFeedValue, hashText, normalizeFeedText, normalizeUrl, stripHtml } from "./text";
 import { normalizeFeedTextDetailed } from "./normalize-feed-text";
@@ -22,6 +23,11 @@ import { discoverFeedForUrl, hasQueryScopedCategoryTokens } from "./feed-discove
 import { resolveHeadlessMarkersByAgent1Rss } from "./agent1-rss-cleanup";
 import { classifyArticleUrl } from "./article-url-policy";
 import { observeAndLogUrlPolicyDecisions } from "./url-policy-decision-observer";
+import {
+  getRedirectRetryState,
+  recordRedirectRetryState,
+  resolveRedirectRetryState,
+} from "./redirect-retry-state";
 import type { StageBatchProbe } from "./stage-telemetry";
 
 type ParsedFeedItem = {
@@ -44,6 +50,8 @@ const INGEST_HTTP_TIMEOUT_MS = 15_000;
 const DEFAULT_RSS_RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_RSS_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
 const MAX_INLINE_RSS_RATE_LIMIT_RETRY_MS = 2_000;
+const MAX_REDIRECT_RETRY_COOLDOWN_MS = 60 * 60 * 1000;
+const DEFAULT_REDIRECT_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
 
 const getInlineRssRateLimitRetryDelayMs = (response: Pick<Response, "headers">) => {
   const retryAfter = response.headers.get("retry-after")?.trim();
@@ -1415,6 +1423,8 @@ export async function ingestSource(
   sourceId: string,
   categoryId?: string,
   telemetry?: StageBatchProbe,
+  pipelineRunId?: string,
+  options?: { bypassRedirectTerminal?: boolean },
 ): Promise<IngestResult> {
   const startedAt = Date.now();
   const [source, category] = await Promise.all([
@@ -1426,6 +1436,8 @@ export async function ingestSource(
         rssFeedUrl: true,
         rssStatus: true,
         mediaName: true,
+        nextRetryAt: true,
+        discoveryEvidence: true,
       },
     }),
     categoryId
@@ -1462,6 +1474,7 @@ export async function ingestSource(
       rejectedItems: [],
     };
   }
+
 
   if (category?.nextRetryAt && category.nextRetryAt.getTime() > Date.now()) {
     await logAgentScan({
@@ -1535,6 +1548,7 @@ export async function ingestSource(
     isUsingDedicatedCategoryFeed ? null : preferredFrontPageUrl,
   );
   let rateLimitedRetryAt: Date | null = null;
+  let redirectRetryAtIso: string | null = null;
   try {
     let response: Response | null = null;
     let xml = "";
@@ -1691,6 +1705,13 @@ export async function ingestSource(
     const now = new Date();
     const skipSummary = emptySkipSummary();
     const rejectedItems: IngestRejectedItem[] = [];
+    const redirectResolutionSeen = new Set<string>();
+
+    const scheduleRedirectRetry = (retryAt: Date) => {
+      if (redirectRetryAtIso === null || retryAt.getTime() < Date.parse(redirectRetryAtIso)) {
+        redirectRetryAtIso = retryAt.toISOString();
+      }
+    };
 
     const feedEntries: ParsedFeedEntry[] = parsedFeed.items.map((item: ParsedFeedItem) => {
       const rawLink = item.link.trim();
@@ -1748,9 +1769,139 @@ export async function ingestSource(
         continue;
       }
 
-      const canonicalUrl = entry.canonicalUrl;
+      const originalCanonicalUrl = entry.canonicalUrl;
+      let canonicalUrl = originalCanonicalUrl;
+      let redirectedFromUrl: string | null = null;
+
+      // ── Aggregator redirector resolution (safe, generic) ───────────
+      // Resolve likely redirector / aggregator URLs one hop at a time with
+      // the same security checks as a direct request. The final validated
+      // publisher URL becomes the canonical article URL; the original
+      // discovered URL is preserved as provenance. Any resolution failure
+      // rejects the item THIS run (bounded retry on the next run) so an
+      // unresolved or unsafe redirect never reaches Agent 3.
+      if (isLikelyRedirectorUrl(canonicalUrl)) {
+        const retryState = await getRedirectRetryState({
+          sourceId: source.id,
+          categoryId: categoryId || null,
+          url: canonicalUrl,
+          bypassTerminal: options?.bypassRedirectTerminal,
+        });
+        if (retryState) {
+          if (retryState.status === "RETRYABLE" && retryState.nextRetryAt) {
+            scheduleRedirectRetry(new Date(retryState.nextRetryAt));
+            skipSummary.redirectDuplicateSuppressed = (skipSummary.redirectDuplicateSuppressed || 0) + 1;
+          } else if (retryState.status === "EXHAUSTED") {
+            skipSummary.redirectRetryExhausted = (skipSummary.redirectRetryExhausted || 0) + 1;
+          } else if (retryState.status === "SECURITY_REJECTED") {
+            skipSummary.redirectSecurityRejected = (skipSummary.redirectSecurityRejected || 0) + 1;
+          } else if (retryState.status === "INVALID_REDIRECT") {
+            skipSummary.redirectInvalid = (skipSummary.redirectInvalid || 0) + 1;
+          }
+          continue;
+        }
+        if (redirectResolutionSeen.has(canonicalUrl)) {
+          skipSummary.redirectDuplicateSuppressed = (skipSummary.redirectDuplicateSuppressed || 0) + 1;
+          continue;
+        }
+        redirectResolutionSeen.add(canonicalUrl);
+        const resolution = await resolveSafeRedirectChain(canonicalUrl, {
+          timeoutMs: INGEST_HTTP_TIMEOUT_MS,
+        });
+        if (resolution.ok) {
+          canonicalUrl = resolution.finalUrl;
+          redirectedFromUrl = originalCanonicalUrl;
+          await resolveRedirectRetryState({
+            pipelineRunId,
+            sourceId: source.id,
+            categoryId: categoryId || null,
+            originalUrl: originalCanonicalUrl,
+            bypassTerminal: options?.bypassRedirectTerminal,
+          });
+        } else if (resolution.evidence.failureKind === "security_rejected") {
+          skipSummary.redirectSecurityRejected = (skipSummary.redirectSecurityRejected || 0) + 1;
+          await recordRedirectRetryState({
+            pipelineRunId,
+            sourceId: source.id,
+            categoryId: categoryId || null,
+            originalUrl: originalCanonicalUrl,
+            evidence: resolution.evidence,
+          });
+          pushRejectedItem(rejectedItems, {
+            reason: "redirect_security_rejected",
+            rawLink,
+            canonicalUrl,
+            title: item.title || null,
+            publishedAt: null,
+          });
+          continue;
+        } else if (resolution.evidence.failureKind === "transient_network") {
+          skipSummary.redirectTransientFailed = (skipSummary.redirectTransientFailed || 0) + 1;
+          const retryAt = new Date(Date.now() + DEFAULT_REDIRECT_RETRY_COOLDOWN_MS);
+          scheduleRedirectRetry(retryAt);
+          await recordRedirectRetryState({
+            pipelineRunId,
+            sourceId: source.id,
+            categoryId: categoryId || null,
+            originalUrl: originalCanonicalUrl,
+            evidence: resolution.evidence,
+          });
+          pushRejectedItem(rejectedItems, {
+            reason: "redirect_transient_failure",
+            rawLink,
+            canonicalUrl,
+            title: item.title || null,
+            publishedAt: null,
+          });
+          continue;
+        } else if (resolution.evidence.failureKind === "rate_limited") {
+          skipSummary.redirectRateLimited = (skipSummary.redirectRateLimited || 0) + 1;
+          const retryAt = new Date(Date.now() + Math.min(
+            MAX_REDIRECT_RETRY_COOLDOWN_MS,
+            resolution.evidence.retryAfterMs ?? DEFAULT_REDIRECT_RETRY_COOLDOWN_MS,
+          ));
+          scheduleRedirectRetry(retryAt);
+          await recordRedirectRetryState({
+            pipelineRunId,
+            sourceId: source.id,
+            categoryId: categoryId || null,
+            originalUrl: originalCanonicalUrl,
+            evidence: resolution.evidence,
+          });
+          pushRejectedItem(rejectedItems, {
+            reason: "redirect_rate_limited",
+            rawLink,
+            canonicalUrl,
+            title: item.title || null,
+            publishedAt: null,
+          });
+          continue;
+        } else {
+          skipSummary.redirectInvalid = (skipSummary.redirectInvalid || 0) + 1;
+          await recordRedirectRetryState({
+            pipelineRunId,
+            sourceId: source.id,
+            categoryId: categoryId || null,
+            originalUrl: originalCanonicalUrl,
+            evidence: resolution.evidence,
+          });
+          pushRejectedItem(rejectedItems, {
+            reason: "redirect_invalid",
+            rawLink,
+            canonicalUrl,
+            title: item.title || null,
+            publishedAt: null,
+          });
+          continue;
+        }
+      }
+
+      if (redirectRetryAtIso) {
+        skipSummary.redirectRetryAt = redirectRetryAtIso;
+      }
 
       // ── Article URL policy: reject non-article URLs early ──
+      // Runs against the FINAL canonical URL after redirect resolution.
       const urlPolicy = classifyArticleUrl(canonicalUrl);
       if (!urlPolicy.accepted) {
         skipSummary.urlPolicyRejected = (skipSummary.urlPolicyRejected || 0) + 1;
@@ -1805,9 +1956,18 @@ export async function ingestSource(
         continue;
       }
 
-      const existingFeedArticle =
+      // Deduplication runs against the FINAL canonical URL. When a redirect
+      // was resolved, the in-memory map is keyed by the original feed URLs,
+      // so do a targeted bounded lookup for the resolved final URL.
+      let existingFeedArticle =
         (entry.rssGuid ? existingFeedArticlesByGuid.get(entry.rssGuid) : null) ||
         existingFeedArticlesByCanonicalUrl.get(canonicalUrl);
+      if (!existingFeedArticle && redirectedFromUrl && canonicalUrl !== redirectedFromUrl) {
+        existingFeedArticle = (await prisma.article.findUnique({
+          where: { canonicalUrl },
+          select: { id: true, rssGuid: true, canonicalUrl: true, categoryId: true, tags: true },
+        })) ?? undefined;
+      }
 
       if (
         existingFeedArticle &&
@@ -1879,7 +2039,9 @@ export async function ingestSource(
         isPaywall: /paywall|subscribe|premium/i.test(xml),
         rawTags: item.categories || [],
         rawSignals: [],
-        reasoning: `${parsedCandidateOrigin.toUpperCase()} ingest from ${source.mediaName || source.frontPageUrl}`,
+        reasoning: `${parsedCandidateOrigin.toUpperCase()} ingest from ${source.mediaName || source.frontPageUrl}${
+          redirectedFromUrl ? `; redirected from ${redirectedFromUrl}` : ""
+        }`,
         normalizationFlags: [...new Set([
           ...(normalizedTitle.changed ? normalizedTitle.flags : []),
           ...(normalizedBody.changed ? normalizedBody.flags : []),
@@ -1891,7 +2053,18 @@ export async function ingestSource(
           discoveredFromCategoryFeed: isUsingDedicatedCategoryFeed,
           sourcePageUrl: preferredFrontPageUrl,
           fetchedAt: new Date().toISOString(),
+          ...(redirectedFromUrl ? { redirectedFromUrl } : {}),
         },
+      });
+    }
+
+    if (redirectRetryAtIso) {
+      await logAgentScan({
+        sourceId,
+        categoryId,
+        status: "REDIRECT_RETRY_STATE_RECORDED",
+        executionTimeMs: Date.now() - startedAt,
+        errorLog: `Per-URL redirect retry state recorded; earliest retry ${redirectRetryAtIso}.`,
       });
     }
 
@@ -2125,8 +2298,9 @@ export async function ingestSource(
       feedUrl: preferredFeedUrl || preferredFrontPageUrl,
       feedFormat: null,
       deferredReason: rateLimitedRetryAt ? "rate_limited" : null,
-      retryAt: rateLimitedRetryAt?.toISOString() || null,
-      skipSummary: emptySkipSummary(),
+      retryAt: rateLimitedRetryAt?.toISOString() || null,      skipSummary: redirectRetryAtIso
+        ? { ...emptySkipSummary(), redirectRetryAt: redirectRetryAtIso }
+        : emptySkipSummary(),
       rejectedItems: [],
       hardCaseQueueCandidates,
     };

@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   browserEnabled: vi.fn(),
   agent3: vi.fn(),
   agent3Progress: vi.fn(),
+  completionForRun: vi.fn(),
 }));
 
 vi.mock("../utils/prisma", () => ({
@@ -46,6 +47,9 @@ vi.mock("../utils/news-pipeline/enrichment-runtime", () => ({
   runEnrichmentBatch: mocks.agent3,
   getAgent3Progress: mocks.agent3Progress,
 }));
+vi.mock("../utils/news-pipeline/agent3-completion", () => ({
+  computeAgent3CompletionSummaryForRun: mocks.completionForRun,
+}));
 vi.mock("../utils/notification-sender", () => ({
   sendDueDailyNotifications: vi.fn(),
 }));
@@ -64,6 +68,20 @@ describe("daily news pipeline stage batches", () => {
     mocks.artifactCount.mockResolvedValue(0);
     mocks.artifactCreate.mockResolvedValue({ id: "telemetry-1" });
     mocks.browserEnabled.mockReturnValue(true);
+    mocks.completionForRun.mockResolvedValue({
+      summary: {
+        completionReason: "globally_complete",
+        currentRunDrained: true,
+        globallyComplete: true,
+        eligibleNextRun: 0,
+        retryableNextRun: 0,
+        deferred: 0,
+        quarantined: 0,
+        nonRetryable: 0,
+        nextRetryAt: null,
+      },
+      currentRunProgress: null,
+    });
     mocks.transaction.mockImplementation((callback) =>
       callback({
         $queryRaw: mocks.queryRaw,
@@ -524,5 +542,38 @@ describe("daily news pipeline stage batches", () => {
         complete: true,
       },
     });
+  });
+
+  it("computes the completion summary with future-run counts (no same-run exclusion)", async () => {
+    mocks.completionForRun.mockResolvedValue({
+      summary: {
+        completionReason: "current_orchestration_drained",
+        currentRunDrained: true,
+        globallyComplete: false,
+        eligibleNextRun: 192,
+        retryableNextRun: 175,
+        deferred: 71,
+        quarantined: 23,
+        nonRetryable: 12,
+        nextRetryAt: "2026-08-03T04:00:00.000Z",
+      },
+      currentRunProgress: null,
+    });
+
+    // The step is exported for direct testing; it must request the future-run
+    // progress query WITHOUT the current orchestration id.
+    const { finalizeAgent3CompletionStep } = await import("./daily-news-pipeline");
+    const summary = await finalizeAgent3CompletionStep("orchestration-1");
+
+    expect(summary).toMatchObject({
+      completionReason: "current_orchestration_drained",
+      currentRunDrained: true,
+      globallyComplete: false,
+      eligibleNextRun: 192,
+      retryableNextRun: 175,
+    });
+    const call = mocks.completionForRun.mock.calls[0]!;
+    expect(call[1].currentRunOptions.pipelineRunId).toBe("orchestration-1");
+    expect(call[1].futureRunOptions.pipelineRunId).toBeUndefined();
   });
 });

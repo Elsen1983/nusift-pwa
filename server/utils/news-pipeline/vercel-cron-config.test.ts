@@ -29,4 +29,20 @@ describe("vercel.json cron schedule", () => {
       schedule: "30 5 * * *",
     });
   });
+
+  it("does not add a third notification cron (durable notification workflow instead)", () => {
+    expect(crons.some((cron) => cron.path.includes("send-due-notifications"))).toBe(false);
+    expect(crons.some((cron) => cron.path.includes("notifications"))).toBe(false);
+    // Every configured cron must run no more than once per day (Hobby limit).
+    for (const cron of crons) {
+      const minute = cron.schedule.split(" ")[0] ?? "";
+      expect(minute.includes(",")).toBe(false);
+      const hour = cron.schedule.split(" ")[1] ?? "";
+      expect(hour.includes(",")).toBe(false);
+      expect(hour.includes("/")).toBe(false);
+      expect(cron.schedule.split(" ")[2]).toBe("*");
+      expect(cron.schedule.split(" ")[3]).toBe("*");
+      expect(cron.schedule.split(" ")[4]).toBe("*");
+    }
+  });
 });

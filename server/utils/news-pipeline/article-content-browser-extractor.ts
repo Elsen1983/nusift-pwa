@@ -135,6 +135,7 @@ export async function extractArticleContentWithBrowser(
   try {
     const context = await browser.newContext({
       userAgent: BROWSER_USER_AGENT,
+      ...(launchResult.viewport ? { viewport: launchResult.viewport } : {}),
     });
     const page = await context.newPage();
 

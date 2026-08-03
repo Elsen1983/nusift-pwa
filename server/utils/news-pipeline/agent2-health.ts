@@ -29,6 +29,10 @@ import {
   type Agent2LifecycleState,
 } from "./agent2-target-lifecycle";
 import { stableTargetKey } from "./text";
+import {
+  classifyBrowserFailureOrigin,
+  healthDescriptionForBrowserFailure,
+} from "./failure-origin";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -153,12 +157,19 @@ function computeHealthScore(input: {
     score -= 20;
   }
 
-  // Browser failures
+  // Browser failures — only genuine publisher evidence lowers the source
+  // score. Platform/runtime failures (BROWSER_RUNTIME_UNAVAILABLE) and
+  // configuration failures (BROWSER_FALLBACK_DISABLED) never reduce source
+  // health as if the publisher failed; they stay visible via the
+  // recommendedAction and lastBrowserStatus fields.
   if (lastBrowserStatus !== null && BROWSER_FAILURE_STATUSES.has(lastBrowserStatus)) {
-    score -= 10;
-    if (lastBrowserStatus === "BROWSER_RUNTIME_UNAVAILABLE") {
-      // Environment issue, not source problem
-      recommendedAction = "Fix browser runtime environment.";
+    const browserOrigin = classifyBrowserFailureOrigin(lastBrowserStatus);
+    if (browserOrigin === "publisher_content_failure") {
+      score -= 10;
+    }
+    const healthNote = healthDescriptionForBrowserFailure(lastBrowserStatus);
+    if (healthNote) {
+      recommendedAction = healthNote;
     }
   }
 
@@ -336,10 +347,15 @@ export async function buildAgent2HealthReport(input?: {
 
       if (existing) {
         // Older artifact: only contribute to failure streak if active.
+        // Platform/runtime failures are NOT publisher failures and must not
+        // drive the streak that can classify a source as "unsupported".
         if (existing._streakActive) {
           if (resolved) {
             existing._streakActive = false;
-          } else if (BROWSER_FAILURE_STATUSES.has(artifact.status)) {
+          } else if (
+            BROWSER_FAILURE_STATUSES.has(artifact.status) &&
+            classifyBrowserFailureOrigin(artifact.status) === "publisher_content_failure"
+          ) {
             existing.consecutiveFailures += 1;
             existing.lastFailureAt = artifact.createdAt;
           }
@@ -370,9 +386,13 @@ export async function buildAgent2HealthReport(input?: {
           lastBrowserStatus: artifact.status,
           lastAcceptedCount: accepted,
           lastInsertedCount: inserted,
-          consecutiveFailures: resolved ? 0 : BROWSER_FAILURE_STATUSES.has(artifact.status) ? 1 : 0,
+          consecutiveFailures: resolved ? 0 :
+            BROWSER_FAILURE_STATUSES.has(artifact.status) &&
+            classifyBrowserFailureOrigin(artifact.status) === "publisher_content_failure" ? 1 : 0,
           lastProductiveAt: resolved ? artifact.createdAt : null,
-          lastFailureAt: !resolved && BROWSER_FAILURE_STATUSES.has(artifact.status) ? artifact.createdAt : null,
+          lastFailureAt: !resolved &&
+            BROWSER_FAILURE_STATUSES.has(artifact.status) &&
+            classifyBrowserFailureOrigin(artifact.status) === "publisher_content_failure" ? artifact.createdAt : null,
           lastSeenAt: artifact.createdAt,
           inCooldown: rateLimited,
           browserCooldownUntil: readString(payload.browserCooldownUntil),

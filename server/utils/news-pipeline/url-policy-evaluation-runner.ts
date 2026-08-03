@@ -381,14 +381,20 @@ export function runUrlPolicyEvaluation(
 
     // A. Evaluate all URLs with production baseline policy
     const prodDecisions: UrlPolicyDecisionLog[] = labels.map((label) =>
-      evaluateProductionUrlPolicy({ url: label.url }),
+      evaluateProductionUrlPolicy({
+        url: label.url,
+        candidateEvidence: label.candidateEvidence,
+      }),
     );
     const prodResult = computeMetrics(labels, prodDecisions, CURRENT_PRODUCTION_URL_POLICY_VERSION);
     policies[PRODUCTION_POLICY_KEY] = prodResult;
 
     // B. Evaluate all URLs with candidate shadow policy
     const candDecisions: UrlPolicyDecisionLog[] = labels.map((label) =>
-      evaluateCandidateUrlPolicy({ url: label.url }),
+      evaluateCandidateUrlPolicy({
+        url: label.url,
+        candidateEvidence: label.candidateEvidence,
+      }),
     );
     const candResult = computeMetrics(labels, candDecisions, CANDIDATE_URL_POLICY_VERSION);
     policies[CANDIDATE_POLICY_KEY] = candResult;

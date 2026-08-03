@@ -8,6 +8,7 @@ import {
   summarizeStageTimings,
   type StageBatchTelemetry,
 } from "../../utils/news-pipeline/stage-telemetry";
+import { normalizeAgent3CompletionSummary } from "../../utils/news-pipeline/agent3-completion";
 
 const DAILY_STATUSES = [
   "DAILY_PIPELINE_WORKFLOW_RUNNING",
@@ -262,6 +263,10 @@ export default defineEventHandler(async (event) => {
       error: typeof summary.error === "string" ? boundText(summary.error, 1000) : null,
       workflowDurationMs,
       notificationsDurationMs: clampDuration(numberOr(summary.notificationsDurationMs)),
+      // Completion semantics: bounded, deterministic fields explaining why a
+      // COMPLETED workflow can still leave future-run Agent 3 work. Legacy
+      // summaries without the new fields yield null ("not available").
+      completion: normalizeAgent3CompletionSummary(summary.completion),
     },
     stageTimings,
     batches,
