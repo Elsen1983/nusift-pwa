@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   agent3: vi.fn(),
   agent3Progress: vi.fn(),
   completionForRun: vi.fn(),
+  fetch: vi.fn(),
 }));
 
 vi.mock("../utils/prisma", () => ({
@@ -68,6 +69,9 @@ describe("daily news pipeline stage batches", () => {
     mocks.artifactCount.mockResolvedValue(0);
     mocks.artifactCreate.mockResolvedValue({ id: "telemetry-1" });
     mocks.browserEnabled.mockReturnValue(true);
+    process.env.VERCEL_URL = "nusift-test.vercel.app";
+    process.env.CRON_SECRET = "test-cron-secret";
+    vi.stubGlobal("fetch", mocks.fetch);
     mocks.completionForRun.mockResolvedValue({
       summary: {
         completionReason: "globally_complete",
@@ -346,32 +350,21 @@ describe("daily news pipeline stage batches", () => {
   });
 
   it("runs the real Agent 2 browser queue in write mode", async () => {
-    mocks.headless.mockResolvedValue({
-      dryRun: false,
-      processed: 3,
-      claimed: 3,
-      browserAttemptedTargets: 3,
-      remainingEligible: 1,
-      selectedQueueItems: 3,
-      targetDispositions: {
-        succeeded: 2,
-        failedRetryable: 0,
-        failedPermanent: 0,
-        skipped: 0,
-        deferred: 1,
-        quarantined: 0,
-        claimLost: 0,
-        persistenceFailed: 0,
-      },
-      productivity: {
-        rawLinks: 4,
-        evaluatedCandidates: 3,
-        acceptedCandidates: 2,
-        rejectedCandidates: 1,
-        insertedCandidates: 2,
-        skippedCandidates: 0,
-        candidatePersistenceFailures: 0,
-      },
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        stage: "agent2-headless",
+        processed: 3,
+        remaining: 1,
+        complete: false,
+        telemetry: {
+          stage: "agent2-headless",
+          batchSeq: 1,
+          batchSizeLimit: 3,
+          concurrencyLimit: 1,
+          complete: false,
+        },
+      }),
     });
     const result = await runDailyPipelineStageBatch(
       "orchestration-1",
@@ -388,10 +381,13 @@ describe("daily news pipeline stage batches", () => {
         complete: false,
       },
     });
-    expect(mocks.headless).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 3, dryRun: false, runBrowser: true }),
+    expect(mocks.fetch).toHaveBeenCalledWith(
+      "https://nusift-test.vercel.app/api/internal/run-agent2-headless",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ authorization: "Bearer test-cron-secret" }),
+      }),
     );
-    expect(mocks.headless.mock.calls[0]![0].telemetry).toBeDefined();
   });
 
   it("runs Agent 3 without browser fallback, reprocessing, or a daily article cap", async () => {

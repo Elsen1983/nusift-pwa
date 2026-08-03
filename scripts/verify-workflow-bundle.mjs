@@ -39,6 +39,26 @@ if (packageJson.dependencies?.playwright) {
   hits.push("full playwright package is declared in dependencies");
 }
 
+// Browser runtimes must remain behind a regular Nitro/serverless endpoint.
+// Bundling either module into a durable step makes playwright-core derive its
+// package root from /var/task/index.js and require the nonexistent
+// /var/package.json at runtime.
+const dailyWorkflowSource = readFileSync(
+  join(root, "server", "workflows", "daily-news-pipeline.ts"),
+  "utf8",
+);
+for (const marker of [
+  "article-discovery-browser",
+  "article-discovery-headless-queue",
+  "browser-runtime",
+  "playwright-core",
+  "@sparticuz/chromium",
+]) {
+  if (dailyWorkflowSource.includes(marker)) {
+    hits.push(`browser runtime marker in durable workflow source: ${marker}`);
+  }
+}
+
 if (hits.length > 0) {
   console.error("workflow-bundle-guard: FAILED");
   for (const hit of hits) console.error(` - ${hit}`);

@@ -293,49 +293,36 @@ export async function runDailyPipelineStageBatch(
     }
 
     if (stage === "agent2-headless") {
-      const { processArticleDiscoveryHeadlessQueue } =
-        await import("../utils/news-pipeline/article-discovery-headless-queue");
-      const { isBrowserFallbackEnabled } =
-        await import("../utils/news-pipeline/article-discovery-browser");
-      if (!isBrowserFallbackEnabled()) {
-        // The stage-level catch below records the failed batch once, preserving
-        // the original fatal error without creating duplicate artifacts.
-        throw new FatalError(
-          "Agent 2 browser fallback is disabled. Set NUXT_ENABLE_AGENT2_BROWSER_FALLBACK=true.",
-        );
+      const deploymentHost = (
+        process.env.VERCEL_URL ||
+        process.env.VERCEL_PROJECT_PRODUCTION_URL ||
+        process.env.NUXT_INTERNAL_BASE_URL ||
+        ""
+      ).trim();
+      const secret = process.env.CRON_SECRET || process.env.NUXT_CRON_SECRET;
+      if (!deploymentHost || !secret) {
+        throw new FatalError("Agent 2 headless internal runner is not configured.");
       }
-      const result = await processArticleDiscoveryHeadlessQueue({
-        limit: 3,
-        dryRun: false,
-        runBrowser: true,
-        telemetry: tracker,
+      const baseUrl = deploymentHost.startsWith("http://") || deploymentHost.startsWith("https://")
+        ? deploymentHost
+        : `https://${deploymentHost}`;
+      const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/internal/run-agent2-headless`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${secret}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          orchestrationRunId,
+          batchSeq: telemetryInput?.batchSeq ?? 1,
+          remainingBefore: telemetryInput?.remainingBefore ?? null,
+          sleepMs: telemetryInput?.sleepMs ?? 0,
+        }),
       });
-      if (result.dryRun)
-        throw new FatalError(
-          "Agent 2 headless workflow unexpectedly ran in dry-run mode.",
-        );
-
-      const processed = result.processed;
-      const remaining = result.remainingEligible ?? 0;
-      const complete = remaining === 0;
-      const dispositions = result.targetDispositions;
-      const telemetry = tracker.finalize({
-        processed: result.selectedQueueItems,
-        succeeded: dispositions.succeeded,
-        failedRetryable: dispositions.failedRetryable,
-        failedPermanent: dispositions.failedPermanent,
-        skipped: dispositions.skipped,
-        deferred: dispositions.deferred,
-        quarantined: dispositions.quarantined,
-        claimLost: dispositions.claimLost,
-        persistenceFailed: dispositions.persistenceFailed,
-        productivity: result.productivity,
-        remainingBefore: telemetryInput?.remainingBefore ?? null,
-        remainingAfter: remaining,
-        complete,
-      });
-      await persistTelemetryBestEffort(telemetry);
-      return { stage, processed, remaining, complete, telemetry };
+      if (!response.ok) {
+        throw new Error(`Agent 2 headless internal runner failed with HTTP ${response.status}.`);
+      }
+      return await response.json() as StageBatchResult;
     }
 
     const { getAgent3Progress, runEnrichmentBatch } =
