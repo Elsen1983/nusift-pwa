@@ -68,6 +68,17 @@ describe("POST /api/internal/run-agent2-headless", () => {
     await expect((await loadHandler())({} as any)).rejects.toMatchObject({ statusCode: 401 });
   });
 
+  it("accepts the cron secret header used by protected internal routes", async () => {
+    mocks.getHeader.mockImplementation((_event, name) =>
+      name === "x-cron-secret" ? "test-secret" : "",
+    );
+
+    await expect((await loadHandler())({} as any)).resolves.toMatchObject({
+      stage: "agent2-headless",
+      complete: true,
+    });
+  });
+
   it("runs the bounded browser queue in write mode and returns telemetry", async () => {
     const result = await (await loadHandler())({} as any);
 

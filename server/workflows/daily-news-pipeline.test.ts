@@ -70,6 +70,7 @@ describe("daily news pipeline stage batches", () => {
     mocks.artifactCreate.mockResolvedValue({ id: "telemetry-1" });
     mocks.browserEnabled.mockReturnValue(true);
     process.env.VERCEL_URL = "nusift-test.vercel.app";
+    process.env.VERCEL_PROJECT_PRODUCTION_URL = "www.nusift.test";
     process.env.CRON_SECRET = "test-cron-secret";
     vi.stubGlobal("fetch", mocks.fetch);
     mocks.completionForRun.mockResolvedValue({
@@ -270,7 +271,7 @@ describe("daily news pipeline stage batches", () => {
 
   it("preserves the original stage error when telemetry persistence also fails", async () => {
     const stageError = new Error("authoritative stage failure");
-    mocks.agent3.mockRejectedValueOnce(stageError);
+    mocks.fetch.mockRejectedValueOnce(stageError);
     mocks.artifactCreate.mockRejectedValueOnce(
       new Error("telemetry database unavailable"),
     );
@@ -286,7 +287,7 @@ describe("daily news pipeline stage batches", () => {
     }
 
     expect(thrown).toBe(stageError);
-    expect(mocks.agent3).toHaveBeenCalledTimes(1);
+    expect(mocks.fetch).toHaveBeenCalledTimes(1);
     expect(mocks.artifactCreate).toHaveBeenCalledTimes(1);
     expect(consoleError).toHaveBeenCalledWith(
       "[daily-pipeline] Stage telemetry persistence failed.",
@@ -382,37 +383,47 @@ describe("daily news pipeline stage batches", () => {
       },
     });
     expect(mocks.fetch).toHaveBeenCalledWith(
-      "https://nusift-test.vercel.app/api/internal/run-agent2-headless",
+      "https://www.nusift.test/api/internal/run-agent2-headless",
       expect.objectContaining({
         method: "POST",
-        headers: expect.objectContaining({ authorization: "Bearer test-cron-secret" }),
+        headers: expect.objectContaining({
+          authorization: "Bearer test-cron-secret",
+          "x-cron-secret": "test-cron-secret",
+        }),
       }),
     );
   });
 
+  it("does not retry deterministic internal-runner authorization failures", async () => {
+    mocks.fetch.mockResolvedValue({ ok: false, status: 401 });
+
+    await expect(
+      runDailyPipelineStageBatch("orchestration-1", "agent2-headless"),
+    ).rejects.toMatchObject({ name: "FatalError" });
+  });
+
   it("runs Agent 3 without browser fallback, reprocessing, or a daily article cap", async () => {
-    mocks.agent3.mockResolvedValue({
-      articleCount: 10,
-      persist: {
-        failed: 0,
-        claimLost: 0,
-        byKind: {
-          SUCCESS: 8,
-          RETRYABLE_FAILURE: 2,
-          SKIPPED: 0,
-          HEADLESS_REQUIRED: 0,
-          PAYWALL_BLOCKED: 0,
-          CANONICAL_MISMATCH: 0,
-          LOW_CONTENT_QUALITY: 0,
-          UNSUPPORTED_STRUCTURE: 0,
-          HTTP_ACCESS_BLOCKED: 0,
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        stage: "agent3",
+        processed: 10,
+        remaining: 7,
+        complete: false,
+        telemetry: {
+          stage: "agent3",
+          batchSeq: 1,
+          batchSizeLimit: 10,
+          concurrencyLimit: 1,
+          processed: 10,
+          succeeded: 8,
+          failedRetryable: 2,
+          deferred: 0,
+          quarantined: 0,
+          remainingAfter: 7,
+          complete: false,
         },
-      },
-    });
-    mocks.agent3Progress.mockResolvedValue({
-      retryableNow: 7,
-      deferred: 3,
-      quarantined: 1,
+      }),
     });
     const result = await runDailyPipelineStageBatch(
       "orchestration-1",
@@ -435,36 +446,32 @@ describe("daily news pipeline stage batches", () => {
         complete: false,
       },
     });
-    expect(mocks.agent3).toHaveBeenCalledWith(
-      expect.objectContaining({
-        maxArticles: 10,
-        includeEnriched: false,
-        forceReprocess: false,
-        browserFallback: false,
-        pipelineRunId: "orchestration-1",
-      }),
+    expect(mocks.fetch).toHaveBeenCalledWith(
+      "https://www.nusift.test/api/internal/run-agent3",
+      expect.objectContaining({ method: "POST" }),
     );
-    expect(mocks.agent3.mock.calls[0]![0].telemetry).toBeDefined();
   });
 
   it("reconciles Agent 3 outcome buckets without double counting", async () => {
-    mocks.agent3.mockResolvedValue({
-      articleCount: 7,
-      persist: {
-        failed: 1,
-        claimLost: 1,
-        byKind: {
-          SUCCESS: 2,
-          RETRYABLE_FAILURE: 1,
-          HEADLESS_REQUIRED: 1,
-          PAYWALL_BLOCKED: 1,
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        stage: "agent3",
+        processed: 7,
+        remaining: 0,
+        complete: true,
+        telemetry: {
+          processed: 7,
+          succeeded: 2,
+          failedRetryable: 1,
+          failedPermanent: 1,
+          skipped: 0,
+          deferred: 1,
+          quarantined: 0,
+          claimLost: 1,
+          persistenceFailed: 1,
         },
-      },
-    });
-    mocks.agent3Progress.mockResolvedValue({
-      retryableNow: 0,
-      deferred: 0,
-      quarantined: 0,
+      }),
     });
 
     const result = await runDailyPipelineStageBatch(
@@ -497,31 +504,22 @@ describe("daily news pipeline stage batches", () => {
   });
 
   it("completes Agent 3 when only deferred work remains", async () => {
-    mocks.agent3.mockResolvedValue({
-      articleCount: 0,
-      persist: {
-        failed: 0,
-        claimLost: 0,
-        byKind: {
-          SUCCESS: 0,
-          RETRYABLE_FAILURE: 0,
-          SKIPPED: 0,
-          HEADLESS_REQUIRED: 0,
-          PAYWALL_BLOCKED: 0,
-          CANONICAL_MISMATCH: 0,
-          LOW_CONTENT_QUALITY: 0,
-          UNSUPPORTED_STRUCTURE: 0,
-          HTTP_ACCESS_BLOCKED: 0,
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        stage: "agent3",
+        processed: 0,
+        remaining: 0,
+        deferred: 12,
+        quarantined: 3,
+        complete: true,
+        telemetry: {
+          deferred: 0,
+          quarantined: 0,
+          remainingAfter: 0,
+          complete: true,
         },
-      },
-    });
-    mocks.agent3Progress.mockResolvedValue({
-      readyNew: 0,
-      readyRetry: 0,
-      retryableNow: 0,
-      deferred: 12,
-      quarantined: 3,
-      nextRetryAt: "2026-08-02T10:00:00.000Z",
+      }),
     });
 
     await expect(
@@ -541,19 +539,22 @@ describe("daily news pipeline stage batches", () => {
   });
 
   it("computes the completion summary with future-run counts (no same-run exclusion)", async () => {
-    mocks.completionForRun.mockResolvedValue({
-      summary: {
-        completionReason: "current_orchestration_drained",
-        currentRunDrained: true,
-        globallyComplete: false,
-        eligibleNextRun: 192,
-        retryableNextRun: 175,
-        deferred: 71,
-        quarantined: 23,
-        nonRetryable: 12,
-        nextRetryAt: "2026-08-03T04:00:00.000Z",
-      },
-      currentRunProgress: null,
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        action: "completion",
+        summary: {
+          completionReason: "current_orchestration_drained",
+          currentRunDrained: true,
+          globallyComplete: false,
+          eligibleNextRun: 192,
+          retryableNextRun: 175,
+          deferred: 71,
+          quarantined: 23,
+          nonRetryable: 12,
+          nextRetryAt: "2026-08-03T04:00:00.000Z",
+        },
+      }),
     });
 
     // The step is exported for direct testing; it must request the future-run
@@ -568,8 +569,9 @@ describe("daily news pipeline stage batches", () => {
       eligibleNextRun: 192,
       retryableNextRun: 175,
     });
-    const call = mocks.completionForRun.mock.calls[0]!;
-    expect(call[1].currentRunOptions.pipelineRunId).toBe("orchestration-1");
-    expect(call[1].futureRunOptions.pipelineRunId).toBeUndefined();
+    expect(JSON.parse(mocks.fetch.mock.calls[0]![1].body)).toEqual({
+      action: "completion",
+      orchestrationRunId: "orchestration-1",
+    });
   });
 });

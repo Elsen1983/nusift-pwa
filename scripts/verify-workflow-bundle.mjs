@@ -2,9 +2,11 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const root = process.cwd();
-const outputRoot = join(root, ".output");
+const nodeOutputRoot = join(root, ".output");
+const vercelOutputRoot = join(root, ".vercel", "output");
+const outputRoot = existsSync(nodeOutputRoot) ? nodeOutputRoot : vercelOutputRoot;
 if (!existsSync(outputRoot)) {
-  console.error("workflow-bundle-guard: .output is missing; run npm run build first.");
+  console.error("workflow-bundle-guard: build output is missing; run npm run build first.");
   process.exit(1);
 }
 
@@ -48,6 +50,7 @@ const dailyWorkflowSource = readFileSync(
   "utf8",
 );
 for (const marker of [
+  "enrichment-runtime",
   "article-discovery-browser",
   "article-discovery-headless-queue",
   "browser-runtime",

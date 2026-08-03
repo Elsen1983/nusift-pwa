@@ -1,0 +1,118 @@
+import { createError, getHeader } from "h3";
+import { runEnrichmentBatch, getAgent3Progress } from "../../utils/news-pipeline/enrichment-runtime";
+import { computeAgent3CompletionSummaryForRun } from "../../utils/news-pipeline/agent3-completion";
+import { persistStageBatchTelemetry } from "../../utils/news-pipeline/stage-telemetry-server";
+import { StageBatchTelemetryTracker } from "../../utils/news-pipeline/stage-telemetry";
+
+const authenticate = (event: Parameters<typeof getHeader>[0]) => {
+  const expected = process.env.CRON_SECRET || process.env.NUXT_CRON_SECRET;
+  const authorization = getHeader(event, "authorization");
+  const bearer = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length).trim()
+    : "";
+  const provided = getHeader(event, "x-cron-secret") || bearer;
+  if (!expected || provided !== expected) {
+    throw createError({ statusCode: 401, statusMessage: "Unauthorized." });
+  }
+};
+
+const boundedInteger = (value: unknown, fallback: number, min: number, max: number) => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed)
+    ? Math.max(min, Math.min(max, Math.trunc(parsed)))
+    : fallback;
+};
+
+export default defineEventHandler(async (event) => {
+  authenticate(event);
+  const body = await readBody(event).catch(() => ({}));
+  const orchestrationRunId = typeof body?.orchestrationRunId === "string"
+    ? body.orchestrationRunId.trim().slice(0, 100)
+    : "";
+  if (!orchestrationRunId) {
+    throw createError({ statusCode: 400, statusMessage: "Missing orchestrationRunId." });
+  }
+
+  if (body?.action === "completion") {
+    const { summary } = await computeAgent3CompletionSummaryForRun(getAgent3Progress, {
+      currentRunOptions: {
+        includeEnriched: false,
+        forceReprocess: false,
+        pipelineRunId: orchestrationRunId,
+      },
+      futureRunOptions: {
+        includeEnriched: false,
+        forceReprocess: false,
+      },
+    });
+    return { action: "completion" as const, summary };
+  }
+
+  const batchSeq = boundedInteger(body?.batchSeq, 1, 1, 10_000);
+  const remainingBefore = body?.remainingBefore == null
+    ? null
+    : boundedInteger(body.remainingBefore, 0, 0, 1_000_000);
+  const sleepMs = boundedInteger(body?.sleepMs, 0, 0, 86_400_000);
+  const tracker = new StageBatchTelemetryTracker({
+    orchestrationRunId,
+    stage: "agent3",
+    batchSeq,
+    batchSizeLimit: 10,
+    concurrencyLimit: 1,
+  });
+  tracker.recordSleep(sleepMs);
+
+  const result = await runEnrichmentBatch({
+    maxArticles: 10,
+    includeEnriched: false,
+    forceReprocess: false,
+    browserFallback: false,
+    pipelineRunId: orchestrationRunId,
+    telemetry: tracker,
+  });
+  const progress = await getAgent3Progress({
+    includeEnriched: false,
+    forceReprocess: false,
+    pipelineRunId: orchestrationRunId,
+  });
+  const complete = progress.retryableNow === 0;
+  const byKind = result.persist?.byKind ?? {};
+  const failedPermanent = Object.entries(byKind)
+    .filter(([kind]) => !["SUCCESS", "SKIPPED", "RETRYABLE_FAILURE", "HEADLESS_REQUIRED"].includes(kind))
+    .reduce((sum, [, count]) => sum + (typeof count === "number" ? count : 0), 0);
+  const telemetry = tracker.finalize({
+    processed: result.articleCount,
+    succeeded: byKind.SUCCESS ?? 0,
+    failedRetryable: byKind.RETRYABLE_FAILURE ?? 0,
+    failedPermanent,
+    skipped: byKind.SKIPPED ?? 0,
+    deferred: byKind.HEADLESS_REQUIRED ?? 0,
+    quarantined: 0,
+    claimLost: result.persist?.claimLost ?? 0,
+    persistenceFailed: result.persist?.failed ?? 0,
+    remainingBefore,
+    remainingAfter: progress.retryableNow,
+    complete,
+  });
+  try {
+    await persistStageBatchTelemetry({ pipelineRunId: orchestrationRunId, telemetry });
+  } catch {
+    console.error("[agent3] Stage telemetry persistence failed.", { orchestrationRunId, batchSeq });
+  }
+
+  return {
+    stage: "agent3" as const,
+    processed: result.articleCount,
+    succeeded: byKind.SUCCESS ?? 0,
+    failedRetryable: byKind.RETRYABLE_FAILURE ?? 0,
+    deferred: progress.deferred,
+    quarantined: progress.quarantined,
+    readyNew: progress.readyNew,
+    readyRetry: progress.readyRetry,
+    retryableNow: progress.retryableNow,
+    nextRetryAt: progress.nextRetryAt,
+    remaining: progress.retryableNow,
+    complete,
+    telemetry,
+  };
+});

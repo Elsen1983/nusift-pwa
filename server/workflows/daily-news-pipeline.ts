@@ -180,6 +180,44 @@ export type StageBatchTelemetryInput = {
   now?: () => number;
 };
 
+const internalRunnerConfig = () => {
+  const deploymentHost = (
+    process.env.NUXT_INTERNAL_BASE_URL ||
+    process.env.VERCEL_PROJECT_PRODUCTION_URL ||
+    process.env.VERCEL_URL ||
+    ""
+  ).trim();
+  const secret = process.env.CRON_SECRET || process.env.NUXT_CRON_SECRET;
+  if (!deploymentHost || !secret) {
+    throw new FatalError("Daily pipeline internal runner is not configured.");
+  }
+  const baseUrl = deploymentHost.startsWith("http://") || deploymentHost.startsWith("https://")
+    ? deploymentHost
+    : `https://${deploymentHost}`;
+  return { baseUrl: baseUrl.replace(/\/$/, ""), secret };
+};
+
+const postInternalRunner = async <T>(path: string, body: Record<string, unknown>): Promise<T> => {
+  const { baseUrl, secret } = internalRunnerConfig();
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${secret}`,
+      "x-cron-secret": secret,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const message = `Daily pipeline internal runner ${path} failed with HTTP ${response.status}.`;
+    if ([400, 401, 403, 404].includes(response.status)) {
+      throw new FatalError(message);
+    }
+    throw new Error(message);
+  }
+  return await response.json() as T;
+};
+
 export async function runDailyPipelineStageBatch(
   orchestrationRunId: string,
   stage: DailyPipelineStage,
@@ -293,103 +331,24 @@ export async function runDailyPipelineStageBatch(
     }
 
     if (stage === "agent2-headless") {
-      const deploymentHost = (
-        process.env.VERCEL_URL ||
-        process.env.VERCEL_PROJECT_PRODUCTION_URL ||
-        process.env.NUXT_INTERNAL_BASE_URL ||
-        ""
-      ).trim();
-      const secret = process.env.CRON_SECRET || process.env.NUXT_CRON_SECRET;
-      if (!deploymentHost || !secret) {
-        throw new FatalError("Agent 2 headless internal runner is not configured.");
-      }
-      const baseUrl = deploymentHost.startsWith("http://") || deploymentHost.startsWith("https://")
-        ? deploymentHost
-        : `https://${deploymentHost}`;
-      const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/internal/run-agent2-headless`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${secret}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
+      return await postInternalRunner<StageBatchResult>(
+        "/api/internal/run-agent2-headless",
+        {
           orchestrationRunId,
           batchSeq: telemetryInput?.batchSeq ?? 1,
           remainingBefore: telemetryInput?.remainingBefore ?? null,
           sleepMs: telemetryInput?.sleepMs ?? 0,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error(`Agent 2 headless internal runner failed with HTTP ${response.status}.`);
-      }
-      return await response.json() as StageBatchResult;
+        },
+      );
     }
 
-    const { getAgent3Progress, runEnrichmentBatch } =
-      await import("../utils/news-pipeline/enrichment-runtime");
-    const result = await runEnrichmentBatch({
-      maxArticles: 10,
-      includeEnriched: false,
-      forceReprocess: false,
-      browserFallback: false,
-      pipelineRunId: orchestrationRunId,
-      telemetry: tracker,
-    });
-    const progress = await getAgent3Progress({
-      includeEnriched: false,
-      forceReprocess: false,
-      pipelineRunId: orchestrationRunId,
-    });
-    const complete = progress.retryableNow === 0;
-    const byKind = result.persist?.byKind ?? {};
-    const failedPermanent = Object.entries(byKind)
-      .filter(
-        ([kind]) =>
-          ![
-            "SUCCESS",
-            "SKIPPED",
-            "RETRYABLE_FAILURE",
-            "HEADLESS_REQUIRED",
-          ].includes(kind),
-      )
-      .reduce(
-        (sum, [, count]) => sum + (typeof count === "number" ? count : 0),
-        0,
-      );
-    // `byKind` is authoritative for outcomes that were durably persisted.
-    // Claim losses and persistence failures are selected-work dispositions, not
-    // extra article outcomes; keep them in dedicated telemetry fields so the
-    // reconciliation is: outcome groups + claimLost + persistenceFailed = processed.
-    const telemetry = tracker.finalize({
-      processed: result.articleCount,
-      succeeded: byKind.SUCCESS ?? 0,
-      failedRetryable: byKind.RETRYABLE_FAILURE ?? 0,
-      failedPermanent,
-      skipped: byKind.SKIPPED ?? 0,
-      deferred: byKind.HEADLESS_REQUIRED ?? 0,
-      quarantined: 0,
-      claimLost: result.persist?.claimLost ?? 0,
-      persistenceFailed: result.persist?.failed ?? 0,
+    return await postInternalRunner<StageBatchResult>("/api/internal/run-agent3", {
+      action: "batch",
+      orchestrationRunId,
+      batchSeq: telemetryInput?.batchSeq ?? 1,
       remainingBefore: telemetryInput?.remainingBefore ?? null,
-      remainingAfter: progress.retryableNow,
-      complete,
+      sleepMs: telemetryInput?.sleepMs ?? 0,
     });
-    await persistTelemetryBestEffort(telemetry);
-    return {
-      stage,
-      processed: result.articleCount,
-      succeeded: result.persist?.byKind?.SUCCESS ?? 0,
-      failedRetryable: result.persist?.byKind?.RETRYABLE_FAILURE ?? 0,
-      deferred: progress.deferred,
-      quarantined: progress.quarantined,
-      readyNew: progress.readyNew,
-      readyRetry: progress.readyRetry,
-      retryableNow: progress.retryableNow,
-      nextRetryAt: progress.nextRetryAt,
-      remaining: progress.retryableNow,
-      complete,
-      telemetry,
-    };
   } catch (error) {
     // Preserve a bounded diagnostic artifact even when the stage operation
     // throws before it can produce an authoritative result. This is additive
@@ -459,23 +418,9 @@ export async function finalizeAgent3CompletionStep(
 ): Promise<Agent3CompletionSummary | null> {
   "use step";
   try {
-    const { getAgent3Progress } =
-      await import("../utils/news-pipeline/enrichment-runtime");
-    const { computeAgent3CompletionSummaryForRun } =
-      await import("../utils/news-pipeline/agent3-completion");
-    const { summary } = await computeAgent3CompletionSummaryForRun(
-      getAgent3Progress,
-      {
-        currentRunOptions: {
-          includeEnriched: false,
-          forceReprocess: false,
-          pipelineRunId: orchestrationRunId,
-        },
-        futureRunOptions: {
-          includeEnriched: false,
-          forceReprocess: false,
-        },
-      },
+    const { summary } = await postInternalRunner<{ summary: Agent3CompletionSummary }>(
+      "/api/internal/run-agent3",
+      { action: "completion", orchestrationRunId },
     );
     return summary;
   } catch (error) {

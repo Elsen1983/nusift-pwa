@@ -14,10 +14,12 @@ const asBoundedInteger = (value: unknown, fallback: number, min: number, max: nu
 export default defineEventHandler(async (event) => {
   const expectedSecret = process.env.CRON_SECRET || process.env.NUXT_CRON_SECRET;
   const authorization = getHeader(event, "authorization");
+  const secretHeader = getHeader(event, "x-cron-secret");
   const bearerToken = authorization?.startsWith("Bearer ")
     ? authorization.slice("Bearer ".length).trim()
     : "";
-  if (!expectedSecret || bearerToken !== expectedSecret) {
+  const providedSecret = secretHeader || bearerToken;
+  if (!expectedSecret || providedSecret !== expectedSecret) {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized." });
   }
   if (!isBrowserFallbackEnabled()) {
