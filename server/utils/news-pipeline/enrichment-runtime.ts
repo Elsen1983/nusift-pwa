@@ -2884,9 +2884,11 @@ export const runEnrichmentBatch = async (
     const message = err instanceof Error ? err.message : String(err);
     const durationMs = Date.now() - startedAt;
 
-    // Attempt to mark PipelineRun as FAILED if it was created.
+    // Only fail a PipelineRun created by this enrichment invocation. A daily
+    // workflow passes its lock run here; changing that run's status would
+    // destroy the lock before the workflow step can retry this batch.
     // Non-fatal: if this fails, the log is the authoritative failure record.
-    if (pipelineRun) {
+    if (pipelineRun && ownsPipelineRun) {
       try {
         await prisma.pipelineRun.update({
           where: { id: pipelineRun.id },

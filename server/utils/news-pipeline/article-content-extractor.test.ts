@@ -376,6 +376,46 @@ describe("extractArticleContentFromUrl", () => {
     }
   });
 
+  it("retries an HTTP 403 once over HTTPS on the same host and path", async () => {
+    const html = articleHtml();
+    safeFetchMock
+      .mockResolvedValueOnce(makeResponse("", false, "text/html", 403, "http://example.com/news/42?edition=uk"))
+      .mockResolvedValueOnce(makeResponse(html, true, "text/html", 200, "https://example.com/news/42?edition=uk"));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 120,
+      articleUrl: "http://example.com/news/42?edition=uk",
+      existingTitle: "Test Article Title",
+    });
+
+    expect(safeFetchMock).toHaveBeenCalledTimes(2);
+    expect(safeFetchMock.mock.calls[1]![0]).toBe("https://example.com/news/42?edition=uk");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.resolvedUrl).toBe("https://example.com/news/42?edition=uk");
+      expect(result.qualitySignals).toContain("http_to_https_upgrade_succeeded");
+    }
+  });
+
+  it.each([
+    ["https://example.com/forbidden", 403],
+    ["http://example.com/rate-limited", 429],
+    ["http://example.com:8080/forbidden", 403],
+  ])("does not upgrade ineligible request %s with status %i", async (articleUrl, status) => {
+    safeFetchMock.mockResolvedValue(makeResponse("", false, "text/html", status, articleUrl));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 121,
+      articleUrl,
+      existingTitle: "Blocked",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("uses existing bodyText as fallback when extraction produces nothing", async () => {
     // Page has a title but no article body
     const html = `<!DOCTYPE html>

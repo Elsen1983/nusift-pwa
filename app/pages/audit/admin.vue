@@ -533,13 +533,12 @@
           <div v-if="agent1Progress" class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px] text-on-surface-variant">
             <span>Eligible now: <strong class="text-cyan-200">{{ agent1Progress.totalEligibleNow }}</strong></span>
             <span v-if="agent1Progress.processedLastRun > 0">Last run processed: <strong>{{ agent1Progress.processedLastRun }}</strong></span>
-            <span v-if="agent1Progress.deferredLastRun > 0">Deferred: <strong class="text-amber-200">{{ agent1Progress.deferredLastRun }}</strong></span>
-            <span>Remaining: <strong :class="agent1Progress.remainingEligible > 0 ? 'text-cyan-200' : 'text-emerald-300'">{{ agent1Progress.remainingEligible }}</strong></span>
+            <span>Latest batch deferred: <strong :class="agent1Progress.deferredLastRun > 0 ? 'text-amber-200' : 'text-emerald-300'">{{ agent1Progress.deferredLastRun }}</strong></span>
             <span v-if="agent1Progress.stoppedReason" class="font-medium text-amber-200">stopped: {{ agent1Progress.stoppedReason }}</span>
             <span v-if="agent1Progress.lastDurationMs != null">Duration: <strong>{{ Math.round(agent1Progress.lastDurationMs / 1000) }}s</strong></span>
           </div>
           <p v-if="agent1Progress && agent1Progress.remainingEligible === 0 && agent1Progress.lastRunAt" class="mt-2 text-xs text-emerald-300">
-            All Agent 1 targets processed in the latest batch.
+            The latest Agent 1 batch left no deferred targets. "Eligible now" is the current next-cycle scope.
           </p>
           <p v-else-if="agent1Progress && agent1Progress.remainingEligible > 0" class="mt-2 text-xs text-amber-200">
             More Agent 1 targets remain. Run Agent 1 again or wait for the next scheduled batch.
@@ -617,8 +616,7 @@
           <div v-if="agent2Progress" class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px] text-on-surface-variant">
             <span>Eligible now: <strong class="text-cyan-200">{{ agent2Progress.totalEligibleNow }}</strong></span>
             <span v-if="agent2Progress.processedLastRun > 0">Last run processed: <strong>{{ agent2Progress.processedLastRun }}</strong></span>
-            <span v-if="agent2Progress.deferredLastRun > 0">Deferred: <strong class="text-amber-200">{{ agent2Progress.deferredLastRun }}</strong></span>
-            <span>Remaining: <strong :class="agent2Progress.remainingEligible > 0 ? 'text-cyan-200' : 'text-emerald-300'">{{ agent2Progress.remainingEligible }}</strong></span>
+            <span>Latest batch deferred: <strong :class="agent2Progress.deferredLastRun > 0 ? 'text-amber-200' : 'text-emerald-300'">{{ agent2Progress.deferredLastRun }}</strong></span>
             <span v-if="agent2Progress.stoppedReason" class="font-medium text-amber-200">stopped: {{ agent2Progress.stoppedReason }}</span>
             <span v-if="agent2Progress.lastDurationMs != null">Duration: <strong>{{ Math.round(agent2Progress.lastDurationMs / 1000) }}s</strong></span>
           </div>
@@ -1625,7 +1623,8 @@
             <span>Needs initial enrichment: <strong>{{ agent3Progress.needingInitialEnrichment }}</strong></span>
             <span>Needs extractor reprocess: <strong class="text-amber-300">{{ agent3Progress.needsCurrentVersionReprocess }}</strong></span>
             <span>Current version complete: <strong class="text-emerald-300">{{ agent3Progress.currentVersionComplete }}</strong></span>
-            <span>Remaining (retryable): <strong :class="agent3Progress.remainingAfterLatestRun > 0 ? 'text-violet-300' : 'text-emerald-300'">{{ agent3Progress.remainingAfterLatestRun }}</strong></span>
+            <span>Ready now: <strong :class="(agent3Progress.retryableNow ?? 0) > 0 ? 'text-violet-300' : 'text-emerald-300'">{{ agent3Progress.retryableNow ?? 0 }}</strong></span>
+            <span v-if="(agent3Progress.deferred ?? 0) > 0" class="text-amber-200">Deferred: <strong>{{ agent3Progress.deferred }}</strong></span>
           </div>
           <p v-if="(agent3Progress?.nonRetryableCurrentVersionFailures ?? 0) > 0" class="mt-1 text-[10px] text-on-surface-variant/60">
             Non-retryable failures were already attempted with the current extractor and will not be retried until force reprocess or extractor version changes.
@@ -1667,11 +1666,14 @@
               </div>
             </div>
           </div>
-          <p v-if="agent3Progress && agent3Progress.remainingAfterLatestRun > 0" class="mt-2 text-xs text-amber-200">
+          <p v-if="agent3Progress && (agent3Progress.retryableNow ?? 0) > 0" class="mt-2 text-xs text-amber-200">
             More Agent 3 articles remain for the current extractor version. Run Agent 3 again.
           </p>
-          <p v-else-if="agent3Progress && agent3Progress.remainingAfterLatestRun === 0" class="mt-2 text-xs text-emerald-300">
-            All in-scope Agent 3 articles are processed with the current extractor version.
+          <p v-else-if="agent3Progress && (agent3Progress.deferred ?? 0) > 0" class="mt-2 text-xs text-amber-200">
+            No Agent 3 work is ready now. Deferred articles become eligible after publisher cooldowns expire<span v-if="agent3Progress.nextRetryAt"> (next retry: {{ formatLogTime(agent3Progress.nextRetryAt) }})</span>.
+          </p>
+          <p v-else-if="agent3Progress" class="mt-2 text-xs text-emerald-300">
+            No retryable Agent 3 articles remain for the selected mode.
           </p>
         </div>
 
@@ -1893,7 +1895,7 @@
                     Dataset: {{ urlPolicyEvalResult.datasetVersion }}
                   </span>
                   <span class="text-[10px] text-on-surface-variant">
-                    Policy: {{ urlPolicyEvalResult.splits?.tuning?.policies ? Object.keys(urlPolicyEvalResult.splits.tuning.policies).join(" vs ") : "N/A" }}
+                    Policy: {{ urlPolicyVersions }}
                   </span>
                 </div>
               </div>
@@ -1918,7 +1920,7 @@
                     >
                       {{ (policyName as string).includes('production') ? 'production' : 'candidate' }}
                     </span>
-                    <span class="text-[10px] text-on-surface-variant">{{ policyName }}</span>
+                    <span class="text-[10px] text-on-surface-variant">{{ (policyData as any).policyVersion || policyName }}</span>
                   </div>
                   <div class="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-on-surface-variant">
                     <span>evaluated: <strong>{{ (policyData as any).counts?.evaluated ?? 0 }}</strong></span>
@@ -1963,12 +1965,12 @@
 
               <!-- Sample groups -->
               <div class="mt-3 grid gap-3 sm:grid-cols-3">
-                <div v-if="urlPolicyEvalResult.samples?.falseRejectSamples?.length" class="rounded-xl border border-rose-500/15 bg-rose-500/5 px-2.5 py-2">
+                <div v-if="urlPolicySamples.falseRejectSamples.length" class="rounded-xl border border-rose-500/15 bg-rose-500/5 px-2.5 py-2">
                   <p class="text-[9px] font-bold uppercase tracking-wider text-rose-300/80">
-                    False rejects ({{ urlPolicyEvalResult.samples.falseRejectSamples.length }})
+                    False rejects ({{ urlPolicySamples.falseRejectSamples.length }})
                   </p>
                   <div
-                    v-for="(sample, si) in urlPolicyEvalResult.samples.falseRejectSamples.slice(0, 5)"
+                    v-for="(sample, si) in urlPolicySamples.falseRejectSamples.slice(0, 5)"
                     :key="si"
                     class="mt-1 truncate text-[10px] text-on-surface-variant"
                     :title="(sample as any).url"
@@ -1976,12 +1978,12 @@
                     {{ (sample as any).url?.slice(0, 60) || 'N/A' }}
                   </div>
                 </div>
-                <div v-if="urlPolicyEvalResult.samples?.nonArticleLeakageSamples?.length" class="rounded-xl border border-amber-500/15 bg-amber-500/5 px-2.5 py-2">
+                <div v-if="urlPolicySamples.nonArticleLeakageSamples.length" class="rounded-xl border border-amber-500/15 bg-amber-500/5 px-2.5 py-2">
                   <p class="text-[9px] font-bold uppercase tracking-wider text-amber-300/80">
-                    Leakage ({{ urlPolicyEvalResult.samples.nonArticleLeakageSamples.length }})
+                    Leakage ({{ urlPolicySamples.nonArticleLeakageSamples.length }})
                   </p>
                   <div
-                    v-for="(sample, si) in urlPolicyEvalResult.samples.nonArticleLeakageSamples.slice(0, 5)"
+                    v-for="(sample, si) in urlPolicySamples.nonArticleLeakageSamples.slice(0, 5)"
                     :key="si"
                     class="mt-1 truncate text-[10px] text-on-surface-variant"
                     :title="(sample as any).url"
@@ -1989,12 +1991,12 @@
                     {{ (sample as any).url?.slice(0, 60) || 'N/A' }}
                   </div>
                 </div>
-                <div v-if="urlPolicyEvalResult.samples?.uncertainSamples?.length" class="rounded-xl border border-sky-500/15 bg-sky-500/5 px-2.5 py-2">
+                <div v-if="urlPolicySamples.uncertainSamples.length" class="rounded-xl border border-sky-500/15 bg-sky-500/5 px-2.5 py-2">
                   <p class="text-[9px] font-bold uppercase tracking-wider text-sky-300/80">
-                    Uncertain ({{ urlPolicyEvalResult.samples.uncertainSamples.length }})
+                    Uncertain ({{ urlPolicySamples.uncertainSamples.length }})
                   </p>
                   <div
-                    v-for="(sample, si) in urlPolicyEvalResult.samples.uncertainSamples.slice(0, 5)"
+                    v-for="(sample, si) in urlPolicySamples.uncertainSamples.slice(0, 5)"
                     :key="si"
                     class="mt-1 truncate text-[10px] text-on-surface-variant"
                     :title="(sample as any).url"
@@ -2003,8 +2005,8 @@
                   </div>
                 </div>
               </div>
-              <p v-if="!urlPolicyEvalResult.samples?.falseRejectSamples?.length && !urlPolicyEvalResult.samples?.nonArticleLeakageSamples?.length && !urlPolicyEvalResult.samples?.uncertainSamples?.length" class="mt-3 text-[11px] text-on-surface-variant">
-                No sample deviations between production and candidate policy.
+              <p v-if="!urlPolicySamples.falseRejectSamples.length && !urlPolicySamples.nonArticleLeakageSamples.length && !urlPolicySamples.uncertainSamples.length" class="mt-3 text-[11px] text-on-surface-variant">
+                No bounded decision samples are available for this report.
               </p>
             </div>
             <p v-else-if="!urlPolicyEvalLoading" class="mt-3 text-xs text-on-surface-variant">
@@ -2368,10 +2370,41 @@ const agent3MaxArticlesPerSource = ref(5);
 const urlPolicyEvalResult = ref<any>(null);
 const urlPolicyEvalLoading = ref(false);
 const urlPolicyEvalError = ref<string | null>(null);
+const urlPolicyVersions = computed(() => {
+  const policies = urlPolicyEvalResult.value?.splits?.tuning?.policies;
+  if (!policies) return "N/A";
+  return Object.entries(policies)
+    .map(([key, value]: [string, any]) => value?.policyVersion || key)
+    .join(" vs ");
+});
+const urlPolicySamples = computed(() => {
+  const groups = {
+    falseRejectSamples: [] as any[],
+    nonArticleLeakageSamples: [] as any[],
+    uncertainSamples: [] as any[],
+  };
+  const seen = new Set<string>();
+  for (const split of Object.values(urlPolicyEvalResult.value?.splits || {}) as any[]) {
+    const candidate = Object.entries(split?.policies || {})
+      .find(([name]) => !name.includes("production"))?.[1] as any;
+    for (const group of Object.keys(groups) as Array<keyof typeof groups>) {
+      for (const sample of candidate?.samples?.[group] || []) {
+        const key = `${group}:${sample?.url || ""}:${sample?.decision || ""}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          groups[group].push(sample);
+        }
+      }
+    }
+  }
+  return groups;
+});
 const agent3Progress = ref<{
   eligibleNow: number;
   recentlyBlocked?: number;
   retryableNow?: number;
+  deferred?: number;
+  nextRetryAt?: string | null;
   nonRetryableCurrentVersionFailures?: number;
   totalInScope: number;
   enrichedInScope: number;

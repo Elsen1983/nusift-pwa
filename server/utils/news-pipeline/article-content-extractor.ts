@@ -286,6 +286,21 @@ interface FetchResult {
   resolvedUrl: string;
   error?: string;
   retryAfterAt?: string | null;
+  qualitySignals?: string[];
+}
+
+function buildHttpsUpgradeUrl(rawUrl: string): string | null {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "http:" || parsed.username || parsed.password) return null;
+    // Do not reinterpret an explicitly configured non-standard service port.
+    if (parsed.port && parsed.port !== "80") return null;
+    parsed.protocol = "https:";
+    if (parsed.port === "80") parsed.port = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
 }
 
 async function fetchArticleHtml(url: string, telemetry?: StageBatchProbe): Promise<FetchResult> {
@@ -318,6 +333,22 @@ async function fetchArticleHtml(url: string, telemetry?: StageBatchProbe): Promi
   const statusCode = response.status;
 
   if (statusCode < 200 || statusCode >= 300) {
+    const httpsUpgradeUrl = (statusCode === 401 || statusCode === 403)
+      ? buildHttpsUpgradeUrl(url)
+      : null;
+    if (httpsUpgradeUrl) {
+      const upgraded = await fetchArticleHtml(httpsUpgradeUrl, telemetry);
+      const upgradeSignal = upgraded.ok
+        ? "http_to_https_upgrade_succeeded"
+        : "http_to_https_upgrade_failed";
+      return {
+        ...upgraded,
+        error: upgraded.ok
+          ? upgraded.error
+          : `HTTP ${statusCode}; HTTPS upgrade failed: ${upgraded.error || `HTTP ${upgraded.statusCode}`}`,
+        qualitySignals: [...(upgraded.qualitySignals || []), upgradeSignal],
+      };
+    }
     return {
       ok: false,
       html: null,
@@ -2374,7 +2405,12 @@ export async function extractArticleContentFromUrl(
     existingBodyText,
     method: "http-dom",
   });
-  return input.telemetry ? input.telemetry.timed("extraction", extract) : extract();
+  const result = input.telemetry ? await input.telemetry.timed("extraction", extract) : await extract();
+  if (!fetchResult.qualitySignals?.length) return result;
+  return {
+    ...result,
+    qualitySignals: [...result.qualitySignals, ...fetchResult.qualitySignals],
+  };
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

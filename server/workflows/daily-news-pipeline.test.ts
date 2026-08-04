@@ -426,7 +426,7 @@ describe("daily news pipeline stage batches", () => {
     ).rejects.toMatchObject({ name: "FatalError" });
   });
 
-  it("runs Agent 3 without browser fallback, reprocessing, or a daily article cap", async () => {
+  it("delegates Agent 3 to the bounded internal runner without a daily article cap", async () => {
     mocks.fetch.mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
@@ -474,6 +474,11 @@ describe("daily news pipeline stage batches", () => {
       "https://www.nusift.test/api/internal/run-agent3",
       expect.objectContaining({ method: "POST" }),
     );
+    const request = mocks.fetch.mock.calls.at(-1)![1];
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      action: "batch",
+      orchestrationRunId: "orchestration-1",
+    });
   });
 
   it("reconciles Agent 3 outcome buckets without double counting", async () => {

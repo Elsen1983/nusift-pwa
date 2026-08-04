@@ -33,6 +33,7 @@ describe("POST /api/internal/run-agent3", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.CRON_SECRET = "test-secret";
+    delete process.env.NUXT_AGENT3_WORKFLOW_BROWSER_FALLBACK;
     mocks.getHeader.mockImplementation((_event, name) =>
       name === "x-cron-secret" ? "test-secret" : "",
     );
@@ -63,14 +64,17 @@ describe("POST /api/internal/run-agent3", () => {
     await expect((await loadHandler())({} as any)).rejects.toMatchObject({ statusCode: 401 });
   });
 
-  it("runs Agent 3 with browser fallback and force reprocessing disabled", async () => {
+  it("runs Agent 3 with a bounded browser fallback budget and reprocessing disabled", async () => {
     const result = await (await loadHandler())({} as any);
 
     expect(mocks.runBatch).toHaveBeenCalledWith(expect.objectContaining({
       maxArticles: 10,
       includeEnriched: false,
       forceReprocess: false,
-      browserFallback: false,
+      browserFallback: true,
+      browserFallbackMaxAttempts: 2,
+      browserTimeoutMs: 25_000,
+      maxArticlesPerSource: 2,
       pipelineRunId: "run-1",
     }));
     expect(result).toMatchObject({
@@ -81,6 +85,18 @@ describe("POST /api/internal/run-agent3", () => {
       remaining: 1,
       complete: false,
     });
+  });
+
+  it("supports an emergency environment opt-out for workflow browser fallback", async () => {
+    process.env.NUXT_AGENT3_WORKFLOW_BROWSER_FALLBACK = "false";
+
+    await (await loadHandler())({} as any);
+
+    expect(mocks.runBatch).toHaveBeenCalledWith(expect.objectContaining({
+      browserFallback: false,
+      browserFallbackMaxAttempts: 2,
+      maxArticlesPerSource: 2,
+    }));
   });
 
   it("computes completion using current-run and future-run scopes", async () => {

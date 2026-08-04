@@ -23,6 +23,10 @@ const boundedInteger = (value: unknown, fallback: number, min: number, max: numb
     : fallback;
 };
 
+const WORKFLOW_BROWSER_MAX_ATTEMPTS = 2;
+const WORKFLOW_BROWSER_TIMEOUT_MS = 25_000;
+const WORKFLOW_MAX_ARTICLES_PER_SOURCE = 2;
+
 export default defineEventHandler(async (event) => {
   authenticate(event);
   const body = await readBody(event).catch(() => ({}));
@@ -62,11 +66,19 @@ export default defineEventHandler(async (event) => {
   });
   tracker.recordSleep(sleepMs);
 
+  // Browser recovery is deliberately bounded. Static extraction remains the
+  // default for every article; only browser-eligible failures consume this
+  // small per-batch budget. Operators can disable it without a code rollback.
+  const browserFallback = process.env.NUXT_AGENT3_WORKFLOW_BROWSER_FALLBACK !== "false";
+
   const result = await runEnrichmentBatch({
     maxArticles: 10,
     includeEnriched: false,
     forceReprocess: false,
-    browserFallback: false,
+    browserFallback,
+    browserFallbackMaxAttempts: WORKFLOW_BROWSER_MAX_ATTEMPTS,
+    browserTimeoutMs: WORKFLOW_BROWSER_TIMEOUT_MS,
+    maxArticlesPerSource: WORKFLOW_MAX_ARTICLES_PER_SOURCE,
     pipelineRunId: orchestrationRunId,
     telemetry: tracker,
   });
@@ -113,6 +125,7 @@ export default defineEventHandler(async (event) => {
     nextRetryAt: progress.nextRetryAt,
     remaining: progress.retryableNow,
     complete,
+    browserFallbackStats: result.browserFallbackStats ?? null,
     telemetry,
   };
 });

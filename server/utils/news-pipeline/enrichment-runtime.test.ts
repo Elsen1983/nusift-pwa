@@ -893,6 +893,24 @@ describe("runEnrichmentBatch", () => {
     expect(failedCall).toBeDefined();
   });
 
+  it("does not invalidate a workflow-owned PipelineRun on a top-level crash", async () => {
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    articleFindManyMock.mockRejectedValue(new Error("transient DB failure"));
+
+    await expect(runEnrichmentBatch({
+      pipelineRunId: "workflow-lock-run",
+    })).rejects.toThrow("transient DB failure");
+
+    expect(pipelineRunCreateMock).not.toHaveBeenCalled();
+    expect(pipelineRunUpdateMock).not.toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "workflow-lock-run" },
+      data: expect.objectContaining({ status: "FAILED" }),
+    }));
+    expect(logAgentScanMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: "ARTICLE_CONTENT_ENRICHMENT_FAILED",
+    }));
+  });
+
   it("persists bodyText only when bodySource is dom, not when existing-fallback", async () => {
     const { runEnrichmentBatch } = await import("./enrichment-runtime");
 
