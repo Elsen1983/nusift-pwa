@@ -14,10 +14,19 @@
 import { getHeader, getCookie, createError } from "h3";
 
 const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "DELETE", "PATCH"]);
+const SECRET_AUTHENTICATED_INTERNAL_POSTS = new Set([
+  "/api/internal/run-agent2-headless",
+  "/api/internal/run-agent3",
+]);
 
 export default defineEventHandler((event) => {
   const method = event.method;
   if (!STATE_CHANGING_METHODS.has(method)) return;
+
+  // These server-to-server workflow calls cannot carry browser CSRF evidence.
+  // Each exact endpoint rejects the request unless CRON_SECRET is valid.
+  const pathname = getRequestURL(event).pathname;
+  if (method === "POST" && SECRET_AUTHENTICATED_INTERNAL_POSTS.has(pathname)) return;
 
   const config = useRuntimeConfig();
   const appUrl: string = config.public.appUrl || "http://localhost:3000";
