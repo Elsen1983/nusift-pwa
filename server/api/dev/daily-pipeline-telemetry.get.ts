@@ -21,6 +21,7 @@ const isTelemetryStage = (value: unknown): value is TelemetryStage =>
   typeof value === "string" && STAGES.has(value as TelemetryStage);
 const MAX_RUN_ID_LENGTH = 100;
 const BATCH_LIMIT = 200;
+const MANUAL_LOCK_RECOVERY_AFTER_MS = 45 * 60 * 1000;
 
 type JsonRecord = Record<string, unknown>;
 type TelemetryStage = "agent1" | "agent2-static" | "agent2-headless" | "agent3";
@@ -190,7 +191,7 @@ export default defineEventHandler(async (event) => {
       ? { id: runId, status: { in: [...DAILY_STATUSES] } }
       : { status: { in: [...DAILY_STATUSES] } },
     orderBy: { createdAt: "desc" },
-    select: { id: true, status: true, createdAt: true, finishedAt: true, summary: true },
+    select: { id: true, status: true, createdAt: true, updatedAt: true, finishedAt: true, summary: true },
   });
 
   if (!latestRun) return { ok: true, run: null, stageTimings: [], batches: [], pagination: { truncated: false, totalReturned: 0, limit: BATCH_LIMIT } };
@@ -245,6 +246,7 @@ export default defineEventHandler(async (event) => {
   const latestNoProgressReason = summaryNoProgressReason
     ?? (workflowError && /made no progress/i.test(workflowError) ? workflowError : null);
   const createdAtMs = dateMs(latestRun.createdAt);
+  const updatedAtMs = dateMs(latestRun.updatedAt);
   const finishedAtMs = dateMs(latestRun.finishedAt);
   const workflowDurationMs = createdAtMs == null
     ? 0
@@ -256,7 +258,13 @@ export default defineEventHandler(async (event) => {
       id: latestRun.id,
       status: latestRun.status,
       createdAt: latestRun.createdAt,
+      updatedAt: latestRun.updatedAt,
       finishedAt: latestRun.finishedAt,
+      lockHeartbeatAgeMs: latestRun.status === "DAILY_PIPELINE_WORKFLOW_RUNNING" && updatedAtMs != null
+        ? clampDuration(Math.max(0, Date.now() - updatedAtMs))
+        : null,
+      lockRecoveryEligible: latestRun.status === "DAILY_PIPELINE_WORKFLOW_RUNNING" &&
+        updatedAtMs != null && Date.now() - updatedAtMs >= MANUAL_LOCK_RECOVERY_AFTER_MS,
       completedStages: Array.isArray(summary.completedStages)
         ? summary.completedStages.filter((stage): stage is TelemetryStage => isTelemetryStage(stage))
         : [],

@@ -118,6 +118,30 @@ describe("daily news pipeline stage batches", () => {
     expect(sql).toContain("pg_advisory_xact_lock(734821, 120026)::text");
   });
 
+  it("recovers workflow locks after two hours without a heartbeat", async () => {
+    const now = new Date("2026-08-04T12:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    mocks.queryRaw.mockResolvedValue([{ lock: "" }]);
+    mocks.findFirst.mockResolvedValue(null);
+    mocks.create.mockResolvedValue({ id: "orchestration-recovered" });
+
+    await acquireDailyPipelineLock({
+      orchestrationId: "workflow-recovered",
+      triggeredAt: now.toISOString(),
+    });
+
+    const staleBefore = new Date("2026-08-04T10:00:00.000Z");
+    expect(mocks.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { status: "DAILY_PIPELINE_WORKFLOW_RUNNING", updatedAt: { gte: staleBefore } },
+    }));
+    expect(mocks.updateMany).toHaveBeenCalledWith({
+      where: { status: "DAILY_PIPELINE_WORKFLOW_RUNNING", updatedAt: { lt: staleBefore } },
+      data: { status: "DAILY_PIPELINE_WORKFLOW_STALE", finishedAt: expect.any(Date) },
+    });
+    vi.useRealTimers();
+  });
+
   it("uses the extensible ordered stage registry", () => {
     expect(DAILY_PIPELINE_STAGES).toEqual([
       "agent1",

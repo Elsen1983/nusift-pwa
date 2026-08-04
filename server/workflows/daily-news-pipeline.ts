@@ -55,7 +55,10 @@ type StageBatchResult = {
 };
 
 const LOCK_STATUS = "DAILY_PIPELINE_WORKFLOW_RUNNING";
-const LOCK_STALE_AFTER_MS = 22 * 60 * 60 * 1000;
+// The longest intentional workflow sleep is 30 minutes. Two hours leaves a
+// wide safety margin while preventing cancelled/errored runs from blocking the
+// daily pipeline for almost an entire day.
+const LOCK_STALE_AFTER_MS = 2 * 60 * 60 * 1000;
 const MAX_BATCHES_BEFORE_YIELD = 20;
 const FAIRNESS_YIELD = "1m";
 const STAGNANT_BATCHES_BEFORE_BACKOFF = 3;

@@ -113,6 +113,21 @@
           <p v-if="dailyPipelineTelemetry.pagination.truncated" class="rounded-lg border border-amber-400/20 bg-amber-500/5 px-3 py-2 text-[10px] font-medium text-amber-200">Data truncated: showing the first 200 valid telemetry batches.</p>
           <p v-if="dailyPipelineTelemetry.latestNoProgressReason" class="rounded-lg border border-rose-400/20 bg-rose-500/5 px-3 py-2 text-[10px] text-rose-200">Latest no-progress reason: {{ dailyPipelineTelemetry.latestNoProgressReason }}</p>
           <p v-if="dailyPipelineTelemetry.stale" class="text-[10px] text-amber-200">This run is stale or has not completed recently.</p>
+          <div v-if="dailyPipelineTelemetry.run.status === 'DAILY_PIPELINE_WORKFLOW_RUNNING'" class="rounded-lg border border-amber-400/20 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-100">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span>Last lock heartbeat: <strong>{{ formatTelemetryMs(dailyPipelineTelemetry.run.lockHeartbeatAgeMs) }} ago</strong></span>
+              <button v-if="dailyPipelineTelemetry.run.lockRecoveryEligible" @click="dailyLockRecoveryModalOpen = true" class="rounded border border-rose-400/25 bg-rose-400/10 px-2 py-1 font-bold text-rose-100">Release stale lock</button>
+            </div>
+            <p class="mt-1 text-[9px] text-on-surface-variant">Only use recovery after confirming that Vercel shows no active daily pipeline workflow.</p>
+          </div>
+          <div v-if="dailyLockRecoveryModalOpen && dailyPipelineTelemetry.run" class="fixed inset-0 z-[130] flex items-center justify-center bg-black/60 px-4" role="dialog" aria-modal="true">
+            <div class="w-full max-w-md rounded-2xl border border-rose-400/20 bg-surface-container-high p-4 shadow-2xl">
+              <h3 class="font-headline text-sm font-bold text-on-surface">Release stale daily pipeline lock?</h3>
+              <p class="mt-2 text-xs leading-relaxed text-on-surface-variant">Confirm in Vercel that no daily pipeline workflow is Active. A concurrent heartbeat prevents this operation, but releasing a genuinely active lock could allow overlapping processing.</p>
+              <input v-model="dailyLockRecoveryToken" type="text" autocomplete="off" placeholder="RELEASE_STALE_DAILY_PIPELINE_LOCK" class="mt-3 w-full rounded border border-outline-variant/20 bg-surface-container px-2 py-1 text-[10px] text-on-surface" />
+              <div class="mt-3 flex justify-end gap-2"><button @click="dailyLockRecoveryModalOpen = false" class="rounded-lg border border-outline-variant/20 px-3 py-1.5 text-xs text-on-surface-variant">Cancel</button><button @click="releaseDailyPipelineLock" :disabled="dailyLockRecoveryToken !== 'RELEASE_STALE_DAILY_PIPELINE_LOCK' || dailyLockRecoveryLoading" class="rounded-lg bg-rose-400/20 px-3 py-1.5 text-xs font-bold text-rose-100 disabled:opacity-50">{{ dailyLockRecoveryLoading ? 'Releasing...' : 'Confirm release' }}</button></div>
+            </div>
+          </div>
         </div>
         </section>
 
@@ -2401,6 +2416,9 @@ const agent3Progress = ref<{
 } | null>(null);
 const agent3ProgressLoading = ref(false);
 const dailyPipelineTelemetry = ref<any>({ loading: false, loaded: false, error: null, run: null, stageTimings: [], batches: [], pagination: { truncated: false } });
+const dailyLockRecoveryModalOpen = ref(false);
+const dailyLockRecoveryLoading = ref(false);
+const dailyLockRecoveryToken = ref("");
 const agent3RejectionLoading = ref(false);
 const agent3RejectionFilter = ref<string>("all");
 const agent3RejectionScope = ref<string>("latest_run");
@@ -3210,6 +3228,26 @@ const loadDailyPipelineTelemetry = async () => {
     dailyPipelineTelemetry.value.loading = false;
     dailyPipelineTelemetry.value.loaded = true;
     dailyPipelineTelemetry.value.error = error?.statusMessage || error?.message || "Telemetry unavailable.";
+  }
+};
+
+const releaseDailyPipelineLock = async () => {
+  const runId = dailyPipelineTelemetry.value.run?.id;
+  if (!runId || dailyLockRecoveryToken.value !== "RELEASE_STALE_DAILY_PIPELINE_LOCK") return;
+  dailyLockRecoveryLoading.value = true;
+  try {
+    const result = await $api<{ changed: boolean; reason: string }>("/api/dev/daily-pipeline-lock-recovery", {
+      method: "POST",
+      body: { runId, confirmation: dailyLockRecoveryToken.value },
+    });
+    showToast(result.changed ? "Stale daily pipeline lock released." : `Lock was not released: ${result.reason}.`, result.changed ? "success" : "error");
+    dailyLockRecoveryModalOpen.value = false;
+    dailyLockRecoveryToken.value = "";
+    await loadDailyPipelineTelemetry();
+  } catch (error: any) {
+    showToast(error?.statusMessage || error?.message || "Failed to release stale pipeline lock.", "error");
+  } finally {
+    dailyLockRecoveryLoading.value = false;
   }
 };
 
