@@ -2447,6 +2447,22 @@ describe("applySourceDiversity", () => {
     expect(result999.length).toBe(25);
   });
 
+  it("backfills a bounded batch when the candidate pool is source-heavy", async () => {
+    const { applySourceDiversity } = await import("./enrichment-runtime");
+    const articles = [
+      ...Array.from({ length: 12 }, (_, index) => ({ sourceId: "src-1", id: index + 1 })),
+      ...Array.from({ length: 2 }, (_, index) => ({ sourceId: "src-2", id: index + 101 })),
+    ];
+
+    const result = applySourceDiversity(articles, 2, 10);
+
+    expect(result).toHaveLength(10);
+    expect(result.slice(0, 4).map((article) => article.sourceId)).toEqual([
+      "src-1", "src-2", "src-1", "src-2",
+    ]);
+    expect(result.filter((article) => article.sourceId === "src-1")).toHaveLength(8);
+  });
+
   it("preserves original order within each source group", async () => {
     const { applySourceDiversity } = await import("./enrichment-runtime");
     const articles = [

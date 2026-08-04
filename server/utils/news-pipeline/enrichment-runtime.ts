@@ -1674,15 +1674,19 @@ export class SourceCooldownTracker {
 
 /**
  * Apply source diversity to a batch of articles.
- * Groups articles by sourceId and round-robins across groups,
- * capping each source at `maxPerSource`.
- * Returns articles in round-robin order (interleaved across sources).
+ * Groups articles by sourceId and round-robins across groups. Without a fill
+ * target, `maxPerSource` is a hard cap. With a fill target, it is a first-pass
+ * diversity cap and remaining capacity is backfilled deterministically.
  */
 export function applySourceDiversity<T extends { sourceId: string }>(
   articles: T[],
   maxPerSource: number,
+  fillTarget?: number,
 ): T[] {
   const capped = Math.min(Math.max(maxPerSource, MIN_MAX_ARTICLES_PER_SOURCE), MAX_MAX_ARTICLES_PER_SOURCE);
+  const target = fillTarget === undefined
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, Math.min(Math.trunc(fillTarget), articles.length));
   const bySource = new Map<string, T[]>();
 
   for (const article of articles) {
@@ -1691,29 +1695,43 @@ export function applySourceDiversity<T extends { sourceId: string }>(
     bySource.set(article.sourceId, group);
   }
 
-  // Cap each group
-  for (const [sourceId, group] of bySource) {
-    if (group.length > capped) {
-      bySource.set(sourceId, group.slice(0, capped));
-    }
-  }
-
-  // Round-robin across sources
+  // First pass round-robins up to the soft per-source cap. When a fill target
+  // is supplied, a second pass backfills unused capacity from the remaining
+  // candidates. This preserves source diversity without shrinking a batch
+  // merely because the ready queue is temporarily dominated by one source.
   const result: T[] = [];
   const sourceIds = [...bySource.keys()];
   const indices = new Map<string, number>();
   for (const id of sourceIds) indices.set(id, 0);
 
   let added = true;
-  while (added) {
+  while (added && result.length < target) {
     added = false;
     for (const sourceId of sourceIds) {
       const group = bySource.get(sourceId)!;
       const idx = indices.get(sourceId)!;
-      if (idx < group.length) {
+      if (idx < Math.min(group.length, capped)) {
         result.push(group[idx]!);
         indices.set(sourceId, idx + 1);
         added = true;
+        if (result.length >= target) break;
+      }
+    }
+  }
+
+  if (fillTarget !== undefined) {
+    added = true;
+    while (added && result.length < target) {
+      added = false;
+      for (const sourceId of sourceIds) {
+        const group = bySource.get(sourceId)!;
+        const idx = indices.get(sourceId)!;
+        if (idx < group.length) {
+          result.push(group[idx]!);
+          indices.set(sourceId, idx + 1);
+          added = true;
+          if (result.length >= target) break;
+        }
       }
     }
   }
@@ -2528,9 +2546,20 @@ export const runEnrichmentBatch = async (
       MAX_MAX_ARTICLES_PER_SOURCE,
     );
 
+    const batchLimit = clamp(
+      maxArticles ?? MAX_ARTICLES_PER_RUN,
+      1,
+      MAX_ARTICLES_PER_RUN,
+    );
+    // Diversity is applied after selection, so fetch a bounded candidate pool
+    // rather than allowing the soft source cap to collapse the final batch.
+    const candidatePoolLimit = Math.min(
+      MAX_ARTICLES_PER_RUN,
+      Math.max(batchLimit, batchLimit * 5),
+    );
     const articles = await selectEnrichmentEligibleArticles(
       now,
-      maxArticles ?? MAX_ARTICLES_PER_RUN,
+      candidatePoolLimit,
       {
         includeEnriched,
         forceReprocess,
@@ -2543,8 +2572,8 @@ export const runEnrichmentBatch = async (
     // Apply source diversity: round-robin across sources, cap per source.
     // Explicit articleIds bypass diversity (admin is targeting specific articles).
     const diversified = (options?.articleIds && options.articleIds.length > 0)
-      ? articles
-      : applySourceDiversity(articles, maxArticlesPerSource);
+      ? articles.slice(0, batchLimit)
+      : applySourceDiversity(articles, maxArticlesPerSource, batchLimit);
 
     // Recover precise upstream provenance from Agent 1 ingest artifacts.
     // This replaces the conservative fallback when artifact data exists.
