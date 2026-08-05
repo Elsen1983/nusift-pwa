@@ -3,6 +3,8 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "db:audit:production-source-cleanup": "node scripts/audit-production-source-cleanup.mjs --production-read-only",
+    "db:repair:production-source-hierarchy": "node scripts/repair-production-source-hierarchy.mjs --production",
     "build": "prisma generate && nuxt build",
     "dev": "nuxt dev",
     "generate": "nuxt generate",
