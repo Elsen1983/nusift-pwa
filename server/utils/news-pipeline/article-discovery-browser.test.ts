@@ -344,7 +344,8 @@ describe("discoverArticleLinksWithBrowser", () => {
     expect(result.links.length).toBe(1);
     expect(result.diagnostics.rawExtractionFallbackUsed).toBe(true);
     expect(result.diagnostics.rawExtractionError).toBe("rich extraction failed");
-    expect(mockPageEvaluate).toHaveBeenCalledTimes(3);
+    // 4 calls: anchor count + rich extraction + basic fallback + canonical capture
+    expect(mockPageEvaluate).toHaveBeenCalledTimes(4);
 
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
@@ -389,7 +390,8 @@ describe("discoverArticleLinksWithBrowser", () => {
     expect(result.links.length).toBe(1);
     expect(result.diagnostics.rawExtractionFallbackUsed).toBe(true);
     expect(result.diagnostics.rawExtractionError).toBeUndefined();
-    expect(mockPageEvaluate).toHaveBeenCalledTimes(3);
+    // 4 calls: anchor count + rich extraction + basic fallback + canonical capture
+    expect(mockPageEvaluate).toHaveBeenCalledTimes(4);
 
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });

@@ -338,8 +338,7 @@ async function runBrowserOnly(target: ArticleDiscoveryTarget) {
     targetUrl: target.targetUrl,
     sourceId: target.sourceId,
     categoryId: target.categoryId || null,
-    targetType: target.targetType,
-    categoryPathUrl: target.categoryId ? target.targetUrl : null,
+    targetType: target.targetType,      categoryPathUrl: target.categoryId ? target.targetUrl : null,
   });
 
   const evaluated = [];

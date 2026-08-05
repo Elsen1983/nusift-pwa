@@ -2,7 +2,7 @@ import { requireAdminId } from "../../utils/require-admin";
 import { assertRateLimit } from "../../utils/rate-limit";
 import { prisma } from "../../utils/prisma";
 import { inspectNotificationWorkflowMarkers } from "../../utils/news-pipeline/notification-workflow-reconciliation";
-import { sanitizeRedirectUrl } from "../../utils/news-pipeline/redirect-retry-state";
+import { describeRedirectStatus, sanitizeRedirectUrl } from "../../utils/news-pipeline/redirect-retry-state";
 
 const MAX_ARTIFACTS = 100;
 const bounded = (value: unknown, max = 300): string | null =>
@@ -58,6 +58,10 @@ export default defineEventHandler(async (event) => {
         httpStatus: typeof payload.httpStatus === "number" ? payload.httpStatus : null,
         retryAfterMs: typeof payload.retryAfterMs === "number" ? Math.min(3_600_000, Math.max(0, Math.round(payload.retryAfterMs))) : null,
         createdAt: artifact.createdAt.toISOString(),
+        statusDescriptor: describeRedirectStatus(
+          typeof artifact.status === "string" ? artifact.status : String(payload.status || "RETRYABLE"),
+          typeof payload.nextRetryAt === "string" ? payload.nextRetryAt : null,
+        ),
       };
     });
 

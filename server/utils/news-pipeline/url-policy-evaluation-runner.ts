@@ -20,6 +20,9 @@ import {
   CANDIDATE_URL_POLICY_VERSION,
   evaluateProductionUrlPolicy,
   evaluateCandidateUrlPolicy,
+  validateUrlEvaluationDataset,
+  validateUrlEvaluationDatasetSplits,
+  validateUrlPolicyDatasetMovements,
 } from "./url-policy-evaluation";
 
 // ─── Rate Precision ─────────────────────────────────────────────────────────
@@ -104,6 +107,10 @@ export type PolicyEvaluationSamples = {
 };
 
 export type PolicyEvaluationResult = {
+  /** Stable internal report key (e.g. "current-production-v1"). */
+  policyKey: string;
+  /** Actual policy version string shown to users (candidate versions are bumped with behavior changes). */
+  policyVersion: string;
   counts: PolicyEvaluationCounts;
   rates: PolicyEvaluationRates;
   samples: PolicyEvaluationSamples;
@@ -122,7 +129,10 @@ export type SplitEvaluation = {
 
 export type BaselineComparisonEntry = {
   split: string;
-  policyVersion: string;
+  /** Actual production policy version shown to users. */
+  productionPolicyVersion: string;
+  /** Actual candidate policy version shown to users. */
+  candidatePolicyVersion: string;
   metric: string;
   productionValue: number;
   candidateValue: number;
@@ -154,7 +164,8 @@ const MAX_SAMPLES_PER_GROUP = 20;
 function computeMetrics(
   labels: UrlEvaluationLabel[],
   decisions: UrlPolicyDecisionLog[],
-  _policyVersion: string,
+  policyKey: string,
+  policyVersion: string,
 ): PolicyEvaluationResult {
   const counts: PolicyEvaluationCounts = {
     evaluated: 0,
@@ -268,7 +279,13 @@ function computeMetrics(
     uncertainNonArticleRate: roundRate(safeDivide(counts.uncertainNonArticles, allNonArticles)),
   };
 
-  return { counts, rates, samples: { falseRejectSamples, nonArticleLeakageSamples, uncertainSamples } };
+  return {
+    policyKey,
+    policyVersion,
+    counts,
+    rates,
+    samples: { falseRejectSamples, nonArticleLeakageSamples, uncertainSamples },
+  };
 }
 
 // ─── Extraction Metrics ─────────────────────────────────────────────────────
@@ -332,7 +349,8 @@ function computeComparison(
     const candidateValue = candResult.rates[metric];
     entries.push({
       split,
-      policyVersion: CANDIDATE_URL_POLICY_VERSION,
+      productionPolicyVersion: CURRENT_PRODUCTION_URL_POLICY_VERSION,
+      candidatePolicyVersion: CANDIDATE_URL_POLICY_VERSION,
       metric,
       productionValue,
       candidateValue,
@@ -365,6 +383,19 @@ export function runUrlPolicyEvaluation(
   ...datasets: UrlEvaluationDataset[]
 ): EvaluationReport {
   const datasetVersion = datasets.length > 0 ? datasets[0]!.datasetVersion : "";
+  const validationErrors = datasets.flatMap((dataset) => validateUrlEvaluationDataset(dataset).errors);
+  const splitErrors = validateUrlEvaluationDatasetSplits(datasets);
+  const movementErrors = datasets.some((dataset) => dataset.split === "tuning") && datasets.some((dataset) => dataset.split === "holdout")
+    ? validateUrlPolicyDatasetMovements(datasets)
+    : [];
+  if (validationErrors.length > 0 || splitErrors.length > 0 || movementErrors.length > 0) {
+    const details = [
+      ...validationErrors.map((error) => `${error.field}: ${error.message}`),
+      ...splitErrors,
+      ...movementErrors,
+    ].join("; ");
+    throw new Error(`Invalid URL policy evaluation dataset: ${details}`);
+  }
   const splits: Record<string, SplitEvaluation> = {};
   const comparison: BaselineComparisonEntry[] = [];
 
@@ -386,7 +417,12 @@ export function runUrlPolicyEvaluation(
         candidateEvidence: label.candidateEvidence,
       }),
     );
-    const prodResult = computeMetrics(labels, prodDecisions, CURRENT_PRODUCTION_URL_POLICY_VERSION);
+    const prodResult = computeMetrics(
+      labels,
+      prodDecisions,
+      PRODUCTION_POLICY_KEY,
+      CURRENT_PRODUCTION_URL_POLICY_VERSION,
+    );
     policies[PRODUCTION_POLICY_KEY] = prodResult;
 
     // B. Evaluate all URLs with candidate shadow policy
@@ -396,7 +432,12 @@ export function runUrlPolicyEvaluation(
         candidateEvidence: label.candidateEvidence,
       }),
     );
-    const candResult = computeMetrics(labels, candDecisions, CANDIDATE_URL_POLICY_VERSION);
+    const candResult = computeMetrics(
+      labels,
+      candDecisions,
+      CANDIDATE_POLICY_KEY,
+      CANDIDATE_URL_POLICY_VERSION,
+    );
     policies[CANDIDATE_POLICY_KEY] = candResult;
 
     // Extraction metrics

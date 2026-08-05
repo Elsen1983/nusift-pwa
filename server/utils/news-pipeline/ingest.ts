@@ -29,6 +29,7 @@ import {
   resolveRedirectRetryState,
 } from "./redirect-retry-state";
 import type { StageBatchProbe } from "./stage-telemetry";
+import { hasStrongPaywallHint } from "./paywall-detection";
 
 type ParsedFeedItem = {
   title: string;
@@ -689,7 +690,10 @@ const extractHtmlCandidates = async (
       rawBodyText,
       bodyText: bodyText || null,
       contentHash,
-      isPaywall: /paywall|subscribe|premium/i.test(html),
+      isPaywall: hasStrongPaywallHint({
+        articleText: `${rawTitle}\n${rawBodyText}`,
+        structuredMarkup: html,
+      }),
       rawTags: [],
       rawSignals: [],
       reasoning: `HTML detail fallback from ${link}`,
@@ -2036,7 +2040,12 @@ export async function ingestSource(
         rawBodyText,
         bodyText: bodyText || null,
         contentHash,
-        isPaywall: /paywall|subscribe|premium/i.test(xml),
+        // Evaluate only this feed item. A newsletter CTA elsewhere in the
+        // feed must not mark every item as paywalled.
+        isPaywall: hasStrongPaywallHint({
+          articleText: `${rawTitle}\n${rawBodyText}`,
+          structuredMarkup: rawBodyText,
+        }),
         rawTags: item.categories || [],
         rawSignals: [],
         reasoning: `${parsedCandidateOrigin.toUpperCase()} ingest from ${source.mediaName || source.frontPageUrl}${

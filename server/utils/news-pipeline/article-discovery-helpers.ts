@@ -18,7 +18,16 @@ import {
 } from "./article-retention-policy";
 import { isLikelyArticleUrl } from "./article-url-policy";
 import { observeAndLogUrlPolicyDecisions } from "./url-policy-decision-observer";
+import {
+  hostOfUrl,
+  isHostVerified,
+  isNonPublisherHost,
+  isSamePublisherFamily,
+  normalizeHostname,
+  type VerifiedHostScope,
+} from "./canonical-host-scope";
 import type { StageBatchProbe } from "./stage-telemetry";
+import { hasStrongPaywallHint } from "./paywall-detection";
 
 /** Agent 2 counts one logical request per safeFetch call; redirects remain one logical request. */
 export type DiscoveryNetworkTelemetry = Pick<
@@ -277,8 +286,14 @@ export function filterSitemapArticleUrls(
   entries: SitemapEntry[],
   targetUrl: string,
   categoryPathUrl?: string | null,
+  /** Authoritative verified scope; legacy callers may pass a host array here. */
+  verifiedHostScopeOrHosts?: VerifiedHostScope | string[] | null,
 ): SitemapEntry[] {
-  const targetHostname = new URL(targetUrl).hostname.replace(/^www\./, "");
+  const targetHostname = hostOfUrl(targetUrl);
+  const verifiedHostScope = verifiedHostScopeOrHosts && !Array.isArray(verifiedHostScopeOrHosts)
+    ? verifiedHostScopeOrHosts
+    : null;
+  const legacyVerifiedHosts = Array.isArray(verifiedHostScopeOrHosts) ? verifiedHostScopeOrHosts : null;
   const categoryPath = categoryPathUrl
     ? new URL(categoryPathUrl).pathname.replace(/\/+$/, "") || "/"
     : null;
@@ -286,7 +301,13 @@ export function filterSitemapArticleUrls(
   return entries.filter((entry) => {
     try {
       const url = new URL(entry.url);
-      if (url.hostname.replace(/^www\./, "") !== targetHostname) return false;
+      const entryHostname = hostOfUrl(entry.url);
+      // Same-domain check (hard requirement). A transitioned host is accepted
+      // only when it is present as trusted evidence in the authoritative scope.
+      const hostAllowed = entryHostname === targetHostname ||
+        (verifiedHostScope ? isHostVerified(verifiedHostScope, entry.url) :
+          (legacyVerifiedHosts ?? []).some((host) => normalizeHostname(host) === entryHostname));
+      if (!hostAllowed) return false;
       const path = url.pathname.replace(/\/+$/, "") || "/";
       if (path === "/") return false;
 
@@ -1155,6 +1176,16 @@ type EvaluateArticleLinkCandidateFromMetadataInput = {
    * the article URL.
    */
   canonicalUrlOverride?: string | null;
+  /**
+   * Final URL of the article request after redirects (e.g. response.url).
+   * Its host is treated as verified host-transition evidence when it is
+   * plausibly the same publisher as the configured target.
+   */
+  effectiveTargetUrl?: string | null;
+  /** The authoritative verified host scope for this evaluation. */
+  verifiedHostScope?: VerifiedHostScope | null;
+  /** @deprecated compatibility-only input for isolated legacy callers. */
+  verifiedHosts?: string[] | null;
 };
 
 const resolveSourceKindFromSourcePageUrl = (spu: string): ArticleDiscoverySourceKind => {
@@ -1256,9 +1287,41 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
     discoveryMethod: "STATIC_LISTING",
   }).catch(() => {});
 
-  const canonicalHostname = new URL(canonicalUrl).hostname.replace(/^www\./, "");
-  const targetHostname = new URL(targetUrl).hostname.replace(/^www\./, "");
-  if (canonicalHostname !== targetHostname) {
+  const canonicalHostname = hostOfUrl(canonicalUrl);
+  const targetHostname = hostOfUrl(targetUrl);
+  if (!canonicalHostname || !targetHostname) {
+    return {
+      accepted: false,
+      candidate: null,
+      outcome: makeOutcome(articleUrl, sourcePageUrl, "rejected_cross_domain", {
+        canonicalUrl,
+        title,
+        reason: "invalid or non-public host",
+      }),
+    };
+  }
+
+  // The caller supplies the one authoritative scope. Detail-response evidence
+  // may extend it, but no module reconstructs a family from host suffixes.
+  let verifiedHostScope = input.verifiedHostScope ?? null;
+  if (!verifiedHostScope) {
+    const { buildVerifiedHostScope, extendVerifiedHostScope } = await import("./canonical-host-scope");
+    verifiedHostScope = buildVerifiedHostScope({
+      configuredTargetUrl: targetUrl,
+      finalUrl: input.effectiveTargetUrl ?? (sourcePageUrl.startsWith("browser:") ? sourcePageUrl.slice("browser:".length) : null),
+      canonicalUrl: input.canonicalUrlOverride,
+      // Compatibility callers may provide complete URLs, but bare host strings
+      // are intentionally ignored as unverifiable trust evidence.
+      observedFinalUrls: (input.verifiedHosts ?? []).filter((value) => value.includes("://")),
+    });
+    if (verifiedHostScope && input.verifiedHosts?.some((value) => value.includes("://"))) {
+      verifiedHostScope = extendVerifiedHostScope(verifiedHostScope, {
+        observedFinalUrls: input.verifiedHosts.filter((value) => value.includes("://")),
+      });
+    }
+  }
+
+  if (!isHostVerified(verifiedHostScope, canonicalUrl)) {
     return {
       accepted: false,
       candidate: null,
@@ -1292,6 +1355,10 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
     title,
     dateText: publishedAtRaw,
     categoryPathUrl: categoryId ? targetUrl : null,
+    verifiedHostScope,
+    // A scope is mandatory for production paths. The legacy list remains only
+    // for isolated tests/callers that stay on the configured host.
+    verifiedHosts: verifiedHostScope ? null : input.verifiedHosts,
   });
   if (score.rejected) {
     return {
@@ -1382,7 +1449,10 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
   const finalTitle = normalizedTitle.value || canonicalUrl;
   const bodyText = normalizedBody.value;
   const contentHash = await hashText([finalTitle, canonicalUrl, bodyText].filter(Boolean).join("|"));
-  const isPaywall = /paywall|subscribe|premium/i.test(html || `${title} ${description}`);
+  const isPaywall = hasStrongPaywallHint({
+    articleText: `${title}\n${description}`,
+    structuredMarkup: html,
+  });
   const rawTags = [...new Set(keywords.filter(Boolean))];
 
   const candidate: EvaluatedCandidate = {
@@ -1451,6 +1521,10 @@ export async function evaluateArticleLinkCandidate(input: {
   freshnessMs?: number;
   listingDateFallbackRaw?: string | null;
   telemetry?: DiscoveryNetworkTelemetry;
+  /** The authoritative verified host scope (preferred). */
+  verifiedHostScope?: VerifiedHostScope | null;
+  /** @deprecated compatibility-only input for isolated legacy callers. */
+  verifiedHosts?: string[] | null;
 }): Promise<EvaluateArticleLinkResult> {
   const { articleUrl, sourcePageUrl, targetUrl, sourceId } = input;
 
@@ -1502,6 +1576,11 @@ export async function evaluateArticleLinkCandidate(input: {
     bodyFallback: stripHtml(html).slice(0, 600),
     html,
     freshnessMs: input.freshnessMs,
+    // The final URL after redirects is direct evidence of where the article
+    // actually rendered (e.g. a publisher-controlled subdomain).
+    effectiveTargetUrl: response.url || null,
+    verifiedHostScope: input.verifiedHostScope,
+    verifiedHosts: input.verifiedHosts,
   });
 }
 
@@ -1535,6 +1614,10 @@ export function scoreCandidateUrl(
     title?: string | null;
     dateText?: string | null;
     categoryPathUrl?: string | null;
+    /** Authoritative verified scope established by redirect/canonical evidence. */
+    verifiedHostScope?: VerifiedHostScope | null;
+    /** @deprecated compatibility-only input for isolated legacy callers. */
+    verifiedHosts?: string[] | null;
   },
 ): CandidateScore {
   const reasons: string[] = [];
@@ -1543,11 +1626,16 @@ export function scoreCandidateUrl(
   try {
     const urlObj = new URL(url);
     const targetObj = new URL(targetUrl);
-    const hostname = urlObj.hostname.replace(/^www\./, "");
-    const targetHostname = targetObj.hostname.replace(/^www\./, "");
+    const hostname = normalizeHostname(urlObj.hostname);
+    const targetHostname = normalizeHostname(targetObj.hostname);
 
-    // Same domain check (hard requirement)
-    if (hostname !== targetHostname) {
+    // Same-domain check is governed by the authoritative scope. Legacy string
+    // evidence remains only for isolated compatibility callers and is never
+    // combined with family inference here.
+    const hostVerified = context?.verifiedHostScope
+      ? isHostVerified(context.verifiedHostScope, url)
+      : hostname === targetHostname && !(context?.verifiedHosts ?? []).some((host) => host.includes("://"));
+    if (!hostVerified) {
       return { score: 0, reasons: ["different_domain"], rejected: true, rejectionReason: "different_domain" };
     }
     score += 20;

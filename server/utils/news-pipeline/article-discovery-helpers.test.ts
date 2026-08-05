@@ -218,6 +218,38 @@ describe("article-discovery-helpers", () => {
 
       expect(withoutCategory).toEqual(withNull);
     });
+
+    it("accepts sitemap entries on a redirect-verified subdomain", async () => {
+      const { filterSitemapArticleUrls } = await import("./article-discovery-helpers");
+
+      const entries = [
+        { url: "https://news.example.com/news/2026/07/16/effective-host-story" },
+        { url: "https://example.com/news/2026/07/16/root-host-story" },
+      ];
+
+      const filtered = filterSitemapArticleUrls(
+        entries,
+        "https://example.com/",
+        null,
+        ["news.example.com"],
+      );
+
+      expect(filtered).toHaveLength(2);
+    });
+
+    it("still rejects a subdomain with no redirect/canonical evidence", async () => {
+      const { filterSitemapArticleUrls } = await import("./article-discovery-helpers");
+
+      const entries = [
+        { url: "https://news.example.com/news/2026/07/16/effective-host-story" },
+        { url: "https://example.com/news/2026/07/16/root-host-story" },
+      ];
+
+      const filtered = filterSitemapArticleUrls(entries, "https://example.com/", null, null);
+
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0]!.url).toContain("root-host-story");
+    });
   });
 
   // ── JSON-LD Extraction ────────────────────────────────────────────────
@@ -1435,6 +1467,130 @@ describe("article-discovery-helpers", () => {
       expect(result.accepted).toBe(false);
       expect(result.outcome.status).toBe("rejected_stale");
       expect(result.outcome.staleReason).toBe("future_published_at");
+    });
+  });
+
+  // ── Verified canonical host transitions (redirect / final-URL evidence) ──
+
+  describe("evaluateArticleLinkCandidateFromExtractedMetadata — verified canonical hosts", () => {
+    const baseInput = () => ({
+      articleUrl: "https://example.com/news/2026/07/20/some-article",
+      sourcePageUrl: "browser:https://example.com/news/2026/07/20/some-article",
+      targetUrl: "https://example.com",
+      sourceId: "src-1",
+      title: "A Valid Article Title For Testing",
+      description: "Description text",
+      keywords: ["news"],
+      publishedAtRaw: new Date().toISOString(),
+      publishedAtSource: "datePublished" as const,
+      bodyFallback: "Body text for testing.",
+    });
+
+    it("accepts a candidate whose canonical lives on a redirect-established subdomain", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      // Root host example.com redirected to news.example.com (the effective host);
+      // the article lives on news.example.com and its canonical is there too.
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://news.example.com/news/2026/07/20/effective-host-article",
+        sourcePageUrl: "browser:https://news.example.com/world",
+        canonicalUrlOverride: "https://news.example.com/news/2026/07/20/effective-host-article",
+        verifiedHosts: ["news.example.com"],
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(result.candidate!.canonicalUrl).toBe("https://news.example.com/news/2026/07/20/effective-host-article");
+      // Source/category identity is preserved — the candidate still belongs to the
+      // configured source, not a rewritten database identity.
+      expect(result.candidate!.sourceId).toBe("src-1");
+      expect(result.candidate!.sourceUrl).toBe("https://example.com");
+    });
+
+    it("rejects the same subdomain when no redirect/canonical evidence establishes it", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      // No canonical override and no effective-URL evidence: the canonical falls
+      // back to the article URL on the subdomain, which was never established by
+      // a redirect or canonical relationship from the configured target.
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://news.example.com/news/2026/07/20/effective-host-article",
+        sourcePageUrl: "browser:https://example.com/world",
+        canonicalUrlOverride: null,
+        verifiedHosts: null,
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_cross_domain");
+    });
+
+    it("accepts a subdomain canonical when the browser listing page establishes it", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      // The rendered listing page (sourcePageUrl) is on the subdomain; the
+      // subdomain host is verified through the final rendered URL evidence.
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://m.example.com/story/2026/07/20/listing-derived-article",
+        sourcePageUrl: "browser:https://m.example.com/home",
+        canonicalUrlOverride: "https://m.example.com/story/2026/07/20/listing-derived-article",
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(result.candidate!.canonicalUrl).toContain("m.example.com");
+    });
+
+    it("accepts an article final-URL host transition (response.url evidence)", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://example.com/news/2026/07/20/redirected-article",
+        canonicalUrlOverride: "https://news.example.com/news/2026/07/20/redirected-article",
+        effectiveTargetUrl: "https://news.example.com/news/2026/07/20/redirected-article",
+      });
+
+      expect(result.accepted).toBe(true);
+    });
+
+    it("rejects a social-domain canonical even when supplied as verified evidence", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://example.com/news/2026/07/20/social-link",
+        canonicalUrlOverride: "https://facebook.com/example/story",
+        verifiedHosts: ["facebook.com"],
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_cross_domain");
+    });
+
+    it("rejects an unrelated external domain canonical", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        canonicalUrlOverride: "https://other-site.com/news/2026/07/20/hijack-slug",
+        verifiedHosts: ["other-site.com"],
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.outcome.status).toBe("rejected_cross_domain");
+    });
+
+    it("keeps existing same-host behavior unchanged", async () => {
+      const { evaluateArticleLinkCandidateFromExtractedMetadata } = await import("./article-discovery-helpers");
+
+      const result = await evaluateArticleLinkCandidateFromExtractedMetadata({
+        ...baseInput(),
+        articleUrl: "https://www.example.com/news/2026/07/20/www-normalized-article",
+        canonicalUrlOverride: "https://example.com/news/2026/07/20/www-normalized-article",
+      });
+
+      expect(result.accepted).toBe(true);
     });
   });
 

@@ -57,6 +57,17 @@ export type Agent2TargetHealth = {
   browserRetryAfterAt: string | null;
   browserRateLimitReason: string | null;
   lastBrowserCooldownSkipAt: string | null;
+  // ── Explicit cooldown state (active vs historical) ─────────────────
+  /** True when a cooldown is CURRENTLY in effect (retry-after still in the future). */
+  cooldownActive: boolean;
+  /** Human-readable reason for the active cooldown (e.g. "HTTP 429 rate limit"). */
+  cooldownReason: string | null;
+  /** When the currently-active cooldown started. */
+  cooldownStartedAt: string | null;
+  /** When the currently-active cooldown expires (only meaningful when cooldownActive). */
+  retryAfter: string | null;
+  /** Timestamp of the most recent historical cooldown evidence (expired cooldowns only). */
+  lastHistoricalCooldownAt: string | null;
   // ── Browser timing observability ───────────────────────────────────
   lastBrowserAttemptAt: string | null;
   lastBrowserFinishedAt: string | null;
@@ -91,6 +102,98 @@ function readNumber(value: unknown): number | null {
  */
 function targetKey(sourceId: string, categoryId: string | null, targetUrl: string): string {
   return stableTargetKey(sourceId, categoryId, targetUrl) ?? `${sourceId}|${categoryId ?? ""}|${targetUrl}`;
+}
+
+export type DerivedCooldownState = {
+  /** True when a cooldown is CURRENTLY in effect (retry-after still in the future). */
+  cooldownActive: boolean;
+  cooldownReason: string | null;
+  cooldownStartedAt: string | null;
+  retryAfter: string | null;
+  lastHistoricalCooldownAt: string | null;
+};
+
+/**
+ * Derive explicit active-vs-historical cooldown state from raw artifact
+ * cooldown fields.
+ *
+ * A cooldown is ACTIVE only when the retry-after (or cooldown-until)
+ * timestamp is still in the future. Expired 429/cooldown evidence is
+ * surfaced as historical (`lastHistoricalCooldownAt`) — it must never be
+ * presented as an active block or make a resolved target look rate-limited.
+ */
+export function deriveCooldownState(input: {
+  browserCooldownUntil: string | null;
+  browserRateLimitedAt: string | null;
+  browserRetryAfterAt: string | null;
+  browserRateLimitReason: string | null;
+  lastBrowserCooldownSkipAt: string | null;
+  nowMs?: number;
+}): DerivedCooldownState {
+  const nowMs = input.nowMs ?? Date.now();
+
+  const retryAfterMs = input.browserRetryAfterAt
+    ? Date.parse(input.browserRetryAfterAt)
+    : Number.NaN;
+  const cooldownUntilMs = input.browserCooldownUntil
+    ? Date.parse(input.browserCooldownUntil)
+    : Number.NaN;
+
+  // Prefer the explicit retry-after; fall back to cooldown-until.
+  const expiryMs = Number.isFinite(retryAfterMs)
+    ? retryAfterMs
+    : Number.isFinite(cooldownUntilMs)
+      ? cooldownUntilMs
+      : Number.NaN;
+
+  const startedAtMs = input.browserRateLimitedAt
+    ? Date.parse(input.browserRateLimitedAt)
+    : Number.NaN;
+  const lastSkipMs = input.lastBrowserCooldownSkipAt
+    ? Date.parse(input.lastBrowserCooldownSkipAt)
+    : Number.NaN;
+
+  // Active when a future expiry exists.
+  const active = Number.isFinite(expiryMs) && expiryMs > nowMs;
+
+  let reason: string | null = null;
+  if (input.browserRateLimitReason === "http_429") {
+    reason = "HTTP 429 rate limit";
+  } else if (input.browserRateLimitReason) {
+    reason = input.browserRateLimitReason;
+  } else if (input.browserCooldownUntil) {
+    reason = "Browser cooldown";
+  }
+
+  // Historical cooldown evidence: the most recent rate-limited/skip event
+  // that is NOT currently active.
+  const historicalCandidates = [
+    Number.isFinite(startedAtMs) ? startedAtMs : Number.NaN,
+    Number.isFinite(lastSkipMs) ? lastSkipMs : Number.NaN,
+  ];
+  let lastHistoricalAt: string | null = null;
+  if (!active) {
+    let maxMs: number | null = null;
+    for (const candidate of historicalCandidates) {
+      if (Number.isFinite(candidate) && (maxMs === null || candidate > maxMs)) {
+        maxMs = candidate;
+      }
+    }
+    if (maxMs !== null) {
+      lastHistoricalAt = new Date(maxMs).toISOString();
+    }
+  }
+
+  return {
+    cooldownActive: active,
+    cooldownReason: active ? reason : null,
+    cooldownStartedAt:
+      active && Number.isFinite(startedAtMs)
+        ? new Date(startedAtMs).toISOString()
+        : null,
+    retryAfter: active ? new Date(expiryMs).toISOString() : null,
+    lastHistoricalCooldownAt: lastHistoricalAt,
+  };
 }
 
 // ─── Scoring logic ──────────────────────────────────────────────────────────
@@ -460,6 +563,13 @@ export async function buildAgent2HealthReport(input?: {
 
     // Skip resolved targets (they're healthy by definition)
     if (isAgent2TargetResolved(lifecycleState)) {
+      const cooldown = deriveCooldownState({
+        browserCooldownUntil: target.browserCooldownUntil,
+        browserRateLimitedAt: target.browserRateLimitedAt,
+        browserRetryAfterAt: target.browserRetryAfterAt,
+        browserRateLimitReason: target.browserRateLimitReason,
+        lastBrowserCooldownSkipAt: target.lastBrowserCooldownSkipAt,
+      });
       results.push({
         sourceId: target.sourceId,
         categoryId: target.categoryId,
@@ -478,6 +588,11 @@ export async function buildAgent2HealthReport(input?: {
         browserRetryAfterAt: target.browserRetryAfterAt,
         browserRateLimitReason: target.browserRateLimitReason,
         lastBrowserCooldownSkipAt: target.lastBrowserCooldownSkipAt,
+        cooldownActive: cooldown.cooldownActive,
+        cooldownReason: cooldown.cooldownReason,
+        cooldownStartedAt: cooldown.cooldownStartedAt,
+        retryAfter: cooldown.retryAfter,
+        lastHistoricalCooldownAt: cooldown.lastHistoricalCooldownAt,
         lastBrowserAttemptAt: target.lastBrowserAttemptAt,
         lastBrowserFinishedAt: target.lastBrowserFinishedAt,
       });
@@ -495,6 +610,14 @@ export async function buildAgent2HealthReport(input?: {
       lastFailureAt: target.lastFailureAt,
       inCooldown: target.inCooldown,
       hardSourceLifecycleState: null,
+    });
+
+    const cooldown = deriveCooldownState({
+      browserCooldownUntil: target.browserCooldownUntil,
+      browserRateLimitedAt: target.browserRateLimitedAt,
+      browserRetryAfterAt: target.browserRetryAfterAt,
+      browserRateLimitReason: target.browserRateLimitReason,
+      lastBrowserCooldownSkipAt: target.lastBrowserCooldownSkipAt,
     });
 
     results.push({
@@ -515,6 +638,11 @@ export async function buildAgent2HealthReport(input?: {
       browserRetryAfterAt: target.browserRetryAfterAt,
       browserRateLimitReason: target.browserRateLimitReason,
       lastBrowserCooldownSkipAt: target.lastBrowserCooldownSkipAt,
+      cooldownActive: cooldown.cooldownActive,
+      cooldownReason: cooldown.cooldownReason,
+      cooldownStartedAt: cooldown.cooldownStartedAt,
+      retryAfter: cooldown.retryAfter,
+      lastHistoricalCooldownAt: cooldown.lastHistoricalCooldownAt,
       lastBrowserAttemptAt: target.lastBrowserAttemptAt,
       lastBrowserFinishedAt: target.lastBrowserFinishedAt,
     });

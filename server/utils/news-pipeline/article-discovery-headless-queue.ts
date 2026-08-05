@@ -964,9 +964,9 @@ export async function processArticleDiscoveryHeadlessQueue(
             targetUrl,
             sourceId: sourceId!,
             categoryId: item.categoryId,
-            listingDateFallbackRaw,
-            telemetry: probe,
-          });
+            listingDateFallbackRaw,              telemetry: probe,
+              verifiedHostScope: browserResult.verifiedHostScope ?? null,
+            });
 
           // Weak-date diagnostic: if rejected for missing date but otherwise
           // article-like (has title, description/body), flag it for audit.
@@ -1007,6 +1007,7 @@ export async function processArticleDiscoveryHeadlessQueue(
                 sourceId: sourceId!,
                 categoryId: item.categoryId,
                 listingDateFallbackRaw,
+                verifiedHostScope: browserResult.verifiedHostScope ?? null,
               });
 
               probe.recordBrowser(Date.now() - detailBrowserStartedAt);
@@ -1267,6 +1268,9 @@ export async function processArticleDiscoveryHeadlessQueue(
               elapsedMs: browserResult.diagnostics.elapsedMs,
             },
             renderedUrl: browserResult.renderedUrl || null,
+            // Verified host-transition evidence (redirect / final URL /
+            // document canonical) accepted for this rendered target.
+            canonicalHostEvidence: browserResult.canonicalHostEvidence ?? [],
             // Accepted/rejected outcome audit (capped by the tracker).
             // These mirror the static discovery artifact shape so admin and
             // hard-source tooling can consume both with the same code path.

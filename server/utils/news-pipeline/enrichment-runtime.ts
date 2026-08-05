@@ -42,6 +42,7 @@ import { hasUsableAgent3BodyText } from "./publication-gate";
 import {
   decideAgent3RetryDisposition,
   getAgent3AttemptNumber,
+  getAgent3HttpStatus,
   getAgent3RetryAfter,
   getAgent3Tier,
   isAgent3RetryableNow,
@@ -253,6 +254,8 @@ export interface EnrichmentSelectionOptions {
   includeEnriched?: boolean;
   /** Include recently-blocked articles that are in cooldown (HTTP 403/429, browser unavailable). */
   includeRecentlyBlocked?: boolean;
+  /** Allow bounded browser recovery of an article's own current-version HTTP 403 failure. */
+  allowBrowserRecoveryDuringHttp403Cooldown?: boolean;
   /** Force reprocess: override non-retryable failure exclusion. */
   forceReprocess?: boolean;
   /** Filter to specific article IDs (debug/admin rerun). Bypasses freshness cutoff. */
@@ -500,6 +503,8 @@ export const selectEnrichmentEligibleArticles = async (
   const articleIds = options?.articleIds;
   const sourceIds = options?.sourceIds;
   const pipelineRunId = options?.pipelineRunId;
+  const allowBrowserRecoveryDuringHttp403Cooldown =
+    options?.allowBrowserRecoveryDuringHttp403Cooldown ?? false;
 
   // When explicit articleIds are provided, bypass freshness cutoff
   // (admin re-run mode: process specific articles regardless of age).
@@ -546,7 +551,15 @@ export const selectEnrichmentEligibleArticles = async (
   const explicitlyTargeted = Boolean(hasExplicitArticleIds);
   const acceptsArticle = (article: EnrichmentEligibleArticle): boolean => {
     if (sameRunArticleIds.has(article.id)) return false;
-    if (shouldApplyRecentBlockFilter && isBlockedByRecentBlockState(article, recentBlockState)) return false;
+    const browserRecoverable403 =
+      allowBrowserRecoveryDuringHttp403Cooldown &&
+      article.enrichmentStatus === "ENRICHMENT_FAILED" &&
+      getAgent3HttpStatus(article) === 403;
+    if (
+      shouldApplyRecentBlockFilter &&
+      isBlockedByRecentBlockState(article, recentBlockState) &&
+      !browserRecoverable403
+    ) return false;
     const disposition = decideAgent3RetryDisposition({
       ...article,
       now,
@@ -554,6 +567,7 @@ export const selectEnrichmentEligibleArticles = async (
       explicitlyTargeted,
       ignoreCooldown: forceReprocess || explicitlyTargeted || includeRecentlyBlocked,
     });
+    if (browserRecoverable403 && disposition.state === "DEFERRED") return true;
     return shouldApplyRetryableFilter
       ? disposition.state === "READY_NEW" || disposition.state === "READY_RETRY"
       : explicitlyTargeted || forceReprocess
@@ -882,7 +896,11 @@ const buildOutcomeFromSuccess = (
     ? result.bodyText
     : null;
   const bodyTextProvenance = buildBodyTextProvenance(article.bodyText, extractedBody, forceReprocess);
-  const isPaywallProvenance = buildIsPaywallProvenance(article.isPaywall, result.isPaywall);
+  const isPaywallProvenance = buildIsPaywallProvenance(
+    article.isPaywall,
+    result.isPaywall,
+    extractedBody,
+  );
 
   const fields: ArticleFieldProvenance = {};
 
@@ -1039,21 +1057,25 @@ function buildBodyTextProvenance(
  * Build isPaywall field provenance.
  * Does not overwrite a definitive Agent 1 paywall=true with extracted null.
  */
-function buildIsPaywallProvenance(
+export function buildIsPaywallProvenance(
   existingIsPaywall: boolean,
   extractedIsPaywall: boolean | null,
+  extractedBodyText: string | null = null,
 ): { raw: boolean; chosenValue: boolean; chosenFrom: FieldProvenanceSource; overrideReason: string } | null {
-  if (extractedIsPaywall === null) return null;
+  const accessibleBodyConfirmed = hasUsableAgent3BodyText(extractedBodyText);
 
-  // Don't overwrite existing true with extracted false (trust Agent 1 paywall hints)
-  if (existingIsPaywall && !extractedIsPaywall) {
+  // A successful substantial extraction is stronger evidence of accessibility
+  // than an early-stage text hint from feed/page chrome.
+  if (existingIsPaywall && extractedIsPaywall !== true && accessibleBodyConfirmed) {
     return {
       raw: existingIsPaywall,
-      chosenValue: existingIsPaywall,
-      chosenFrom: "unchanged",
-      overrideReason: "Kept Agent 1 paywall=true; extractor found no paywall signal.",
+      chosenValue: false,
+      chosenFrom: "dom",
+      overrideReason: "Cleared early paywall hint after successful substantial article-body extraction without paywall signals.",
     };
   }
+
+  if (extractedIsPaywall === null) return null;
 
   return {
     raw: existingIsPaywall,
@@ -2431,6 +2453,8 @@ export interface EnrichmentBatchOptions {
   browserFallbackMaxAttempts?: number;
   /** Timeout per browser fallback attempt in ms (default 25000, clamp 5000..45000). */
   browserTimeoutMs?: number;
+  /** Bypass only an article's own HTTP 403 cooldown for a bounded browser recovery batch. */
+  allowBrowserRecoveryDuringHttp403Cooldown?: boolean;
   /** Maximum articles from a single source per batch (default 5, clamp 1..25). */
   maxArticlesPerSource?: number;
   /** Existing durable PipelineRun to use for same-run attempt artifacts. */
@@ -2566,6 +2590,8 @@ export const runEnrichmentBatch = async (
         articleIds: options?.articleIds,
         sourceIds: options?.sourceIds,
         pipelineRunId: pipelineRun.id,
+        allowBrowserRecoveryDuringHttp403Cooldown:
+          options?.allowBrowserRecoveryDuringHttp403Cooldown,
       },
     );
 

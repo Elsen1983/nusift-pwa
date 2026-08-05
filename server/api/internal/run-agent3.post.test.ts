@@ -99,6 +99,29 @@ describe("POST /api/internal/run-agent3", () => {
     }));
   });
 
+  it("runs a bounded browser recovery batch after the normal queue drains", async () => {
+    mocks.getProgress
+      .mockResolvedValueOnce({ retryableNow: 0, deferred: 12 })
+      .mockResolvedValueOnce({
+        readyNew: 0,
+        readyRetry: 0,
+        retryableNow: 0,
+        deferred: 10,
+        quarantined: 0,
+        nextRetryAt: null,
+      });
+
+    const result = await (await loadHandler())({} as any);
+
+    expect(mocks.runBatch).toHaveBeenCalledWith(expect.objectContaining({
+      maxArticles: 2,
+      browserFallback: true,
+      browserFallbackMaxAttempts: 2,
+      allowBrowserRecoveryDuringHttp403Cooldown: true,
+    }));
+    expect(result).toMatchObject({ processed: 2, remaining: 10, complete: false });
+  });
+
   it("computes completion using current-run and future-run scopes", async () => {
     mocks.readBody.mockResolvedValue({ orchestrationRunId: "run-1", action: "completion" });
     mocks.completion.mockResolvedValue({

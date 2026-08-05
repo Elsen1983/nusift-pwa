@@ -20,7 +20,7 @@ import { classifyArticleUrl } from "./article-url-policy";
 export const CURRENT_PRODUCTION_URL_POLICY_VERSION = "url-policy-2026-07-prod";
 
 /** The version string for the candidate (next-gen) URL policy. */
-export const CANDIDATE_URL_POLICY_VERSION = "url-policy-2026-08-candidate-v3-media-program";
+export const CANDIDATE_URL_POLICY_VERSION = "url-policy-2026-08-candidate-v5-metadata-tristate";
 
 /** The dataset version for the first URL evaluation dataset. */
 export const URL_EVALUATION_DATASET_VERSION = "url-eval-2026-08-v1";
@@ -190,6 +190,143 @@ export type DatasetValidationResult = {
   split: DatasetSplit;
   labelCount: number;
 };
+
+/** Documented tuning/holdout movements. Each replacement is independently
+ * stratified; originals remain in tuning and replacements remain in holdout. */
+export const URL_POLICY_DATASET_MOVEMENTS = [
+  {
+    originalUrl: "https://www.bbc.com/news/business",
+    destinationSplit: "tuning",
+    replacementUrl: "https://www.bbc.com/news/entertainment",
+    replacementSplit: "holdout",
+    expectedType: "LISTING",
+    discoveryMethod: "STATIC_LISTING",
+    reason: "The original news-section listing was consumed while tuning the section-landing rule; the independent BBC entertainment section remains holdout evidence.",
+  },
+  {
+    originalUrl: "https://www.theguardian.com/news/series/investigation-podcast",
+    destinationSplit: "tuning",
+    replacementUrl: "https://www.theguardian.com/news/series/audio-long-reads",
+    replacementSplit: "holdout",
+    expectedType: "MEDIA",
+    discoveryMethod: "RSS",
+    reason: "The original podcast-series media URL was consumed while tuning media semantics; the independent Guardian series remains holdout evidence.",
+  },
+  {
+    originalUrl: "https://example.com/video/2026/07/30/documentary-premiere",
+    destinationSplit: "tuning",
+    replacementUrl: "https://example.com/video/2026/08/01/evening-news-roundup",
+    replacementSplit: "holdout",
+    expectedType: "MEDIA",
+    discoveryMethod: "BROWSER",
+    reason: "The original player-only video URL was consumed while tuning media semantics; the independent VideoObject URL remains holdout evidence.",
+  },
+  {
+    originalUrl: "https://example.com/schedule/2026/07/30/evening-lineup",
+    destinationSplit: "tuning",
+    replacementUrl: "https://example.com/schedule/2026/08/01/primetime-block",
+    replacementSplit: "holdout",
+    expectedType: "MEDIA",
+    discoveryMethod: "RSS",
+    reason: "The original BroadcastEvent schedule URL was consumed while tuning programme semantics; the independent schedule remains holdout evidence.",
+  },
+  {
+    originalUrl: "https://example.com/redirect/article?id=123",
+    destinationSplit: "tuning",
+    replacementUrl: "https://example.com/redirector/article-view?id=42",
+    replacementSplit: "holdout",
+    expectedType: "BAD_CANONICAL",
+    discoveryMethod: "BROWSER",
+    reason: "The original redirect-style URL was consumed while tuning redirect semantics; the independent redirect form remains holdout evidence.",
+  },
+  {
+    originalUrl: "https://example.com/search?q=test",
+    destinationSplit: "tuning",
+    replacementUrl: "https://example.com/search?q=holdout",
+    replacementSplit: "holdout",
+    expectedType: "OTHER",
+    discoveryMethod: "HTML_FALLBACK",
+    reason: "The original search landing URL was consumed while tuning generic landing semantics; the independent query remains holdout evidence.",
+  },
+  {
+    originalUrl: "https://example.com/feed",
+    destinationSplit: "tuning",
+    replacementUrl: "https://example.com/feed/holdout",
+    replacementSplit: "holdout",
+    expectedType: "OTHER",
+    discoveryMethod: "MANUAL",
+    reason: "The original feed landing URL was consumed while tuning generic landing semantics; the independent feed path remains holdout evidence.",
+  },
+] as const;
+
+function normalizeEvaluationUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    parsed.hostname = parsed.hostname.toLowerCase();
+    const meaningfulParams = [...parsed.searchParams.entries()]
+      .filter(([key]) => !/^utm_[^=]+$/i.test(key) && key.toLowerCase() !== "fbclid")
+      .sort(([keyA, valueA], [keyB, valueB]) => `${keyA}=${valueA}`.localeCompare(`${keyB}=${valueB}`));
+    parsed.search = "";
+    for (const [key, value] of meaningfulParams) parsed.searchParams.append(key, value);
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Reject accidental URL leakage between tuning and holdout splits. */
+export function validateUrlEvaluationDatasetSplits(
+  datasets: UrlEvaluationDataset[],
+): string[] {
+  const seen = new Map<string, DatasetSplit>();
+  const errors: string[] = [];
+  for (const dataset of datasets) {
+    for (const label of dataset.labels) {
+      const normalized = normalizeEvaluationUrl(label.url);
+      if (!normalized) continue;
+      const previous = seen.get(normalized);
+      if (previous && previous !== dataset.split) {
+        errors.push(`normalized URL appears in both ${previous} and ${dataset.split}: ${normalized}`);
+      } else {
+        seen.set(normalized, dataset.split);
+      }
+    }
+  }
+  return [...new Set(errors)].sort();
+}
+
+/** Validate every documented movement against the actual split contents. */
+export function validateUrlPolicyDatasetMovements(
+  datasets: UrlEvaluationDataset[],
+): string[] {
+  const errors: string[] = [];
+  const bySplit = new Map<DatasetSplit, UrlEvaluationLabel[]>();
+  for (const dataset of datasets) bySplit.set(dataset.split, dataset.labels);
+  for (const movement of URL_POLICY_DATASET_MOVEMENTS) {
+    const original = bySplit.get(movement.destinationSplit)?.find((label) => normalizeEvaluationUrl(label.url) === normalizeEvaluationUrl(movement.originalUrl));
+    const replacement = bySplit.get(movement.replacementSplit)?.find((label) => normalizeEvaluationUrl(label.url) === normalizeEvaluationUrl(movement.replacementUrl));
+    if (!original) errors.push(`movement original missing from ${movement.destinationSplit}: ${movement.originalUrl}`);
+    if (!replacement) errors.push(`movement replacement missing from ${movement.replacementSplit}: ${movement.replacementUrl}`);
+    if (bySplit.get(movement.replacementSplit)?.some((label) => normalizeEvaluationUrl(label.url) === normalizeEvaluationUrl(movement.originalUrl))) {
+      errors.push(`movement original also appears in replacement split: ${movement.originalUrl}`);
+    }
+    if (bySplit.get(movement.destinationSplit)?.some((label) => normalizeEvaluationUrl(label.url) === normalizeEvaluationUrl(movement.replacementUrl))) {
+      errors.push(`movement replacement also appears in destination split: ${movement.replacementUrl}`);
+    }
+    if (normalizeEvaluationUrl(movement.originalUrl) === normalizeEvaluationUrl(movement.replacementUrl)) errors.push(`movement original and replacement are identical: ${movement.originalUrl}`);
+    if (movement.destinationSplit !== "tuning") errors.push(`movement destinationSplit must be tuning: ${movement.originalUrl}`);
+    if (movement.replacementSplit !== "holdout") errors.push(`movement replacementSplit must be holdout: ${movement.replacementUrl}`);
+    if (original && original.expectedType !== movement.expectedType) errors.push(`movement original expectedType mismatch: ${movement.originalUrl}`);
+    if (replacement && replacement.expectedType !== movement.expectedType) errors.push(`movement replacement expectedType mismatch: ${movement.replacementUrl}`);
+    if (original && original.discoveryMethod !== movement.discoveryMethod) errors.push(`movement original discoveryMethod mismatch: ${movement.originalUrl}`);
+    if (replacement && replacement.discoveryMethod !== movement.discoveryMethod) errors.push(`movement replacement discoveryMethod mismatch: ${movement.replacementUrl}`);
+    const expectedShouldAccept = ACCEPTABLE_ARTICLE_TYPES.has(movement.expectedType);
+    if (original && original.shouldAccept !== expectedShouldAccept) errors.push(`movement original acceptance class mismatch: ${movement.originalUrl}`);
+    if (replacement && replacement.shouldAccept !== expectedShouldAccept) errors.push(`movement replacement acceptance class mismatch: ${movement.replacementUrl}`);
+  }
+  return [...new Set(errors)].sort();
+}
 
 /**
  * Validate a URL evaluation dataset.
@@ -460,6 +597,14 @@ export function createTuningDataset(): UrlEvaluationDataset {
       L("https://example.com/subscribe/premium-plan", "OTHER", { discoveryMethod: "RSS" }),
       L("https://example.com/author/jane-doe", "OTHER", { discoveryMethod: "STATIC_LISTING" }),
       L("https://example.com/newsletter/weekly-digest", "OTHER", { discoveryMethod: "RSS" }),
+      // ── Movement originals intentionally consumed during tuning ─────
+      L("https://www.bbc.com/news/business", "LISTING", { sourceId: "bbc-com", discoveryMethod: "STATIC_LISTING" }),
+      L("https://www.theguardian.com/news/series/investigation-podcast", "MEDIA", { sourceId: "theguardian-com", discoveryMethod: "RSS" }),
+      L("https://example.com/video/2026/07/30/documentary-premiere", "MEDIA", { discoveryMethod: "BROWSER", candidateEvidence: { hasArticleMetadata: false, hasPlayerOnlyMetadata: true, structuredDataTypes: ["VideoObject"] } }),
+      L("https://example.com/schedule/2026/07/30/evening-lineup", "MEDIA", { discoveryMethod: "RSS", candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["BroadcastEvent"] } }),
+      L("https://example.com/redirect/article?id=123", "BAD_CANONICAL", { discoveryMethod: "BROWSER" }),
+      L("https://example.com/search?q=test", "OTHER", { discoveryMethod: "HTML_FALLBACK" }),
+      L("https://example.com/feed", "OTHER", { discoveryMethod: "MANUAL" }),
     ],
   };
 }
@@ -506,7 +651,7 @@ export function createHoldoutDataset(): UrlEvaluationDataset {
       // ── Listing pages (should reject) ─────────────────────────────
       L("https://example.com/latest", "LISTING", { discoveryMethod: "STATIC_LISTING" }),
       L("https://example.com/trending", "LISTING", { discoveryMethod: "STATIC_LISTING" }),
-      L("https://www.bbc.com/news/business", "LISTING", { sourceId: "bbc-com", discoveryMethod: "STATIC_LISTING" }),
+      L("https://www.bbc.com/news/entertainment", "LISTING", { sourceId: "bbc-com", discoveryMethod: "STATIC_LISTING", notes: "Replacement holdout for news-section listing class (original moved to tuning)" }),
       L("https://www.theguardian.com/commentisfree", "LISTING", { sourceId: "theguardian-com", discoveryMethod: "STATIC_LISTING" }),
       L("https://example.com/tag/economy", "LISTING", { discoveryMethod: "SITEMAP" }),
       L("https://example.com/category/science", "LISTING", { discoveryMethod: "SITEMAP" }),
@@ -521,9 +666,9 @@ export function createHoldoutDataset(): UrlEvaluationDataset {
       L("https://example.com/audio/special-report", "MEDIA", { discoveryMethod: "RSS" }),
       L("https://example.com/clips/highlights-20260729", "MEDIA", { discoveryMethod: "STATIC_LISTING" }),
       L("https://example.com/podcast/true-crime-season-finale", "MEDIA", { discoveryMethod: "RSS" }),
-      L("https://www.theguardian.com/news/series/investigation-podcast", "MEDIA", { sourceId: "theguardian-com", discoveryMethod: "RSS" }),
-      L("https://example.com/video/2026/07/30/documentary-premiere", "MEDIA", { discoveryMethod: "BROWSER", candidateEvidence: { hasArticleMetadata: false, hasPlayerOnlyMetadata: true, structuredDataTypes: ["VideoObject"] } }),
-      L("https://example.com/schedule/2026/07/30/evening-lineup", "MEDIA", { discoveryMethod: "RSS", candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["BroadcastEvent"] } }),
+      L("https://www.theguardian.com/news/series/audio-long-reads", "MEDIA", { sourceId: "theguardian-com", discoveryMethod: "RSS", notes: "Replacement holdout for podcast-series media class (original moved to tuning)" }),
+      L("https://example.com/video/2026/08/01/evening-news-roundup", "MEDIA", { discoveryMethod: "BROWSER", candidateEvidence: { hasArticleMetadata: false, hasPlayerOnlyMetadata: true, structuredDataTypes: ["VideoObject"] }, notes: "Replacement holdout for video media class (original moved to tuning)" }),
+      L("https://example.com/schedule/2026/08/01/primetime-block", "MEDIA", { discoveryMethod: "RSS", candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["BroadcastEvent"] }, notes: "Replacement holdout for schedule media class (original moved to tuning)" }),
       L("https://example.com/radio/programmes/long-form-investigation", "MEDIA", { discoveryMethod: "RSS", candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["RadioEpisode"] } }),
       L("https://example.com/video/2026/07/30/text-report-from-the-field", "ARTICLE", { discoveryMethod: "RSS", extractionExpected: true, notes: "Genuine text article under a media route", candidateEvidence: { hasArticleMetadata: true, structuredDataTypes: ["Article", "VideoObject"] } }),
       // ── Liveblog (should accept) ──────────────────────────────────
@@ -538,10 +683,10 @@ export function createHoldoutDataset(): UrlEvaluationDataset {
       // ── Stale article (should accept) ─────────────────────────────
       L("https://www.theguardian.com/world/2021/feb/14/old-story-with-valid-url-structure", "STALE_ARTICLE", { sourceId: "theguardian-com", discoveryMethod: "SITEMAP", extractionExpected: true, expectedPublishedDate: "2021-02-14" }),
       // ── Bad canonical (should reject) ─────────────────────────────
-      L("https://example.com/redirect/article?id=123", "BAD_CANONICAL", { discoveryMethod: "BROWSER", notes: "Redirect page URL pointing to canonical article" }),
+      L("https://example.com/redirector/article-view?id=42", "BAD_CANONICAL", { discoveryMethod: "BROWSER", notes: "Replacement holdout for redirect-style BAD_CANONICAL class (original moved to tuning)" }),
       // ── Other (should reject) ─────────────────────────────────────
-      L("https://example.com/search?q=test", "OTHER", { discoveryMethod: "HTML_FALLBACK" }),
-      L("https://example.com/feed", "OTHER", { discoveryMethod: "MANUAL" }),
+      L("https://example.com/search?q=holdout", "OTHER", { discoveryMethod: "HTML_FALLBACK" }),
+      L("https://example.com/feed/holdout", "OTHER", { discoveryMethod: "MANUAL" }),
       L("https://example.com/help/faq", "OTHER", { discoveryMethod: "STATIC_LISTING" }),
       L("https://example.com/careers", "OTHER", { discoveryMethod: "STATIC_LISTING" }),
       L("https://example.com/auth/sign-in", "OTHER", { discoveryMethod: "HTML_FALLBACK" }),
@@ -614,6 +759,86 @@ const MEDIA_STRUCTURED_DATA_TYPES = new Set([
   "RadioEpisode", "PodcastEpisode", "BroadcastEvent", "AudioObject", "VideoObject",
 ]);
 
+function evaluateCandidateSemanticLandingEvidence(
+  input: UrlPolicyEvaluationInput,
+  signals: string[],
+): { decision: UrlPolicyDecision; reasonCode: string; evidence: Record<string, unknown> } | null {
+  const parsed = new URL(input.url);
+  const segments = parsed.pathname.toLowerCase().split("/").filter(Boolean);
+  const pathTokens = new Set(segments.flatMap((segment) => segment.split(/[-_]/g)));
+  const articleMetadataState = input.candidateEvidence?.hasArticleMetadata;
+  const hasArticleMetadata = articleMetadataState === true;
+  const metadataConfirmedAbsent = articleMetadataState === false;
+  const structuredDataTypes = input.candidateEvidence?.structuredDataTypes ?? [];
+  const hasArticleStructuredData = structuredDataTypes
+    .some((type) => ["Article", "NewsArticle", "LiveBlogPosting"].includes(type));
+  const hasExplicitListingStructuredData = structuredDataTypes
+    .some((type) => ["CollectionPage", "ItemList", "SearchResultsPage", "WebSite"].includes(type));
+  const hasStrongArticleSignal = [
+    "pos:date_path", "pos:long_slug", "pos:article_segment", "pos:article_suffix",
+  ].some((signal) => signals.includes(signal));
+
+  const docsTokens = ["docs", "documentation", "api", "developer", "reference", "swagger", "openapi", "getting", "started"];
+  if (!hasArticleMetadata && !hasArticleStructuredData && !hasStrongArticleSignal && docsTokens.some((token) => pathTokens.has(token)) && segments.length <= 4) {
+    return {
+      decision: "REJECT",
+      reasonCode: "documentation_api_landing_without_article_evidence",
+      evidence: { semanticPathClass: "documentation_api_landing", pathSegments: segments.slice(0, 8) },
+    };
+  }
+
+  const sectionTokens = ["section", "category", "categories", "topic", "topics", "technology", "business", "politics", "world", "news"];
+  const hasDatedOrLongArticleEvidence = signals.includes("pos:date_path") || signals.includes("pos:long_slug");
+  const sectionLikePath = segments.length <= 2 && sectionTokens.some((token) => pathTokens.has(token));
+  const confirmedListing = metadataConfirmedAbsent && hasExplicitListingStructuredData;
+  if (!hasArticleMetadata && !hasArticleStructuredData && sectionLikePath && (confirmedListing || (!hasStrongArticleSignal && !hasDatedOrLongArticleEvidence))) {
+    // A short section-like URL is ambiguous when page metadata was not
+    // evaluated. Only confirmed absence plus explicit listing evidence is
+    // strong enough for REJECT; unknown metadata abstains to UNCERTAIN.
+    return {
+      decision: confirmedListing ? "REJECT" : "UNCERTAIN",
+      reasonCode: confirmedListing
+        ? "section_landing_without_article_evidence"
+        : "ambiguous_section_without_confirmed_metadata",
+      evidence: {
+        semanticPathClass: "section_landing",
+        pathSegments: segments.slice(0, 8),
+        articleMetadataState: articleMetadataState ?? "unknown",
+        explicitListingEvidence: hasExplicitListingStructuredData,
+      },
+    };
+  }
+
+  const redirectTokens = ["redirect", "redirector", "article", "view", "go", "link"];
+  if (!hasArticleMetadata && !hasArticleStructuredData && !hasStrongArticleSignal && segments.some((segment) => redirectTokens.includes(segment)) && (parsed.searchParams.has("id") || segments.includes("redirect") || segments.includes("redirector"))) {
+    return {
+      decision: "REJECT",
+      reasonCode: "redirect_style_without_article_evidence",
+      evidence: { semanticPathClass: "redirect_style", pathSegments: segments.slice(0, 8) },
+    };
+  }
+
+  const shallowLandingTokens = ["latest", "trending", "popular", "most-read", "browse", "explore", "discover", "search", "feed"];
+  if (!hasArticleMetadata && !hasArticleStructuredData && !hasStrongArticleSignal && segments.length <= 2 && segments.some((segment) => shallowLandingTokens.includes(segment))) {
+    return {
+      decision: "REJECT",
+      reasonCode: "generic_shallow_landing_without_article_evidence",
+      evidence: { semanticPathClass: "generic_shallow_landing", pathSegments: segments.slice(0, 8) },
+    };
+  }
+
+  if (!hasArticleMetadata && !hasArticleStructuredData && !hasStrongArticleSignal && segments.length === 2 && segments.every((segment) => /^[a-z-]{2,24}$/.test(segment))) {
+    return {
+      decision: "UNCERTAIN",
+      reasonCode: "generic_shallow_path_without_article_evidence",
+      evidence: { semanticPathClass: "generic_shallow_path", pathSegments: segments.slice(0, 8) },
+    };
+  }
+
+  if (hasArticleMetadata || hasArticleStructuredData || hasStrongArticleSignal) return null;
+  return null;
+}
+
 function evaluateCandidateMediaEvidence(
   input: UrlPolicyEvaluationInput,
   signals: string[],
@@ -626,29 +851,36 @@ function evaluateCandidateMediaEvidence(
     .map((type) => type.slice(0, 80))
     .filter((type) => MEDIA_STRUCTURED_DATA_TYPES.has(type));
   const playerOnly = input.candidateEvidence?.hasPlayerOnlyMetadata === true;
-  const hasArticleMetadata = input.candidateEvidence?.hasArticleMetadata === true;
+  const articleMetadataState = input.candidateEvidence?.hasArticleMetadata;
+  const hasArticleMetadata = articleMetadataState === true;
+  const hasArticleStructuredData = (input.candidateEvidence?.structuredDataTypes ?? [])
+    .some((type) => ["Article", "NewsArticle", "LiveBlogPosting"].includes(type));
   const hasStrongArticleSignal = [
     "pos:date_path", "pos:long_slug", "pos:article_segment", "pos:article_suffix",
   ].some((signal) => signals.includes(signal));
   const strongProgrammeEvidence = routeTokens.length > 0 || structuredDataTypes.length > 0 || playerOnly;
 
-  if (!strongProgrammeEvidence || hasArticleMetadata || hasStrongArticleSignal) return null;
+  const explicitNonArticleStructuredData = structuredDataTypes.length > 0;
+  if (!strongProgrammeEvidence || hasArticleMetadata || hasArticleStructuredData || (hasStrongArticleSignal && !explicitNonArticleStructuredData && !playerOnly)) return null;
 
-  const noArticleMetadata = input.candidateEvidence?.hasArticleMetadata === false;
-  const reasonCode = noArticleMetadata && (routeTokens.length > 0 || structuredDataTypes.length > 0)
-    ? "programme_media_without_article_metadata"
-    : playerOnly
-      ? "player_only_media_metadata"
-      : "media_programme_route";
+  const noArticleMetadata = articleMetadataState === false;
+  const reasonCode = explicitNonArticleStructuredData
+    ? "explicit_non_article_media_structured_data"
+    : noArticleMetadata && routeTokens.length > 0
+      ? "programme_media_without_article_metadata"
+      : playerOnly
+        ? "player_only_media_metadata"
+        : "media_programme_route";
 
   return {
-    decision: noArticleMetadata || playerOnly ? "REJECT" : "UNCERTAIN",
+    decision: explicitNonArticleStructuredData || noArticleMetadata || playerOnly ? "REJECT" : "UNCERTAIN",
     reasonCode,
     evidence: {
       mediaRouteTokens: routeTokens.slice(0, 8),
       structuredDataTypes: structuredDataTypes.slice(0, 8),
       playerOnlyMetadata: playerOnly,
       articleMetadataPresent: hasArticleMetadata,
+      articleMetadataState: articleMetadataState ?? "unknown",
       articleSignals: ["pos:date_path", "pos:long_slug", "pos:article_segment", "pos:article_suffix"]
         .filter((signal) => signals.includes(signal)),
     },
@@ -670,13 +902,20 @@ export function evaluateCandidateUrlPolicy(
     reasonCode = result.reason || "unknown_rejection";
     evidence = { signals: result.signals };
   } else {
+    // Evaluate deterministic media evidence first so programme/video/audio
+    // pages cannot be downgraded by the generic shallow-path rule.
     const mediaDecision = evaluateCandidateMediaEvidence(input, result.signals);
+    const semanticDecision = mediaDecision ? null : evaluateCandidateSemanticLandingEvidence(input, result.signals);
     // Candidate-only media/program evidence remains SHADOW. Strong article
     // signals or explicit article metadata preserve genuine text articles.
     if (mediaDecision) {
       decision = mediaDecision.decision;
       reasonCode = mediaDecision.reasonCode;
       evidence = { signals: result.signals, ...mediaDecision.evidence };
+    } else if (semanticDecision) {
+      decision = semanticDecision.decision;
+      reasonCode = semanticDecision.reasonCode;
+      evidence = { signals: result.signals, ...semanticDecision.evidence };
     } else if (isCandidateBorderlineAcceptance(result.signals)) {
       decision = "UNCERTAIN";
       reasonCode = "low_article_url_confidence";

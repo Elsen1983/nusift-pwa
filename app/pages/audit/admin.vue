@@ -169,7 +169,20 @@
               <div class="font-bold uppercase tracking-wider text-amber-200">Per-redirect retry state</div>
               <div v-if="reliabilityDiagnostics.redirects.length === 0" class="mt-1">No recent redirect retry artifacts.</div>
               <div v-for="redirect in reliabilityDiagnostics.redirects.slice(0, 5)" :key="redirect.id" class="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
-                <span class="truncate">{{ redirect.originalUrl || 'unknown URL' }}</span><span>{{ redirect.failureKind || redirect.status }} · attempts {{ redirect.attemptCount }} · next {{ redirect.nextRetryAt || 'eligible' }}</span>
+                <span class="truncate">{{ redirect.originalUrl || 'unknown URL' }}</span>
+                <span>
+                  <span :class="redirectStatusDescriptor(redirect).terminal ? 'text-rose-300' : redirectStatusDescriptor(redirect).resolved ? 'text-emerald-300' : 'text-on-surface-variant'">{{ redirectStatusDescriptor(redirect).label }}</span>
+                  · attempts {{ redirect.attemptCount }}
+                  <template v-if="redirectStatusDescriptor(redirect).terminal">
+                    <span class="text-on-surface-variant/60">· no automatic retry</span>
+                  </template>
+                  <template v-else-if="redirectStatusDescriptor(redirect).retryable && redirectStatusDescriptor(redirect).nextRetryAt">
+                    · next eligible {{ formatLogTime(redirectStatusDescriptor(redirect).nextRetryAt!) }}
+                  </template>
+                  <template v-else-if="redirectStatusDescriptor(redirect).retryable">
+                    · next eligible soon
+                  </template>
+                </span>
               </div>
             </div>
           </div>
@@ -1265,6 +1278,9 @@
                     <span v-if="profile.failureCount > 1" class="text-[10px] font-medium text-rose-300">
                       {{ profile.failureCount }}x failed
                     </span>
+                    <span v-if="(profile.evidenceCount ?? 1) > 1" class="text-[10px] font-medium text-on-surface-variant/70" title="One current row per logical target; older evidence kept in bounded history.">
+                      {{ profile.evidenceCount }} evidence · {{ (profile.history || []).length }} history
+                    </span>
                     <span
                       class="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
                       :class="hardSourceLifecycleBadgeClass(profile.lifecycleState || 'open')"
@@ -1422,20 +1438,30 @@
                   <p v-if="target.recommendedAction" class="mt-1 text-[10px] font-medium text-amber-200">
                     {{ target.recommendedAction }}
                   </p>
-                  <!-- Browser cooldown observability -->
-                  <div v-if="target.browserCooldownUntil || target.browserRetryAfterAt || target.browserRateLimitedAt" class="mt-1.5 rounded-lg border border-cyan-500/15 bg-cyan-500/5 px-2.5 py-1.5">
-                    <p class="text-[9px] font-bold uppercase tracking-wider text-cyan-300/80">Browser cooldown</p>
+                  <!-- Cooldown observability: explicit active vs historical -->
+                  <div
+                    v-if="target.cooldownActive || target.lastHistoricalCooldownAt"
+                    class="mt-1.5 rounded-lg border px-2.5 py-1.5"
+                    :class="target.cooldownActive
+                      ? 'border-cyan-500/15 bg-cyan-500/5'
+                      : 'border-outline-variant/20 bg-surface-container'"
+                  >
+                    <p
+                      class="text-[9px] font-bold uppercase tracking-wider"
+                      :class="target.cooldownActive ? 'text-cyan-300/80' : 'text-on-surface-variant/60'"
+                    >
+                      {{ target.cooldownActive ? 'Active cooldown' : 'Historical cooldown' }}
+                    </p>
                     <div class="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-on-surface-variant/80">
-                      <span v-if="target.browserCooldownUntil">Cooldown until: <strong>{{ formatLogTime(target.browserCooldownUntil) }}</strong></span>
-                      <span v-if="target.browserRetryAfterAt">Retry after: <strong>{{ formatLogTime(target.browserRetryAfterAt) }}</strong></span>
-                      <span v-if="cooldownRemainingMinutes(target.browserRetryAfterAt || target.browserCooldownUntil) != null" class="text-cyan-200">
-                        Retryable in: <strong>{{ cooldownRemainingMinutes(target.browserRetryAfterAt || target.browserCooldownUntil) }} min</strong>
+                      <span v-if="target.cooldownActive && target.retryAfter">
+                        Retry after: <strong>{{ formatLogTime(target.retryAfter) }}</strong>
                       </span>
-                    </div>
-                    <div class="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-on-surface-variant/80">
-                      <span v-if="target.browserRateLimitedAt">Rate limited at: {{ formatLogTime(target.browserRateLimitedAt) }}</span>
-                      <span v-if="target.browserRateLimitReason">Reason: <strong class="text-rose-200">{{ target.browserRateLimitReason }}</strong></span>
-                      <span v-if="target.lastBrowserCooldownSkipAt">Last skipped: {{ formatLogTime(target.lastBrowserCooldownSkipAt) }}</span>
+                      <span v-if="target.cooldownActive && cooldownRemainingMinutes(target.retryAfter) != null" class="text-cyan-200">
+                        Retryable in: <strong>{{ cooldownRemainingMinutes(target.retryAfter) }} min</strong>
+                      </span>
+                      <span v-if="target.cooldownActive && target.cooldownStartedAt">Started: {{ formatLogTime(target.cooldownStartedAt) }}</span>
+                      <span v-if="target.cooldownActive && target.cooldownReason">Reason: <strong class="text-rose-200">{{ target.cooldownReason }}</strong></span>
+                      <span v-if="target.lastHistoricalCooldownAt">Last cooldown: {{ formatLogTime(target.lastHistoricalCooldownAt) }} (expired)</span>
                     </div>
                   </div>
                 </div>
@@ -1943,6 +1969,9 @@
               <div v-if="urlPolicyEvalResult.comparison?.length" class="mt-3 rounded-xl border border-outline-variant/20 bg-surface-container px-3 py-2">
                 <h4 class="font-headline text-xs font-bold uppercase tracking-wider text-on-surface-variant/70">
                   Production vs candidate delta
+                  <span class="ml-1 text-[9px] font-normal normal-case tracking-normal text-on-surface-variant/60">
+                    ({{ urlPolicyComparisonVersions }})
+                  </span>
                 </h4>
                 <div class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-on-surface-variant">
                   <div
@@ -2340,6 +2369,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAuthStore } from "~/stores/auth";
 import { useFeedStore } from "~/stores/feedStore";
 import { $api } from "~/utils/api";
+import {
+  describeRedirectStatus,
+  type RedirectStatusDescriptor,
+} from "~/../shared/redirect-status";
 
 definePageMeta({
   layout: "app-layout",
@@ -2376,6 +2409,12 @@ const urlPolicyVersions = computed(() => {
   return Object.entries(policies)
     .map(([key, value]: [string, any]) => value?.policyVersion || key)
     .join(" vs ");
+});
+const urlPolicyComparisonVersions = computed(() => {
+  const comparison = urlPolicyEvalResult.value?.comparison;
+  const first = Array.isArray(comparison) ? comparison[0] : null;
+  if (!first) return "";
+  return `${first.productionPolicyVersion || 'production'} vs ${first.candidatePolicyVersion || 'candidate'}`;
 });
 const urlPolicySamples = computed(() => {
   const groups = {
@@ -2678,6 +2717,12 @@ type HardSourceProfileEntry = {
   resolvedReason: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Stable logical target key (sourceId/categoryId/normalized target URL). */
+  key?: string | null;
+  /** Number of raw evidence rows aggregated under this logical target. */
+  evidenceCount?: number | null;
+  /** Bounded chronological history, newest first. */
+  history?: HardSourceProfileEntry[];
 };
 
 const hardSourceProfiles = ref<HardSourceProfileEntry[]>([]);
@@ -2720,6 +2765,11 @@ const agent2HealthTargets = ref<Array<{
   browserRetryAfterAt: string | null;
   browserRateLimitReason: string | null;
   lastBrowserCooldownSkipAt: string | null;
+  cooldownActive: boolean;
+  cooldownReason: string | null;
+  cooldownStartedAt: string | null;
+  retryAfter: string | null;
+  lastHistoricalCooldownAt: string | null;
   lastBrowserAttemptAt: string | null;
   lastBrowserFinishedAt: string | null;
 }>>([]);
@@ -3711,6 +3761,15 @@ const headlessStatusBadgeClass = (status: string) => {
       return "bg-gray-500/15 text-gray-400 border-gray-500/20";
   }
 };
+
+const redirectStatusDescriptor = (redirect: {
+  status?: string | null;
+  nextRetryAt?: string | null;
+  statusDescriptor?: RedirectStatusDescriptor | null;
+}): RedirectStatusDescriptor => redirect.statusDescriptor ?? describeRedirectStatus(
+  redirect.status || "RETRYABLE",
+  redirect.nextRetryAt ?? null,
+);
 
 const hardSourceActionLabel = (action: string): string => {
   const labels: Record<string, string> = {

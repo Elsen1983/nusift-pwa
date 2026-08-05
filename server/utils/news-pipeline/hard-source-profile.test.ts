@@ -218,6 +218,146 @@ describe("hard-source-profile — pure helpers", () => {
       expect(result).not.toHaveProperty("detailRejectionReasons");
     });
   });
+
+  describe("buildHardSourceTargetKey", () => {
+    it("builds a stable key from sourceId/categoryId/normalized target URL", async () => {
+      const { buildHardSourceTargetKey } = await loadModule();
+      const key = buildHardSourceTargetKey({
+        sourceId: "src-1",
+        categoryId: "cat-1",
+        targetUrl: "https://Example.com/News?utm_source=x",
+      });
+      expect(key).toBe("src-1|cat-1|https://example.com/News");
+    });
+
+    it("uses empty category segment for source-level targets", async () => {
+      const { buildHardSourceTargetKey } = await loadModule();
+      const key = buildHardSourceTargetKey({
+        sourceId: "src-1",
+        categoryId: null,
+        targetUrl: "https://example.com",
+      });
+      expect(key).toBe("src-1||https://example.com/");
+    });
+
+    it("returns null for missing sourceId or invalid target URL", async () => {
+      const { buildHardSourceTargetKey } = await loadModule();
+      expect(buildHardSourceTargetKey({
+        sourceId: null,
+        categoryId: null,
+        targetUrl: "https://example.com",
+      })).toBeNull();
+      expect(buildHardSourceTargetKey({
+        sourceId: "src-1",
+        categoryId: null,
+        targetUrl: "not-a-url",
+      })).toBeNull();
+    });
+  });
+
+  describe("aggregateHardSourceProfiles", () => {
+    const row = (overrides: Partial<{
+      id: string;
+      sourceId: string;
+      categoryId: string | null;
+      createdAt: string;
+      updatedAt: string;
+      payload: Record<string, unknown>;
+    }>) => ({
+      id: overrides.id ?? "prof-1",
+      sourceId: overrides.sourceId ?? "src-1",
+      categoryId: overrides.categoryId ?? null,
+      createdAt: new Date(overrides.createdAt ?? "2026-07-24T10:00:00Z"),
+      updatedAt: new Date(overrides.updatedAt ?? "2026-07-24T10:00:00Z"),
+      payload: overrides.payload ?? {
+        targetUrl: "https://example.com/news",
+        failureCount: 2,
+        lifecycleState: "open",
+      },
+    });
+
+    it("groups repeated evidence for one target into a single current row", async () => {
+      const { aggregateHardSourceProfiles } = await loadModule();
+      const result = aggregateHardSourceProfiles([
+        row({ id: "prof-old", createdAt: "2026-07-24T10:00:00Z", updatedAt: "2026-07-24T10:00:00Z" }),
+        row({ id: "prof-new", createdAt: "2026-07-24T11:00:00Z", updatedAt: "2026-07-24T11:00:00Z", payload: { targetUrl: "https://example.com/news", failureCount: 5, lifecycleState: "open" } }),
+      ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.id).toBe("prof-new");
+      expect(result[0]!.failureCount).toBe(5);
+      expect(result[0]!.evidenceCount).toBe(2);
+      expect(result[0]!.history).toHaveLength(1);
+      expect(result[0]!.history[0]!.id).toBe("prof-old");
+    });
+
+    it("uses createdAt ASC ordering so the newest artifact becomes current", async () => {
+      const { aggregateHardSourceProfiles } = await loadModule();
+      // Input is out of order — newest first.
+      const result = aggregateHardSourceProfiles([
+        row({ id: "prof-new", createdAt: "2026-07-24T11:00:00Z", updatedAt: "2026-07-24T11:00:00Z", payload: { targetUrl: "https://example.com/news", failureCount: 6, lifecycleState: "suggested" } }),
+        row({ id: "prof-old", createdAt: "2026-07-24T10:00:00Z", updatedAt: "2026-07-24T10:00:00Z", payload: { targetUrl: "https://example.com/news", failureCount: 1, lifecycleState: "open" } }),
+      ]);
+
+      expect(result[0]!.id).toBe("prof-new");
+      expect(result[0]!.history[0]!.id).toBe("prof-old");
+    });
+
+    it("does not merge different categories under the same source", async () => {
+      const { aggregateHardSourceProfiles } = await loadModule();
+      const result = aggregateHardSourceProfiles([
+        row({ id: "prof-a", categoryId: "cat-a", payload: { targetUrl: "https://example.com/sport", lifecycleState: "open" } }),
+        row({ id: "prof-b", categoryId: "cat-b", payload: { targetUrl: "https://example.com/tech", lifecycleState: "open" } }),
+      ]);
+      expect(result).toHaveLength(2);
+    });
+
+    it("does not merge semantically different category paths via URL normalization", async () => {
+      const { aggregateHardSourceProfiles } = await loadModule();
+      const result = aggregateHardSourceProfiles([
+        row({ id: "prof-a", categoryId: "cat-a", payload: { targetUrl: "https://example.com/news/world", lifecycleState: "open" } }),
+        row({ id: "prof-b", categoryId: "cat-a", payload: { targetUrl: "https://example.com/news/sports", lifecycleState: "open" } }),
+      ]);
+      expect(result).toHaveLength(2);
+    });
+
+    it("bounded history keeps only the most recent entries, newest first", async () => {
+      const { aggregateHardSourceProfiles } = await loadModule();
+      const rows = [1, 2, 3, 4, 5, 6].map((n) =>
+        row({ id: `prof-${n}`, createdAt: `2026-07-24T10:0${n}:00Z`, updatedAt: `2026-07-24T10:0${n}:00Z` }),
+      );
+      const result = aggregateHardSourceProfiles(rows, { maxHistory: 2 });
+
+      expect(result[0]!.history).toHaveLength(2);
+      expect(result[0]!.history[0]!.id).toBe("prof-5");
+      expect(result[0]!.history[1]!.id).toBe("prof-4");
+      expect(result[0]!.evidenceCount).toBe(6);
+    });
+
+    it("marks current row resolved when the newest artifact is resolved", async () => {
+      const { aggregateHardSourceProfiles, filterActiveHardSourceRows, filterResolvedHardSourceRows } = await loadModule();
+      const result = aggregateHardSourceProfiles([
+        row({ id: "prof-open", createdAt: "2026-07-24T10:00:00Z", payload: { targetUrl: "https://example.com/news", lifecycleState: "open" } }),
+        row({ id: "prof-resolved", createdAt: "2026-07-24T11:00:00Z", payload: { targetUrl: "https://example.com/news", lifecycleState: "resolved", resolvedReason: "Agent 1 RSS" } }),
+      ]);
+
+      expect(result[0]!.resolved).toBe(true);
+      expect(filterActiveHardSourceRows(result)).toHaveLength(0);
+      expect(filterResolvedHardSourceRows(result)).toHaveLength(1);
+    });
+
+    it("sorts current rows by severity then latest event", async () => {
+      const { aggregateHardSourceProfiles } = await loadModule();
+      const result = aggregateHardSourceProfiles([
+        row({ id: "prof-open-1", sourceId: "src-a", createdAt: "2026-07-24T10:00:00Z", payload: { targetUrl: "https://a.example.com", lifecycleState: "open" } }),
+        row({ id: "prof-resolved", sourceId: "src-b", createdAt: "2026-07-24T11:00:00Z", payload: { targetUrl: "https://b.example.com", lifecycleState: "resolved" } }),
+        row({ id: "prof-open-2", sourceId: "src-c", createdAt: "2026-07-24T12:00:00Z", payload: { targetUrl: "https://c.example.com", lifecycleState: "suggested" } }),
+      ]);
+
+      // open (0) < suggested (1) < resolved (3)
+      expect(result.map((r) => r.id)).toEqual(["prof-open-1", "prof-open-2", "prof-resolved"]);
+    });
+  });
 });
 
 // ─── Profile creation tests (mocked DB) ─────────────────────────────────────

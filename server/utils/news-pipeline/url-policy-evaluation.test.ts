@@ -11,6 +11,9 @@ import {
 
   // Dataset validation
   validateUrlEvaluationDataset,
+  validateUrlEvaluationDatasetSplits,
+  validateUrlPolicyDatasetMovements,
+  URL_POLICY_DATASET_MOVEMENTS,
 
   // Fixtures
   createTuningDataset,
@@ -387,6 +390,34 @@ describe("validateUrlEvaluationDataset", () => {
   });
 });
 
+describe("tuning/holdout split independence", () => {
+  it("keeps the shipped tuning and holdout normalized URL sets disjoint", () => {
+    expect(validateUrlEvaluationDatasetSplits([createTuningDataset(), createHoldoutDataset()])).toEqual([]);
+  });
+
+  it("rejects a duplicate normalized URL across splits", () => {
+    const tuning = createTuningDataset();
+    const holdout = createHoldoutDataset();
+    holdout.labels = [...holdout.labels, { ...tuning.labels[0]!, url: `${tuning.labels[0]!.url}#duplicate` }];
+    expect(validateUrlEvaluationDatasetSplits([tuning, holdout])).toHaveLength(1);
+  });
+
+  it("proves every documented movement against the actual shipped labels", () => {
+    expect(URL_POLICY_DATASET_MOVEMENTS).toHaveLength(7);
+    expect(validateUrlPolicyDatasetMovements([createTuningDataset(), createHoldoutDataset()])).toEqual([]);
+    for (const movement of URL_POLICY_DATASET_MOVEMENTS) {
+      expect(movement.originalUrl).not.toBe(movement.replacementUrl);
+      expect(movement.destinationSplit).toBe("tuning");
+      expect(movement.replacementSplit).toBe("holdout");
+      expect(movement.reason).toContain("independent");
+      const tuning = createTuningDataset();
+      const holdout = createHoldoutDataset();
+      expect(tuning.labels.some((label) => label.url === movement.replacementUrl)).toBe(false);
+      expect(holdout.labels.some((label) => label.url === movement.originalUrl)).toBe(false);
+    }
+  });
+});
+
 // ─── Production Policy Evaluator ───────────────────────────────────────────
 
 describe("evaluateProductionUrlPolicy", () => {
@@ -560,6 +591,53 @@ describe("evaluateCandidateUrlPolicy", () => {
     expect(result.agent).toBe("AGENT_2");
     expect(result.stage).toBe("sitemap-discovery");
     expect(result.discoveryMethod).toBe("SITEMAP");
+  });
+
+  it("rejects documentation and API landings while production remains unchanged", () => {
+    for (const url of ["https://example.com/docs/api/getting-started", "https://example.com/api/reference"]) {
+      expect(evaluateProductionUrlPolicy({ url }).decision).toBe("ACCEPT");
+      expect(evaluateCandidateUrlPolicy({ url }).decision).toBe("REJECT");
+      expect(evaluateCandidateUrlPolicy({ url }).reasonCode).toBe("documentation_api_landing_without_article_evidence");
+    }
+  });
+
+  it("distinguishes unknown metadata from confirmed non-article section evidence", () => {
+    expect(evaluateCandidateUrlPolicy({ url: "https://example.com/latest" }).decision).toBe("REJECT");
+    for (const url of [
+      "https://example.com/news/brexit",
+      "https://example.com/world/election",
+      "https://example.com/business/markets",
+      "https://example.com/technology/ai",
+    ]) {
+      expect(evaluateCandidateUrlPolicy({ url }).decision).toBe("UNCERTAIN");
+    }
+    expect(evaluateCandidateUrlPolicy({
+      url: "https://example.com/technology/ai",
+      candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["CollectionPage"] },
+    }).decision).toBe("REJECT");
+    expect(evaluateCandidateUrlPolicy({
+      url: "https://example.com/video/2026/07/30/documentary-premiere",
+      candidateEvidence: { structuredDataTypes: ["VideoObject"] },
+    }).decision).toBe("REJECT");
+    expect(evaluateCandidateUrlPolicy({
+      url: "https://example.com/news/technology",
+      candidateEvidence: { hasArticleMetadata: false, structuredDataTypes: ["ItemList"] },
+    }).decision).toBe("REJECT");
+    const article = "https://example.com/news/2026/07/30/technology-policy-update";
+    expect(evaluateProductionUrlPolicy({ url: article }).decision).toBe("ACCEPT");
+    expect(evaluateCandidateUrlPolicy({ url: article }).decision).toBe("ACCEPT");
+    expect(evaluateCandidateUrlPolicy({
+      url: "https://example.com/analysis/markets",
+      candidateEvidence: { structuredDataTypes: ["Article"] },
+    }).decision).toBe("ACCEPT");
+  });
+
+  it("rejects redirect-style URLs while Article metadata protects a valid article", () => {
+    const redirect = "https://example.com/redirect/article?id=123";
+    expect(evaluateProductionUrlPolicy({ url: redirect }).decision).toBe("ACCEPT");
+    expect(evaluateCandidateUrlPolicy({ url: redirect }).decision).toBe("REJECT");
+    const article = "https://example.com/redirect/article/2026/07/30/report-on-policy";
+    expect(evaluateCandidateUrlPolicy({ url: article, candidateEvidence: { hasArticleMetadata: true, structuredDataTypes: ["Article"] } }).decision).toBe("ACCEPT");
   });
 
   it("is side-effect-free (same URL produces same result)", () => {

@@ -31,6 +31,7 @@ import type {
   PublishedAtSource,
 } from "./article-discovery-helpers";
 import { normalizeUrl } from "./text";
+import { buildVerifiedHostScope, extendVerifiedHostScope, serializeHostScope, isHostVerified, type VerifiedHostScope } from "./canonical-host-scope";
 import {
   isAgent2BrowserFallbackEnabledFlag,
   launchHeadlessBrowser,
@@ -99,6 +100,19 @@ export type BrowserArticleLinkResult = {
     browserRuntimeAvailable: boolean;
     elapsedMs: number;
   };
+  /**
+   * Bounded evidence of verified host transitions (redirect / final URL /
+   * document canonical) accepted for this rendered target. Query values are
+   * redacted. Present when the browser ran successfully.
+   */
+  canonicalHostEvidence?: Array<{
+    host: string;
+    establishedBy: "configured_target" | "redirect" | "final_url" | "document_canonical";
+    via: string;
+    trusted: boolean;
+  }>;
+  /** Internal authoritative scope reused by browser detail evaluation. */
+  verifiedHostScope?: VerifiedHostScope | null;
 };
 
 // ─── Feature Gate ───────────────────────────────────────────────────────────
@@ -408,6 +422,7 @@ function isStrongListingContextArticle(
   raw: RawBrowserLink,
   pageUrl: string,
   categoryPathUrl: string | null,
+  verifiedHostScope: VerifiedHostScope | null,
 ): { accepted: boolean; score: number; reasons: string[] } {
   if (!isCategoryDirectoryPath(categoryPathUrl)) {
     return { accepted: false, score: 0, reasons: [] };
@@ -424,9 +439,9 @@ function isStrongListingContextArticle(
 
       const score = scoreCandidateUrl(raw.url, pageUrl, {
         title: raw.text,
-        dateText: raw.dateText,
-        categoryPathUrl: null,
-      });
+        dateText: raw.dateText,          categoryPathUrl: null,
+          verifiedHostScope,
+        });
 
   const hasUsefulAnchor = Boolean(raw.text && raw.text.trim().length >= 12);
   const accepted = !score.rejected && score.score >= 50 && hasUsefulAnchor;
@@ -443,6 +458,7 @@ function scoreAndFilterBrowserLinks(
   rawLinks: RawBrowserLink[],
   pageUrl: string,
   categoryPathUrl: string | null,
+  verifiedHostScope: VerifiedHostScope | null,
 ): ScoreAndFilterResult {
   // Collect ALL accepted candidates — we iterate the full raw sample so that
   // rejectedLinks and rejectionReasonCounts cover every link, not just the
@@ -462,7 +478,11 @@ function scoreAndFilterBrowserLinks(
 
     // ── Domain validation (moved from browser-context extraction) ──
     let sameDomain = false;
-    try { sameDomain = new URL(raw.url).hostname.replace(/^www\./, "") === pageHostname; } catch { /* invalid URL below */ }
+    try {
+      sameDomain = verifiedHostScope
+        ? isHostVerified(verifiedHostScope, raw.url)
+        : new URL(raw.url).hostname.replace(/^www\./, "") === pageHostname;
+    } catch { /* invalid URL below */ }
 
     // ── Invalid URL detection ──────────────────────────────────────
     if (!normalizedUrl) {
@@ -541,7 +561,7 @@ function scoreAndFilterBrowserLinks(
     // directory. This is common on sites such as /category/arizona-news where
     // the listing page is category-scoped but article detail URLs are global.
     if (categoryScoped === false) {
-      const listingContext = isStrongListingContextArticle(raw, pageUrl, categoryPathUrl);
+      const listingContext = isStrongListingContextArticle(raw, pageUrl, categoryPathUrl, verifiedHostScope);
       if (!listingContext.accepted) {
         const entry = makeAuditEntry(true, "out_of_category_scope", {
           score: listingContext.score,
@@ -578,6 +598,7 @@ function scoreAndFilterBrowserLinks(
       title: raw.text,
       dateText: raw.dateText,
       categoryPathUrl,
+      verifiedHostScope,
     });
 
     if (score.rejected) {
@@ -764,8 +785,9 @@ export async function discoverArticleLinksWithBrowser(input: {
   sourceId: string;
   categoryId?: string | null;
   targetType: "source" | "category";
-  timeoutMs?: number;
-  categoryPathUrl?: string | null;
+  timeoutMs?: number;    categoryPathUrl?: string | null;
+    /** Optional scope established by the caller; otherwise derived from render evidence. */
+    verifiedHostScope?: VerifiedHostScope | null;
 }): Promise<BrowserArticleLinkResult> {
   const startedAt = Date.now();
   const timeoutMs = Math.min(input.timeoutMs || DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
@@ -919,7 +941,39 @@ export async function discoverArticleLinksWithBrowser(input: {
       }
     }
 
-    const filterResult = scoreAndFilterBrowserLinks(rawLinks, renderedUrl || input.targetUrl, categoryPathUrl);
+    // Capture the rendered document's canonical URL. When the configured root
+    // host renders its content under a publisher-controlled subdomain, the
+    // canonical relationship plus the final rendered URL establish the
+    // verified host scope for candidate link acceptance. This runs AFTER the
+    // raw-link extraction so the page.evaluate() call sequence is unchanged
+    // for existing callers and tests.
+    let documentCanonicalHref: string | null = null;
+    try {
+      const rawCanonical = await page.evaluate(() => {
+        const canonical = document.querySelector('link[rel="canonical"]');
+        return canonical ? canonical.getAttribute("href") : null;
+      });
+      if (typeof rawCanonical === "string" && rawCanonical.trim()) {
+        documentCanonicalHref = rawCanonical;
+      }
+    } catch {
+      // Canonical evidence is best-effort — a failure must not fail the render.
+    }
+
+    const derivedScope = buildVerifiedHostScope({
+      configuredTargetUrl: input.targetUrl,
+      finalUrl: renderedUrl || input.targetUrl,
+      canonicalUrl: documentCanonicalHref,
+    });
+    const verifiedHostScope = input.verifiedHostScope
+      ? extendVerifiedHostScope(input.verifiedHostScope, {
+          finalUrl: renderedUrl || input.targetUrl,
+          canonicalUrl: documentCanonicalHref,
+        }) ?? input.verifiedHostScope
+      : derivedScope;
+    const canonicalHostEvidence = serializeHostScope(verifiedHostScope);
+
+    const filterResult = scoreAndFilterBrowserLinks(rawLinks, renderedUrl || input.targetUrl, categoryPathUrl, verifiedHostScope);
 
     await browser.close();
 
@@ -932,6 +986,8 @@ export async function discoverArticleLinksWithBrowser(input: {
       topRejectedLinks: filterResult.topRejectedLinks,
       shortlistedLinkSamples: filterResult.shortlistedLinkSamples,
       topRejectionReasons: filterResult.topRejectionReasons,
+      canonicalHostEvidence,
+      verifiedHostScope,
       diagnostics: {
         pageTitle,
         linkCount: allAnchors,
@@ -1217,6 +1273,8 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
   categoryId?: string | null;
   timeoutMs?: number;
   listingDateFallbackRaw?: string | null;
+  /** Authoritative scope established by the listing render/caller. */
+  verifiedHostScope?: VerifiedHostScope | null;
 }): Promise<EvaluateArticleLinkResult> {
   const startedAt = Date.now();
   const { articleUrl, sourcePageUrl, targetUrl, sourceId, categoryId } = input;
@@ -1364,6 +1422,8 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
       extraRawSignals: ["agent2-browser-detail-recovery"],
       canonicalUrlOverride: extracted.canonicalUrl,
       allowWeakPublishedAt: true,
+      verifiedHostScope: input.verifiedHostScope,
+      effectiveTargetUrl: renderedUrl || null,
     });
 
     return evaluation;

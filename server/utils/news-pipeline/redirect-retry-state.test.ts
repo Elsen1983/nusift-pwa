@@ -129,3 +129,51 @@ describe("per-redirect retry state", () => {
     expect(state).toMatchObject({ status: "EXHAUSTED", nextRetryAt: null, attemptCount: 5 });
   });
 });
+
+describe("describeRedirectStatus — terminal redirect UI semantics", () => {
+  it("RETRYABLE is retryable and never terminal", async () => {
+    const { describeRedirectStatus } = await import("./redirect-retry-state");
+    expect(describeRedirectStatus("RETRYABLE")).toEqual({ status: "RETRYABLE", label: "retryable", terminal: false, retryable: true, resolved: false, nextRetryAt: null });
+  });
+
+  it("RESOLVED shows resolved and no retry wording", async () => {
+    const { describeRedirectStatus } = await import("./redirect-retry-state");
+    expect(describeRedirectStatus("RESOLVED")).toEqual({ status: "RESOLVED", label: "resolved", terminal: false, retryable: false, resolved: true, nextRetryAt: null });
+  });
+
+  it("SECURITY_REJECTED is terminal — security rejected", async () => {
+    const { describeRedirectStatus } = await import("./redirect-retry-state");
+    const result = describeRedirectStatus("SECURITY_REJECTED");
+    expect(result.terminal).toBe(true);
+    expect(result.retryable).toBe(false);
+    expect(result.resolved).toBe(false);
+    expect(result.nextRetryAt).toBeNull();
+    expect(result.label).toContain("security rejected");
+    expect(result.label).toContain("terminal");
+  });
+
+  it("INVALID_REDIRECT is terminal — invalid redirect", async () => {
+    const { describeRedirectStatus } = await import("./redirect-retry-state");
+    const result = describeRedirectStatus("INVALID_REDIRECT");
+    expect(result.terminal).toBe(true);
+    expect(result.retryable).toBe(false);
+    expect(result.resolved).toBe(false);
+    expect(result.nextRetryAt).toBeNull();
+    expect(result.label).toContain("invalid redirect");
+  });
+
+  it("EXHAUSTED is terminal — manual reprocess only", async () => {
+    const { describeRedirectStatus } = await import("./redirect-retry-state");
+    const result = describeRedirectStatus("EXHAUSTED");
+    expect(result.terminal).toBe(true);
+    expect(result.retryable).toBe(false);
+    expect(result.resolved).toBe(false);
+    expect(result.nextRetryAt).toBeNull();
+    expect(result.label).toContain("manual reprocess only");
+  });
+
+  it("unknown status defaults to retryable, never terminal", async () => {
+    const { describeRedirectStatus } = await import("./redirect-retry-state");
+    expect(describeRedirectStatus("SOMETHING_UNKNOWN")).toEqual({ status: "RETRYABLE", label: "retryable", terminal: false, retryable: true, resolved: false, nextRetryAt: null });
+  });
+});

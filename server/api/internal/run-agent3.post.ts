@@ -70,15 +70,25 @@ export default defineEventHandler(async (event) => {
   // default for every article; only browser-eligible failures consume this
   // small per-batch budget. Operators can disable it without a code rollback.
   const browserFallback = process.env.NUXT_AGENT3_WORKFLOW_BROWSER_FALLBACK !== "false";
+  const progressBefore = await getAgent3Progress({
+    includeEnriched: false,
+    forceReprocess: false,
+    pipelineRunId: orchestrationRunId,
+  });
+  // Once normal work is drained, use the browser budget to recover persisted
+  // article-level 403 failures without bypassing 429 or host-only cooldowns.
+  const browserRecoveryMode =
+    browserFallback && progressBefore.retryableNow === 0 && progressBefore.deferred > 0;
 
   const result = await runEnrichmentBatch({
-    maxArticles: 10,
+    maxArticles: browserRecoveryMode ? WORKFLOW_BROWSER_MAX_ATTEMPTS : 10,
     includeEnriched: false,
     forceReprocess: false,
     browserFallback,
     browserFallbackMaxAttempts: WORKFLOW_BROWSER_MAX_ATTEMPTS,
     browserTimeoutMs: WORKFLOW_BROWSER_TIMEOUT_MS,
     maxArticlesPerSource: WORKFLOW_MAX_ARTICLES_PER_SOURCE,
+    allowBrowserRecoveryDuringHttp403Cooldown: browserRecoveryMode,
     pipelineRunId: orchestrationRunId,
     telemetry: tracker,
   });
@@ -87,7 +97,8 @@ export default defineEventHandler(async (event) => {
     forceReprocess: false,
     pipelineRunId: orchestrationRunId,
   });
-  const complete = progress.retryableNow === 0;
+  const browserRecoveryMadeProgress = browserRecoveryMode && result.articleCount > 0;
+  const complete = progress.retryableNow === 0 && !browserRecoveryMadeProgress;
   const byKind = result.persist?.byKind ?? {};
   const failedPermanent = Object.entries(byKind)
     .filter(([kind]) => !["SUCCESS", "SKIPPED", "RETRYABLE_FAILURE", "HEADLESS_REQUIRED"].includes(kind))
@@ -123,7 +134,9 @@ export default defineEventHandler(async (event) => {
     readyRetry: progress.readyRetry,
     retryableNow: progress.retryableNow,
     nextRetryAt: progress.nextRetryAt,
-    remaining: progress.retryableNow,
+    remaining: browserRecoveryMadeProgress
+      ? Math.max(progress.deferred, 1)
+      : progress.retryableNow,
     complete,
     browserFallbackStats: result.browserFallbackStats ?? null,
     telemetry,

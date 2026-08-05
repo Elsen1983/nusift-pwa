@@ -524,7 +524,8 @@ describe("baseline comparison", () => {
     const report = runUrlPolicyEvaluation(createTuningDataset());
     for (const entry of report.comparison) {
       expect(entry).toHaveProperty("split");
-      expect(entry).toHaveProperty("policyVersion");
+      expect(entry).toHaveProperty("productionPolicyVersion");
+      expect(entry).toHaveProperty("candidatePolicyVersion");
       expect(entry).toHaveProperty("metric");
       expect(entry).toHaveProperty("productionValue");
       expect(entry).toHaveProperty("candidateValue");
@@ -619,7 +620,52 @@ describe("stable object key structure for snapshot tests", () => {
   it("policy result has deterministic keys", () => {
     const report = runUrlPolicyEvaluation(createTuningDataset());
     const prod = report.splits.tuning!.policies["current-production-v1"]!;
-    expect(Object.keys(prod).sort()).toEqual(["counts", "rates", "samples"]);
+    expect(Object.keys(prod).sort()).toEqual(["counts", "policyKey", "policyVersion", "rates", "samples"]);
+  });
+
+  it("policy result exposes the ACTUAL policy version separately from the stable report key", () => {
+    const report = runUrlPolicyEvaluation(createTuningDataset());
+    const tuning = report.splits.tuning!;
+
+    // Stable internal keys are preserved for snapshot compatibility.
+    expect(tuning.policies["current-production-v1"]!.policyKey).toBe("current-production-v1");
+    expect(tuning.policies["candidate-v1"]!.policyKey).toBe("candidate-v1");
+
+    // User-facing labels must use the real policy versions.
+    expect(tuning.policies["current-production-v1"]!.policyVersion).toBe(
+      CURRENT_PRODUCTION_URL_POLICY_VERSION,
+    );
+    expect(tuning.policies["candidate-v1"]!.policyVersion).toBe(
+      CANDIDATE_URL_POLICY_VERSION,
+    );
+
+    // Comparison entries carry both real versions.
+    for (const entry of report.comparison) {
+      expect(entry.productionPolicyVersion).toBe(CURRENT_PRODUCTION_URL_POLICY_VERSION);
+      expect(entry.candidatePolicyVersion).toBe(CANDIDATE_URL_POLICY_VERSION);
+    }
+  });
+
+  it("regression: changing CANDIDATE_URL_POLICY_VERSION changes user-facing output without changing the stable report key", () => {
+    // The user-facing policyVersion is derived from the actual version constant.
+    const report = runUrlPolicyEvaluation(createTuningDataset());
+    const json = JSON.stringify(report);
+
+    // The real candidate version string appears in the user-facing output.
+    expect(json).toContain(CANDIDATE_URL_POLICY_VERSION);
+
+    // The stable internal report key is preserved for snapshot compatibility.
+    expect(report.splits.tuning!.policies["candidate-v1"]!.policyKey).toBe("candidate-v1");
+    expect(report.splits.tuning!.policies["candidate-v1"]!.policyVersion).toBe(
+      CANDIDATE_URL_POLICY_VERSION,
+    );
+
+    // The version string must be independent from the stable key: if the
+    // candidate version were bumped, the report key would remain "candidate-v1".
+    const cand = report.splits.tuning!.policies["candidate-v1"]!;
+    expect(cand.policyVersion).not.toBe("candidate-v1");
+    expect(cand.policyKey).toBe("candidate-v1");
+    expect(report.comparison[0]!.candidatePolicyVersion).toBe(CANDIDATE_URL_POLICY_VERSION);
   });
 
   it("no wall-clock duration in snapshot-compared output", () => {

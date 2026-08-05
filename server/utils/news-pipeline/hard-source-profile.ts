@@ -21,6 +21,7 @@
 import { prisma } from "../prisma";
 import { logAgentScan } from "./log";
 import { isGenuineHardSourceEvidence } from "./failure-origin";
+import { stableTargetKey } from "./text";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -101,6 +102,22 @@ const MAX_NOTES = 10;
 const MAX_ARTIFACT_IDS = 10;
 const MAX_REASON_MAP_KEYS = 20;
 const DEDUP_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+/** Default bounded history kept per logical target in the admin API. */
+const DEFAULT_HISTORY_LIMIT = 5;
+
+/**
+ * Severity ordering for current target summaries. Lower = more severe
+ * (needs attention first). Resolved/ignored/stale are terminal and sort last.
+ */
+const LIFECYCLE_SEVERITY: Record<string, number> = {
+  open: 0,
+  suggested: 1,
+  applied: 2,
+  resolved: 3,
+  ignored: 4,
+  stale: 5,
+};
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -631,6 +648,7 @@ export type NormalizedHardSourceProfile = {
   resolvedReason: string | null;
   createdAt: Date;
   updatedAt: Date;
+  status?: string | null;
 };
 
 /**
@@ -645,8 +663,10 @@ export function normalizeHardSourceProfile(artifact: {
   createdAt: Date;
   updatedAt: Date;
   payload: unknown;
+  status?: string | null;
 }): NormalizedHardSourceProfile {
   const payload = isPlainObject(artifact.payload) ? artifact.payload : {};
+  const persistedResolved = artifact.status === "RESOLVED" || artifact.status === "RESOLVED_BY_AGENT1_RSS";
 
   return {
     id: artifact.id,
@@ -665,12 +685,147 @@ export function normalizeHardSourceProfile(artifact: {
     dominantReasons: capArray(readStringArray(payload.dominantReasons), MAX_DOMINANT_REASONS),
     suggestedNextAction: readString(payload.suggestedNextAction),
     profileConfidence: readString(payload.profileConfidence),
-    lifecycleState: readString(payload.lifecycleState) ?? "open",
+    lifecycleState: persistedResolved ? "resolved" : (readString(payload.lifecycleState) ?? "open"),
     recoverySuggestion: readString(payload.recoverySuggestion),
     resolvedBy: readString(payload.resolvedBy),
     resolvedAt: readString(payload.resolvedAt),
     resolvedReason: readString(payload.resolvedReason),
     createdAt: artifact.createdAt,
     updatedAt: artifact.updatedAt,
+    status: artifact.status ?? null,
   };
+}
+
+// ─── Stable logical target aggregation ─────────────────────────────────────
+
+/**
+ * Build the stable logical target key for a hard-source profile row.
+ *
+ * One key per logical source/category target, derived from normalized
+ * source ID, category ID, and normalized target URL. Different categories
+ * under the same source produce different keys; URL normalization never
+ * merges semantically different category paths.
+ */
+export function buildHardSourceTargetKey(input: {
+  sourceId: string | null;
+  categoryId: string | null;
+  targetUrl: string | null;
+}): string | null {
+  return stableTargetKey(input.sourceId, input.categoryId, input.targetUrl);
+}
+
+export type HardSourceProfileCurrentRow = NormalizedHardSourceProfile & {
+  /** Stable logical target key. */
+  key: string;
+  /** Total raw evidence rows grouped under this key (bounded scan window). */
+  evidenceCount: number;
+  /** Bounded chronological history, newest first. */
+  history: NormalizedHardSourceProfile[];
+  /** Whether the current row derives from a resolved artifact. */
+  resolved: boolean;
+};
+
+export type HardSourceProfileRawRow = {
+  id: string;
+  sourceId: string | null;
+  categoryId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  payload: unknown;
+  status?: string | null;
+};
+
+const RESOLVED_PROFILE_LIFECYCLES = new Set(["resolved", "ignored", "stale"]);
+const RESOLVED_PROFILE_STATUSES = new Set(["RESOLVED", "RESOLVED_BY_AGENT1_RSS"]);
+
+/**
+ * Aggregate raw hard-source profile artifacts into one current row per
+ * logical target with bounded chronological history.
+ *
+ * - Raw evidence is sorted by createdAt ASC before deriving transitions so
+ *   the newest artifact of each key becomes the current row.
+ * - Current rows are sorted by severity (lifecycle) then latest relevant
+ *   event (updatedAt desc).
+ * - History is bounded (newest first) for diagnosis.
+ *
+ * Rows without a valid stable key (missing source/target URL) are excluded
+ * from aggregation — they are malformed and cannot form a logical target.
+ */
+export function aggregateHardSourceProfiles(
+  rows: HardSourceProfileRawRow[],
+  options?: { maxHistory?: number },
+): HardSourceProfileCurrentRow[] {
+  const maxHistory = Math.min(
+    Math.max(options?.maxHistory ?? DEFAULT_HISTORY_LIMIT, 1),
+    20,
+  );
+
+  // Sort raw evidence by createdAt ASC before deriving transitions.
+  const sorted = [...rows].sort(
+    (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+  );
+
+  const groups = new Map<string, NormalizedHardSourceProfile[]>();
+  for (const row of sorted) {
+    const key = buildHardSourceTargetKey({
+      sourceId: row.sourceId,
+      categoryId: row.categoryId,
+      targetUrl: readString(isPlainObject(row.payload) ? row.payload.targetUrl : null),
+    });
+    if (!key) continue;
+    const group = groups.get(key) ?? [];
+    group.push(normalizeHardSourceProfile(row));
+    groups.set(key, group);
+  }
+
+  const current: HardSourceProfileCurrentRow[] = [];
+  for (const [key, group] of groups) {
+    // The newest artifact in the ASC-sorted group is the current row.
+    const newest = group[group.length - 1]!;
+    current.push({
+      ...newest,
+      key,
+      evidenceCount: group.length,
+      // Bounded history, newest first (excluding the current row itself).
+      history: group
+        .slice(0, -1)
+        .reverse()
+        .slice(0, maxHistory),
+      resolved: RESOLVED_PROFILE_LIFECYCLES.has(newest.lifecycleState ?? "open") ||
+        RESOLVED_PROFILE_STATUSES.has(newest.status ?? ""),
+    });
+  }
+
+  // Sort current summaries by severity then latest relevant event.
+  current.sort((a, b) => {
+    const sevA = LIFECYCLE_SEVERITY[a.lifecycleState ?? "open"] ?? 0;
+    const sevB = LIFECYCLE_SEVERITY[b.lifecycleState ?? "open"] ?? 0;
+    if (sevA !== sevB) return sevA - sevB;
+    return b.updatedAt.getTime() - a.updatedAt.getTime();
+  });
+
+  return current;
+}
+
+/**
+ * Filter aggregated current rows to only the ones that are NOT resolved
+ * (used by the default active view). A resolved target must not remain
+ * retryable solely because older failure artifacts exist — the current row
+ * already reflects the newest artifact, so resolved lifecycle states are
+ * excluded here. Historical artifacts are NOT deleted; they simply stop
+ * producing an active current row.
+ */
+export function filterActiveHardSourceRows(
+  rows: HardSourceProfileCurrentRow[],
+): HardSourceProfileCurrentRow[] {
+  return rows.filter((row) => !row.resolved);
+}
+
+/**
+ * Filter aggregated current rows to only resolved ones (history view).
+ */
+export function filterResolvedHardSourceRows(
+  rows: HardSourceProfileCurrentRow[],
+): HardSourceProfileCurrentRow[] {
+  return rows.filter((row) => row.resolved);
 }

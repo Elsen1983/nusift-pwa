@@ -31,6 +31,7 @@ import {
 } from "./article-discovery-helpers";
 import { Prisma } from "@prisma/client";
 import { isLikelyArticleUrl } from "./article-url-policy";
+import { buildVerifiedHostScope, serializeHostScope, isHostVerified, type VerifiedHostScope } from "./canonical-host-scope";
 import type { IngestCandidate, IngestRejectedItem, IngestSkipSummary, PipelineResult } from "./types";
 import {
   createNoopStageBatchProbe,
@@ -43,6 +44,23 @@ const MAX_LISTING_PAGES = 3;
 const MAX_LINKS_PER_PAGE = 20;
 const MAX_TOTAL_CANDIDATES = 60;
 const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
+
+/**
+ * Build compact verified host-transition evidence for a discovery run.
+ * Accepts bounded final URLs observed during the crawl; every entry is
+ * sanitized (query values redacted) by the shared canonical-host-scope helper.
+ */
+const buildCanonicalHostEvidence = (
+  configuredTargetUrl: string,
+  finalUrls: string[],
+) => {
+  const scope = buildVerifiedHostScope({
+    configuredTargetUrl,
+    finalUrl: finalUrls[finalUrls.length - 1] ?? null,
+    redirectUrls: finalUrls.slice(0, -1),
+  });
+  return serializeHostScope(scope);
+};
 
 export type ArticleDiscoveryTarget = {
   targetType: "source" | "category";
@@ -105,6 +123,17 @@ export type ArticleDiscoveryResult = {
     appliedDiscoveryProfileSource: string;
     appliedDiscoveryProfileAt: string;
   } | null;
+  /**
+   * Bounded evidence of verified host transitions (redirect / final URL /
+   * document canonical) accepted during this discovery run. Query values
+   * are redacted. Empty when no host transition occurred.
+   */
+  canonicalHostEvidence: Array<{
+    host: string;
+    establishedBy: "configured_target" | "redirect" | "final_url" | "document_canonical";
+    via: string;
+    trusted: boolean;
+  }>;
 };
 
 type ListingArticleLink = {
@@ -233,12 +262,13 @@ const extractHtmlLinkTags = (html: string): HtmlLinkTag[] => {
   return links;
 };
 
-const isLikelyArticleLink = (href: string, sourceUrl: string) => {
+const isLikelyArticleLink = (href: string, sourceUrl: string, verifiedHostScope?: VerifiedHostScope | null) => {
   try {
     const url = new URL(href);
-    if (url.hostname.replace(/^www\./, "") !== new URL(sourceUrl).hostname.replace(/^www\./, "")) {
-      return false;
-    }
+    const sameHost = verifiedHostScope
+      ? isHostVerified(verifiedHostScope, href)
+      : url.hostname.replace(/^www\./, "") === new URL(sourceUrl).hostname.replace(/^www\./, "");
+    if (!sameHost) return false;
     const path = normalizePath(href).replace(/^\/|\/$/g, "");
     if (!path || isBlockedDiscoveryPath(href)) return false;
     const segments = path.split("/").filter(Boolean);
@@ -260,6 +290,7 @@ const extractListingArticleLinks = (
   pageUrl: string,
   categoryPathUrl?: string | null,
   deniedPathPrefixes?: string[] | null,
+  verifiedHostScope?: VerifiedHostScope | null,
 ) => {
   const links = new Map<string, { url: string; score: number; order: number }>();
   const htmlLinks = extractHtmlLinkTags(html).filter((link) => link.tagName === "a");
@@ -274,7 +305,7 @@ const extractListingArticleLinks = (
       if (links.has(resolved)) continue;
       if (isBlockedDiscoveryPath(resolved)) continue;
       if (!isLikelyArticleUrl(resolved)) continue;
-      if (!isLikelyArticleLink(resolved, pageUrl)) continue;
+      if (!isLikelyArticleLink(resolved, pageUrl, verifiedHostScope)) continue;
       // Check deniedPathPrefixes from active discovery profile
       if (deniedPathPrefixes && deniedPathPrefixes.length > 0) {
         try {
@@ -285,6 +316,7 @@ const extractListingArticleLinks = (
       const score = scoreCandidateUrl(resolved, pageUrl, {
         title: link.text || link.title || link.ariaLabel,
         categoryPathUrl,
+        verifiedHostScope,
       });
       if (score.rejected) continue;
       links.set(resolved, { url: resolved, score: score.score, order });
@@ -299,7 +331,7 @@ const extractListingArticleLinks = (
     .map((link) => link.url);
 };
 
-const extractPaginationLinks = (html: string, pageUrl: string) => {
+const extractPaginationLinks = (html: string, pageUrl: string, verifiedHostScope?: VerifiedHostScope | null) => {
   const links = new Set<string>();
   const htmlLinks = extractHtmlLinkTags(html);
 
@@ -314,7 +346,9 @@ const extractPaginationLinks = (html: string, pageUrl: string) => {
     try {
       const resolved = new URL(href, pageUrl).toString();
       if (isBlockedDiscoveryPath(resolved)) continue;
-      if (new URL(resolved).hostname.replace(/^www\./, "") !== new URL(pageUrl).hostname.replace(/^www\./, "")) continue;
+      if (verifiedHostScope
+        ? !isHostVerified(verifiedHostScope, resolved)
+        : new URL(resolved).hostname.replace(/^www\./, "") !== new URL(pageUrl).hostname.replace(/^www\./, "")) continue;
       links.add(resolved);
     } catch {
       continue;
@@ -442,6 +476,17 @@ const crawlListingPages = async (
     }
 
     const html = await response.text();
+    // The effective page URL is the final URL after redirects. A configured
+    // root host may redirect to a publisher-controlled subdomain that renders
+    // the actual content; candidate links must be evaluated against this
+    // verified effective host, not the originally configured host.
+    const effectivePageUrl = response.url || pageUrl;
+    // Establish only this response's full final URL as bounded evidence. The
+    // scope is enforced during extraction; it is not diagnostics-only.
+    const pageHostScope = buildVerifiedHostScope({
+      configuredTargetUrl: targetUrl,
+      finalUrl: response.url || pageUrl,
+    });
     let rawLinkCount = 0;
     let articleLikeLinks: string[] = [];
     let paginationLinks: string[] = [];
@@ -449,8 +494,8 @@ const crawlListingPages = async (
     try {
       const htmlLinks = extractHtmlLinkTags(html);
       rawLinkCount = htmlLinks.filter((link) => link.tagName === "a").length;
-      articleLikeLinks = extractListingArticleLinks(html, pageUrl, categoryPathUrl, deniedPathPrefixes);
-      paginationLinks = extractPaginationLinks(html, pageUrl);
+      articleLikeLinks = extractListingArticleLinks(html, effectivePageUrl, categoryPathUrl, deniedPathPrefixes, pageHostScope);
+      paginationLinks = extractPaginationLinks(html, effectivePageUrl, pageHostScope);
       title = extractTitleFromHtml(html);
     } catch (error: any) {
       diagnostics.push({
@@ -548,6 +593,10 @@ const discoverArticleCandidatesForPage = async (
     freshnessMs?: number;
     deniedPathPrefixes?: string[] | null;
     telemetry?: DiscoveryNetworkTelemetry;
+    /** Authoritative verified host scope established by discovery evidence. */
+    verifiedHostScope?: VerifiedHostScope | null;
+    /** @deprecated compatibility-only input for isolated callers. */
+    verifiedHosts?: string[] | null;
   },
 ): Promise<CandidateEvaluationResult> => {
   const { url: articleUrl, sourcePageUrl } = articleLink;
@@ -581,6 +630,10 @@ const discoverArticleCandidatesForPage = async (
     categoryId: target.categoryId,
     freshnessMs: overrides?.freshnessMs,
     telemetry: overrides?.telemetry,
+    // The one authoritative scope is carried into metadata evaluation and URL
+    // scoring; raw host arrays are not used by the production path.
+    verifiedHostScope: overrides?.verifiedHostScope ?? null,
+    verifiedHosts: overrides?.verifiedHostScope ? null : (overrides?.verifiedHosts ?? null),
   });
 
   if (!result.accepted) {
@@ -1074,6 +1127,8 @@ export async function persistArticleDiscoveryArtifact(input: {
     qualityAssessment: input.result.qualityAssessment,
     // Discovery profile audit metadata (if an active profile was applied)
     ...(input.result.appliedProfileAudit ? { appliedProfileAudit: input.result.appliedProfileAudit } : {}),
+    // Verified host-transition evidence (redirect/final-URL/document-canonical)
+    canonicalHostEvidence: input.result.canonicalHostEvidence,
   };
 
   return prisma.pipelineArtifact.create({
@@ -1168,6 +1223,22 @@ export async function discoverArticlesFromTarget(
   pagesVisited.push(...listing.visitedPages);
   discoverySources.listingPages = listing.visitedPages.length;
 
+  // ── Verified host transition evidence ──────────────────────────────────
+  // Build a bounded evidence set from the listing pages' final URLs. When a
+  // configured root host redirects to a publisher-controlled subdomain, the
+  // final URL directly establishes the effective host for candidate links.
+  const observedFinalUrls = listing.diagnostics
+    .map((diag) => diag.finalUrl)
+    .filter((url): url is string => Boolean(url));
+  const verifiedHostScope = buildVerifiedHostScope({
+    configuredTargetUrl: target.targetUrl,
+    // Preserve full URL evidence. The scope itself decides which transitions
+    // are trusted and records rejected public hosts for diagnostics.
+    observedFinalUrls,
+    finalUrl: observedFinalUrls[observedFinalUrls.length - 1] ?? target.targetUrl,
+  });
+  const canonicalHostEvidence = serializeHostScope(verifiedHostScope);
+
   // ── Phase 2: Merge all article link sources ────────────────────────────
   const allArticleLinks = new Map<string, ListingArticleLink>();
 
@@ -1175,11 +1246,17 @@ export async function discoverArticlesFromTarget(
     allArticleLinks.set(link.url, link);
   }
 
-  const filteredSitemap = filterSitemapArticleUrls(sitemapEntries, target.targetUrl, effectiveCategoryPathUrl)
+  const filteredSitemap = filterSitemapArticleUrls(
+    sitemapEntries,
+    target.targetUrl,
+    effectiveCategoryPathUrl,
+    verifiedHostScope,
+  )
     .map((entry) => ({
       entry,
       score: scoreCandidateUrl(entry.url, target.targetUrl, {
         categoryPathUrl: target.categoryId ? target.targetUrl : null,
+        verifiedHostScope,
       }).score,
     }))
     .sort((a, b) => b.score - a.score || a.entry.url.length - b.entry.url.length)
@@ -1213,6 +1290,7 @@ export async function discoverArticlesFromTarget(
           // (the browser-only flag) still handles missing-date acceptance independently.
           ...(deniedPathPrefixes && deniedPathPrefixes.length > 0 ? { deniedPathPrefixes } : {}),
           telemetry,
+          verifiedHostScope,
         },
       );
 
@@ -1301,6 +1379,7 @@ export async function discoverArticlesFromTarget(
     rejectedOutcomes: tracker.getRejected(),
     qualityAssessment,
     appliedProfileAudit: profileAudit,
+    canonicalHostEvidence,
   };
 }
 

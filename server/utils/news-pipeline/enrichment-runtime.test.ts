@@ -218,6 +218,27 @@ describe("buildArticleProvenance", () => {
   });
 });
 
+describe("buildIsPaywallProvenance", () => {
+  it("clears an early paywall hint after substantial accessible body extraction", async () => {
+    const { buildIsPaywallProvenance } = await import("./enrichment-runtime");
+    const result = buildIsPaywallProvenance(true, null, `${"Accessible article paragraph. ".repeat(30)}\n\n${"Second paragraph. ".repeat(20)}`);
+    expect(result?.chosenValue).toBe(false);
+    expect(result?.chosenFrom).toBe("dom");
+  });
+
+  it("does not clear a paywall hint from a short preview", async () => {
+    const { buildIsPaywallProvenance } = await import("./enrichment-runtime");
+    expect(buildIsPaywallProvenance(true, null, "Short preview only.")).toBeNull();
+  });
+
+  it("preserves a confirmed extractor paywall decision", async () => {
+    const { buildIsPaywallProvenance } = await import("./enrichment-runtime");
+    const result = buildIsPaywallProvenance(false, true, "Preview text");
+    expect(result?.chosenValue).toBe(true);
+    expect(result?.chosenFrom).toBe("dom");
+  });
+});
+
 describe("stubExtractArticle", () => {
   it("produces a SUCCESS outcome with unchanged field provenance for a normal article", async () => {
     const { stubExtractArticle } = await import("./enrichment-runtime");
@@ -2834,6 +2855,39 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
     // Both articles should be included (includeRecentlyBlocked skips cooldown filter,
     // HTTP_ACCESS_BLOCKED passes retryable filter)
     expect(articles.length).toBe(2);
+  });
+
+  it("allows browser recovery for own HTTP 403 cooldown but not HTTP 429", async () => {
+    const { selectEnrichmentEligibleArticles } = await import("./enrichment-runtime");
+    const now = new Date("2026-07-29T12:00:00Z");
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({
+        id: 2,
+        enrichmentStatus: "ENRICHMENT_FAILED",
+        enrichmentOutcome: {
+          extractorVersion: AGENT3_EXTRACTOR_VERSION,
+          kind: "HTTP_ACCESS_BLOCKED",
+          rejection: { code: "HTTP_FORBIDDEN", httpStatus: 403 },
+        },
+        enrichmentFinishedAt: new Date("2026-07-29T11:00:00Z"),
+      }),
+      makeArticle({
+        id: 3,
+        enrichmentStatus: "ENRICHMENT_FAILED",
+        enrichmentOutcome: {
+          extractorVersion: AGENT3_EXTRACTOR_VERSION,
+          kind: "HTTP_ACCESS_BLOCKED",
+          rejection: { code: "HTTP_429", httpStatus: 429 },
+        },
+        enrichmentFinishedAt: new Date("2026-07-29T11:30:00Z"),
+      }),
+    ]);
+
+    const articles = await selectEnrichmentEligibleArticles(now, 2, {
+      allowBrowserRecoveryDuringHttp403Cooldown: true,
+    });
+
+    expect(articles.map((article) => article.id)).toEqual([2]);
   });
 
   it("bypasses recently-blocked filter when explicit articleIds are provided", async () => {

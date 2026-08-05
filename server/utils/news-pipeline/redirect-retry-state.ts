@@ -2,19 +2,20 @@ import { createHash } from "node:crypto";
 import { prisma } from "../prisma";
 import { normalizeUrl } from "./text";
 import type { SafeRedirectFailureKind, SafeRedirectEvidence } from "../safe-redirect-resolver";
+import {
+  describeRedirectStatus,
+  type RedirectArtifactStatus,
+  type RedirectStatusDescriptor,
+} from "../../../shared/redirect-status";
+
+export { describeRedirectStatus } from "../../../shared/redirect-status";
+export type { RedirectArtifactStatus, RedirectStatusDescriptor } from "../../../shared/redirect-status";
 
 export const REDIRECT_RETRY_ARTIFACT_TYPE = "agent1_redirect_retry";
 const MAX_STATE_SCAN = 200;
 const MAX_ATTEMPTS = 5;
 const DEFAULT_RETRY_MS = 5 * 60 * 1000;
 const MAX_RETRY_MS = 60 * 60 * 1000;
-
-type RedirectArtifactStatus =
-  | "RETRYABLE"
-  | "RESOLVED"
-  | "SECURITY_REJECTED"
-  | "INVALID_REDIRECT"
-  | "EXHAUSTED";
 
 export type RedirectRetryKey = {
   normalizedUrl: string;
