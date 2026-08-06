@@ -676,7 +676,34 @@
             "noon": "Délben",
             "evening": "Este",
             "breaking": "Breaking értesítések",
-            "breakingDesc": "Sürgős rendszerüzenetek engedélyezése."
+            "breakingDesc": "Sürgős rendszerüzenetek engedélyezése.",
+            "inboxIndependent": "A beérkező értesítések a böngészős push értesítésektől függetlenül működnek.",
+            "retry": "Regisztráció újrapróbálása",
+            "refresh": "Állapot frissítése",
+            "activeDescription": "Ez a böngésző regisztrálva van push értesítésekre.",
+            "permissionDeniedHelp": "Az engedélyt elutasítottad. Engedélyezd az értesítéseket a böngésző beállításaiban, majd próbáld újra.",
+            "states": {
+                "unsupported": "A push nem támogatott",
+                "unavailable": "A push nem érhető el",
+                "permission-default": "Engedély még nincs kérve",
+                "permission-granted-unsubscribed": "Engedélyezve · nincs regisztrálva",
+                "active": "Böngészős push aktív",
+                "permission-denied": "Engedély megtagadva",
+                "registering": "Regisztráció…",
+                "unregistering": "Kikapcsolás…",
+                "recoverable-error": "A regisztráció újrapróbálható"
+            },
+            "stateDescriptions": {
+                "unsupported": "Ez a böngésző vagy a service worker nem támogatja a push értesítéseket.",
+                "unavailable": "A böngészős push nem érhető el, mert az alkalmazás konfigurációja hiányos.",
+                "permission-default": "Az engedélykéréshez válaszd az Engedélyezés gombot.",
+                "permission-granted-unsubscribed": "Az engedély megvan, de ez a böngésző nincs aktív előfizetéshez kötve.",
+                "active": "",
+                "permission-denied": "",
+                "registering": "A regisztráció folyamatban van.",
+                "unregistering": "A kikapcsolás folyamatban van.",
+                "recoverable-error": "A regisztráció vagy a mentés sikertelen volt. Biztonságosan újrapróbálhatod."
+            }
         }
     },
     "savedPage": {

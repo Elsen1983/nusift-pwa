@@ -1,5 +1,5 @@
 import { createError, getHeader } from "h3";
-import { sendDueDailyNotifications } from "../../utils/notification-sender";
+import { sendDueDailyNotificationsInternal } from "../../utils/notification-sender";
 
 export default defineEventHandler(async (event) => {
   const expectedSecret = process.env.CRON_SECRET || process.env.NUXT_CRON_SECRET;
@@ -18,11 +18,22 @@ export default defineEventHandler(async (event) => {
   }
 
   const startedAt = new Date();
-  const results = await sendDueDailyNotifications(startedAt);
+  const { stats } = await sendDueDailyNotificationsInternal(startedAt);
   return {
     ok: true,
-    usersProcessed: results.length,
-    pushesSent: results.reduce((sum, result) => sum + result.sent, 0),
+    telemetryVersion: stats.telemetryVersion,
+    usersMatchedSchedule: stats.usersMatchedSchedule,
+    usersAlreadyNotified: stats.usersAlreadyNotified,
+    usersWithoutActiveScope: stats.usersWithoutActiveScope,
+    usersWithEmptyFeed: stats.usersWithEmptyFeed,
+    inboxNotificationsCreated: stats.inboxNotificationsCreated,
+    inboxNotificationFailures: stats.inboxNotificationFailures,
+    usersWithActivePushSubscriptions: stats.usersWithActivePushSubscriptions,
+    pushSubscriptionsAttempted: stats.pushSubscriptionsAttempted,
+    pushesDelivered: stats.pushesDelivered,
+    pushesFailed: stats.pushesFailed,
+    stalePushSubscriptionsDeactivated: stats.stalePushSubscriptionsDeactivated,
+    lastError: stats.lastError,
     processedAt: startedAt.toISOString(),
   };
 });

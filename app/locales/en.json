@@ -676,7 +676,34 @@
             "noon": "Noon",
             "evening": "Evening",
             "breaking": "Breaking notifications",
-            "breakingDesc": "Allow urgent system messages."
+            "breakingDesc": "Allow urgent system messages.",
+            "inboxIndependent": "Inbox notifications work independently from browser push notifications.",
+            "retry": "Retry registration",
+            "refresh": "Refresh status",
+            "activeDescription": "This browser is registered for push notifications.",
+            "permissionDeniedHelp": "Permission was denied. Enable notifications in your browser settings, then retry.",
+            "states": {
+                "unsupported": "Push unsupported",
+                "unavailable": "Push unavailable",
+                "permission-default": "Permission not requested",
+                "permission-granted-unsubscribed": "Permission granted · not registered",
+                "active": "Browser push active",
+                "permission-denied": "Permission denied",
+                "registering": "Registering…",
+                "unregistering": "Disabling…",
+                "recoverable-error": "Registration needs retry"
+            },
+            "stateDescriptions": {
+                "unsupported": "This browser or its service worker does not support push.",
+                "unavailable": "Browser push is unavailable because the application is not configured.",
+                "permission-default": "Choose Enable to ask the browser for permission.",
+                "permission-granted-unsubscribed": "Permission exists, but this browser has no active subscription.",
+                "active": "",
+                "permission-denied": "",
+                "registering": "Registration is in progress.",
+                "unregistering": "Deactivation is in progress.",
+                "recoverable-error": "Registration or persistence failed. You can safely retry."
+            }
         }
     },
     "notificationsPage": {

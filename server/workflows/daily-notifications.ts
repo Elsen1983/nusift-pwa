@@ -1,5 +1,8 @@
 import { sleep } from "workflow";
-import type { DailyNotificationSlot } from "../utils/notification-sender";
+import type {
+  DailyNotificationRunStats,
+  DailyNotificationSlot,
+} from "../utils/notification-sender";
 
 /**
  * Durable daily notification workflow.
@@ -15,7 +18,7 @@ import type { DailyNotificationSlot } from "../utils/notification-sender";
  *    lock) before `start()`, so duplicate daily pipeline executions cannot
  *    start duplicate notification workflows.
  *  - Each slot step delegates to sendDueDailyNotificationsInternal, which
- *    deduplicates per user/day via the existing DAILY_DIGEST Notification
+ *    deduplicates per user/UTC-day via the durable DAILY_DIGEST dedupe key
  *    row, so workflow retries never duplicate messages.
  *
  * Past-slot behavior (documented + tested):
@@ -41,14 +44,29 @@ export type DailyNotificationsWorkflowInput = {
   markerRunId: string;
 };
 
-export type DailyNotificationsWorkflowResult = {
+export type DailyNotificationsWorkflowResult = Pick<DailyNotificationRunStats,
+  | "usersMatchedSchedule"
+  | "usersAlreadyNotified"
+  | "usersWithoutActiveScope"
+  | "usersWithEmptyFeed"
+  | "inboxNotificationsCreated"
+  | "inboxNotificationFailures"
+  | "usersWithActivePushSubscriptions"
+  | "pushSubscriptionsAttempted"
+  | "pushesDelivered"
+  | "pushesFailed"
+  | "stalePushSubscriptionsDeactivated"
+  | "lastError"
+> & {
   dateKey: string;
   markerRunId: string;
   slotsProcessed: DailyNotificationSlot[];
+  /** @deprecated legacy artifact alias; new readers use explicit counters. */
   usersProcessed: number;
+  /** @deprecated legacy artifact alias; new readers use explicit counters. */
   pushesSent: number;
+  /** @deprecated legacy artifact alias; new readers use explicit counters. */
   skippedEmpty: number;
-  lastError: string | null;
 };
 
 // ─── Pure slot scheduling helpers ───────────────────────────────────────────
@@ -106,13 +124,29 @@ export function decideNotificationSlotAction(
 
 // ─── Slot step ──────────────────────────────────────────────────────────────
 
-export type NotificationSlotStepResult = {
+export type NotificationSlotStepResult = Pick<DailyNotificationRunStats,
+  | "telemetryVersion"
+  | "usersMatchedSchedule"
+  | "usersAlreadyNotified"
+  | "usersWithoutActiveScope"
+  | "usersWithEmptyFeed"
+  | "inboxNotificationsCreated"
+  | "inboxNotificationFailures"
+  | "usersWithActivePushSubscriptions"
+  | "pushSubscriptionsAttempted"
+  | "pushesDelivered"
+  | "pushesFailed"
+  | "stalePushSubscriptionsDeactivated"
+  | "lastError"
+> & {
   slot: DailyNotificationSlot;
   processed: boolean;
+  /** @deprecated compatibility alias. */
   usersProcessed: number;
+  /** @deprecated compatibility alias. */
   pushesSent: number;
+  /** @deprecated compatibility alias. */
   skippedEmpty: number;
-  lastError: string | null;
   reason: string;
 };
 
@@ -125,13 +159,28 @@ export async function runNotificationSlotStep(
     const { sendDueDailyNotificationsInternal } =
       await import("../utils/notification-sender");
     const { results, stats } = await sendDueDailyNotificationsInternal(at, [slot]);
+    const inboxNotificationsCreated = stats.inboxNotificationsCreated ?? stats.usersProcessed ?? results.length;
+    const pushesDelivered = stats.pushesDelivered ?? stats.pushesSent ?? 0;
+    const usersWithEmptyFeed = stats.usersWithEmptyFeed ?? stats.skippedEmpty ?? 0;
     return {
       slot,
       processed: true,
-      usersProcessed: results.length,
-      pushesSent: stats.pushesSent,
-      skippedEmpty: stats.skippedEmpty,
+      telemetryVersion: 2,
+      usersMatchedSchedule: stats.usersMatchedSchedule ?? inboxNotificationsCreated,
+      usersAlreadyNotified: stats.usersAlreadyNotified ?? 0,
+      usersWithoutActiveScope: stats.usersWithoutActiveScope ?? 0,
+      usersWithEmptyFeed,
+      inboxNotificationsCreated,
+      inboxNotificationFailures: stats.inboxNotificationFailures ?? 0,
+      usersWithActivePushSubscriptions: stats.usersWithActivePushSubscriptions ?? (pushesDelivered > 0 ? 1 : 0),
+      pushSubscriptionsAttempted: stats.pushSubscriptionsAttempted ?? pushesDelivered,
+      pushesDelivered,
+      pushesFailed: stats.pushesFailed ?? 0,
+      stalePushSubscriptionsDeactivated: stats.stalePushSubscriptionsDeactivated ?? 0,
       lastError: stats.lastError,
+      usersProcessed: inboxNotificationsCreated,
+      pushesSent: pushesDelivered,
+      skippedEmpty: usersWithEmptyFeed,
       reason: "slot_due",
     };
   } catch (error: any) {
@@ -140,6 +189,18 @@ export async function runNotificationSlotStep(
     return {
       slot,
       processed: false,
+      telemetryVersion: 2,
+      usersMatchedSchedule: 0,
+      usersAlreadyNotified: 0,
+      usersWithoutActiveScope: 0,
+      usersWithEmptyFeed: 0,
+      inboxNotificationsCreated: 0,
+      inboxNotificationFailures: 0,
+      usersWithActivePushSubscriptions: 0,
+      pushSubscriptionsAttempted: 0,
+      pushesDelivered: 0,
+      pushesFailed: 0,
+      stalePushSubscriptionsDeactivated: 0,
       usersProcessed: 0,
       pushesSent: 0,
       skippedEmpty: 0,
@@ -179,14 +240,20 @@ const EVIDENCE_UPDATE_STATUSES = [
   "NOTIFICATION_WORKFLOW_RECONCILIATION_REQUIRED",
 ] as const;
 
-const asSlotArray = (value: unknown): DailyNotificationSlot[] =>
-  Array.isArray(value)
-    ? value
-        .filter((slot): slot is DailyNotificationSlot =>
-          NOTIFICATION_SLOTS.includes(slot as DailyNotificationSlot),
-        )
-        .slice(0, NOTIFICATION_SLOTS.length)
-    : [];
+const asSlotArray = (value: unknown): DailyNotificationSlot[] => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<DailyNotificationSlot>();
+  const result: DailyNotificationSlot[] = [];
+  for (const candidate of value) {
+    if (!NOTIFICATION_SLOTS.includes(candidate as DailyNotificationSlot)) continue;
+    const slot = candidate as DailyNotificationSlot;
+    if (seen.has(slot)) continue;
+    seen.add(slot);
+    result.push(slot);
+    if (result.length === NOTIFICATION_SLOTS.length) break;
+  }
+  return result;
+};
 
 const nextSlotAfter = (slot: DailyNotificationSlot): DailyNotificationSlot | null => {
   const index = NOTIFICATION_SLOTS.indexOf(slot);
@@ -213,6 +280,68 @@ const readMarkerSummary = async (
  * began cannot resurrect a retryable run. A persistence failure returns false
  * and the caller must default to non-retry-safe behavior.
  */
+export async function readNotificationProgressStep(
+  markerRunId: string,
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  completedSlots: DailyNotificationSlot[];
+  legacyOnly: boolean;
+  counters: Partial<Pick<DailyNotificationRunStats,
+    | "usersMatchedSchedule"
+    | "usersAlreadyNotified"
+    | "usersWithoutActiveScope"
+    | "usersWithEmptyFeed"
+    | "inboxNotificationsCreated"
+    | "inboxNotificationFailures"
+    | "usersWithActivePushSubscriptions"
+    | "pushSubscriptionsAttempted"
+    | "pushesDelivered"
+    | "pushesFailed"
+    | "stalePushSubscriptionsDeactivated"
+  >>;
+}> {
+  "use step";
+  try {
+    const summary = await readMarkerSummary(markerRunId);
+    const asCounter = (key: string) =>
+      typeof summary[key] === "number" && Number.isFinite(summary[key])
+        ? Math.max(0, Math.round(summary[key] as number))
+        : undefined;
+    return {
+      ok: true,
+      error: null,
+      completedSlots: asSlotArray(summary.completedSlots),
+      legacyOnly: summary.telemetryVersion !== 2 && (
+        typeof summary.usersProcessed === "number" ||
+        typeof summary.pushesSent === "number" ||
+        typeof summary.skippedEmpty === "number"
+      ),
+      counters: {
+        usersMatchedSchedule: asCounter("usersMatchedSchedule"),
+        usersAlreadyNotified: asCounter("usersAlreadyNotified"),
+        usersWithoutActiveScope: asCounter("usersWithoutActiveScope"),
+        usersWithEmptyFeed: asCounter("usersWithEmptyFeed"),
+        inboxNotificationsCreated: asCounter("inboxNotificationsCreated"),
+        inboxNotificationFailures: asCounter("inboxNotificationFailures"),
+        usersWithActivePushSubscriptions: asCounter("usersWithActivePushSubscriptions"),
+        pushSubscriptionsAttempted: asCounter("pushSubscriptionsAttempted"),
+        pushesDelivered: asCounter("pushesDelivered"),
+        pushesFailed: asCounter("pushesFailed"),
+        stalePushSubscriptionsDeactivated: asCounter("stalePushSubscriptionsDeactivated"),
+      },
+    };
+  } catch (error: any) {
+    return {
+      ok: false,
+      error: error?.message ? String(error.message).slice(0, 300) : "notification progress could not be read",
+      completedSlots: [],
+      legacyOnly: false,
+      counters: {},
+    };
+  }
+}
+
 export async function claimNotificationRetrySafetyStep(
   markerRunId: string,
 ): Promise<boolean> {
@@ -294,6 +423,19 @@ export async function markNotificationDeliveryStartedStep(
 export async function recordNotificationSlotCompletedStep(
   markerRunId: string,
   slot: DailyNotificationSlot,
+  counters: Partial<Pick<DailyNotificationRunStats,
+    | "usersMatchedSchedule"
+    | "usersAlreadyNotified"
+    | "usersWithoutActiveScope"
+    | "usersWithEmptyFeed"
+    | "inboxNotificationsCreated"
+    | "inboxNotificationFailures"
+    | "usersWithActivePushSubscriptions"
+    | "pushSubscriptionsAttempted"
+    | "pushesDelivered"
+    | "pushesFailed"
+    | "stalePushSubscriptionsDeactivated"
+  >> = {},
 ): Promise<boolean> {
   "use step";
   try {
@@ -306,6 +448,7 @@ export async function recordNotificationSlotCompletedStep(
       data: {
         summary: {
           ...summary,
+          ...counters,
           currentSlot: null,
           completedSlots: completed,
         },
@@ -323,14 +466,28 @@ export type NotificationWorkflowFinalizeInput = {
   markerRunId: string;
   dateKey: string;
   slotsProcessed: DailyNotificationSlot[];
-  usersProcessed: number;
-  pushesSent: number;
-  skippedEmpty: number;
+  usersMatchedSchedule?: number;
+  usersAlreadyNotified?: number;
+  usersWithoutActiveScope?: number;
+  usersWithEmptyFeed?: number;
+  inboxNotificationsCreated?: number;
+  inboxNotificationFailures?: number;
+  usersWithActivePushSubscriptions?: number;
+  pushSubscriptionsAttempted?: number;
+  pushesDelivered?: number;
+  pushesFailed?: number;
+  stalePushSubscriptionsDeactivated?: number;
   lastError: string | null;
+  /** Deprecated aliases retained only for old callers/artifacts. */
+  usersProcessed?: number;
+  pushesSent?: number;
+  skippedEmpty?: number;
   /** True when orchestration failed before normal completion. */
   isFatalFailure?: boolean;
   /** True when a retry-safety evidence write failed; default non-retry-safe. */
   evidenceBroken?: boolean;
+  /** Preserve legacy-only summaries without manufacturing unavailable v2 zeros. */
+  legacyTelemetryOnly?: boolean;
 };
 
 /**
@@ -360,6 +517,21 @@ export async function finalizeNotificationWorkflowStep(
   const deliveryStarted =
     existingSummary.firstSlotAttempted === true ||
     typeof existingSummary.deliveryStartedAt === "string";
+  const mergedCompletedSlots = asSlotArray([
+    ...asSlotArray(existingSummary.completedSlots),
+    ...input.slotsProcessed,
+  ]);
+  const usersMatchedSchedule = input.usersMatchedSchedule ?? input.usersProcessed ?? 0;
+  const usersAlreadyNotified = input.usersAlreadyNotified ?? 0;
+  const usersWithoutActiveScope = input.usersWithoutActiveScope ?? 0;
+  const usersWithEmptyFeed = input.usersWithEmptyFeed ?? input.skippedEmpty ?? 0;
+  const inboxNotificationsCreated = input.inboxNotificationsCreated ?? input.usersProcessed ?? 0;
+  const inboxNotificationFailures = input.inboxNotificationFailures ?? 0;
+  const usersWithActivePushSubscriptions = input.usersWithActivePushSubscriptions ?? 0;
+  const pushSubscriptionsAttempted = input.pushSubscriptionsAttempted ?? input.pushesSent ?? 0;
+  const pushesDelivered = input.pushesDelivered ?? input.pushesSent ?? 0;
+  const pushesFailed = input.pushesFailed ?? 0;
+  const stalePushSubscriptionsDeactivated = input.stalePushSubscriptionsDeactivated ?? 0;
 
   let status: string;
   if (input.evidenceBroken) {
@@ -374,7 +546,52 @@ export async function finalizeNotificationWorkflowStep(
     status = "NOTIFICATION_WORKFLOW_COMPLETED";
   }
 
-  await prisma.pipelineRun.updateMany({
+  const nextSummary = {
+    ...existingSummary,
+    kind: "daily_notifications_workflow",
+    dateKey: input.dateKey,
+    ...(input.legacyTelemetryOnly
+      ? {}
+      : {
+          telemetryVersion: 2,
+          slotsProcessed: mergedCompletedSlots,
+          usersMatchedSchedule,
+          usersAlreadyNotified,
+          usersWithoutActiveScope,
+          usersWithEmptyFeed,
+          inboxNotificationsCreated,
+          inboxNotificationFailures,
+          usersWithActivePushSubscriptions,
+          pushSubscriptionsAttempted,
+          pushesDelivered,
+          pushesFailed,
+          stalePushSubscriptionsDeactivated,
+          // Deprecated aliases are written for readers that have not migrated;
+          // new UI and workflow logic use the explicit fields above.
+          usersProcessed: inboxNotificationsCreated,
+          pushesSent: pushesDelivered,
+          skippedEmpty: usersWithEmptyFeed,
+        }),
+    lastError: input.lastError,
+    completedAt: new Date().toISOString(),
+    retryable: status === "NOTIFICATION_WORKFLOW_FAILED_RETRYABLE",
+    retrySafe: status === "NOTIFICATION_WORKFLOW_FAILED_RETRYABLE"
+      ? true
+      : existingSummary.retrySafe === true,
+    firstSlotAttempted: existingSummary.firstSlotAttempted === true,
+    deliveryStartedAt: typeof existingSummary.deliveryStartedAt === "string"
+      ? existingSummary.deliveryStartedAt
+      : null,
+    currentSlot: typeof existingSummary.currentSlot === "string"
+      ? existingSummary.currentSlot
+      : null,
+    nextSlot: typeof existingSummary.nextSlot === "string"
+      ? existingSummary.nextSlot
+      : null,
+    completedSlots: mergedCompletedSlots,
+  };
+
+  const updateResult = await prisma.pipelineRun.updateMany({
     where: {
       id: input.markerRunId,
       status: {
@@ -384,34 +601,12 @@ export async function finalizeNotificationWorkflowStep(
     data: {
       status,
       finishedAt: new Date(),
-      summary: {
-        ...existingSummary,
-        kind: "daily_notifications_workflow",
-        dateKey: input.dateKey,
-        slotsProcessed: input.slotsProcessed,
-        usersProcessed: input.usersProcessed,
-        pushesSent: input.pushesSent,
-        skippedEmpty: input.skippedEmpty,
-        lastError: input.lastError,
-        completedAt: new Date().toISOString(),
-        retryable: status === "NOTIFICATION_WORKFLOW_FAILED_RETRYABLE",
-        retrySafe: status === "NOTIFICATION_WORKFLOW_FAILED_RETRYABLE"
-          ? true
-          : existingSummary.retrySafe === true,
-        firstSlotAttempted: existingSummary.firstSlotAttempted === true,
-        deliveryStartedAt: typeof existingSummary.deliveryStartedAt === "string"
-          ? existingSummary.deliveryStartedAt
-          : null,
-        currentSlot: typeof existingSummary.currentSlot === "string"
-          ? existingSummary.currentSlot
-          : null,
-        nextSlot: typeof existingSummary.nextSlot === "string"
-          ? existingSummary.nextSlot
-          : null,
-        completedSlots: asSlotArray(existingSummary.completedSlots),
-      },
+      summary: nextSummary,
     },
   });
+  if (updateResult.count !== 1) {
+    throw new Error("notification workflow marker finalization did not persist");
+  }
 }
 
 // ─── Workflow ───────────────────────────────────────────────────────────────
@@ -423,10 +618,34 @@ export async function runDailyNotificationsWorkflow(
 
   const now = new Date(input.triggeredAt);
   const slotsProcessed: DailyNotificationSlot[] = [];
-  let usersProcessed = 0;
-  let pushesSent = 0;
-  let skippedEmpty = 0;
+  let usersMatchedSchedule = 0;
+  let usersAlreadyNotified = 0;
+  let usersWithoutActiveScope = 0;
+  let usersWithEmptyFeed = 0;
+  let inboxNotificationsCreated = 0;
+  let inboxNotificationFailures = 0;
+  let usersWithActivePushSubscriptions = 0;
+  let pushSubscriptionsAttempted = 0;
+  let pushesDelivered = 0;
+  let pushesFailed = 0;
+  let stalePushSubscriptionsDeactivated = 0;
   let lastError: string | null = null;
+  let completedSlots: DailyNotificationSlot[] = [];
+  let legacyOnly = false;
+
+  const addExistingCounters = (counters: Awaited<ReturnType<typeof readNotificationProgressStep>>["counters"]) => {
+    usersMatchedSchedule = counters.usersMatchedSchedule ?? 0;
+    usersAlreadyNotified = counters.usersAlreadyNotified ?? 0;
+    usersWithoutActiveScope = counters.usersWithoutActiveScope ?? 0;
+    usersWithEmptyFeed = counters.usersWithEmptyFeed ?? 0;
+    inboxNotificationsCreated = counters.inboxNotificationsCreated ?? 0;
+    inboxNotificationFailures = counters.inboxNotificationFailures ?? 0;
+    usersWithActivePushSubscriptions = counters.usersWithActivePushSubscriptions ?? 0;
+    pushSubscriptionsAttempted = counters.pushSubscriptionsAttempted ?? 0;
+    pushesDelivered = counters.pushesDelivered ?? 0;
+    pushesFailed = counters.pushesFailed ?? 0;
+    stalePushSubscriptionsDeactivated = counters.stalePushSubscriptionsDeactivated ?? 0;
+  };
   let isFatalFailure = false;
   let evidenceBroken = false;
 
@@ -434,11 +653,21 @@ export async function runDailyNotificationsWorkflow(
     // Before any notification slot is processed, persist the durable
     // retry-safety claim. A persistence failure defaults the run to
     // non-retry-safe behavior.
-    if (!(await claimNotificationRetrySafetyStep(input.markerRunId))) {
+    const progress = await readNotificationProgressStep(input.markerRunId);
+    if (!progress.ok) {
+      evidenceBroken = true;
+      lastError = progress.error;
+    }
+    completedSlots = progress.completedSlots;
+    legacyOnly = progress.legacyOnly;
+    addExistingCounters(progress.counters);
+    if (progress.ok && !(await claimNotificationRetrySafetyStep(input.markerRunId))) {
       evidenceBroken = true;
     }
 
     for (const slot of NOTIFICATION_SLOTS) {
+      if (evidenceBroken || completedSlots.includes(slot)) continue;
+
       const decision = decideNotificationSlotAction(slot, now, input.dateKey);
       if (decision.action === "skip") {
         continue; // slot_past — deterministic skip for this date
@@ -461,13 +690,39 @@ export async function runDailyNotificationsWorkflow(
 
       const slotResult = await runNotificationSlotStep(slot, at);
       slotsProcessed.push(slotResult.slot);
-      usersProcessed += slotResult.usersProcessed;
-      pushesSent += slotResult.pushesSent;
-      skippedEmpty += slotResult.skippedEmpty;
+      completedSlots.push(slotResult.slot);
+      usersMatchedSchedule += slotResult.usersMatchedSchedule;
+      usersAlreadyNotified += slotResult.usersAlreadyNotified;
+      usersWithoutActiveScope += slotResult.usersWithoutActiveScope;
+      usersWithEmptyFeed += slotResult.usersWithEmptyFeed;
+      inboxNotificationsCreated += slotResult.inboxNotificationsCreated;
+      inboxNotificationFailures += slotResult.inboxNotificationFailures;
+      usersWithActivePushSubscriptions += slotResult.usersWithActivePushSubscriptions;
+      pushSubscriptionsAttempted += slotResult.pushSubscriptionsAttempted;
+      pushesDelivered += slotResult.pushesDelivered;
+      pushesFailed += slotResult.pushesFailed;
+      stalePushSubscriptionsDeactivated += slotResult.stalePushSubscriptionsDeactivated;
       if (slotResult.lastError) lastError = slotResult.lastError;
 
       // Best-effort durable progress; never changes retry-safety semantics.
-      await recordNotificationSlotCompletedStep(input.markerRunId, slot);
+      const progressRecorded = await recordNotificationSlotCompletedStep(input.markerRunId, slot, {
+        usersMatchedSchedule,
+        usersAlreadyNotified,
+        usersWithoutActiveScope,
+        usersWithEmptyFeed,
+        inboxNotificationsCreated,
+        inboxNotificationFailures,
+        usersWithActivePushSubscriptions,
+        pushSubscriptionsAttempted,
+        pushesDelivered,
+        pushesFailed,
+        stalePushSubscriptionsDeactivated,
+      });
+      if (!progressRecorded) {
+        evidenceBroken = true;
+        lastError = "notification progress could not be persisted after slot delivery";
+        break;
+      }
     }
   } catch (error: any) {
     // Catch orchestration failures (including durable sleep failures) so an
@@ -484,25 +739,55 @@ export async function runDailyNotificationsWorkflow(
     await finalizeNotificationWorkflowStep({
       markerRunId: input.markerRunId,
       dateKey: input.dateKey,
-      slotsProcessed,
-      usersProcessed,
-      pushesSent,
-      skippedEmpty,
+      slotsProcessed: completedSlots,
+      usersMatchedSchedule: legacyOnly && completedSlots.length > 0 ? undefined : usersMatchedSchedule,
+      usersAlreadyNotified,
+      usersWithoutActiveScope,
+      usersWithEmptyFeed,
+      inboxNotificationsCreated,
+      inboxNotificationFailures,
+      usersWithActivePushSubscriptions,
+      pushSubscriptionsAttempted,
+      pushesDelivered,
+      pushesFailed,
+      stalePushSubscriptionsDeactivated: legacyOnly && completedSlots.length > 0 ? undefined : stalePushSubscriptionsDeactivated,
       lastError,
+      usersProcessed: legacyOnly && completedSlots.length > 0 ? undefined : inboxNotificationsCreated,
+      pushesSent: legacyOnly && completedSlots.length > 0 ? undefined : pushesDelivered,
+      skippedEmpty: legacyOnly && completedSlots.length > 0 ? undefined : usersWithEmptyFeed,
       isFatalFailure,
       evidenceBroken,
+      legacyTelemetryOnly: legacyOnly,
     });
   } catch (error: any) {
-    lastError = lastError ?? (error?.message ? String(error.message).slice(0, 300) : "marker finalize failed");
+    // A missing durable final marker is never a successful zero-valued run.
+    // Surface the bounded persistence error in the workflow result so the
+    // scheduler/admin path can reconcile it instead of treating delivery as
+    // fully observed.
+    lastError = error?.message
+      ? String(error.message).slice(0, 300)
+      : "notification workflow marker finalization failed";
+    evidenceBroken = true;
   }
 
   return {
     dateKey: input.dateKey,
     markerRunId: input.markerRunId,
-    slotsProcessed,
-    usersProcessed,
-    pushesSent,
-    skippedEmpty,
+    slotsProcessed: completedSlots,
+    usersMatchedSchedule,
+    usersAlreadyNotified,
+    usersWithoutActiveScope,
+    usersWithEmptyFeed,
+    inboxNotificationsCreated,
+    inboxNotificationFailures,
+    usersWithActivePushSubscriptions,
+    pushSubscriptionsAttempted,
+    pushesDelivered,
+    pushesFailed,
+    stalePushSubscriptionsDeactivated,
+    usersProcessed: inboxNotificationsCreated,
+    pushesSent: pushesDelivered,
+    skippedEmpty: usersWithEmptyFeed,
     lastError,
   };
 }

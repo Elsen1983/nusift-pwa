@@ -84,7 +84,7 @@ describe("notification slot step", () => {
     vi.clearAllMocks();
     mocks.sendDueDailyNotificationsInternal.mockResolvedValue({
       results: [{ userId: "u1", sent: 2 }],
-      stats: { usersProcessed: 1, pushesSent: 2, skippedEmpty: 3, lastError: null },
+      stats: { telemetryVersion: 2, usersProcessed: 1, pushesSent: 2, skippedEmpty: 3, lastError: null },
     });
   });
 
@@ -298,8 +298,7 @@ describe("notification workflow retry-safety evidence", () => {
   };
 
   const emptySlotResult = () => ({
-    results: [] as Array<{ userId: string; sent: number }>,
-    stats: { usersProcessed: 0, pushesSent: 0, skippedEmpty: 0, lastError: null },
+    results: [] as Array<{ userId: string; sent: number }>,      stats: { telemetryVersion: 2, usersProcessed: 0, pushesSent: 0, skippedEmpty: 0, lastError: null },
   });
 
   beforeEach(() => {
@@ -312,7 +311,7 @@ describe("notification workflow retry-safety evidence", () => {
     const state = makeMarkerHarness();
     mocks.sendDueDailyNotificationsInternal.mockResolvedValue({
       results: [{ userId: "u1", sent: 2 }],
-      stats: { usersProcessed: 1, pushesSent: 2, skippedEmpty: 3, lastError: null },
+      stats: { telemetryVersion: 2, usersProcessed: 1, pushesSent: 2, skippedEmpty: 3, lastError: null },
     });
 
     await runDailyNotificationsWorkflow({

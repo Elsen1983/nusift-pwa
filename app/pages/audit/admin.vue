@@ -150,7 +150,25 @@
                 <div v-if="reliabilityDiagnostics.notifications.markers.length === 0" class="mt-1">No marker for the current UTC date.</div>                  <div v-for="marker in reliabilityDiagnostics.notifications.markers.slice(0, 3)" :key="marker.id" class="mt-1 space-y-0.5">
                   <div class="flex flex-wrap items-center gap-2"><strong class="text-on-surface">{{ marker.dateKey || 'unknown date' }}</strong> · {{ marker.status }} · {{ marker.startState || 'unknown' }} <button v-if="marker.staleLaunching || marker.summary.reconciliationRequired" @click="reconciliationModalMarkerId = marker.id" :disabled="reconciliationLoading" class="rounded border border-amber-400/20 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-bold text-amber-100">{{ reconciliationLoading ? 'Saving...' : 'Acknowledge reconciliation' }}</button></div>
                   <div>run: {{ marker.workflowRunId || 'not persisted' }} · attempt: {{ marker.launchAttemptId || 'none' }} · external: {{ marker.externalWorkflow ? `${marker.externalWorkflow.exists ? 'known' : 'not found'}${marker.externalWorkflow.status ? ` / ${marker.externalWorkflow.status}` : ''}` : 'inconclusive' }}</div>
-                  <div>slot: {{ marker.summary.currentSlot || '—' }} → {{ marker.summary.nextSlot || '—' }} · users {{ marker.summary.usersProcessed }} · pushes {{ marker.summary.pushesSent }} · empty {{ marker.summary.skippedEmpty }}</div>
+                  <div class="mt-2 space-y-1">
+                    <div class="font-bold uppercase tracking-wider text-violet-200">Notification telemetry</div>
+                    <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                      <span>Recipient selection · matching slot: {{ marker.summary.usersMatchedSchedule ?? 'not recorded' }}</span>
+                      <span>already notified: {{ marker.summary.usersAlreadyNotified ?? 'not recorded' }}</span>
+                      <span>no active content scope: {{ marker.summary.usersWithoutActiveScope ?? 'not recorded' }}</span>
+                      <span>empty eligible feed: {{ marker.summary.usersWithEmptyFeed ?? 'not recorded' }}</span>
+                      <span>Inbox · notifications created: {{ marker.summary.inboxNotificationsCreated ?? 'not recorded' }}</span>
+                      <span>inbox persistence failures: {{ marker.summary.inboxNotificationFailures ?? 'not recorded' }}</span>
+                      <span>Browser push · users with active push: {{ marker.summary.usersWithActivePushSubscriptions ?? 'not recorded' }}</span>
+                      <span>subscriptions attempted: {{ marker.summary.pushSubscriptionsAttempted ?? 'not recorded' }}</span>
+                      <span>pushes delivered: {{ marker.summary.pushesDelivered ?? 'not recorded' }}</span>
+                      <span>pushes failed: {{ marker.summary.pushesFailed ?? 'not recorded' }}</span>
+                      <span>stale subscriptions deactivated: {{ marker.summary.stalePushSubscriptionsDeactivated ?? 'not recorded' }}</span>
+                    </div>
+                    <div v-if="marker.summary.usersMatchedSchedule === 0" class="font-bold text-amber-200">No users configured for this slot.</div>
+                    <div v-else-if="marker.summary.inboxNotificationsCreated > 0 && marker.summary.usersWithActivePushSubscriptions === 0" class="font-bold text-cyan-200">Inbox notifications created, browser push unavailable.</div>
+                    <div class="text-[9px] text-on-surface-variant">workflow: current {{ marker.summary.currentSlot || '—' }} → next {{ marker.summary.nextSlot || '—' }} · completed {{ (marker.summary.completedSlots || []).join(', ') || 'none' }} · legacy fields show “not recorded” when absent</div>
+                  </div>
                   <div class="text-[9px] text-violet-200/80">retry-safe {{ marker.summary.retrySafe ? 'yes' : 'no' }} · first slot {{ marker.summary.firstSlotAttempted ? 'attempted' : 'not attempted' }} · delivered {{ marker.summary.deliveryStartedAt || '—' }} · completed {{ (marker.summary.completedSlots || []).join(', ') || 'none' }}</div>
                   <div v-if="marker.staleLaunching || marker.summary.reconciliationRequired" class="font-bold text-amber-200">Reconciliation required; automatic restart is disabled.</div>
                   <div v-if="marker.failureReason || marker.summary.lastError" class="text-rose-200">{{ marker.failureReason || marker.summary.lastError }}</div>

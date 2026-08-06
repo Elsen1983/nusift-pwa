@@ -4,6 +4,7 @@ import {
   NOTIFICATION_WORKFLOW_STATUSES,
   utcDateKey,
 } from "./notification-workflow-constants";
+import { normalizeNotificationTelemetry } from "../notification-telemetry";
 
 const MAX_RECONCILIATION_SCAN = 100;
 const RECONCILIATION_STALE_MS = 15 * 60 * 1000;
@@ -33,11 +34,24 @@ export type NotificationReconciliationMarker = {
   staleLaunching: boolean;
   failureReason: string | null;
   summary: {
+    telemetryVersion: number | null;
     currentSlot: string | null;
     nextSlot: string | null;
-    usersProcessed: number;
-    pushesSent: number;
-    skippedEmpty: number;
+    usersMatchedSchedule: number | null;
+    usersAlreadyNotified: number | null;
+    usersWithoutActiveScope: number | null;
+    usersWithEmptyFeed: number | null;
+    inboxNotificationsCreated: number | null;
+    inboxNotificationFailures: number | null;
+    usersWithActivePushSubscriptions: number | null;
+    pushSubscriptionsAttempted: number | null;
+    pushesDelivered: number | null;
+    pushesFailed: number | null;
+    stalePushSubscriptionsDeactivated: number | null;
+    /** @deprecated legacy fields are null when unavailable, never inferred. */
+    usersProcessed: number | null;
+    pushesSent: number | null;
+    skippedEmpty: number | null;
     lastError: string | null;
     reconciliationRequired: boolean;
     retrySafe: boolean;
@@ -60,9 +74,7 @@ const normalizeMarker = (marker: {
   summary: unknown;
 }): NotificationReconciliationMarker => {
   const summary = isRecord(marker.summary) ? marker.summary : {};
-  const asCount = (value: unknown) => typeof value === "number" && Number.isFinite(value)
-    ? Math.max(0, Math.min(1_000_000, Math.round(value)))
-    : 0;
+  const telemetry = normalizeNotificationTelemetry(summary);
   return {
     id: marker.id,
     dateKey: boundedString(summary.dateKey, 10),
@@ -75,12 +87,24 @@ const normalizeMarker = (marker: {
     staleLaunching: markerIsStaleLaunching(marker),
     failureReason: boundedString(summary.failureReason),
     summary: {
+      telemetryVersion: telemetry.telemetryVersion,
       currentSlot: boundedString(summary.currentSlot, 30),
       nextSlot: boundedString(summary.nextSlot, 30),
-      usersProcessed: asCount(summary.usersProcessed),
-      pushesSent: asCount(summary.pushesSent),
-      skippedEmpty: asCount(summary.skippedEmpty),
-      lastError: boundedString(summary.lastError),
+      usersMatchedSchedule: telemetry.usersMatchedSchedule,
+      usersAlreadyNotified: telemetry.usersAlreadyNotified,
+      usersWithoutActiveScope: telemetry.usersWithoutActiveScope,
+      usersWithEmptyFeed: telemetry.usersWithEmptyFeed,
+      inboxNotificationsCreated: telemetry.inboxNotificationsCreated,
+      inboxNotificationFailures: telemetry.inboxNotificationFailures,
+      usersWithActivePushSubscriptions: telemetry.usersWithActivePushSubscriptions,
+      pushSubscriptionsAttempted: telemetry.pushSubscriptionsAttempted,
+      pushesDelivered: telemetry.pushesDelivered,
+      pushesFailed: telemetry.pushesFailed,
+      stalePushSubscriptionsDeactivated: telemetry.stalePushSubscriptionsDeactivated,
+      usersProcessed: telemetry.usersProcessed,
+      pushesSent: telemetry.pushesSent,
+      skippedEmpty: telemetry.skippedEmpty,
+      lastError: telemetry.lastError,
       reconciliationRequired: marker.status === "NOTIFICATION_WORKFLOW_RECONCILIATION_REQUIRED" ||
         summary.reconciliationRequired === true,
       // Durable retry-safety evidence written by the workflow. The scheduler

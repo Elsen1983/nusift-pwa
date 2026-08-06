@@ -35,20 +35,35 @@
                 type="checkbox"
                 class="sr-only peer"
                 :checked="pushEnabled"
-                :disabled="pushStatus === 'loading'"
+                :disabled="isActivationToggleDisabled(pushState, pushEnabled, pushOperation)"
                 @change="togglePush"
               />
               <div class="w-11 h-6 bg-surface-container-highest peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container"></div>
             </label>
           </div>
 
-          <div class="flex flex-wrap gap-3">
-            <button
-              class="px-4 py-3 rounded-lg border border-outline-variant/30 bg-surface-container hover:bg-surface-container-high text-on-surface-variant text-[11px] font-headline uppercase tracking-widest transition-colors"
-              @click="sendTestPush"
-            >
-              {{ $t("appSettings.notifications.test") }}
-            </button>
+          <div class="rounded-2xl border border-outline-variant/15 bg-surface-container/60 p-3 space-y-3">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="h-2 w-2 rounded-full" :class="pushState === 'active' ? 'bg-emerald-400' : pushState === 'recoverable-error' ? 'bg-amber-300' : 'bg-on-surface-variant/50'"></span>
+              <span class="font-label text-xs font-bold uppercase tracking-wider text-on-surface">{{ pushStateLabel }}</span>
+            </div>
+            <p class="text-xs leading-relaxed text-on-surface-variant">{{ pushStateDescription }}</p>
+            <p class="text-[11px] leading-relaxed text-on-surface-variant/80">{{ $t("appSettings.notifications.inboxIndependent") }}</p>
+            <p v-if="push.error.value" class="text-xs text-amber-200">{{ push.error.value }}</p>
+            <div class="flex flex-wrap gap-2">
+              <button v-if="pushState === 'permission-default' || pushState === 'permission-granted-unsubscribed' || pushState === 'recoverable-error'" type="button" class="rounded-lg bg-primary-container px-4 py-2 text-[11px] font-headline font-bold uppercase tracking-widest text-on-primary-container transition hover:brightness-110 disabled:opacity-60" :disabled="pushOperation !== 'idle'" @click="enablePush">
+                {{ pushState === 'recoverable-error' ? $t("appSettings.notifications.retry") : $t("appSettings.notifications.enable") }}
+              </button>
+              <button v-if="pushState === 'active' || (pushState === 'permission-denied' && pushEnabled)" type="button" class="rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-[11px] font-headline font-bold uppercase tracking-widest text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-60" :disabled="pushOperation !== 'idle'" @click="disablePush">
+                {{ $t("appSettings.notifications.disable") }}
+              </button>
+              <button type="button" class="rounded-lg border border-outline-variant/30 bg-surface-container hover:bg-surface-container-high px-4 py-2 text-[11px] font-headline uppercase tracking-widest text-on-surface-variant transition disabled:opacity-60" :disabled="pushOperation !== 'idle'" @click="refreshPushStatus">
+                {{ $t("appSettings.notifications.refresh") }}
+              </button>
+              <button type="button" class="rounded-lg border border-outline-variant/30 bg-surface-container hover:bg-surface-container-high px-4 py-2 text-[11px] font-headline uppercase tracking-widest text-on-surface-variant transition" @click="sendTestPush">
+                {{ $t("appSettings.notifications.test") }}
+              </button>
+            </div>
           </div>
 
           <div class="space-y-3">
@@ -222,6 +237,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useAuthStore } from "~/stores/auth";
 import { usePushNotifications } from "~/composables/usePushNotifications";
+import { canActivatePush, decidePushToggle, isActivationToggleDisabled } from "./push-settings-policy";
 
 definePageMeta({ layout: "app-layout" });
 
@@ -232,6 +248,17 @@ const push = usePushNotifications();
 
 const pushEnabled = computed(() => push.enabled.value);
 const pushStatus = computed(() => push.status.value);
+const pushOperation = computed(() => push.operation.value);
+const pushState = computed(() => push.state.value);
+const pushStateLabel = computed(() => {
+  const key = `appSettings.notifications.states.${pushState.value}`;
+  return $t(key);
+});
+const pushStateDescription = computed(() => {
+  if (pushState.value === "permission-denied") return $t("appSettings.notifications.permissionDeniedHelp");
+  if (pushState.value === "active") return $t("appSettings.notifications.activeDescription");
+  return $t(`appSettings.notifications.stateDescriptions.${pushState.value}`);
+});
 const scheduleSlot = ref<"MORNING" | "NOON" | "EVENING">("MORNING");
 const breakingEnabled = ref(true);
 const scheduleOptions = [
@@ -286,13 +313,21 @@ const enablePush = async () => {
   await push.subscribe();
 };
 
+const refreshPushStatus = async () => {
+  await push.refreshStatus();
+};
+
 const disablePush = async () => {
   await push.unsubscribe();
 };
 
 const togglePush = async (event: Event) => {
   const nextEnabled = (event.target as HTMLInputElement)?.checked ?? false;
-  if (nextEnabled) await enablePush();
+  // Denied permission is authoritative only while no persisted subscription
+  // is active; an active endpoint must remain disableable.
+  const action = decidePushToggle(pushState.value, pushEnabled.value, nextEnabled);
+  if (action === "noop") return;
+  if (action === "enable") await enablePush();
   else await disablePush();
 };
 

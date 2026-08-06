@@ -597,6 +597,9 @@ model Notification {
   readAt DateTime?
   scheduledFor NotificationScheduleSlot?
   errorLog String? @db.Text
+  // Deterministic per-user/day key for durable DAILY_DIGEST idempotency.
+  // Nullable so legacy notifications remain valid during rollout.
+  dedupeKey String? @unique
 
   @@index([type, status])
   @@index([userId, status])
