@@ -359,6 +359,8 @@ const handleSecureLogout = async () => {
   const token = useCookie("auth_token");
   token.value = null;
 
+  useState<boolean>("adminInspectionMode", () => false).value = false;
+
   if (typeof authStore.$reset === "function") {
     authStore.$reset();
   } else {

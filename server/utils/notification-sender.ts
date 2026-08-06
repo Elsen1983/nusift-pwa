@@ -1,10 +1,7 @@
 import { prisma } from "./prisma";
-import {
-  buildUserFeedPublicationWhere,
-  isEffectivelyPublishableArticle,
-} from "./news-pipeline/publication-gate";
 import { getNotificationPayload, sendPushNotification } from "./push";
 import { buildSubscriptionArticleScope, getSubscriptionScope } from "./subscription-scope";
+import { countScopedPublishableArticles } from "../services/user-feed";
 import { dailyDigestDedupeKey, isUniqueConstraintConflict } from "./notification-idempotency";
 import { appendBoundedDiagnostic, boundedDiagnostic } from "./notification-diagnostics";
 
@@ -171,26 +168,7 @@ export async function sendDueDailyNotificationsInternal(
       continue;
     }
 
-    const publicationWhere = {
-      ...buildUserFeedPublicationWhere(),
-      publicationReadyAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) },
-      OR: subscriptionPredicates,
-    };
-    const pageSize = 500;
-    let articleCount = 0;
-    let cursor: number | undefined;
-    while (true) {
-      const page = await prisma.article.findMany({
-        where: publicationWhere,
-        select: { id: true, title: true, canonicalUrl: true, bodyText: true },
-        orderBy: { id: "asc" },
-        take: pageSize,
-        ...(cursor === undefined ? {} : { skip: 1, cursor: { id: cursor } }),
-      });
-      articleCount += page.filter(isEffectivelyPublishableArticle).length;
-      if (page.length < pageSize) break;
-      cursor = page[page.length - 1]!.id;
-    }
+    const articleCount = await countScopedPublishableArticles(prisma, scope, now);
 
     if (articleCount === 0) {
       stats.usersWithEmptyFeed += 1;

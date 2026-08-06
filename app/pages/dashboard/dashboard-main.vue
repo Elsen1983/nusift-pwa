@@ -1,5 +1,7 @@
 <template>
   <div>
+    <AdminInspectionMode />
+    <div v-if="!inspectionMode">
     <!-- REFACTORED: Removed hardcoded #131313 gradients and black borders -->
     <div class="fixed top-[60px] inset-x-0 z-[90]">
       <div
@@ -318,6 +320,7 @@
         @confirm="handleConfirmRating"
       />
     </main>
+    </div>
   </div>
 </template>
 
@@ -330,6 +333,7 @@ import { $api } from "~/utils/api";
 const { t } = useI18n();
 const authStore = useAuthStore();
 const feedStore = useFeedStore();
+const inspectionMode = useState<boolean>("adminInspectionMode", () => false);
 
 const isUserFreeTier = computed(() => {
   return !authStore.user?.tier || authStore.user.tier === "FREE";

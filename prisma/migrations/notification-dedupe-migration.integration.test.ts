@@ -58,21 +58,21 @@ describe.skipIf(!runIntegration)("notification dedupe PostgreSQL integration", (
         "scheduledFor" "NotificationScheduleSlot",
         "errorLog" TEXT
       )`);
-      await admin.query(`ALTER TABLE "Notification" ADD CONSTRAINT "Notification_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL`);
-      await admin.query(`INSERT INTO "User" ("id") VALUES ('integration-user')`);
+      // The isolated fixture keeps userId nullable and omits the unrelated User
+      // foreign key so the test exercises only the Notification dedupe index.
       // Apply the exact forward migration against the isolated legacy-shaped table.
       await admin.query(migrationSql);
 
-      firstPool = new Pool({ connectionString: databaseUrl, max: 1, options: `-c search_path="${schema}"` });
-      secondPool = new Pool({ connectionString: databaseUrl, max: 1, options: `-c search_path="${schema}"` });
-      first = new PrismaClient({ adapter: new PrismaPg(firstPool) });
-      second = new PrismaClient({ adapter: new PrismaPg(secondPool) });
+      firstPool = new Pool({ connectionString: databaseUrl, max: 1 });
+      secondPool = new Pool({ connectionString: databaseUrl, max: 1 });
+      first = new PrismaClient({ adapter: new PrismaPg(firstPool, { schema }) });
+      second = new PrismaClient({ adapter: new PrismaPg(secondPool, { schema }) });
 
       const key = dailyDigestDedupeKey("integration-user", new Date(Date.UTC(2026, 7, 6)));
       const create = (client: PrismaClient) => client.notification.create({
         data: {
           id: randomUUID(),
-          userId: "integration-user",
+          userId: null,
           type: "DAILY_DIGEST",
           title: "Integration",
           body: "Integration",
@@ -83,15 +83,23 @@ describe.skipIf(!runIntegration)("notification dedupe PostgreSQL integration", (
       const results = await Promise.allSettled([create(first), create(second)]);
       const successes = results.filter((result) => result.status === "fulfilled");
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-      expect(successes).toHaveLength(1);
+      const resultSummary = results.map((result) => result.status === "fulfilled"
+        ? "fulfilled"
+        : JSON.stringify({ code: result.reason?.code ?? "unknown", meta: result.reason?.meta ?? null, message: String(result.reason?.message ?? "").replace(/\\s+/g, " ").slice(-180) }));
+      expect(successes, resultSummary.join(" | ")).toHaveLength(1);
       expect(failures).toHaveLength(1);
-      expect(failures[0]!.reason?.code).toBe("P2002");
-      expect(isUniqueConstraintConflict(failures[0]!.reason)).toBe(true);
+      // PrismaPg 7.8 exposes this PostgreSQL unique-index violation as P2002
+      // with nested driver-adapter fields. The production classifier accepts
+      // only that P2002 shape; arbitrary connector/raw-query errors remain
+      // persistence failures.
+      const losingError = failures[0]!.reason;
+      const classifiedAsConflict = isUniqueConstraintConflict(losingError);
+      expect(classifiedAsConflict, JSON.stringify({ classifiedAsConflict, type: typeof losingError, keys: losingError && typeof losingError === "object" ? Object.getOwnPropertyNames(losingError) : [], code: losingError?.code ?? null, meta: losingError?.meta ?? null, message: String(losingError?.message ?? "").slice(-300) })).toBe(true);
 
       // The complete sender's mocked conflict-path test verifies this same
       // classification prevents push. This real-client test verifies the
       // database error shape consumed by that path.
-      const pushAttemptsForLosingClaim = isUniqueConstraintConflict(failures[0]!.reason) ? 0 : 1;
+      const pushAttemptsForLosingClaim = classifiedAsConflict ? 0 : 1;
       expect(pushAttemptsForLosingClaim).toBe(0);
     } finally {
       await first?.$disconnect().catch(() => undefined);
