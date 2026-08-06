@@ -694,7 +694,7 @@ const handleOAuth = async (provider: string) => {
 
       const client = (window as any).google.accounts.oauth2.initTokenClient({
         client_id: googleId,
-        scope: "email profile",
+        scope: "openid email profile",
         callback: async (response: any) => {
           clearSafetyTimer();
           if (response.error) {

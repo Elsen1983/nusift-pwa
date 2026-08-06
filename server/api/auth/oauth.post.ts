@@ -1,10 +1,11 @@
 // server/api/auth/oauth.post.ts
 import { Resend } from 'resend';
 import appleSigninAuth from 'apple-signin-auth';
-import { prisma } from '../../utils/prisma'; 
+import { prisma } from '../../utils/prisma';
 import { signSessionToken, setSessionCookies, requireJwtSecret } from "../../utils/auth";
 import { assertRateLimit } from "../../utils/rate-limit";
 import { getAdminStatusByUserId } from "../../utils/admin";
+import { verifyGoogleAccessToken } from "../../utils/google-oauth";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const EMAIL_SENDER = process.env.EMAIL_SENDER || 'NuSift <onboarding@nusift.com>';
@@ -30,20 +31,18 @@ export default defineEventHandler(async (event) => {
 
   let verifiedEmail: string | undefined;
   let verifiedProviderId: string | undefined;
+  let failureStage = "request_validation";
 
   try {
     // --- 1. CRYPTOGRAPHIC VERIFICATION ---
     if (provider === 'GOOGLE') {
-      const googleResponse: any = await $fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      if (!googleResponse?.email) throw new Error("Invalid Google Token");
-      
-      verifiedEmail = googleResponse.email;
-      verifiedProviderId = googleResponse.sub;
+      failureStage = "google_userinfo";
+      const identity = await verifyGoogleAccessToken(token, $fetch as any);
+      verifiedEmail = identity.email;
+      verifiedProviderId = identity.providerId;
 
     } else if (provider === 'APPLE') {
+      failureStage = "apple_token";
       const appleTokenPayload = await appleSigninAuth.verifyIdToken(token, {
         audience: APPLE_CLIENT_ID,
         ignoreExpiration: false,
@@ -51,6 +50,8 @@ export default defineEventHandler(async (event) => {
 
       verifiedProviderId = appleTokenPayload.sub;
       verifiedEmail = appleTokenPayload.email;
+    } else {
+      throw new Error("unsupported_oauth_provider");
     }
 
     if (!verifiedEmail || !verifiedProviderId) {
@@ -58,7 +59,8 @@ export default defineEventHandler(async (event) => {
     }
 
     // --- 2. DATABASE SYNC (Explicit Relational Fetch) ---
-    let user = await prisma.user.findUnique({ 
+    failureStage = "account_lookup";
+    let user = await prisma.user.findUnique({
       where: { email: verifiedEmail },
       include: {
         sourceSubscriptions: {
@@ -71,7 +73,7 @@ export default defineEventHandler(async (event) => {
     });
 
     if (!user) {
-      // NEW USER: Create account and apply the language from the payload
+      failureStage = "account_create";
       user = await prisma.user.create({
         data: {
           email: verifiedEmail,
@@ -102,14 +104,13 @@ export default defineEventHandler(async (event) => {
             </div>
           `
         });
-      } catch (e) {
-        console.error("Welcome email failed, but account created:", e);
+      } catch {
+        console.error("[auth:oauth] welcome email failed", { provider });
       }
-
     } else {
-      // EXISTING USER: Link the OAuth account if it is missing
-      // We explicitly DO NOT update preferredLanguage to protect the DB state
+      // Preserve the established linking behavior for legacy email accounts.
       if (!user.oauthProvider || !user.oauthId) {
+        failureStage = "account_link";
         user = await prisma.user.update({
           where: { email: verifiedEmail },
           data: {
@@ -122,11 +123,11 @@ export default defineEventHandler(async (event) => {
           }
         });
       } else if (user.oauthProvider !== provider || user.oauthId !== verifiedProviderId) {
-        throw new Error("Identity verification failed: Account conflict.");
-      } else {
-        console.log("OAuth login: Existing account verified for", verifiedEmail);
+        throw new Error("oauth_account_conflict");
       }
     }
+
+    failureStage = "session_creation";
 
     // --- 3. JWT GENERATION ---
     const isFullyOnboarded = user.onboardingStep >= 3;
@@ -167,10 +168,32 @@ export default defineEventHandler(async (event) => {
     };
 
   } catch (error: any) {
-    console.error("OAuth Internal Error:", error);
-    throw createError({ 
-      statusCode: 401, 
-      statusMessage: 'Identity verification failed'
+    const upstreamStatus = Number(error?.response?.status || error?.statusCode) || undefined;
+    const errorCode = typeof error?.code === "string" && /^[A-Z0-9_]{2,32}$/.test(error.code)
+      ? error.code
+      : undefined;
+    const errorName = typeof error?.constructor?.name === "string"
+      ? error.constructor.name.slice(0, 80)
+      : undefined;
+    const knownReason = typeof error?.message === "string" && [
+      "invalid_google_token",
+      "invalid_google_identity",
+      "unsupported_oauth_provider",
+      "oauth_account_conflict",
+    ].includes(error.message)
+      ? error.message
+      : "internal_or_upstream_failure";
+    console.error("[auth:oauth] request failed", {
+      provider: provider === "GOOGLE" || provider === "APPLE" ? provider : "UNKNOWN",
+      stage: failureStage,
+      upstreamStatus,
+      errorCode,
+      errorName,
+      reason: knownReason,
+    });
+    throw createError({
+      statusCode: 401,
+      statusMessage: 'Identity verification failed',
     });
   }
 });
