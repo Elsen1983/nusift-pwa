@@ -278,6 +278,12 @@
                   ><span>{{ target.publishedArticlesInWindow }} published</span
                   ><span>{{ target.activityState }}</span>
                 </div>
+                <p
+                  v-if="target.pathUrl || target.frontPageUrl"
+                  class="mt-1 truncate text-[9px] text-violet-200/70"
+                >
+                  {{ target.pathUrl || target.frontPageUrl }}
+                </p>
                 <div class="mt-1 flex flex-wrap gap-1">
                   <span
                     v-for="flag in target.diagnosticFlags.slice(0, 3)"
@@ -313,6 +319,51 @@
               >
                 Refresh
               </button>
+            </div>
+            <div
+              v-if="selectedTargets.length > 0"
+              class="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1"
+            >
+              <article
+                v-for="target in selectedTargets"
+                :key="`diagnostic:${target.targetType}:${target.targetId}`"
+                class="rounded-lg border border-violet-300/15 bg-violet-400/5 p-2.5"
+              >
+                <div class="flex min-w-0 items-start justify-between gap-2">
+                  <h4 class="min-w-0 truncate text-xs font-bold text-on-surface">
+                    {{ target.displayName }}
+                  </h4>
+                  <span class="shrink-0 text-[9px] uppercase text-violet-200">
+                    {{ target.targetType }}
+                  </span>
+                </div>
+                <p
+                  v-if="target.pathUrl || target.frontPageUrl"
+                  class="mt-1 break-all text-[9px] text-violet-200/75"
+                >
+                  {{ target.pathUrl || target.frontPageUrl }}
+                </p>
+                <div class="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-on-surface-variant">
+                  <span>activity: <strong>{{ target.activityState }}</strong></span>
+                  <span>lifecycle: <strong>{{ target.lifecycleState }}</strong></span>
+                  <span>active reason: <strong>{{ target.activeReason }}</strong></span>
+                  <span>RSS: <strong>{{ target.rssStatus }}</strong></span>
+                  <span>articles: <strong>{{ target.totalArticlesInWindow }}</strong></span>
+                  <span>published: <strong>{{ target.publishedArticlesInWindow }}</strong></span>
+                  <span>deferred: <strong>{{ target.deferredArticlesInWindow }}</strong></span>
+                  <span>retryable: <strong>{{ target.retryableFailuresInWindow }}</strong></span>
+                </div>
+                <p v-if="target.rssFeedUrl" class="mt-1 break-all text-[9px] text-on-surface-variant/70">
+                  RSS: {{ target.rssFeedUrl }}
+                </p>
+                <div v-if="target.diagnosticFlags?.length" class="mt-1.5 flex flex-wrap gap-1">
+                  <span
+                    v-for="flag in target.diagnosticFlags"
+                    :key="flag"
+                    class="rounded bg-amber-300/10 px-1.5 py-0.5 text-[8px] text-amber-100"
+                  >{{ flag.replaceAll("_", " ") }}</span>
+                </div>
+              </article>
             </div>
             <p v-if="articleError" class="mt-2 text-xs text-rose-200">
               {{ articleError }}
