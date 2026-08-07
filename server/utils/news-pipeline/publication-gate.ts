@@ -1,3 +1,5 @@
+import { isBlockingInterstitialBody } from "./article-body-policy";
+
 export type PipelineStageId = `agent${number}`;
 
 const DEFAULT_TERMINAL_STAGE: PipelineStageId = "agent3";
@@ -7,7 +9,9 @@ const STAGE_PATTERN = /^agent[1-9]\d*$/;
 export const MIN_USABLE_AGENT3_BODY_TEXT_LENGTH = 500;
 
 export function hasUsableAgent3BodyText(bodyText: string | null | undefined): boolean {
-  return typeof bodyText === "string" && bodyText.trim().length >= MIN_USABLE_AGENT3_BODY_TEXT_LENGTH;
+  return typeof bodyText === "string" &&
+    bodyText.trim().length >= MIN_USABLE_AGENT3_BODY_TEXT_LENGTH &&
+    !isBlockingInterstitialBody(bodyText);
 }
 
 /**

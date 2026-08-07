@@ -61,6 +61,21 @@ describe("publication gate", () => {
     }
   });
 
+  it("rejects a persisted JavaScript/cookie blocker even when it exceeds the body length threshold", () => {
+    const blocker = [
+      "Le van tiltva a JavaScript. Kerlek, enged\u00e9lyezd a JavaScript fut\u00e1s\u00e1t a b\u00f6ng\u00e9sz\u0151dben!",
+      "Le van tiltva a s\u00fctik haszn\u00e1lata. Kerlek, enged\u00e9lyezd a s\u00fctik haszn\u00e1lat\u00e1t a b\u00f6ng\u00e9sz\u0151dben!",
+      "Torold a bongeszod gyorsitotarat, majd probald meg ujra betolteni az oldalt. ".repeat(8),
+    ].join("\n\n");
+
+    expect(blocker.length).toBeGreaterThanOrEqual(500);
+    expect(isEffectivelyPublishableArticle({
+      title: "A GCC-bol is kitiltottak",
+      canonicalUrl: "https://prog.hu/hirek/7155/example",
+      bodyText: blocker,
+    })).toBe(false);
+  });
+
   it("withholds a non-publishable outcome and removes a prior publication", () => {
     const completedAt = new Date("2026-07-31T12:00:00.000Z");
     expect(buildPublicationGateUpdate({ stage: "agent3", publishable: false, completedAt })).toEqual({

@@ -23,6 +23,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { safeFetch } from "../ssrf-guard";
+import {
+  detectStrongInterstitialSignals,
+  hasBlockingInterstitialSignalPair,
+} from "./article-body-policy";
 import type { StageBatchProbe } from "./stage-telemetry";
 import { loadJsdom } from "./jsdom-runtime";
 
@@ -2459,7 +2463,35 @@ export async function extractArticleContentFromHtml(
       );
     }
 
-    // Step 8.5: HTTP 202 interstitial/challenge classification.
+    // Step 8.5: Some publishers return a blocker document with HTTP 200. Only
+    // classify it when both strong blocker groups occur in the selected body,
+    // or when the current response had no body and an existing-body fallback
+    // would otherwise hide the blocker. Raw-page signals alone are not enough:
+    // genuine article pages commonly include equivalent noscript warnings.
+    const rawStrongInterstitialSignals = detectStrongInterstitialSignals(rawPageText);
+    const bodyStrongInterstitialSignals = detectStrongInterstitialSignals(bodyText ?? "");
+    const currentBodyMissing = diagnostics.bodySource === "existing-fallback" || !bodyText;
+    const strongHttp200Interstitial =
+      statusCode === 200 &&
+      !jsonLdBodyText &&
+      hasBlockingInterstitialSignalPair(rawStrongInterstitialSignals) &&
+      (currentBodyMissing || hasBlockingInterstitialSignalPair(bodyStrongInterstitialSignals));
+
+    if (strongHttp200Interstitial) {
+      diagnostics.bodyRejectedReason = "interstitial_or_challenge";
+      try { domWindow?.close(); } catch { /* cleanup is non-fatal */ }
+      return fail(
+        method,
+        resolvedUrl,
+        statusCode,
+        "interstitial_or_challenge",
+        "HTTP 200 response contains a JavaScript/cookie blocker instead of article content.",
+        ["http_200_interstitial", ...rawStrongInterstitialSignals],
+        { ...diagnostics, htmlLength: html.trim().length },
+      );
+    }
+
+    // Step 8.6: HTTP 202 interstitial/challenge classification.
     // A 2xx response that carries NO usable article body, NO trustworthy
     // structured-data body, and no acceptable existing body is an
     // interstitial/challenge/consent/queue/non-final shell and must not become

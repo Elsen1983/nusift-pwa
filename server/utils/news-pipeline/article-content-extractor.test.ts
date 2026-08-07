@@ -2315,6 +2315,58 @@ describe("HTTP 202 interstitial/challenge classification", () => {
 });
 
 describe("HTTP 202 interstitial false-positive guard", () => {
+  it("classifies the Prog.hu HTTP 200 JavaScript/cookie blocker as an interstitial", async () => {
+    const html = `<!DOCTYPE html>
+<html><head>
+  <title>A GCC-bol is kitiltottak a mesterseges intelligencia altal generalt hozzajarulasokat</title>
+</head><body><main>
+  <h1>A GCC-bol is kitiltottak a mesterseges intelligencia altal generalt hozzajarulasokat</h1>
+  <p>Orulunk, hogy ellatogattal hozzank, de sajnos ugy tunik, hogy az altalad jelenleg hasznalt bongeszo vagy annak beallitasai nem teszik lehetove szamodra oldalunk hasznalatat.</p>
+  <p>Le van tiltva a JavaScript. Kerlek, enged\u00e9lyezd a JavaScript fut\u00e1s\u00e1t a b\u00f6ng\u00e9sz\u0151dben!</p>
+  <p>Le van tiltva a s\u00fctik haszn\u00e1lata. Kerlek, enged\u00e9lyezd a s\u00fctik haszn\u00e1lat\u00e1t a b\u00f6ng\u00e9sz\u0151dben!</p>
+  <p>Miutan orvosoltad a fenti problemakat, kattints az alabbi gombra a folytatashoz. Torold a bongeszod gyorsitotarat es a sutiket, majd probald meg ujra betolteni az oldalt.</p>
+</main></body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(
+      html,
+      true,
+      "text/html",
+      200,
+      "https://prog.hu/hirek/7155/gcc-mesterseges-intelligencia-tiltas",
+    ));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 920,
+      articleUrl: "https://prog.hu/hirek/7155/gcc-mesterseges-intelligencia-tiltas",
+      existingTitle: "A GCC-bol is kitiltottak",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.statusCode).toBe(200);
+      expect(result.rejectedReason).toBe("interstitial_or_challenge");
+      expect(result.qualitySignals).toContain("http_200_interstitial");
+      expect(result.qualitySignals).toContain("interstitial_signal:javascript_disabled");
+      expect(result.qualitySignals).toContain("interstitial_signal:cookies_disabled");
+    }
+  });
+
+  it("does not reject a real HTTP 200 article because its noscript footer has blocker text", async () => {
+    const html = articleHtml({
+      body: `${defaultBody()}<noscript><p>JavaScript is disabled. Enable JavaScript and enable cookies to continue.</p></noscript>`,
+    });
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 921,
+      articleUrl: "https://example.com/real-article",
+      existingTitle: "Test Article Title",
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
   it("HTTP 200 page with a genuinely short article stays too_short (not interstitial)", async () => {
     const shortPara = "This paragraph is just long enough to pass the meaningful paragraph filter but not long enough to qualify as a usable article body for extraction purposes.";
     const html = `<!DOCTYPE html>
