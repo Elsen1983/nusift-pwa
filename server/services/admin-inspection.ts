@@ -100,6 +100,7 @@ const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,800}$/;
 const VALID_SOURCE_STATUS = new Set(["ACTIVE", "INACTIVE", "ALL"]);
 const VALID_TARGET_TYPES = new Set(["ALL", "SOURCE", "CATEGORY"]);
 const VALID_PRODUCTIVITY = new Set([
+  "ALL",
   "NO_ARTICLES_GENERATED", "DISCOVERED_NOT_ENRICHED", "ENRICHED_NOT_PUBLISHED", "HIGH_REJECTION_RATE",
   "RETRY_BACKLOG", "RSS_UNPRODUCTIVE", "BROWSER_FALLBACK_REQUIRED", "RECENTLY_PRODUCTIVE",
   "ACTIVE_AND_PRODUCTIVE", "ACTIVE_UNPRODUCTIVE", "ACTIVE_DEFERRED", "ACTIVE_BROWSER_REQUIRED", "FAILED", "DOMAIN_DEAD", "INACTIVE",
@@ -201,12 +202,14 @@ export async function runAdminSourceInspection(db: any, userId: string, query: A
   const search = normalizeInspectionSearch(query.search); const rssStatus = typeof query.rssStatus === "string" ? query.rssStatus.toUpperCase() : null;
   const targetType = typeof query.targetType === "string" ? query.targetType.toUpperCase() : "ALL";
   if (!VALID_TARGET_TYPES.has(targetType)) throw createError({ statusCode: 400, statusMessage: "Invalid target type." });
-  const sourceStatus = typeof query.sourceStatus === "string" ? query.sourceStatus.toUpperCase() : "ALL"; const productivityState = typeof query.productivityState === "string" ? query.productivityState.toUpperCase() : null;
+  const sourceStatus = typeof query.sourceStatus === "string" ? query.sourceStatus.toUpperCase() : "ALL";
+  const requestedProductivityState = typeof query.productivityState === "string" ? query.productivityState.toUpperCase() : null;
+  const productivityState = requestedProductivityState === "ALL" ? null : requestedProductivityState;
   if (sourceStatus && !VALID_SOURCE_STATUS.has(sourceStatus)) throw createError({ statusCode: 400, statusMessage: "Invalid source status." });
   if (rssStatus && !["ACTIVE", "FAILED", "PENDING_DISCOVERY", "NO_RSS_FOUND", "DOMAIN_DEAD"].includes(rssStatus)) throw createError({ statusCode: 400, statusMessage: "Invalid RSS status." });
   const dateRangeError = validateInspectionDateRange({ dateFrom: query.dateFrom, dateTo: query.dateTo });
   if (dateRangeError) throw createError({ statusCode: 400, statusMessage: dateRangeError });
-  if (productivityState && !VALID_PRODUCTIVITY.has(productivityState)) throw createError({ statusCode: 400, statusMessage: "Invalid productivity state." });
+  if (requestedProductivityState && !VALID_PRODUCTIVITY.has(requestedProductivityState)) throw createError({ statusCode: 400, statusMessage: "Invalid productivity state." });
   const { dateFrom, dateTo, days } = normalizeInspectionDateRange({ dateFrom: query.dateFrom, dateTo: query.dateTo });
   // Display fingerprint: every display filter that changes which targets a
   // cursor page may contain. It is separate from the snapshot's canonical

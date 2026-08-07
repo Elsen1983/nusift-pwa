@@ -31,6 +31,21 @@ describe("Prompt 13A inspection endpoint behavior", () => {
     expect(mocks.articleFindMany).not.toHaveBeenCalled();
   });
 
+  it("accepts ALL as the unfiltered source productivity state", async () => {
+    const handler = (await import("./admin-source-inspection.get")).default;
+    const result = await handler({
+      query: {
+        limit: "50",
+        targetType: "ALL",
+        productivityState: "ALL",
+        dateFrom: "2026-07-31T00:00:00.000Z",
+        dateTo: "2026-08-07T00:00:00.000Z",
+      },
+    } as any);
+
+    expect(result.items).toEqual([]);
+  });
+
   it("returns a bounded body preview and uses canonical publication validation", async () => {
     const article = { id: 1, title: "Valid", bodyText: "\u0000  long text ".repeat(100), sourceId: "source-1", categoryId: null, sourceUrl: "https://example.com/source?secret=yes", canonicalUrl: "https://example.com/a?token=secret", publishedAt: null, date: new Date("2026-08-01T00:00:00Z"), createdAt: new Date("2026-08-01T00:00:00Z"), publicationStatus: "PUBLISHED", publicationStage: "agent3", publicationReadyAt: new Date("2026-08-01T00:00:00Z"), enrichmentStatus: "ENRICHED", enrichmentOutcome: {}, processingStage: "INGESTED", processingStatus: "SUCCESS", isPaywall: false, source: { mediaName: "Source", frontPageUrl: "https://example.com" }, category: null };
     mocks.articleFindMany.mockResolvedValueOnce([article]).mockResolvedValueOnce([]);
