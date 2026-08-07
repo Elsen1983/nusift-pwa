@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const lockMock = vi.fn();
 const findManyMock = vi.fn();
 const createMock = vi.fn();
+const updateManyMock = vi.fn();
 const transactionMock = vi.fn(async (callback: (tx: unknown) => unknown) =>
   callback({
     $queryRawUnsafe: lockMock,
     pipelineArtifact: {
       findMany: findManyMock,
       create: createMock,
+      updateMany: updateManyMock,
     },
   }),
 );
@@ -25,6 +27,7 @@ describe("createHeadlessQueueArtifactIfAbsent", () => {
     vi.clearAllMocks();
     lockMock.mockResolvedValue([]);
     findManyMock.mockResolvedValue([]);
+    updateManyMock.mockResolvedValue({ count: 1 });
     createMock.mockResolvedValue({
       id: "created-1",
       sourceId: "source-1",
@@ -74,6 +77,118 @@ describe("createHeadlessQueueArtifactIfAbsent", () => {
 
     expect(result).toMatchObject({ created: false, artifact: { id: "existing-1" } });
     expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("refreshes an existing pending marker with namespaced static evidence using a status CAS", async () => {
+    const existing = {
+      id: "existing-pending",
+      sourceId: "source-1",
+      categoryId: null,
+      status: "PENDING_HEADLESS",
+      payload: {
+        targetUrl: "https://example.com/news",
+        targetKey: "source-1||https://example.com/news",
+        browserAttempt: 4,
+        claimToken: "worker-token",
+      },
+    };
+    findManyMock.mockResolvedValue([existing]);
+    const { createHeadlessQueueArtifactIfAbsent } = await import("./headless-queue-artifact");
+    const result = await createHeadlessQueueArtifactIfAbsent({
+      pipelineRunId: "run-refresh",
+      sourceId: "source-1",
+      categoryId: null,
+      targetUrl: "https://example.com/news",
+      payload: {
+        stopReason: "rate_limited",
+        rateLimitPhase: "article_detail",
+        retryAfterAt: "2026-07-30T12:30:00.000Z",
+        retryAfterSource: "delta_seconds",
+        requestBudget: { limit: 40, used: 3, remaining: 37, exhausted: false, skippedWork: [] },
+        discoveryComplete: false,
+        retryable: true,
+        acceptedCount: 2,
+        evaluatedCount: 3,
+      },
+    });
+
+    expect(result).toMatchObject({ created: false, evidenceRefreshed: true, evidenceRefreshConflict: false });
+    const refreshedData = updateManyMock.mock.calls[0]![0].data.payload;
+    expect(refreshedData.retryAfterAt).toBe("2026-07-30T12:30:00.000Z");
+    expect(refreshedData.requestBudget).toMatchObject({ used: 3, remaining: 37 });
+    expect(refreshedData.discoveryComplete).toBe(false);
+    expect(refreshedData.acceptedCount).toBe(2);
+    expect(refreshedData.evaluatedCount).toBe(3);
+    expect(updateManyMock).toHaveBeenCalledWith({
+      where: { id: "existing-pending", status: "PENDING_HEADLESS" },
+      data: { payload: expect.objectContaining({
+        targetKey: "source-1||https://example.com/news",
+        browserAttempt: 4,
+        claimToken: "worker-token",
+        staticDiscovery: expect.objectContaining({
+          stopReason: "rate_limited",
+          rateLimitPhase: "article_detail",
+          retryAfterAt: "2026-07-30T12:30:00.000Z",
+          retryAfterSource: "delta_seconds",
+          discoveryComplete: false,
+          retryable: true,
+          acceptedCount: 2,
+          evaluatedCount: 3,
+        }),
+        stopReason: "rate_limited",
+        rateLimitPhase: "article_detail",
+        retryAfterAt: "2026-07-30T12:30:00.000Z",
+        retryAfterSource: "delta_seconds",
+        discoveryComplete: false,
+        retryable: true,
+        acceptedCount: 2,
+        evaluatedCount: 3,
+      }) },
+    });
+  });
+
+  it("reports a pending-marker CAS conflict without claiming refresh", async () => {
+    findManyMock.mockResolvedValue([{
+      id: "existing-pending",
+      sourceId: "source-1",
+      categoryId: null,
+      status: "PENDING_HEADLESS",
+      payload: { targetUrl: "https://example.com/news", targetKey: "source-1||https://example.com/news" },
+    }]);
+    updateManyMock.mockResolvedValue({ count: 0 });
+    const { createHeadlessQueueArtifactIfAbsent } = await import("./headless-queue-artifact");
+    const result = await createHeadlessQueueArtifactIfAbsent({
+      pipelineRunId: "run-conflict",
+      sourceId: "source-1",
+      categoryId: null,
+      targetUrl: "https://example.com/news",
+      payload: { stopReason: "request_budget_exhausted", retryable: true, discoveryComplete: false },
+    });
+
+    expect(result).toMatchObject({ created: false, evidenceRefreshed: false, evidenceRefreshConflict: true });
+    expect(result.artifact.payload).not.toHaveProperty("staticDiscovery");
+  });
+
+  it("does not overwrite processing or stale-processing markers", async () => {
+    for (const status of ["HEADLESS_PROCESSING", "HEADLESS_PROCESSING_STALE"]) {
+      findManyMock.mockResolvedValueOnce([{
+        id: `existing-${status}`,
+        sourceId: "source-1",
+        categoryId: null,
+        status,
+        payload: { targetUrl: "https://example.com/news", browserClaim: "preserve" },
+      }]);
+      const { createHeadlessQueueArtifactIfAbsent } = await import("./headless-queue-artifact");
+      const result = await createHeadlessQueueArtifactIfAbsent({
+        pipelineRunId: "run-processing",
+        sourceId: "source-1",
+        categoryId: null,
+        targetUrl: "https://example.com/news",
+        payload: { stopReason: "rate_limited", retryable: true },
+      });
+      expect(result).toMatchObject({ created: false, evidenceRefreshed: false, evidenceRefreshConflict: false });
+    }
+    expect(updateManyMock).not.toHaveBeenCalled();
   });
 
   it("allows a new artifact when only terminal history exists", async () => {

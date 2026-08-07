@@ -12,6 +12,159 @@ const makeResponse = (body: string, ok = true) => ({
 });
 
 describe("article-discovery-helpers", () => {
+  it("parses and bounds Retry-After delta-seconds, HTTP-date, and fallback values", async () => {
+    const {
+      STATIC_RETRY_AFTER_FALLBACK_MS,
+      STATIC_RETRY_AFTER_MAX_MS,
+      STATIC_RETRY_AFTER_MIN_MS,
+      parseBoundedStaticRetryAfter,
+    } = await import("./article-discovery-helpers");
+    const now = Date.parse("2026-07-30T12:00:00.000Z");
+    expect(parseBoundedStaticRetryAfter("120", now)).toEqual({
+      retryAfterAt: new Date(now + 120_000).toISOString(),
+      source: "delta_seconds",
+    });
+    expect(parseBoundedStaticRetryAfter("999999999", now)).toEqual({
+      retryAfterAt: new Date(now + STATIC_RETRY_AFTER_MAX_MS).toISOString(),
+      source: "delta_seconds",
+    });
+    expect(parseBoundedStaticRetryAfter("Wed, 30 Jul 2026 12:10:00 GMT", now)).toEqual({
+      retryAfterAt: "2026-07-30T12:10:00.000Z",
+      source: "http_date",
+    });
+    expect(parseBoundedStaticRetryAfter("invalid", now)).toEqual({
+      retryAfterAt: new Date(now + STATIC_RETRY_AFTER_FALLBACK_MS).toISOString(),
+      source: "fallback",
+    });
+    expect(parseBoundedStaticRetryAfter(null, now)).toEqual({
+      retryAfterAt: new Date(now + STATIC_RETRY_AFTER_FALLBACK_MS).toISOString(),
+      source: "fallback",
+    });
+    expect(parseBoundedStaticRetryAfter("0", now).retryAfterAt).toBe(new Date(now + STATIC_RETRY_AFTER_MIN_MS).toISOString());
+  });
+
+  it("looks up plain-object Retry-After headers case-insensitively", async () => {
+    const { readStaticResponseHeader } = await import("./article-discovery-helpers");
+    for (const key of ["Retry-After", "retry-after", "RETRY-AFTER"]) {
+      expect(readStaticResponseHeader({ headers: { [key]: "60" } }, "retry-after")).toBe("60");
+    }
+  });
+
+  it("evaluates a real static HTTP 429 without a request budget and preserves Retry-After evidence", async () => {
+    const { evaluateArticleLinkCandidate } = await import("./article-discovery-helpers");
+    safeFetchMock.mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: { "Retry-After": "120", "X-Do-Not-Persist": "secret" },
+      text: async () => "",
+    });
+
+    const result = await evaluateArticleLinkCandidate({
+      articleUrl: "https://example.com/news/2026/07/20/rate-limited-story",
+      sourcePageUrl: "https://example.com/news",
+      targetUrl: "https://example.com/news",
+      sourceId: "src-1",
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.outcome).toMatchObject({
+      status: "fetch_failed",
+      httpStatus: 429,
+      rateLimited: true,
+      retryAfterSource: "delta_seconds",
+    });
+    expect(Date.parse(result.outcome.retryAfterAt!)).toBeGreaterThan(Date.now());
+    expect(result.outcome).not.toHaveProperty("headers");
+    expect(result.outcome).not.toHaveProperty("body");
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("evaluates a real static HTTP-date Retry-After header", async () => {
+    const { evaluateArticleLinkCandidate } = await import("./article-discovery-helpers");
+    safeFetchMock.mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: { "retry-after": new Date(Date.now() + 10 * 60 * 1000).toUTCString() },
+      text: async () => "",
+    });
+
+    const result = await evaluateArticleLinkCandidate({
+      articleUrl: "https://example.com/news/2026/07/20/date-rate-limit",
+      sourcePageUrl: "https://example.com/news",
+      targetUrl: "https://example.com/news",
+      sourceId: "src-1",
+    });
+
+    expect(result.outcome).toMatchObject({ httpStatus: 429, rateLimited: true, retryAfterSource: "http_date" });
+    expect(Date.parse(result.outcome.retryAfterAt!)).toBeGreaterThan(Date.now());
+  });
+
+  it("uses bounded fallback evidence for missing or invalid static Retry-After", async () => {
+    const { evaluateArticleLinkCandidate, STATIC_RETRY_AFTER_FALLBACK_MS, STATIC_RETRY_AFTER_MAX_MS } = await import("./article-discovery-helpers");
+    for (const headers of [{}, { "Retry-After": "not-a-date" }, { "Retry-After": "999999999" }]) {
+      safeFetchMock.mockResolvedValue({ ok: false, status: 429, headers, text: async () => "" });
+      const result = await evaluateArticleLinkCandidate({
+        articleUrl: "https://example.com/news/2026/07/20/fallback-rate-limit",
+        sourcePageUrl: "https://example.com/news",
+        targetUrl: "https://example.com/news",
+        sourceId: "src-1",
+      });
+      expect(result.outcome.httpStatus).toBe(429);
+      expect(result.outcome.rateLimited).toBe(true);
+      expect(Date.parse(result.outcome.retryAfterAt!) - Date.now()).toBeGreaterThanOrEqual(
+        headers["Retry-After"] === "999999999" ? STATIC_RETRY_AFTER_MAX_MS - 1000 : STATIC_RETRY_AFTER_FALLBACK_MS - 1000,
+      );
+    }
+  });
+
+  it("runs the real evaluator with a request budget and records one phase-specific 429 evidence item", async () => {
+    const { createStaticDiscoveryRequestBudget, evaluateArticleLinkCandidate } = await import("./article-discovery-helpers");
+    const budget = createStaticDiscoveryRequestBudget(1);
+    const telemetry = {
+      recordNetworkRequest: vi.fn(),
+      recordLogicalRequestDuration: vi.fn(),
+      recordTimeout: vi.fn(),
+      recordRateLimited: vi.fn(),
+    };
+    safeFetchMock.mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: { "Retry-After": "60" },
+      text: async () => "",
+    });
+
+    const result = await evaluateArticleLinkCandidate({
+      articleUrl: "https://example.com/news/2026/07/20/budget-rate-limit",
+      sourcePageUrl: "https://example.com/news",
+      targetUrl: "https://example.com/news",
+      sourceId: "src-1",
+      requestBudget: budget,
+      telemetry,
+    });
+
+    expect(result.outcome).toMatchObject({ httpStatus: 429, rateLimited: true, retryAfterSource: "delta_seconds" });
+    expect(budget.snapshot()).toMatchObject({ used: 1, remaining: 0, exhausted: false });
+    expect(budget.rateLimitEvidence).toHaveLength(1);
+    expect(budget.rateLimitEvidence[0]).toMatchObject({ phase: "article_detail", status: 429, retryAfterSource: "delta_seconds" });
+    expect(telemetry.recordRateLimited).not.toHaveBeenCalled();
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts each budgeted safeFetch attempt once and records phase-specific 429 evidence", async () => {
+    const { createStaticDiscoveryRequestBudget } = await import("./article-discovery-helpers");
+    const budget = createStaticDiscoveryRequestBudget(2);
+    expect(budget.consume("listing", "https://example.com/")).toBe(true);
+    expect(budget.consume("article_detail", "https://example.com/a")).toBe(true);
+    expect(budget.consume("sitemap", "https://example.com/sitemap.xml")).toBe(false);
+    const evidence = budget.recordRateLimit("article_detail", "https://example.com/a", "60");
+    expect(evidence).toMatchObject({ phase: "article_detail", status: 429, retryAfterSource: "delta_seconds" });
+    // The prior refused request marks the budget exhausted; consuming the final
+    // permitted request alone would not have done so.
+    expect(budget.snapshot()).toMatchObject({ limit: 2, used: 2, remaining: 0, exhausted: true });
+    expect(budget.rateLimitEvidence).toHaveLength(1);
+    expect(budget.snapshot().skippedWork).toHaveLength(1);
+  });
+
   beforeEach(() => {
     safeFetchMock.mockReset();
   });
@@ -80,6 +233,70 @@ describe("article-discovery-helpers", () => {
 
       const entries = await discoverSitemapUrls("https://example.com/");
       expect(entries.some((e) => e.url.includes("child-story"))).toBe(true);
+    });
+
+    it("counts a same-host sitemap fetch as exactly one logical budgeted request", async () => {
+      const { createStaticDiscoveryRequestBudget, discoverSitemapUrls } = await import("./article-discovery-helpers");
+      safeFetchMock.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/robots.txt") return makeResponse("");
+        if (url === "https://example.com/sitemap.xml") return makeResponse(`<?xml version="1.0"?><urlset><url><loc>https://example.com/news/2026/07/16/budget-story</loc></url></urlset>`);
+        return makeResponse("", false);
+      });
+      const budget = createStaticDiscoveryRequestBudget(2);
+      await discoverSitemapUrls("https://example.com/", undefined, budget);
+
+      expect(safeFetchMock).toHaveBeenCalledTimes(2);
+      expect(budget.snapshot()).toMatchObject({ used: 2, remaining: 0 });
+      // The exact boundary is complete only when no known work remains. Here
+      // the remaining built-in sitemap probes are known work, so they are
+      // explicitly recorded as skipped without invoking safeFetch.
+      expect(budget.snapshot().skippedWork).toHaveLength(3);
+      expect(safeFetchMock).toHaveBeenCalledTimes(budget.snapshot().used);
+    });
+
+    it("does not spend budget or call safeFetch for an external robots sitemap", async () => {
+      const { createStaticDiscoveryRequestBudget, discoverSitemapUrls } = await import("./article-discovery-helpers");
+      const external = "https://external.example/sitemap.xml";
+      safeFetchMock.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/robots.txt") return makeResponse(`Sitemap: ${external}`);
+        return makeResponse("", false);
+      });
+      const budget = createStaticDiscoveryRequestBudget(5);
+      await discoverSitemapUrls("https://example.com/", undefined, budget);
+
+      expect(safeFetchMock).not.toHaveBeenCalledWith(external, expect.anything());
+      expect(budget.snapshot().used).toBe(5); // robots + four built-in same-host probes
+      expect(budget.snapshot().skippedWork.some((work) => work.url === external)).toBe(false);
+    });
+
+    it("does not spend budget or call safeFetch for an invalid robots sitemap", async () => {
+      const { createStaticDiscoveryRequestBudget, discoverSitemapUrls } = await import("./article-discovery-helpers");
+      const invalid = "not a valid URL";
+      safeFetchMock.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/robots.txt") return makeResponse(`Sitemap: ${invalid}`);
+        return makeResponse("", false);
+      });
+      const budget = createStaticDiscoveryRequestBudget(5);
+      await discoverSitemapUrls("https://example.com/", undefined, budget);
+
+      expect(safeFetchMock).not.toHaveBeenCalledWith(invalid, expect.anything());
+      expect(budget.snapshot().used).toBe(5);
+      expect(budget.snapshot().skippedWork.some((work) => work.url === invalid)).toBe(false);
+    });
+
+    it("does not spend budget or call safeFetch for a same-host non-http robots sitemap", async () => {
+      const { createStaticDiscoveryRequestBudget, discoverSitemapUrls } = await import("./article-discovery-helpers");
+      const invalidScheme = "ftp://example.com/sitemap.xml";
+      safeFetchMock.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/robots.txt") return makeResponse(`Sitemap: ${invalidScheme}`);
+        return makeResponse("", false);
+      });
+      const budget = createStaticDiscoveryRequestBudget(5);
+      await discoverSitemapUrls("https://example.com/", undefined, budget);
+
+      expect(safeFetchMock).not.toHaveBeenCalledWith(invalidScheme, expect.anything());
+      expect(budget.snapshot().used).toBe(5);
+      expect(budget.snapshot().skippedWork.some((work) => work.url === invalidScheme)).toBe(false);
     });
 
     it("discovers sitemap references from robots.txt", async () => {

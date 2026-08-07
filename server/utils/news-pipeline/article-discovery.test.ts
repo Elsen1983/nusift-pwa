@@ -9,6 +9,7 @@ const prismaPipelineRunFindFirstMock = vi.hoisted(() => vi.fn());
 const prismaNewsSourceFindManyMock = vi.hoisted(() => vi.fn());
 const prismaSourceCategoryFindManyMock = vi.hoisted(() => vi.fn());
 const resolveHardSourceProfilesForTargetMock = vi.hoisted(() => vi.fn());
+const createHeadlessQueueArtifactIfAbsentMock = vi.hoisted(() => vi.fn().mockResolvedValue({ artifact: { id: "headless-artifact" }, created: true }));
 
 vi.mock("../ssrf-guard", () => ({
   safeFetch: safeFetchMock,
@@ -22,6 +23,10 @@ vi.mock("./log", () => ({
 vi.mock("./artifacts", () => ({
   createPipelineRun: vi.fn(),
   finalizePipelineRun: vi.fn(),
+}));
+
+vi.mock("./headless-queue-artifact", () => ({
+  createHeadlessQueueArtifactIfAbsent: (...args: any[]) => createHeadlessQueueArtifactIfAbsentMock(...args),
 }));
 
 vi.mock("./ingest", () => ({
@@ -62,8 +67,16 @@ vi.mock("../prisma", () => ({
   },
 }));
 
-const makeResponse = (body: string, ok = true) => ({
+const makeResponse = (
+  body: string,
+  ok = true,
+  status = ok ? 200 : 500,
+  headers: Record<string, string> = {},
+) => ({
   ok,
+  status,
+  url: "",
+  headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
   text: async () => body,
 });
 
@@ -80,6 +93,7 @@ describe("article-discovery", () => {
     prismaNewsSourceFindManyMock.mockReset();
     prismaSourceCategoryFindManyMock.mockReset();
     resolveHardSourceProfilesForTargetMock.mockReset();
+    createHeadlessQueueArtifactIfAbsentMock.mockClear();
     prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
     prismaArtifactFindManyMock.mockResolvedValue([]);
     prismaArtifactUpdateMock.mockResolvedValue({ id: "updated" });
@@ -2428,6 +2442,35 @@ describe("article-discovery", () => {
     expect(deferredLog![0].errorLog).toContain("reason=max_targets");
   });
 
+  it("classifies a zero-candidate detail 429 as retryable in the static batch", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+    (resolveActivePipelineTargets as any).mockResolvedValue([{ sourceId: "src-429", categoryId: null }]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([
+      { id: "src-429", frontPageUrl: "https://a.com/", mediaName: "A", rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0 },
+    ]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-429" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 0, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-429" });
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://a.com/") return makeResponse(`<html><body><article><a href="/news/2026/07/16/limited-story">Limited story title long enough</a></article></body></html>`);
+      if (url.includes("limited-story")) return makeResponse("Too many requests", false, 429, { "retry-after": "60" });
+      return makeResponse("", false, 404);
+    });
+
+    const result = await runArticleDiscoveryBatch({ maxTargets: 1 });
+
+    expect(result.processed).toBe(1);
+    expect(result.productivity.acceptedCandidates).toBe(0);
+    expect(result.targetDispositions.failedRetryable).toBe(1);
+    expect(result.targetDispositions.succeeded).toBe(0);
+    expect(result.targetDispositions.persistenceFailed).toBe(0);
+    expect(result.result.failed).toBe(0);
+  });
+
   it("returns stoppedReason=completed when all targets processed", async () => {
     const { runArticleDiscoveryBatch } = await import("./article-discovery");
     const { resolveActivePipelineTargets } = await import("./targets");
@@ -2499,5 +2542,231 @@ describe("article-discovery", () => {
 
     // createPipelineRun should receive min(3, 2) = 2, not 3
     expect(createPipelineRun).toHaveBeenCalledWith(2);
+  });
+
+  it("caps evaluated detail URLs independently when every URL is rejected", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const links = Array.from({ length: 8 }, (_, index) =>
+      `<article><a href="/news/2026/07/16/rejected-${index}">Rejected story title ${index} long enough</a></article>`,
+    ).join("\\n");
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(`<html><body>${links}</body></html>`);
+      return makeResponse("Not found", false, 404);
+    });
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 3, maxAcceptedCandidates: 10, maxRequests: 10 });
+    expect(result.outcomeSummary.totalEvaluated).toBe(3);
+    expect(result.detailEvaluationStoppedReason).toBe("evaluation_cap");
+    // Evaluation cap is intentional bounded completion; no continuation cursor
+    // exists, so repeating this run would not provide forward progress.
+    expect(result.discoveryComplete).toBe(true);
+    expect(result.retryable).toBe(false);
+    expect(safeFetchMock.mock.calls.filter((call: any[]) => String(call[0]).includes("rejected-")).length).toBe(3);
+  });
+
+  it("keeps accepted and evaluated candidate caps independent", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const links = Array.from({ length: 6 }, (_, index) =>
+      `<article><a href="/news/2026/07/16/accepted-${index}">Accepted story title ${index} long enough</a></article>`,
+    ).join("\\n");
+    const article = `<html><head><title>Accepted story title long enough</title><meta property="article:published_time" content="2026-07-24T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(`<html><body>${links}</body></html>`);
+      if (url.includes("accepted-")) return makeResponse(article);
+      return makeResponse("", false, 404);
+    });
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 5, maxAcceptedCandidates: 2, maxRequests: 10 });
+    expect(result.candidates).toHaveLength(2);
+    expect(result.outcomeSummary.totalEvaluated).toBe(2);
+    expect(result.detailEvaluationStoppedReason).toBe("accepted_cap");
+    expect(result.discoveryComplete).toBe(true);
+  });
+
+  it("uses listing-first staging and skips sitemap probing for a strong listing", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const links = Array.from({ length: 30 }, (_, index) =>
+      `<article><a href="/news/2026/07/16/strong-${index}">Strong story title ${index} long enough</a></article>`,
+    ).join("\\n");
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(`<html><body>${links}</body></html>`);
+      return makeResponse("", false, 404);
+    });
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 30, maxRequests: 35 });
+    expect(result.discoverySources.listingPages).toBe(1);
+    expect(safeFetchMock.mock.calls.some((call: any[]) => String(call[0]).includes("sitemap") || String(call[0]).includes("robots"))).toBe(false);
+  });
+
+  it("falls back to sitemap discovery for a sparse listing", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const article = `<html><head><title>Sitemap story title long enough</title><meta property="article:published_time" content="2026-07-24T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse("<html><body><p>Sparse listing</p></body></html>");
+      if (url === "https://example.com/sitemap.xml") return makeResponse("<urlset><url><loc>https://example.com/news/2026/07/16/sitemap-story</loc></url></urlset>", true, 200, { "content-type": "application/xml" });
+      if (url.includes("sitemap-story")) return makeResponse(article);
+      return makeResponse("", false, 404);
+    });
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 2, maxRequests: 20 });
+    expect(result.discoverySources.sitemapUrls).toBe(1);
+    expect(result.candidates).toHaveLength(1);
+  });
+
+  it("enforces the total logical request budget across static discovery phases", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const links = Array.from({ length: 5 }, (_, index) =>
+      `<article><a href="/news/2026/07/16/budget-${index}">Budget story title ${index} long enough</a></article>`,
+    ).join("\\n");
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(`<html><body>${links}</body></html>`);
+      return makeResponse("", false, 404);
+    });
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 5, maxRequests: 4 });
+    expect(result.requestBudget.used).toBeLessThanOrEqual(4);
+    expect(safeFetchMock).toHaveBeenCalledTimes(result.requestBudget.used);
+    expect(result.requestBudget.exhausted).toBe(true);
+    expect(result.retryable).toBe(true);
+  });
+
+  it("keeps the exact budget boundary complete when the final request leaves no known work", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const listing = `<html><body><article><a href="/news/2026/07/16/only-story">Only story title long enough</a></article></body></html>`;
+    const article = `<html><head><title>Only story title long enough</title><meta property="article:published_time" content="2026-07-29T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url.includes("only-story")) return makeResponse(article);
+      return makeResponse("", false, 404);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 1, maxRequests: 2 });
+
+    expect(result.requestBudget).toMatchObject({ used: 2, remaining: 0, exhausted: false, skippedWork: [] });
+    expect(result.discoveryComplete).toBe(true);
+    expect(result.retryable).toBe(false);
+    expect(result.detailEvaluationStoppedReason).toBeNull();
+  });
+
+  it("stops at the first static detail 429 and records telemetry exactly once", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const links = ["first", "second"].map((name) => `<article><a href="/news/2026/07/16/${name}-story">${name} story title long enough</a></article>`).join("");
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(`<html><body>${links}</body></html>`);
+      if (url.includes("first-story")) return makeResponse("Too many requests", false, 429, { "retry-after": "120" });
+      if (url.includes("second-story")) return makeResponse("should not fetch");
+      return makeResponse("", false, 404);
+    });    const recordRateLimited = vi.fn();
+    const result = await discoverArticlesFromTarget(
+{
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, { recordNetworkRequest: vi.fn(), recordLogicalRequestDuration: vi.fn(), recordTimeout: vi.fn(), recordRateLimited } as any, { maxEvaluatedCandidates: 2, maxRequests: 5 });
+    expect(result.retryable).toBe(true);
+    expect(result.detailEvaluationStoppedReason).toBe("rate_limited");
+    expect(result.rateLimitEvidence).toMatchObject([{ phase: "article_detail", status: 429, retryAfterSource: "delta_seconds" }]);
+    expect(recordRateLimited).toHaveBeenCalledTimes(1);
+    expect(safeFetchMock.mock.calls.some((call: any[]) => String(call[0]).includes("second-story"))).toBe(false);
+  });
+
+  it("does not continue detail evaluation after a listing-level 429", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const links = `<article><a href="/news/2026/07/16/should-not-fetch">Should not fetch story title</a></article>`;
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse("Too many requests", false, 429);
+      if (url.includes("should-not-fetch")) return makeResponse(links);
+      return makeResponse("", false, 404);
+    });
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 2, maxRequests: 10 });
+    expect(result.candidates).toHaveLength(0);
+    expect(result.detailEvaluationStoppedReason).toBe("rate_limited");
+    expect(result.rateLimitEvidence).toMatchObject([{ phase: "listing", status: 429 }]);
+    expect(safeFetchMock.mock.calls.some((call: any[]) => String(call[0]).includes("should-not-fetch"))).toBe(false);
+  });
+
+  it("records missing Retry-After with the bounded fallback cooldown", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(`<html><body><article><a href="/news/2026/07/16/missing-retry">Missing retry story title</a></article></body></html>`);
+      if (url.includes("missing-retry")) return makeResponse("Too many requests", false, 429);
+      if (url.includes("robots") || url.includes("sitemap")) return makeResponse("", false, 404);
+      return makeResponse("", false, 404);
+    });
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 2, maxRequests: 10 });
+    expect(result.rateLimitEvidence[0]).toMatchObject({ phase: "article_detail", retryAfterSource: "fallback" });
+    expect(Date.parse(result.rateLimitEvidence[0]!.retryAfterAt)).toBeGreaterThan(Date.now());
+  });
+
+  it("records sitemap-level 429 once and does not evaluate synthetic detail URLs", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const detailUrl = "https://example.com/news/2026/07/16/should-not-evaluate";
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse("<html><body><p>Sparse</p></body></html>");
+      if (url.includes("sitemap")) return makeResponse("Too many requests", false, 429, { "retry-after": "60" });
+      if (url === detailUrl) return makeResponse("should not evaluate");
+      return makeResponse("", false, 404);
+    });
+    const recordRateLimited = vi.fn();
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, { recordNetworkRequest: vi.fn(), recordLogicalRequestDuration: vi.fn(), recordTimeout: vi.fn(), recordRateLimited } as any, { maxEvaluatedCandidates: 2, maxRequests: 20 });
+    expect(result.rateLimitEvidence.filter((e) => e.phase === "sitemap")).toHaveLength(1);
+    expect(recordRateLimited).toHaveBeenCalledTimes(1);
+    expect(safeFetchMock.mock.calls.some((call: any[]) => call[0] === detailUrl)).toBe(false);
+  });
+
+  it("preserves partial candidates before detail 429 and does not resolve completion", async () => {
+    const { discoverArticlesFromTarget, persistArticleDiscoveryArtifact } = await import("./article-discovery");
+    const links = ["accepted", "limited"].map((name) => `<article><a href="/news/2026/07/16/${name}-story">${name} story title long enough</a></article>`).join("");
+    const article = `<html><head><title>Accepted story title long enough</title><meta property="article:published_time" content="2026-07-24T09:00:00Z" /></head><body><p>Body</p></body></html>`;
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(`<html><body>${links}</body></html>`);
+      if (url.includes("accepted-story")) return makeResponse(article);
+      if (url.includes("limited-story")) return makeResponse("Too many requests", false, 429, { "retry-after": "Wed, 30 Jul 2026 12:10:00 GMT" });
+      return makeResponse("", false, 404);
+    });
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 2, maxRequests: 5 });
+    expect(result.candidates).toHaveLength(1);
+    expect(result.retryable).toBe(true);
+    expect(result.discoveryComplete).toBe(false);
+    expect(result.rateLimitEvidence[0]).toMatchObject({ phase: "article_detail", retryAfterSource: "http_date" });
+    prismaArtifactCreateMock.mockClear();
+    await persistArticleDiscoveryArtifact({ pipelineRunId: "run-1", result });
+    expect(prismaArtifactCreateMock.mock.calls[0]?.[0]?.data?.status).toBe("DEFERRED_RATE_LIMIT");
+    expect(prismaArtifactCreateMock.mock.calls[0]?.[0]?.data?.payload?.discoveryComplete).toBe(false);
   });
 });

@@ -98,6 +98,7 @@ describe("outcomeKindToArtifact", () => {
       "LOW_CONTENT_QUALITY",
       "UNSUPPORTED_STRUCTURE",
       "HTTP_ACCESS_BLOCKED",
+      "INTERSTITIAL_OR_CHALLENGE",
     ] as const) {
       expect(outcomeKindToArtifact(kind)).toEqual({
         artifactType: "article_enrichment_rejection",
@@ -223,6 +224,67 @@ describe("buildArticleEnrichmentUpdate", () => {
     expect(failed.enrichmentStatus).toBe("ENRICHMENT_FAILED");
     expect(failed.publicationStatus).toBe("REJECTED");
     expect(failed.publicationReadyAt).toBeNull();
+  });
+
+  it("keeps recoverable interstitials in PROCESSING and only quarantined interstitials become REJECTED", async () => {
+    const { buildArticleEnrichmentUpdate } = await import("./enrichment-persist");
+    const interstitial = (disposition: string | null) =>
+      buildArticleEnrichmentUpdate(
+        buildFailureOutcome({
+          articleId: 7,
+          provenance: baseProvenance,
+          reason: { code: "INTERSTITIAL_OR_CHALLENGE", detail: "HTTP 202 interstitial" },
+          retryable: false,
+        }),
+        { retryDisposition: disposition ? { state: disposition } : null },
+      ) as Record<string, unknown>;
+
+    // First attempt / no disposition yet → recoverable.
+    expect(interstitial(null).enrichmentStatus).toBe("ENRICHMENT_FAILED");
+    expect(interstitial(null).publicationStatus).toBe("PROCESSING");
+    expect(interstitial(null).publicationReadyAt).toBeNull();
+    // Deferred (browser recovery still possible) → recoverable.
+    expect(interstitial("DEFERRED").publicationStatus).toBe("PROCESSING");
+    // Ready-retry (cooldown elapsed) → still recoverable.
+    expect(interstitial("READY_RETRY").publicationStatus).toBe("PROCESSING");
+    // Exhausted/quarantined → terminal rejection.
+    expect(interstitial("QUARANTINED").publicationStatus).toBe("REJECTED");
+    expect(interstitial("QUARANTINED").publicationReadyAt).toBeNull();
+
+    // Terminal kinds keep their existing behavior.
+    const paywall = buildArticleEnrichmentUpdate(
+      buildFailureOutcome({
+        articleId: 8,
+        provenance: baseProvenance,
+        reason: { code: "PAYWALL_BLOCKED" },
+        retryable: false,
+      }),
+    ) as Record<string, unknown>;
+    expect(paywall.publicationStatus).toBe("REJECTED");
+  });
+
+  it("a successful browser recovery transitions normally to publication-ready state", async () => {
+    const { buildArticleEnrichmentUpdate } = await import("./enrichment-persist");
+    const recovered = buildSuccessOutcome({
+      articleId: 9,
+      articleUrl: "https://example.com/a",
+      provenance: baseProvenance,
+      method: { method: "browser-dom", detail: "browser recovery" },
+      quality: { confidence: 0.9, qualityScore: 88, signals: ["method:browser-dom"], bodyLength: 1200 },
+      fields: {
+        title: { raw: "Feed title", chosenValue: "HTML title", chosenFrom: "dom", overrideReason: "richer" },
+        bodyText: { raw: null, chosenValue: "A".repeat(1200), chosenFrom: "dom", overrideReason: "browser recovery" },
+      },
+    });
+    const update = buildArticleEnrichmentUpdate(recovered, {
+      existingTitle: "Published title",
+      existingCanonicalUrl: "https://example.com/a",
+      existingBodyText: "A".repeat(1200),
+    }) as Record<string, unknown>;
+
+    expect(update.enrichmentStatus).toBe("ENRICHED");
+    expect(update.publicationStatus).toBe("PUBLISHED");
+    expect(update.publicationReadyAt).toEqual(new Date(recovered.timing.finishedAt));
   });
 
   it("persists blocking metadata in the row summary for progress cooldown checks", async () => {
@@ -639,6 +701,7 @@ describe("buildEnrichmentRunSummary", () => {
             LOW_CONTENT_QUALITY: 0,
             UNSUPPORTED_STRUCTURE: 0,
             HTTP_ACCESS_BLOCKED: 0,
+            INTERSTITIAL_OR_CHALLENGE: 0,
           },
           artifactIds: ["a", "b"],
         },

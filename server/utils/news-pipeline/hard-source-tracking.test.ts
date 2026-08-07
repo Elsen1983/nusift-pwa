@@ -269,6 +269,24 @@ describe("hard-source-tracking — buildHardSourceReport", () => {
     expect(report.hardSources).toEqual([]);
   });
 
+  it("transient incomplete productive static evidence is deferred, not a hard-source failure", async () => {
+    findManyMock.mockResolvedValue([
+      {
+        ...makeStaticArtifact({ sourceId: "src-deferred", targetUrl: "https://deferred.com/news", quality: "productive" }),
+        payload: {
+          ...makeStaticArtifact({ sourceId: "src-deferred", targetUrl: "https://deferred.com/news", quality: "productive" }).payload,
+          retryable: true,
+          discoveryComplete: false,
+          detailEvaluationStoppedReason: "rate_limited",
+        },
+      },
+    ]);
+    const fn = await loadFn();
+    const report = await fn();
+    expect(report.total).toBe(0);
+    expect(report.deferredIncompleteCount).toBe(1);
+  });
+
   it("static failed + browser no candidates → AI inspection candidate (single static + single browser failure)", async () => {
     // Spec acceptance: "If static and browser both fail, it should be clearly
     // visible as an AI-inspection candidate." A single static failure (+1)

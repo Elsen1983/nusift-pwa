@@ -38,6 +38,9 @@ import type { Prisma } from "@prisma/client";
  *  - CANONICAL_MISMATCH → fetched page canonical does not match the article URL
  *  - LOW_CONTENT_QUALITY→ extraction succeeded but content quality below threshold
  *  - UNSUPPORTED_STRUCTURE → page structure not parseable by HTTP extraction
+ *  - INTERSTITIAL_OR_CHALLENGE → HTTP 202 page without a usable article body
+ *    that resembles an interstitial/challenge/consent/queue page; stays bounded
+ *    and retryable (browser-recoverable) instead of a terminal quality failure
  */
 export type EnrichmentOutcomeKind =
   | "SUCCESS"
@@ -48,7 +51,8 @@ export type EnrichmentOutcomeKind =
   | "CANONICAL_MISMATCH"
   | "LOW_CONTENT_QUALITY"
   | "UNSUPPORTED_STRUCTURE"
-  | "HTTP_ACCESS_BLOCKED";
+  | "HTTP_ACCESS_BLOCKED"
+  | "INTERSTITIAL_OR_CHALLENGE";
 
 /**
  * Structured rejection / skip reason. Never a free-form log string.
@@ -67,6 +71,7 @@ export interface EnrichmentRejectionReason {
     | "DUPLICATE_OR_REDUNDANT"
     | "HEADLESS_REQUIRED"
     | "UNSUPPORTED_STRUCTURE"
+    | "INTERSTITIAL_OR_CHALLENGE"
     | "ALREADY_ENRICHED"
     | "OUTSIDE_FRESHNESS_WINDOW"
     | "NO_ARTICLE_URL"
@@ -400,6 +405,7 @@ const VALID_OUTCOME_KINDS: ReadonlySet<string> = new Set<EnrichmentOutcomeKind>(
   "LOW_CONTENT_QUALITY",
   "UNSUPPORTED_STRUCTURE",
   "HTTP_ACCESS_BLOCKED",
+  "INTERSTITIAL_OR_CHALLENGE",
 ]);
 
 const VALID_REJECTION_CODES: ReadonlySet<string> = new Set([
@@ -412,6 +418,7 @@ const VALID_REJECTION_CODES: ReadonlySet<string> = new Set([
   "DUPLICATE_OR_REDUNDANT",
   "HEADLESS_REQUIRED",
   "UNSUPPORTED_STRUCTURE",
+  "INTERSTITIAL_OR_CHALLENGE",
   "ALREADY_ENRICHED",
   "OUTSIDE_FRESHNESS_WINDOW",
   "NO_ARTICLE_URL",
@@ -913,6 +920,8 @@ const rejectionCodeToTerminalKind = (
       return "UNSUPPORTED_STRUCTURE";
     case "HEADLESS_REQUIRED":
       return "HEADLESS_REQUIRED";
+    case "INTERSTITIAL_OR_CHALLENGE":
+      return "INTERSTITIAL_OR_CHALLENGE";
     // HTTP 403/429 access failures → distinct HTTP_ACCESS_BLOCKED kind
     case "HTTP_FORBIDDEN":
       return "HTTP_ACCESS_BLOCKED";
@@ -992,6 +1001,7 @@ export const outcomeKindToStatus = (
     case "LOW_CONTENT_QUALITY":
     case "UNSUPPORTED_STRUCTURE":
     case "HTTP_ACCESS_BLOCKED":
+    case "INTERSTITIAL_OR_CHALLENGE":
       return "ENRICHMENT_FAILED";
     default:
       return "ENRICHMENT_FAILED";

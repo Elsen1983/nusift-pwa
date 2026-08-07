@@ -1762,7 +1762,7 @@
               @click="agent3RejectionFilter = k; loadAgent3RejectionDiagnostics()"
               class="rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider transition-colors"
               :class="agent3RejectionFilter === k
-                ? (k === 'HTTP_ACCESS_BLOCKED' ? 'border-amber-500/30 bg-amber-500/15 text-amber-200' : k === 'HEADLESS_REQUIRED' ? 'border-amber-500/30 bg-amber-500/15 text-amber-200' : 'border-rose-500/30 bg-rose-500/15 text-rose-200')
+                ? (k === 'HTTP_ACCESS_BLOCKED' || k === 'HEADLESS_REQUIRED' ? 'border-amber-500/30 bg-amber-500/15 text-amber-200' : k === 'INTERSTITIAL_OR_CHALLENGE' ? 'border-sky-500/30 bg-sky-500/15 text-sky-200' : 'border-rose-500/30 bg-rose-500/15 text-rose-200')
                 : 'border-outline-variant/20 bg-surface-container text-on-surface-variant hover:text-on-surface'"
             >
               {{ k === 'all' ? 'ALL' : k }}
@@ -1780,7 +1780,7 @@
               v-for="(count, kind) in agent3RejectionData.summary.byKind"
               :key="kind"
               class="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
-              :class="kind === 'HEADLESS_REQUIRED' || kind === 'HTTP_ACCESS_BLOCKED' ? 'border-amber-500/20 bg-amber-500/10 text-amber-200' : 'border-rose-500/20 bg-rose-500/10 text-rose-200'"
+              :class="kind === 'HEADLESS_REQUIRED' || kind === 'HTTP_ACCESS_BLOCKED' ? 'border-amber-500/20 bg-amber-500/10 text-amber-200' : kind === 'INTERSTITIAL_OR_CHALLENGE' ? 'border-sky-500/20 bg-sky-500/10 text-sky-200' : 'border-rose-500/20 bg-rose-500/10 text-rose-200'"
             >
               {{ kind }}: {{ count }}
             </span>
@@ -1811,7 +1811,7 @@
               v-for="item in agent3RejectionData.items"
               :key="item.id"
               class="rounded-xl border px-3 py-2"
-              :class="item.kind === 'HEADLESS_REQUIRED' || item.kind === 'HTTP_ACCESS_BLOCKED' ? 'border-amber-500/15 bg-amber-500/5' : 'border-rose-500/10 bg-rose-500/5'"
+              :class="item.kind === 'HEADLESS_REQUIRED' || item.kind === 'HTTP_ACCESS_BLOCKED' ? 'border-amber-500/15 bg-amber-500/5' : item.kind === 'INTERSTITIAL_OR_CHALLENGE' ? 'border-sky-500/15 bg-sky-500/5' : 'border-rose-500/10 bg-rose-500/5'"
             >
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0 flex-1">
@@ -1820,6 +1820,7 @@
                       class="rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider"
                       :class="item.kind === 'HEADLESS_REQUIRED' ? 'border-amber-500/20 bg-amber-500/10 text-amber-200'
                         : item.kind === 'HTTP_ACCESS_BLOCKED' ? 'border-amber-500/20 bg-amber-500/10 text-amber-200'
+                        : item.kind === 'INTERSTITIAL_OR_CHALLENGE' ? 'border-sky-500/20 bg-sky-500/10 text-sky-200'
                         : item.kind === 'LOW_CONTENT_QUALITY' ? 'border-orange-500/20 bg-orange-500/10 text-orange-200'
                         : item.kind === 'PAYWALL_BLOCKED' ? 'border-purple-500/20 bg-purple-500/10 text-purple-200'
                         : 'border-rose-500/20 bg-rose-500/10 text-rose-200'"
@@ -2511,7 +2512,7 @@ const dailyLockRecoveryToken = ref("");
 const agent3RejectionLoading = ref(false);
 const agent3RejectionFilter = ref<string>("all");
 const agent3RejectionScope = ref<string>("latest_run");
-const agent3RejectionKinds = ["LOW_CONTENT_QUALITY", "UNSUPPORTED_STRUCTURE", "HTTP_ACCESS_BLOCKED", "HEADLESS_REQUIRED", "PAYWALL_BLOCKED", "RETRYABLE_FAILURE", "CANONICAL_MISMATCH"];
+const agent3RejectionKinds = ["LOW_CONTENT_QUALITY", "UNSUPPORTED_STRUCTURE", "HTTP_ACCESS_BLOCKED", "INTERSTITIAL_OR_CHALLENGE", "HEADLESS_REQUIRED", "PAYWALL_BLOCKED", "RETRYABLE_FAILURE", "CANONICAL_MISMATCH"];
 const agent3RejectionData = ref<{
   ok: boolean;
   summary: {

@@ -100,17 +100,32 @@ export default defineEventHandler(async (event) => {
   const browserRecoveryMadeProgress = browserRecoveryMode && result.articleCount > 0;
   const complete = progress.retryableNow === 0 && !browserRecoveryMadeProgress;
   const byKind = result.persist?.byKind ?? {};
+  // INTERSTITIAL_OR_CHALLENGE is not inherently permanent: browser recovery
+  // may still be possible. These disposition counts are persisted-only and
+  // come from the exact per-article retry disposition computed once by the
+  // retry policy and counted only after Article/artifact persistence succeeds.
+  // DEFERRED → deferred, QUARANTINED → quarantined, READY_RETRY →
+  // failedRetryable, NON_RETRYABLE → failedPermanent. Thus NON_RETRYABLE
+  // interstitials may legitimately contribute to failedPermanent; every other
+  // outcome keeps its byKind semantics and HEADLESS_REQUIRED stays deferred.
+  const interstitialCounts = result.interstitialDispositionCounts ?? {
+    deferred: 0,
+    quarantined: 0,
+    readyRetry: 0,
+    nonRetryable: 0,
+  };
   const failedPermanent = Object.entries(byKind)
-    .filter(([kind]) => !["SUCCESS", "SKIPPED", "RETRYABLE_FAILURE", "HEADLESS_REQUIRED"].includes(kind))
-    .reduce((sum, [, count]) => sum + (typeof count === "number" ? count : 0), 0);
+    .filter(([kind]) => !["SUCCESS", "SKIPPED", "RETRYABLE_FAILURE", "HEADLESS_REQUIRED", "INTERSTITIAL_OR_CHALLENGE"].includes(kind))
+    .reduce((sum, [, count]) => sum + (typeof count === "number" ? count : 0), 0)
+    + interstitialCounts.nonRetryable;
   const telemetry = tracker.finalize({
     processed: result.articleCount,
     succeeded: byKind.SUCCESS ?? 0,
-    failedRetryable: byKind.RETRYABLE_FAILURE ?? 0,
+    failedRetryable: (byKind.RETRYABLE_FAILURE ?? 0) + interstitialCounts.readyRetry,
     failedPermanent,
     skipped: byKind.SKIPPED ?? 0,
-    deferred: byKind.HEADLESS_REQUIRED ?? 0,
-    quarantined: 0,
+    deferred: (byKind.HEADLESS_REQUIRED ?? 0) + interstitialCounts.deferred,
+    quarantined: interstitialCounts.quarantined,
     claimLost: result.persist?.claimLost ?? 0,
     persistenceFailed: result.persist?.failed ?? 0,
     remainingBefore,

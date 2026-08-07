@@ -10,12 +10,21 @@
 
 import { prisma } from "../prisma";
 import { logAgentScan } from "./log";
-import { isBrowserFallbackEnabled, discoverArticleLinksWithBrowser, evaluateArticleLinkCandidateWithBrowser } from "./article-discovery-browser";
+import {
+  isBrowserFallbackEnabled,
+  discoverArticleLinksWithBrowser,
+  createBrowserArticleDetailSession,
+  MAX_BROWSER_DETAIL_EVALUATIONS,
+  DEFAULT_BROWSER_DETAIL_TARGET_TIME_BUDGET_MS,
+  isBrowserDetailTimeBudgetExceeded,
+} from "./article-discovery-browser";
 import {
   evaluateArticleLinkCandidate,
   ArticleDiscoveryOutcomeTracker,
   assessArticleDiscoveryQuality,
   type ArticleDiscoveryCandidateOutcome,
+  type StaticDiscoveryRateLimitEvidence,
+  boundStaticRetryAfterTimestamp,
 } from "./article-discovery-helpers";
 import { persistCandidates } from "./ingest";
 import type { IngestCandidate } from "./types";
@@ -30,11 +39,12 @@ import {
   createNoopStageBatchProbe,
   type StageBatchProbe,
 } from "./stage-telemetry";
+import type { BrowserArticleDetailSession } from "./article-discovery-browser";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 25;
 const MAX_BROWSER_LIMIT = 3;
-const MAX_BROWSER_DETAIL_EVALUATED_LINKS = 10;
+const MAX_BROWSER_DETAIL_EVALUATED_LINKS = MAX_BROWSER_DETAIL_EVALUATIONS;
 const MAX_BROWSER_ACCEPTED_CANDIDATES = 10;
 const BROWSER_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
 
@@ -44,6 +54,8 @@ type HeadlessQueueInput = {
   runBrowser?: boolean;
   /** Operation-level stage telemetry probe (optional, no-op by default). */
   telemetry?: StageBatchProbe;
+  /** Injectable clock for deterministic target wall-clock budget tests. */
+  now?: () => number;
 };
 
 type HeadlessQueueArtifact = {
@@ -160,6 +172,40 @@ function safeNormalizeUrl(raw: string): string | null {
   return normalizeTargetUrl(raw);
 }
 
+type QueueRateLimitEvidence = StaticDiscoveryRateLimitEvidence;
+
+const isStaticOrBrowserDetailRateLimited = (outcome: ArticleDiscoveryCandidateOutcome): boolean =>
+  outcome.rateLimited === true || outcome.httpStatus === 429 || /\b429\b/i.test(String(outcome.reason || ""));
+
+const buildDetailRateLimitEvidence = (
+  outcome: ArticleDiscoveryCandidateOutcome,
+  articleUrl: string,
+): QueueRateLimitEvidence | null => {
+  if (!isStaticOrBrowserDetailRateLimited(outcome)) return null;
+  // Production static outcomes now always carry bounded evidence. Preserve the
+  // historical one-hour browser fallback for legacy/mocked browser outcomes
+  // that only expose "HTTP 429" without Retry-After fields, then apply the same
+  // trust-boundary maximum/minimum to the resulting timestamp.
+  const rawRetryAfterAt = outcome.retryAfterAt ?? (
+    outcome.sourceKind === "browser"
+      ? new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString()
+      : null
+  );
+  const boundedRetryAfter = boundStaticRetryAfterTimestamp(
+    rawRetryAfterAt,
+    outcome.retryAfterSource ?? (rawRetryAfterAt ? "fallback" : null),
+  );
+  const retryAfterAt = boundedRetryAfter.retryAfterAt;
+  const retryAfterSource = boundedRetryAfter.source;
+  return {
+    phase: "article_detail",
+    url: articleUrl,
+    status: 429,
+    retryAfterAt,
+    retryAfterSource,
+  };
+};
+
 /**
  * Check if a target has an active browser rate-limit cooldown by looking at
  * recent artifacts for the same sourceId/categoryId/targetUrl combination.
@@ -255,7 +301,8 @@ export async function processArticleDiscoveryHeadlessQueue(
   // branch inside the loop, avoiding repeated isBrowserFallbackEnabled() calls.
   const browserEnabled = runBrowser && isBrowserFallbackEnabled();
 
-  const startedAt = Date.now();
+  const now = input?.now ?? Date.now;
+  const startedAt = now();
 
   await logAgentScan({
     status: "ARTICLE_DISCOVERY_HEADLESS_QUEUE_STARTED",
@@ -447,28 +494,38 @@ export async function processArticleDiscoveryHeadlessQueue(
       }
       const hostCooldown = hostname ? inRunHostCooldown.get(hostname) : null;
       if (hostCooldown && Date.parse(hostCooldown.retryAfterAt) > Date.now()) {
-        browserCooldownSkipped += 1;
-        dispositionDeferred += 1;
         // Update payload with cooldown metadata but keep PENDING_HEADLESS.
-        await prisma.pipelineArtifact.updateMany({
-          where: {
-            id: item.id,
-            artifactType: "article_discovery_headless_required",
-            status: "PENDING_HEADLESS",
-          },
-          data: {
-            payload: {
-              ...item.payload,
-              skippedDueToBrowserCooldown: true,
-              browserRateLimited: true,
-              browserRateLimitReason: hostCooldown.reason,
-              browserRateLimitedAt: hostCooldown.rateLimitedAt,
-              browserRetryAfterAt: hostCooldown.retryAfterAt,
-              browserCooldownUntil: hostCooldown.retryAfterAt,
-              lastBrowserCooldownSkipAt: new Date().toISOString(),
+        try {
+          const cooldownUpdate = await prisma.pipelineArtifact.updateMany({
+            where: {
+              id: item.id,
+              artifactType: "article_discovery_headless_required",
+              status: "PENDING_HEADLESS",
             },
-          },
-        }).catch(() => {});
+            data: {
+              payload: {
+                ...item.payload,
+                skippedDueToBrowserCooldown: true,
+                browserRateLimited: true,
+                browserRateLimitReason: hostCooldown.reason,
+                browserRateLimitedAt: hostCooldown.rateLimitedAt,
+                browserRetryAfterAt: hostCooldown.retryAfterAt,
+                browserCooldownUntil: hostCooldown.retryAfterAt,
+                lastBrowserCooldownSkipAt: new Date().toISOString(),
+              },
+            },
+          });
+          if (cooldownUpdate.count === 1) {
+            browserCooldownSkipped += 1;
+            dispositionDeferred += 1;
+          } else {
+            skippedAlreadyClaimed += 1;
+            dispositionClaimLost += 1;
+          }
+        } catch {
+          skippedAlreadyClaimed += 1;
+          dispositionClaimLost += 1;
+        }
         continue;
       }
     }
@@ -619,16 +676,20 @@ export async function processArticleDiscoveryHeadlessQueue(
         errorLog: `Browser fallback started for artifact ${item.id}. targetUrl=${targetUrl}, quality=${fields.quality}.`,
       });
 
-      const claimedPayload = {
+      const claimedProcessingStartedAt = new Date().toISOString();
+      const claimedPayload: Record<string, unknown> = {
         ...item.payload,
-        headlessProcessingStartedAt: new Date().toISOString(),
+        headlessProcessingStartedAt: claimedProcessingStartedAt,
         headlessProcessingMode: "browser",
       };
 
       let browserResult;
       probe.recordBrowserAttempt();
       probe.recordNetworkRequest();
-      const browserStartedAt = Date.now();
+      const browserStartedAt = now();
+      // The target deadline starts before listing discovery so time spent on
+      // browser setup/listing cannot silently consume the entire detail budget.
+      const browserTargetDeadline = browserStartedAt + DEFAULT_BROWSER_DETAIL_TARGET_TIME_BUDGET_MS;
       try {
         browserResult = await discoverArticleLinksWithBrowser({
           targetUrl,
@@ -653,7 +714,7 @@ export async function processArticleDiscoveryHeadlessQueue(
         };
       }
 
-      probe.recordBrowser(Date.now() - browserStartedAt);
+      probe.recordBrowser(now() - browserStartedAt);
 
       // ── Detect listing-page 429 early (used in both failure and success paths) ──
       const isListingPage429 =
@@ -703,7 +764,7 @@ export async function processArticleDiscoveryHeadlessQueue(
               ...claimedPayload,
               // ── Compact browser fallback result metadata ──────────────
               browserFallbackRan: true,
-              browserFallbackStartedAt: claimedPayload.headlessProcessingStartedAt,
+              browserFallbackStartedAt: claimedProcessingStartedAt,
               browserFallbackFinishedAt: failedFinishedAt,
               // linkCount is always a number on the browser result type;
               // for failures it reflects whatever the resolver observed.
@@ -915,21 +976,101 @@ export async function processArticleDiscoveryHeadlessQueue(
       const browserDetailRecoveryReasons: string[] = [];
       let consecutiveBrowserRateLimitCount = 0;
       let browserBlockedReason: string | null = null;
+      let browserRuntimeUnavailable = false;
+      let detailTimeBudgetExhausted = false;
       let browserRateLimitedAt: string | null = null;
       let browserRetryAfterAt: string | null = null;
+      let detailRateLimitEvidence: QueueRateLimitEvidence | null = null;
+
+      const activateDetailHostCooldown = (retryAfterAt: string, rateLimitedAt: string) => {
+        browserBlockedReason = "http_429";
+        browserRateLimitedAt = rateLimitedAt;
+        browserRetryAfterAt = retryAfterAt;
+        try {
+          const host = new URL(targetUrl).hostname.toLowerCase();
+          if (host) {
+            inRunHostCooldown.set(host, {
+              retryAfterAt,
+              rateLimitedAt,
+              reason: "http_429",
+            });
+            probe.recordHostCooldown();
+          }
+        } catch {
+          // The target was validated before queueing; keep the artifact evidence
+          // even if a malformed legacy target cannot produce a host key.
+        }
+      };
+
+      const mergeDetailRateLimitEvidence = (evidence: QueueRateLimitEvidence) => {
+        detailRateLimitEvidence = evidence;
+        probe.recordRateLimited(429);
+        activateDetailHostCooldown(evidence.retryAfterAt, new Date().toISOString());
+      };
 
       const isRecoverableDetailRejection = (outcome: ArticleDiscoveryCandidateOutcome): boolean => {
+        // A structured detail 429 is host throttling, never a browser-rendering
+        // failure. The caller handles it before this predicate and stops the
+        // remaining link loop immediately.
+        if (isStaticOrBrowserDetailRateLimited(outcome)) return false;
         if (outcome.status === "fetch_failed" || outcome.status === "detail_validation_failed") {
           return true;
         }
         const reason = String(outcome.reason || "");
-        return /\b(403|401|429)\b/.test(reason);
+        return /\b(403|401)\b/.test(reason);
       };
+
+      // One target-scoped browser process is reused for detail recovery. It is
+      // created lazily only when static evaluation actually requests browser
+      // recovery, so static success and static HTTP 429 never launch Chromium.
+      // Each article gets a fresh context/page inside that process, preserving
+      // isolation without repeated Chromium startup. The session is bounded
+      // by both the detail cap and a target-level wall-clock budget.
+      let detailSession: BrowserArticleDetailSession | null = null;
+      let detailSessionStarted = false;
+      let detailSessionBlockedReason: string | null = null;
+      const ensureDetailSession = async (): Promise<BrowserArticleDetailSession | null> => {
+        if (detailSession || detailSessionStarted) return detailSession;
+        detailSessionStarted = true;
+        const remainingBudgetMs = browserTargetDeadline - now();
+        if (remainingBudgetMs <= 0) {
+          detailTimeBudgetExhausted = true;
+          detailSessionBlockedReason = "browser target time budget exhausted";
+          return null;
+        }
+        const result = await createBrowserArticleDetailSession({
+          timeBudgetMs: remainingBudgetMs,
+          deadlineAt: browserTargetDeadline,
+          now,
+        });
+        detailSession = result.session;
+        detailSessionBlockedReason = result.blockedReason ?? null;
+        if (result.timeBudgetExhausted) detailTimeBudgetExhausted = true;
+        return detailSession;
+      };
+
+      // Listing/rendering time is part of the target budget. If it consumed
+      // the entire deadline, record an explicit retryable stop even when the
+      // rendered shortlist is empty; otherwise the run could be misreported as
+      // BROWSER_NO_CANDIDATES and trigger permanent-failure side effects.
+      if (now() >= browserTargetDeadline) {
+        detailTimeBudgetExhausted = true;
+        browserError = "Browser detail target time budget exhausted.";
+      }
 
       // Limit total detail evaluations (static + recovery) to MAX_BROWSER_DETAIL_EVALUATED_LINKS.
       let totalDetailEvaluations = 0;
 
-      for (const link of browserResult.links) {
+      try {
+        for (const link of browserResult.links) {
+        // A target deadline is an explicit retryable stop, not an empty result.
+        // Check before every remaining shortlist entry so no later static or
+        // browser detail evaluation starts after the wall-clock budget.
+        if (now() >= browserTargetDeadline) {
+          detailTimeBudgetExhausted = true;
+          browserError = "Browser detail target time budget exhausted.";
+          break;
+        }
         // Stop early if we have enough accepted candidates
         if (candidates.length >= MAX_BROWSER_ACCEPTED_CANDIDATES) break;
         // Stop early if we've evaluated enough detail pages
@@ -953,6 +1094,17 @@ export async function processArticleDiscoveryHeadlessQueue(
         }
 
         try {
+          const sessionForBudget = detailSession as BrowserArticleDetailSession | null;
+          if (sessionForBudget && !sessionForBudget.hasTimeRemaining()) {
+            detailTimeBudgetExhausted = true;
+            browserError = "Browser detail target time budget exhausted.";
+            break;
+          }
+          if (now() >= browserTargetDeadline) {
+            detailTimeBudgetExhausted = true;
+            browserError = "Browser detail target time budget exhausted.";
+            break;
+          }
           totalDetailEvaluations += 1;
           const listingDateFallbackRaw =
             typeof link.rawSignals?.listingDateText === "string"
@@ -964,8 +1116,11 @@ export async function processArticleDiscoveryHeadlessQueue(
             targetUrl,
             sourceId: sourceId!,
             categoryId: item.categoryId,
-            listingDateFallbackRaw,              telemetry: probe,
-              verifiedHostScope: browserResult.verifiedHostScope ?? null,
+            listingDateFallbackRaw,
+            telemetry: probe,
+            // Headless static detail evaluation has no discovery-wide budget,
+            // but the evaluator still returns bounded structured 429 evidence.
+            verifiedHostScope: browserResult.verifiedHostScope ?? null,
             });
 
           // Weak-date diagnostic: if rejected for missing date but otherwise
@@ -988,11 +1143,56 @@ export async function processArticleDiscoveryHeadlessQueue(
           }
 
           if (!evaluation.accepted) {
+            // Static HTTP 429 is authoritative host throttling evidence. Do not
+            // launch Playwright for this URL and do not evaluate later links.
+            const staticRateLimit = buildDetailRateLimitEvidence(evaluation.outcome, link.url);
+            if (staticRateLimit) {
+              tracker.record(evaluation.outcome);
+              browserRejected += 1;
+              consecutiveBrowserRateLimitCount += 1;
+              mergeDetailRateLimitEvidence(staticRateLimit);
+              browserError = `Static detail fetches are rate-limited by ${targetUrl}; retry after ${browserRetryAfterAt}.`;
+              break;
+            }
+
             const shouldRecover =
               detailRecoveryAttempts < MAX_DETAIL_RECOVERY_PAGES &&
               isRecoverableDetailRejection(evaluation.outcome);
 
             if (shouldRecover) {
+              let session: BrowserArticleDetailSession | null = null;
+              try {
+                session = await ensureDetailSession();
+              } catch (error) {
+                if (isBrowserDetailTimeBudgetExceeded(error) || now() >= browserTargetDeadline) {
+                  detailTimeBudgetExhausted = true;
+                  browserError = "Browser detail target time budget exhausted.";
+                } else {
+                  browserRuntimeUnavailable = true;
+                  browserError = `Browser detail runtime unavailable: ${error instanceof Error ? error.message : String(error)}`;
+                }
+                break;
+              }
+              if (!session) {
+                if (detailTimeBudgetExhausted) {
+                  browserError = "Browser detail target time budget exhausted.";
+                } else {
+                  browserRuntimeUnavailable = true;
+                  browserError = `Browser detail runtime unavailable: ${detailSessionBlockedReason || "unknown runtime error"}`;
+                }
+                break;
+              }
+              if (!session.hasTimeRemaining()) {
+                detailTimeBudgetExhausted = true;
+                browserError = "Browser detail target time budget exhausted.";
+                break;
+              }
+              if (now() >= browserTargetDeadline) {
+                detailTimeBudgetExhausted = true;
+                browserError = "Browser detail target time budget exhausted.";
+                break;
+              }
+
               detailRecoveryAttempts += 1;
               totalDetailEvaluations += 1;
               browserDetailRecoveryReasons.push(evaluation.outcome.status);
@@ -1000,15 +1200,25 @@ export async function processArticleDiscoveryHeadlessQueue(
               probe.recordBrowserAttempt();
               probe.recordNetworkRequest();
               const detailBrowserStartedAt = Date.now();
-              const detailEval = await evaluateArticleLinkCandidateWithBrowser({
-                articleUrl: link.url,
-                sourcePageUrl: `browser:${link.url}`,
-                targetUrl,
-                sourceId: sourceId!,
-                categoryId: item.categoryId,
-                listingDateFallbackRaw,
-                verifiedHostScope: browserResult.verifiedHostScope ?? null,
-              });
+              let detailEval;
+              try {
+                detailEval = await session.evaluate({
+                    articleUrl: link.url,
+                    sourcePageUrl: `browser:${link.url}`,
+                    targetUrl,
+                    sourceId: sourceId!,
+                    categoryId: item.categoryId,
+                    listingDateFallbackRaw,
+                    verifiedHostScope: browserResult.verifiedHostScope ?? null,
+                  });
+              } catch (error) {
+                if (isBrowserDetailTimeBudgetExceeded(error)) {
+                  detailTimeBudgetExhausted = true;
+                  browserError = "Browser detail target time budget exhausted.";
+                  break;
+                }
+                throw error;
+              }
 
               probe.recordBrowser(Date.now() - detailBrowserStartedAt);
               browserDetailEvaluated += 1;
@@ -1038,57 +1248,32 @@ export async function processArticleDiscoveryHeadlessQueue(
                   tracker.record(detailEval.outcome);
                 }
               } else {
-              browserDetailRejected += 1;
-              tracker.record(detailEval.outcome);
-              const detailReason = String(detailEval.outcome.reason || "");
-              if (/\b429\b/.test(detailReason)) {
-                consecutiveBrowserRateLimitCount += 1;
-                browserBlockedReason = "http_429";
-                browserRateLimitedAt = new Date().toISOString();
-                browserRetryAfterAt = new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString();
-                browserError = `Browser detail fetches are rate-limited by ${targetUrl}; retry after ${browserRetryAfterAt}.`;
-                // Activate host-level cooldown for the rest of this run
-                try {
-                  const host = new URL(targetUrl).hostname;
-                  if (host && browserRetryAfterAt) {
-                    inRunHostCooldown.set(host.toLowerCase(), {
-                      retryAfterAt: browserRetryAfterAt,
-                      rateLimitedAt: browserRateLimitedAt,
-                      reason: "http_429",
-                    });
-                  }
-                } catch { /* invalid URL */ }
-                break;
-              } else {
+                browserDetailRejected += 1;
+                tracker.record(detailEval.outcome);
+                const browserRateLimit = buildDetailRateLimitEvidence(detailEval.outcome, link.url);
+                if (browserRateLimit) {
+                  consecutiveBrowserRateLimitCount += 1;
+                  mergeDetailRateLimitEvidence(browserRateLimit);
+                  browserError = `Browser detail fetches are rate-limited by ${targetUrl}; retry after ${browserRetryAfterAt}.`;
+                  break;
+                }
                 consecutiveBrowserRateLimitCount = 0;
               }
-            }
           } else {
               // Normal rejection (stale, low score, missing title, etc.) or
               // detail recovery limit reached — record the original outcome.
               tracker.record(evaluation.outcome);
               browserRejected += 1;
               const reason = String(evaluation.outcome.reason || "");
+              const acceptedPathRateLimit = buildDetailRateLimitEvidence(evaluation.outcome, link.url);
+              if (acceptedPathRateLimit) {
+                consecutiveBrowserRateLimitCount += 1;
+                mergeDetailRateLimitEvidence(acceptedPathRateLimit);
+                browserError = `Browser detail fetches are rate-limited by ${targetUrl}; retry after ${browserRetryAfterAt}.`;
+                break;
+              }
               if (/\b429\b/.test(reason)) {
                 consecutiveBrowserRateLimitCount += 1;
-                if (consecutiveBrowserRateLimitCount >= 1) {
-                  browserBlockedReason = "http_429";
-                  browserRateLimitedAt = new Date().toISOString();
-                  browserRetryAfterAt = new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString();
-                  browserError = `Browser detail fetches are rate-limited by ${targetUrl}; retry after ${browserRetryAfterAt}.`;
-                  // Activate host-level cooldown for the rest of this run
-                  try {
-                    const host = new URL(targetUrl).hostname;
-                    if (host && browserRetryAfterAt) {
-                      inRunHostCooldown.set(host.toLowerCase(), {
-                        retryAfterAt: browserRetryAfterAt,
-                        rateLimitedAt: browserRateLimitedAt,
-                        reason: "http_429",
-                      });
-                    }
-                  } catch { /* invalid URL */ }
-                  break;
-                }
               } else {
                 consecutiveBrowserRateLimitCount = 0;
               }
@@ -1125,6 +1310,10 @@ export async function processArticleDiscoveryHeadlessQueue(
           } as ArticleDiscoveryCandidateOutcome);
           browserSkipped += 1;
         }
+        }
+      } finally {
+        const sessionForClose = detailSession as BrowserArticleDetailSession | null;
+        if (sessionForClose) await sessionForClose.close().catch(() => {});
       }
 
       const browserOutcomeSummary = tracker.getSummary();
@@ -1181,12 +1370,15 @@ export async function processArticleDiscoveryHeadlessQueue(
     }
 
       // Transition from HEADLESS_PROCESSING → durable success or retryable state.
-      // RESOLVED is only valid after every accepted candidate was persisted or
-      // idempotently skipped. Any counted/thrown persistence failure returns the
-      // marker to PENDING_HEADLESS so a later run can retry safely.
+      // A detail-level 429 leaves evaluation incomplete even when candidates
+      // found before the rate limit were persisted successfully. Keep the marker
+      // pending so the remaining shortlist is retried after the host cooldown.
       const persistenceSucceeded = persisted.failed === 0;
+      const detailEvaluationRateLimited = browserBlockedReason === "http_429";
       if (persisted.failed > 0) dispositionPersistenceFailed += 1;
-      const finalStatus = candidates.length === 0
+      const finalStatus = detailEvaluationRateLimited || detailTimeBudgetExhausted || browserRuntimeUnavailable
+        ? "PENDING_HEADLESS"
+        : candidates.length === 0
         ? "BROWSER_NO_CANDIDATES"
         : persistenceSucceeded
           ? "RESOLVED"
@@ -1210,7 +1402,7 @@ export async function processArticleDiscoveryHeadlessQueue(
             // All fields are compact counts / short strings / short arrays.
             // No raw HTML, screenshots, or large DOM dumps are stored.
             browserFallbackRan: true,
-            browserFallbackStartedAt: claimedPayload.headlessProcessingStartedAt,
+            browserFallbackStartedAt: claimedProcessingStartedAt,
             browserFallbackFinishedAt: finishedAt,
             // linkCount is the total anchor count on the rendered page;
             // it is always a number on a successful browser result.
@@ -1242,15 +1434,31 @@ export async function processArticleDiscoveryHeadlessQueue(
             browserDetailRecoveryReasons,
             browserError,
             browserBlockedReason,
+            browserDetailRuntimeUnavailable: browserRuntimeUnavailable,
+            browserDetailTimeBudgetExhausted: detailTimeBudgetExhausted,
             browserRateLimited: browserBlockedReason === "http_429",
             browserRateLimitReason: browserBlockedReason === "http_429" ? "http_429" : null,
             browserRateLimitedAt,
             browserRetryAfterAt,
             browserRateLimitedCount: consecutiveBrowserRateLimitCount,
-            browserDetailEvaluationStoppedReason: browserBlockedReason === "http_429" ? "rate_limited" : null,
-            // Clear any previous cooldown metadata now that browser work succeeded.
+            // Reuse Prompt 1's structured static rate-limit evidence shape;
+            // retain any evidence already carried by the queue marker.
+            rateLimitEvidence: detailRateLimitEvidence
+              ? [
+                ...(Array.isArray(claimedPayload.rateLimitEvidence) ? claimedPayload.rateLimitEvidence : [])
+                  .filter((entry: any) => entry?.url !== detailRateLimitEvidence!.url),
+                detailRateLimitEvidence,
+              ]
+              : claimedPayload.rateLimitEvidence ?? null,
+            browserDetailEvaluationStoppedReason: browserBlockedReason === "http_429"
+              ? "rate_limited"
+              : detailTimeBudgetExhausted
+                ? "time_budget_exhausted"
+                : null,
+            // A partial 429 keeps an explicit cooldown while preserving any
+            // candidates that were persisted before evaluation stopped.
             skippedDueToBrowserCooldown: false,
-            browserCooldownUntil: null,
+            browserCooldownUntil: detailEvaluationRateLimited ? browserRetryAfterAt : null,
             lastBrowserCooldownSkipAt: null,
             browserOutcomeSummary: browserOutcomeSummaryCompact,
             browserQualityAssessment: {
@@ -1324,6 +1532,7 @@ export async function processArticleDiscoveryHeadlessQueue(
         dispositionFailedPermanent += 1;
       } else if (finalStatus === "PENDING_HEADLESS") {
         dispositionDeferred += 1;
+        if (browserRuntimeUnavailable) browserSkippedUnavailable += 1;
       }
 
       // Do NOT create a hard-source profile when the browser was rate-limited
@@ -1367,11 +1576,17 @@ export async function processArticleDiscoveryHeadlessQueue(
 
       const browserAuditStatus = finalStatus === "RESOLVED"
         ? "ARTICLE_DISCOVERY_BROWSER_RESOLVED"
-        : "ARTICLE_DISCOVERY_BROWSER_FAILED";
+        : detailTimeBudgetExhausted
+          ? "ARTICLE_DISCOVERY_BROWSER_DEFERRED"
+          : "ARTICLE_DISCOVERY_BROWSER_FAILED";
       const browserAuditOutcome = finalStatus === "RESOLVED"
         ? `Browser fallback resolved for ${targetUrl}.`
         : finalStatus === "PENDING_HEADLESS"
-          ? `Candidate persistence failed for ${targetUrl}; artifact remains retryable in PENDING_HEADLESS.`
+          ? detailEvaluationRateLimited
+            ? `Browser detail evaluation was rate-limited for ${targetUrl}; persisted candidates were retained and the artifact remains retryable in PENDING_HEADLESS after cooldown.`
+            : detailTimeBudgetExhausted
+              ? `Browser detail evaluation exhausted the target wall-clock budget for ${targetUrl}; completed candidates were retained and the artifact remains deferred/retryable in PENDING_HEADLESS.`
+              : `Candidate persistence failed for ${targetUrl}; artifact remains retryable in PENDING_HEADLESS.`
           : `Browser fallback found no candidates for ${targetUrl}.`;
 
       await logAgentScan({

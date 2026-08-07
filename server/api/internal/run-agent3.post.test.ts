@@ -137,4 +137,134 @@ describe("POST /api/internal/run-agent3", () => {
       futureRunOptions: expect.not.objectContaining({ pipelineRunId: expect.anything() }),
     });
   });
+
+  it("reports DEFERRED interstitials in deferred, not failedPermanent or quarantined", async () => {
+    mocks.runBatch.mockResolvedValue({
+      articleCount: 1,
+      persist: { failed: 0, claimLost: 0, byKind: { INTERSTITIAL_OR_CHALLENGE: 1 } },
+      interstitialDispositionCounts: { deferred: 1, quarantined: 0, readyRetry: 0, nonRetryable: 0 },
+    });
+
+    const result = await (await loadHandler())({} as any);
+
+    expect(result.telemetry).toMatchObject({
+      processed: 1,
+      succeeded: 0,
+      failedRetryable: 0,
+      failedPermanent: 0,
+      deferred: 1,
+      quarantined: 0,
+    });
+  });
+
+  it("does not expose non-persisted interstitial dispositions as durable telemetry", async () => {
+    mocks.runBatch.mockResolvedValue({
+      articleCount: 3,
+      persist: {
+        persisted: 0,
+        failed: 1,
+        claimLost: 2,
+        byKind: { INTERSTITIAL_OR_CHALLENGE: 0 },
+      },
+      // Runtime must leave all four persisted-only buckets at zero when these
+      // disposition attempts lost their claims or failed to persist.
+      interstitialDispositionCounts: { deferred: 0, quarantined: 0, readyRetry: 0, nonRetryable: 0 },
+    });
+
+    const result = await (await loadHandler())({} as any);
+
+    expect(result.telemetry).toMatchObject({
+      processed: 3,
+      failedRetryable: 0,
+      failedPermanent: 0,
+      deferred: 0,
+      quarantined: 0,
+      claimLost: 2,
+      persistenceFailed: 1,
+    });
+  });
+
+  it("maps persisted NON_RETRYABLE interstitials to failedPermanent exactly once", async () => {
+    mocks.runBatch.mockResolvedValue({
+      articleCount: 1,
+      persist: {
+        persisted: 1,
+        failed: 0,
+        claimLost: 0,
+        byKind: { INTERSTITIAL_OR_CHALLENGE: 1 },
+      },
+      interstitialDispositionCounts: { deferred: 0, quarantined: 0, readyRetry: 0, nonRetryable: 1 },
+    });
+
+    const result = await (await loadHandler())({} as any);
+
+    expect(result.telemetry).toMatchObject({
+      processed: 1,
+      failedRetryable: 0,
+      failedPermanent: 1,
+      deferred: 0,
+      quarantined: 0,
+    });
+  });
+
+  it("reports QUARANTINED interstitials in quarantined (terminal), not deferred", async () => {
+    mocks.runBatch.mockResolvedValue({
+      articleCount: 1,
+      persist: { failed: 0, claimLost: 0, byKind: { INTERSTITIAL_OR_CHALLENGE: 1 } },
+      interstitialDispositionCounts: { deferred: 0, quarantined: 1, readyRetry: 0, nonRetryable: 0 },
+    });
+
+    const result = await (await loadHandler())({} as any);
+
+    expect(result.telemetry).toMatchObject({
+      failedPermanent: 0,
+      deferred: 0,
+      quarantined: 1,
+    });
+  });
+
+  it("reports READY_RETRY interstitials as failedRetryable without double counting", async () => {
+    mocks.runBatch.mockResolvedValue({
+      articleCount: 3,
+      persist: {
+        failed: 0,
+        claimLost: 0,
+        byKind: { INTERSTITIAL_OR_CHALLENGE: 1, RETRYABLE_FAILURE: 1, SUCCESS: 1 },
+      },
+      interstitialDispositionCounts: { deferred: 0, quarantined: 0, readyRetry: 1, nonRetryable: 0 },
+    });
+
+    const result = await (await loadHandler())({} as any);
+
+    // RETRYABLE_FAILURE (byKind) + one READY_RETRY interstitial = 2, exactly.
+    expect(result.telemetry).toMatchObject({
+      processed: 3,
+      succeeded: 1,
+      failedRetryable: 2,
+      failedPermanent: 0,
+      deferred: 0,
+      quarantined: 0,
+    });
+  });
+
+  it("mixed batch: terminal outcomes count failedPermanent, recoverable interstitials never do", async () => {
+    mocks.runBatch.mockResolvedValue({
+      articleCount: 4,
+      persist: {
+        failed: 0,
+        claimLost: 0,
+        byKind: { INTERSTITIAL_OR_CHALLENGE: 3, PAYWALL_BLOCKED: 1 },
+      },
+      interstitialDispositionCounts: { deferred: 2, quarantined: 1, readyRetry: 0, nonRetryable: 0 },
+    });
+
+    const result = await (await loadHandler())({} as any);
+
+    expect(result.telemetry).toMatchObject({
+      processed: 4,
+      failedPermanent: 1, // PAYWALL_BLOCKED only
+      deferred: 2,
+      quarantined: 1,
+    });
+  });
 });

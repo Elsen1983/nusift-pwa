@@ -88,7 +88,8 @@ vi.mock("./article-content-browser-extractor", () => ({
     ]);
     switch (rejectedReason) {
       case "http_error": return statusCode === 403 || statusCode === 429;
-      case "no_article_text": case "empty_html": case "too_short": return true;
+      case "no_article_text": case "empty_html": case "too_short":
+      case "interstitial_or_challenge": return true;
       case "fetch_failed": {
         if (signals.some((s: string) => browserUsefulSignals.has(s))) return true;
         const detailLower = (result.detail ?? "").toLowerCase();
@@ -104,7 +105,8 @@ vi.mock("./article-content-browser-extractor", () => ({
   isBrowserFallbackEligible: (rejectedReason: string, statusCode: number | null) => {
     switch (rejectedReason) {
       case "http_error": return statusCode === 403 || statusCode === 429;
-      case "no_article_text": case "empty_html": case "too_short": return true;
+      case "no_article_text": case "empty_html": case "too_short":
+      case "interstitial_or_challenge": return true;
       case "fetch_failed": return false;
       default: return false;
     }
@@ -2890,6 +2892,45 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
     expect(articles.map((article) => article.id)).toEqual([2]);
   });
 
+  it("allows bounded browser recovery for a new sibling on an HTTP 403 host but not an HTTP 429 host", async () => {
+    const { selectEnrichmentEligibleArticles } = await import("./enrichment-runtime");
+    const now = new Date("2026-07-29T12:00:00Z");
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({
+        id: 1,
+        canonicalUrl: "https://blocked.example/failed",
+        enrichmentStatus: "ENRICHMENT_FAILED",
+        enrichmentOutcome: {
+          extractorVersion: AGENT3_EXTRACTOR_VERSION,
+          kind: "HTTP_ACCESS_BLOCKED",
+          rejection: { code: "HTTP_FORBIDDEN", httpStatus: 403 },
+        },
+        enrichmentFinishedAt: new Date("2026-07-29T11:00:00Z"),
+      }),
+      makeArticle({ id: 2, canonicalUrl: "https://blocked.example/new" }),
+      makeArticle({
+        id: 3,
+        canonicalUrl: "https://limited.example/failed",
+        enrichmentStatus: "ENRICHMENT_FAILED",
+        enrichmentOutcome: {
+          extractorVersion: AGENT3_EXTRACTOR_VERSION,
+          kind: "HTTP_ACCESS_BLOCKED",
+          rejection: { code: "HTTP_429", httpStatus: 429 },
+        },
+        enrichmentFinishedAt: new Date("2026-07-29T11:30:00Z"),
+      }),
+      makeArticle({ id: 4, canonicalUrl: "https://limited.example/new" }),
+    ]);
+
+    const normallySelected = await selectEnrichmentEligibleArticles(now, 1);
+    const recoverySelected = await selectEnrichmentEligibleArticles(now, 1, {
+      allowBrowserRecoveryDuringHttp403Cooldown: true,
+    });
+
+    expect(normallySelected).toEqual([]);
+    expect(recoverySelected.map((article) => article.id)).toEqual([2]);
+  });
+
   it("bypasses recently-blocked filter when explicit articleIds are provided", async () => {
     const { selectEnrichmentEligibleArticles } = await import("./enrichment-runtime");
     const now = new Date("2026-07-29T12:00:00Z");
@@ -4276,5 +4317,519 @@ describe("collectAgent3HttpEvidence", () => {
       rateLimited403: 0,
       rateLimited429: 0,
     });
+  });
+});
+
+// ─── HTTP 202 interstitial/challenge recovery (Prompt 14) ───────────────────
+
+describe("HTTP 202 INTERSTITIAL_OR_CHALLENGE recovery", () => {
+  const makeInterstitialStaticFail = () => ({
+    ok: false as const,
+    method: "http-dom" as const,
+    resolvedUrl: "https://example.com/a",
+    statusCode: 202 as number | null,
+    rejectedReason: "interstitial_or_challenge" as const,
+    detail: "HTTP 202 response without a usable article body — page resembles an interstitial/challenge.",
+    confidence: 0,
+    qualitySignals: ["http_202_interstitial"],
+    diagnostics: {
+      selectedContainerSelector: null, selectedContainerScore: null,
+      selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+      candidateContainerCount: 0, bodyRejectedReason: "interstitial_or_challenge",
+      scoreReasons: [], excerptLength: null, bodyEqualsExcerpt: false,
+      bodySource: "none" as const, linkTextRatio: null, boilerplatePenalty: null,
+      topCandidates: [], usedExpansion: false, expansionType: null,
+      leadLikePenaltyApplied: false, stopReason: null, boundaryMarkersSeen: 0,
+      stoppedAtText: null, stoppedAtClassOrId: null, excludedBlockCount: 0,
+      skippedCandidateReasons: [],
+    },
+  });
+
+  const makeInterstitialBrowserFailure = () => ({
+    ok: false as const,
+    method: "browser-dom" as const,
+    resolvedUrl: "https://example.com/a",
+    statusCode: 202 as number | null,
+    rejectedReason: "interstitial_or_challenge" as const,
+    detail: "Browser also observed the interstitial.",
+    confidence: 0,
+    qualitySignals: ["browser_http_202"],
+    diagnostics: {
+      selectedContainerSelector: null, selectedContainerScore: null,
+      selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+      candidateContainerCount: 0, bodyRejectedReason: null, scoreReasons: [],
+      excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none" as const,
+      linkTextRatio: null, boilerplatePenalty: null, topCandidates: [],
+      usedExpansion: false, expansionType: null, leadLikePenaltyApplied: false,
+      stopReason: null, boundaryMarkersSeen: 0, stoppedAtText: null,
+      stoppedAtClassOrId: null, excludedBlockCount: 0, skippedCandidateReasons: [],
+    },
+  });
+
+  const makeBrowserSuccessLocal = (overrides: Record<string, unknown> = {}) => ({
+    ok: true as const,
+    method: "browser-dom" as const,
+    resolvedUrl: "https://example.com/a",
+    statusCode: 200,
+    title: "Extracted Title",
+    excerpt: "An excerpt",
+    bodyText: "Browser-rendered body text content that is long enough to pass the minimum threshold. ".repeat(10),
+    imageUrl: null,
+    author: null,
+    publishedAt: null,
+    isPaywall: null,
+    confidence: 0.8,
+    qualitySignals: ["selector:article", "method:browser-dom", "bodyLength:800"],
+    diagnostics: {
+      selectedContainerSelector: "article", selectedContainerScore: 55,
+      selectedContainerParagraphCount: 12, selectedContainerTextLength: 800,
+      candidateContainerCount: 1, bodyRejectedReason: null, scoreReasons: [],
+      excerptLength: 12, bodyEqualsExcerpt: false, bodySource: "dom" as const,
+      linkTextRatio: 0.04, boilerplatePenalty: 0, topCandidates: [],
+      usedExpansion: false, expansionType: null, leadLikePenaltyApplied: false,
+      stopReason: null, boundaryMarkersSeen: 0, stoppedAtText: null,
+      stoppedAtClassOrId: null, excludedBlockCount: 0, skippedCandidateReasons: [],
+    },
+    ...overrides,
+  });
+
+  const findRejectionArtifact = () => {
+    const createCalls = artifactCreateMock.mock.calls;
+    const artifact = createCalls.find(
+      (c) => (c[0]?.data as Record<string, unknown>)?.artifactType === "article_enrichment_rejection",
+    );
+    expect(artifact).toBeDefined();
+    return asObj((artifact![0].data as Record<string, unknown>).payload);
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    configureAgent3PrismaMocks();
+    articleFindManyMock.mockResolvedValue([makeArticle({ id: 1 })]);
+    articleUpdateMock.mockResolvedValue({ id: 0 });
+    artifactCreateMock.mockResolvedValue({ id: "art-x" });
+    artifactFindManyMock.mockResolvedValue([]);
+    pipelineRunCreateMock.mockResolvedValue({ id: "run-int" });
+    pipelineRunUpdateMock.mockResolvedValue({});
+    logAgentScanMock.mockResolvedValue(undefined);
+    extractArticleContentWithBrowserMock.mockReset();
+  });
+
+  it("D: INTERSTITIAL_OR_CHALLENGE triggers one bounded browser attempt; browser success → SUCCESS", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue(makeInterstitialStaticFail());
+    extractArticleContentWithBrowserMock.mockResolvedValue(makeBrowserSuccessLocal());
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: true, browserFallbackMaxAttempts: 3 });
+
+    expect(extractArticleContentWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(result.persist.byKind.SUCCESS).toBe(1);
+    expect(result.persist.byKind.INTERSTITIAL_OR_CHALLENGE).toBe(0);
+    expect(result.browserFallbackStats?.attempted).toBe(1);
+    expect(result.browserFallbackStats?.succeeded).toBe(1);
+
+    const createCalls = artifactCreateMock.mock.calls;
+    const successArtifact = createCalls.find(
+      (c) => (c[0]?.data as Record<string, unknown>)?.artifactType === "article_enrichment_result",
+    );
+    expect(successArtifact).toBeDefined();
+    const payload = asObj((successArtifact![0].data as Record<string, unknown>).payload);
+    expect(payload.kind).toBe("SUCCESS");
+    const bf = asObj(payload.browserFallback);
+    expect(bf.attempted).toBe(true);
+    expect(bf.succeeded).toBe(true);
+    expect(bf.staticRejectedReason).toBe("interstitial_or_challenge");
+  });
+
+  it("E: browser disabled → INTERSTITIAL_OR_CHALLENGE stays deferred with browser_disabled and retryAfterAt", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue(makeInterstitialStaticFail());
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: false });
+
+    expect(extractArticleContentWithBrowserMock).not.toHaveBeenCalled();
+    expect(result.persist.byKind.INTERSTITIAL_OR_CHALLENGE).toBe(1);
+    expect(result.persist.byKind.LOW_CONTENT_QUALITY).toBe(0);
+
+    const payload = findRejectionArtifact();
+    expect(payload.kind).toBe("INTERSTITIAL_OR_CHALLENGE");
+    expect(asObj(payload.rejection).code).toBe("INTERSTITIAL_OR_CHALLENGE");
+    const bf = asObj(payload.browserFallback);
+    expect(bf.attempted).toBe(false);
+    expect(bf.browserFallbackSkippedReason).toBe("browser_disabled");
+    // Bounded retry time persisted on the rejection summary (30min interstitial cooldown).
+    expect(typeof asObj(payload.rejection).retryAfterAt).toBe("string");
+    expect(Number.isFinite(Date.parse(asObj(payload.rejection).retryAfterAt as string))).toBe(true);
+    const rd = asObj(payload.retryDiagnostics);
+    expect(rd.disposition).toBe("DEFERRED");
+    expect(typeof rd.retryAfter).toBe("string");
+    expect(rd.browserFallbackCouldHelp).toBe(true);
+  });
+
+  it("E2: recoverable interstitial persists publicationStatus=PROCESSING and reports deferred disposition counts", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue(makeInterstitialStaticFail());
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: false });
+
+    expect(result.persist.persisted).toBe(1);
+    expect(result.persist.claimLost).toBe(0);
+    expect(result.persist.failed).toBe(0);
+    expect(result.persist.byKind.INTERSTITIAL_OR_CHALLENGE).toBe(1);
+    // Authoritative retry-policy queue state: DEFERRED (30min interstitial
+    // cooldown), not terminal — telemetry must never re-derive it from byKind.
+    expect(result.interstitialDispositionCounts).toEqual({
+      deferred: 1,
+      quarantined: 0,
+      readyRetry: 0,
+      nonRetryable: 0,
+    });
+
+    // The persisted Article row keeps the recoverable interstitial in
+    // PROCESSING (only a quarantined interstitial becomes REJECTED).
+    const updateCall = articleUpdateMock.mock.calls.find((c: any[]) => c[0]?.where?.id === 1);
+    expect(updateCall).toBeDefined();
+    expect(updateCall![0].data.publicationStatus).toBe("PROCESSING");
+    expect(updateCall![0].data.publicationReadyAt).toBeNull();
+  });
+
+  it("14B-B: claim-lost DEFERRED interstitial contributes no persisted disposition telemetry", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue(makeInterstitialStaticFail());
+    claimDeleteManyMock.mockImplementation(async (args: any) =>
+      args?.where?.token ? { count: 0 } : { count: 0 },
+    );
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: false });
+
+    expect(result.persist).toMatchObject({
+      persisted: 0,
+      claimLost: 1,
+      failed: 0,
+      byKind: { INTERSTITIAL_OR_CHALLENGE: 0 },
+    });
+    expect(result.interstitialDispositionCounts).toEqual({
+      deferred: 0,
+      quarantined: 0,
+      readyRetry: 0,
+      nonRetryable: 0,
+    });
+  });
+
+  it("14B-C-success: persisted READY_RETRY interstitial is counted once and stays PROCESSING", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
+    extractArticleContentFromUrlMock.mockResolvedValue({
+      ...makeInterstitialStaticFail(),
+      retryAfterAt: "2026-07-01T00:00:00.000Z",
+    });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({
+      browserFallback: false,
+      now: new Date("2026-07-01T01:00:00.000Z"),
+    });
+
+    expect(result.persist).toMatchObject({
+      persisted: 1,
+      claimLost: 0,
+      failed: 0,
+      byKind: { INTERSTITIAL_OR_CHALLENGE: 1 },
+    });
+    expect(result.interstitialDispositionCounts).toEqual({
+      deferred: 0,
+      quarantined: 0,
+      readyRetry: 1,
+      nonRetryable: 0,
+    });
+    const updateCall = articleUpdateMock.mock.calls.find((c: any[]) => c[0]?.where?.id === 1);
+    expect(updateCall?.[0]?.data?.publicationStatus).toBe("PROCESSING");
+    const rejectionArtifact = artifactCreateMock.mock.calls.find((c: any[]) =>
+      c[0]?.data?.artifactType === "article_enrichment_rejection",
+    );
+    expect(asObj((rejectionArtifact?.[0]?.data as Record<string, unknown>)?.payload).retryDiagnostics)
+      .toMatchObject({ disposition: "READY_RETRY" });
+  });
+
+  it("14B-C: persistence-failed READY_RETRY interstitial contributes no persisted disposition telemetry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
+    extractArticleContentFromUrlMock.mockResolvedValue(makeInterstitialStaticFail());
+    artifactCreateMock.mockImplementation(async (args: any) => {
+      const type = args?.data?.artifactType;
+      if (type === "article_enrichment_rejection") {
+        throw new Error("artifact persistence failed");
+      }
+      return { id: "attempt-marker" };
+    });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    // The persisted outcome finishes at 00:00 while the policy evaluates at
+    // 01:00, so the exact computed state is READY_RETRY.
+    const result = await runEnrichmentBatch({
+      browserFallback: false,
+      now: new Date("2026-07-01T01:00:00.000Z"),
+    });
+
+    expect(result.persist).toMatchObject({
+      persisted: 0,
+      claimLost: 0,
+      failed: 1,
+      byKind: { INTERSTITIAL_OR_CHALLENGE: 0 },
+    });
+    expect(result.interstitialDispositionCounts).toEqual({
+      deferred: 0,
+      quarantined: 0,
+      readyRetry: 0,
+      nonRetryable: 0,
+    });
+  });
+
+  it("14B-D: persisted QUARANTINED interstitial is counted once and published as REJECTED", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue(makeInterstitialStaticFail());
+    articleFindManyMock.mockResolvedValue([makeArticle({
+      id: 1,
+      enrichmentStatus: "ENRICHMENT_FAILED",
+      enrichmentAttemptCount: 2,
+      enrichmentFinishedAt: new Date("2026-07-28T11:00:00.000Z"),
+      enrichmentOutcome: {
+        extractorVersion: AGENT3_EXTRACTOR_VERSION,
+        kind: "INTERSTITIAL_OR_CHALLENGE",
+        rejectionCode: "INTERSTITIAL_OR_CHALLENGE",
+      },
+    })]);
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({
+      browserFallback: false,
+      now: new Date("2026-07-29T12:00:00.000Z"),
+    });
+
+    expect(result.persist).toMatchObject({
+      persisted: 1,
+      claimLost: 0,
+      failed: 0,
+      byKind: { INTERSTITIAL_OR_CHALLENGE: 1 },
+    });
+    expect(result.interstitialDispositionCounts).toEqual({
+      deferred: 0,
+      quarantined: 1,
+      readyRetry: 0,
+      nonRetryable: 0,
+    });
+    const updateCall = articleUpdateMock.mock.calls.find((c: any[]) => c[0]?.where?.id === 1);
+    expect(updateCall?.[0]?.data?.publicationStatus).toBe("REJECTED");
+  });
+
+  it("14B-E: mixed persistence outcomes count only the persisted DEFERRED interstitial", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T00:00:00.000Z"));
+    extractArticleContentFromUrlMock.mockImplementation(async (input: any) => {
+      if (input.articleId === 1) {
+        return {
+          ...makeInterstitialStaticFail(),
+          retryAfterAt: "2026-07-29T23:00:00.000Z",
+        };
+      }
+      if (input.articleId === 2) {
+        return {
+          ...makeInterstitialStaticFail(),
+          retryAfterAt: "2026-07-29T00:00:00.000Z",
+        };
+      }
+      return {
+        ...makeInterstitialStaticFail(),
+        retryAfterAt: "2026-07-29T00:00:00.000Z",
+      };
+    });
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({ id: 1, sourceId: "src-1" }),
+      makeArticle({ id: 2, sourceId: "src-2", canonicalUrl: "https://example.com/b", sourceUrl: "https://example.com/b" }),
+      makeArticle({
+        id: 3,
+        sourceId: "src-3",
+        canonicalUrl: "https://example.com/c",
+        sourceUrl: "https://example.com/c",
+        enrichmentStatus: "ENRICHMENT_FAILED",
+        enrichmentAttemptCount: 2,
+        enrichmentFinishedAt: new Date("2026-07-28T11:00:00.000Z"),
+        enrichmentOutcome: {
+          extractorVersion: AGENT3_EXTRACTOR_VERSION,
+          kind: "INTERSTITIAL_OR_CHALLENGE",
+          rejectionCode: "INTERSTITIAL_OR_CHALLENGE",
+        },
+      }),
+    ]);
+    claimDeleteManyMock.mockImplementation(async (args: any) => {
+      if (!args?.where?.token) return { count: 0 };
+      // Article 2 loses its claim; this is keyed by the actual persistence
+      // request rather than loop position so the test proves per-article state.
+      return { count: args.where.articleId === 2 ? 0 : 1 };
+    });
+    artifactCreateMock.mockImplementation(async (args: any) => {
+      const payload = asObj(args?.data?.payload);
+      if (
+        args?.data?.artifactType === "article_enrichment_rejection" &&
+        payload.articleId === 3
+      ) {
+        throw new Error("quarantined artifact persistence failed");
+      }
+      return { id: `artifact-${String(args?.data?.artifactType ?? "unknown")}` };
+    });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({
+      browserFallback: false,
+      now: new Date("2026-07-29T12:00:00.000Z"),
+    });
+
+    expect(result.persist).toMatchObject({ persisted: 1, claimLost: 1, failed: 1 });
+    expect(result.persist.byKind.INTERSTITIAL_OR_CHALLENGE).toBe(1);
+    expect(result.interstitialDispositionCounts).toEqual({
+      deferred: 1,
+      quarantined: 0,
+      readyRetry: 0,
+      nonRetryable: 0,
+    });
+  });
+
+  it("F: browser runtime unavailable → interstitial outcome stays deferred and respects the runtime cooldown", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue(makeInterstitialStaticFail());
+    extractArticleContentWithBrowserMock.mockResolvedValue({
+      ok: false as const,
+      method: "none" as const,
+      resolvedUrl: "https://example.com/a",
+      statusCode: null,
+      rejectedReason: "fetch_failed" as const,
+      detail: "[browser_runtime_unavailable] Playwright not installed",
+      confidence: 0,
+      qualitySignals: ["browser_runtime_unavailable"],
+      diagnostics: {
+        selectedContainerSelector: null, selectedContainerScore: null,
+        selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+        candidateContainerCount: 0, bodyRejectedReason: null, scoreReasons: [],
+        excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none" as const,
+        linkTextRatio: null, boilerplatePenalty: null, topCandidates: [],
+        usedExpansion: false, expansionType: null, leadLikePenaltyApplied: false,
+        stopReason: null, boundaryMarkersSeen: 0, stoppedAtText: null,
+        stoppedAtClassOrId: null, excludedBlockCount: 0, skippedCandidateReasons: [],
+      },
+    });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: true, browserFallbackMaxAttempts: 3 });
+
+    expect(result.persist.byKind.INTERSTITIAL_OR_CHALLENGE).toBe(1);
+    expect(result.browserFallbackStats?.runtimeUnavailable).toBe(1);
+    const payload = findRejectionArtifact();
+    const bf = asObj(payload.browserFallback);
+    expect(bf.attempted).toBe(true);
+    expect(bf.runtimeUnavailable).toBe(true);
+    const rd = asObj(payload.retryDiagnostics);
+    expect(rd.disposition).toBe("DEFERRED");
+    expect(rd.reasonCode).toBe("BROWSER_RUNTIME_UNAVAILABLE");
+    expect(typeof rd.retryAfter).toBe("string");
+  });
+
+  it("G: exhausted browser budget → no extra browser attempt, interstitial stays bounded by retry policy", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue(makeInterstitialStaticFail());
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: true, browserFallbackMaxAttempts: 0 });
+
+    expect(extractArticleContentWithBrowserMock).not.toHaveBeenCalled();
+    expect(result.persist.byKind.INTERSTITIAL_OR_CHALLENGE).toBe(1);
+    const payload = findRejectionArtifact();
+    const bf = asObj(payload.browserFallback);
+    expect(bf.browserFallbackSkippedReason).toBe("max_attempts_exhausted");
+    expect(asObj(payload.retryDiagnostics).disposition).toBe("DEFERRED");
+  });
+
+  it("G2: browser also sees the interstitial → outcome remains deferred, not terminal LOW_CONTENT_QUALITY", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue(makeInterstitialStaticFail());
+    extractArticleContentWithBrowserMock.mockResolvedValue(makeInterstitialBrowserFailure());
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: true, browserFallbackMaxAttempts: 3 });
+
+    expect(result.persist.byKind.INTERSTITIAL_OR_CHALLENGE).toBe(1);
+    expect(result.persist.byKind.LOW_CONTENT_QUALITY).toBe(0);
+    const payload = findRejectionArtifact();
+    const bf = asObj(payload.browserFallback);
+    expect(bf.attempted).toBe(true);
+    expect(bf.succeeded).toBe(false);
+    expect(bf.browserRejectedReason).toBe("interstitial_or_challenge");
+    expect(asObj(payload.retryDiagnostics).disposition).toBe("DEFERRED");
+  });
+
+  it("I: HTTP 429 static failure is never classified as interstitial and keeps its cooldown", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue({
+      ok: false as const,
+      method: "http-dom" as const,
+      resolvedUrl: "https://example.com/a",
+      statusCode: 429 as number | null,
+      rejectedReason: "http_error" as const,
+      detail: "[http_error] HTTP 429 Too Many Requests",
+      confidence: 0,
+      qualitySignals: ["http_429"],
+      diagnostics: {
+        selectedContainerSelector: null, selectedContainerScore: null,
+        selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+        candidateContainerCount: 0, bodyRejectedReason: null, scoreReasons: [],
+        excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none" as const,
+        linkTextRatio: null, boilerplatePenalty: null, topCandidates: [],
+        usedExpansion: false, expansionType: null, leadLikePenaltyApplied: false,
+        stopReason: null, boundaryMarkersSeen: 0, stoppedAtText: null,
+        stoppedAtClassOrId: null, excludedBlockCount: 0, skippedCandidateReasons: [],
+      },
+    });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: false });
+
+    expect(result.persist.byKind.HTTP_ACCESS_BLOCKED).toBe(1);
+    expect(result.persist.byKind.INTERSTITIAL_OR_CHALLENGE).toBe(0);
+    const payload = findRejectionArtifact();
+    expect(asObj(payload.rejection).httpStatus).toBe(429);
+  });
+
+  it("H: interstitial attempt budget exhaustion → article quarantined, not retried indefinitely", async () => {
+    const { selectEnrichmentEligibleArticles } = await import("./enrichment-runtime");
+    const now = new Date("2026-07-29T12:00:00Z");
+    articleFindManyMock.mockResolvedValue([makeArticle({
+      id: 1,
+      enrichmentStatus: "ENRICHMENT_FAILED",
+      enrichmentAttemptCount: 3,
+      enrichmentFinishedAt: new Date("2026-07-29T11:00:00Z"),
+      enrichmentOutcome: {
+        extractorVersion: AGENT3_EXTRACTOR_VERSION,
+        kind: "INTERSTITIAL_OR_CHALLENGE",
+        rejectionCode: "INTERSTITIAL_OR_CHALLENGE",
+      },
+    })]);
+
+    const articles = await selectEnrichmentEligibleArticles(now, 50);
+    expect(articles).toHaveLength(0);
+  });
+
+  it("J: same-run attempted interstitial articles remain excluded from selection", async () => {
+    const { selectEnrichmentEligibleArticles } = await import("./enrichment-runtime");
+    const now = new Date("2026-07-29T12:00:00Z");
+    articleFindManyMock.mockResolvedValue([makeArticle({
+      id: 1,
+      enrichmentStatus: "ENRICHMENT_FAILED",
+      enrichmentAttemptCount: 1,
+      enrichmentFinishedAt: new Date("2026-07-29T11:00:00Z"),
+      enrichmentOutcome: {
+        extractorVersion: AGENT3_EXTRACTOR_VERSION,
+        kind: "INTERSTITIAL_OR_CHALLENGE",
+        rejectionCode: "INTERSTITIAL_OR_CHALLENGE",
+      },
+    })]);
+    // Same-run attempt marker exists for article 1.
+    artifactFindManyMock.mockResolvedValue([{ payload: { articleId: 1 } }]);
+
+    const articles = await selectEnrichmentEligibleArticles(now, 50, { pipelineRunId: "run-1" });
+    expect(articles).toHaveLength(0);
   });
 });

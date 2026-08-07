@@ -32,9 +32,148 @@ import { hasStrongPaywallHint } from "./paywall-detection";
 /** Agent 2 counts one logical request per safeFetch call; redirects remain one logical request. */
 export type DiscoveryNetworkTelemetry = Pick<
   StageBatchProbe,
-  "recordNetworkRequest" | "recordLogicalRequestDuration" | "recordTimeout"
+  "recordNetworkRequest" | "recordLogicalRequestDuration" | "recordTimeout" | "recordRateLimited"
 >;
 
+export type StaticDiscoveryRequestPhase = "listing" | "robots" | "sitemap" | "article_detail";
+export type StaticDiscoveryRetryAfterSource = "delta_seconds" | "http_date" | "fallback";
+
+export type StaticDiscoveryRateLimitEvidence = {
+  phase: StaticDiscoveryRequestPhase;
+  url: string;
+  status: 429;
+  retryAfterAt: string;
+  retryAfterSource: StaticDiscoveryRetryAfterSource;
+};
+
+export type StaticDiscoverySkippedWork = {
+  phase: StaticDiscoveryRequestPhase;
+  url: string;
+  reason: string;
+};
+
+export type StaticDiscoveryRequestBudgetSnapshot = {
+  limit: number;
+  used: number;
+  remaining: number;
+  exhausted: boolean;
+  skippedWork: StaticDiscoverySkippedWork[];
+};
+
+export type StaticDiscoveryRequestBudget = {
+  limit: number;
+  consume: (phase: StaticDiscoveryRequestPhase, url: string) => boolean;
+  /** Record known required work that could not start because no slot remained. */
+  recordWorkSkipped: (phase: StaticDiscoveryRequestPhase, url: string, reason: string) => void;
+  recordRateLimit: (phase: StaticDiscoveryRequestPhase, url: string, retryAfterHeader?: string | null) => StaticDiscoveryRateLimitEvidence;
+  snapshot: () => StaticDiscoveryRequestBudgetSnapshot;
+  rateLimitEvidence: StaticDiscoveryRateLimitEvidence[];
+};
+
+export const STATIC_RETRY_AFTER_FALLBACK_MS = 15 * 60 * 1000;
+export const STATIC_RETRY_AFTER_MIN_MS = 30 * 1000;
+export const STATIC_RETRY_AFTER_MAX_MS = 24 * 60 * 60 * 1000;
+
+/** Parse both Retry-After formats and clamp untrusted cooldowns to safe bounds. */
+export function parseBoundedStaticRetryAfter(
+  value: string | null | undefined,
+  nowMs = Date.now(),
+): { retryAfterAt: string; source: StaticDiscoveryRetryAfterSource } {
+  const raw = value?.trim() ?? "";
+  let delayMs: number | null = null;
+  let source: StaticDiscoveryRetryAfterSource = "fallback";
+  if (/^\d+$/.test(raw)) {
+    delayMs = Number(raw) * 1000;
+    source = "delta_seconds";
+  } else if (raw) {
+    const dateMs = Date.parse(raw);
+    if (Number.isFinite(dateMs)) {
+      delayMs = dateMs - nowMs;
+      source = "http_date";
+    }
+  }
+  const boundedDelay = Math.min(
+    STATIC_RETRY_AFTER_MAX_MS,
+    Math.max(STATIC_RETRY_AFTER_MIN_MS, Number.isFinite(delayMs ?? NaN) ? delayMs as number : STATIC_RETRY_AFTER_FALLBACK_MS),
+  );
+  return {
+    retryAfterAt: new Date(nowMs + boundedDelay).toISOString(),
+    source,
+  };
+}
+
+/**
+ * Normalize a previously-produced Retry-After timestamp at a trust boundary.
+ * Legacy/mock payloads may contain a valid but stale or multi-year timestamp;
+ * clamp the delay to the same policy used for response headers.
+ */
+export function boundStaticRetryAfterTimestamp(
+  value: string | null | undefined,
+  source: StaticDiscoveryRetryAfterSource | null | undefined,
+  nowMs = Date.now(),
+): { retryAfterAt: string; source: StaticDiscoveryRetryAfterSource } {
+  const parsedMs = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  if (!Number.isFinite(parsedMs)) return parseBoundedStaticRetryAfter(null, nowMs);
+
+  const boundedDelay = Math.min(
+    STATIC_RETRY_AFTER_MAX_MS,
+    Math.max(STATIC_RETRY_AFTER_MIN_MS, parsedMs - nowMs),
+  );
+  const normalizedSource = source === "delta_seconds" || source === "http_date" || source === "fallback"
+    ? source
+    : "fallback";
+  return {
+    retryAfterAt: new Date(nowMs + boundedDelay).toISOString(),
+    source: normalizedSource,
+  };
+}
+
+export function createStaticDiscoveryRequestBudget(limit: number): StaticDiscoveryRequestBudget {
+  const boundedLimit = Math.max(0, Math.floor(Number.isFinite(limit) ? limit : 0));
+  let used = 0;
+  // `exhausted` means a request was refused because no slot remained. Merely
+  // consuming the final slot is not itself an incomplete discovery outcome:
+  // the current phase may have finished exactly at the configured boundary.
+  let exhausted = boundedLimit === 0;
+  const rateLimitEvidence: StaticDiscoveryRateLimitEvidence[] = [];
+  const skippedWork: StaticDiscoverySkippedWork[] = [];
+  return {
+    limit: boundedLimit,
+    consume: (phase, url) => {
+      if (used >= boundedLimit) {
+        exhausted = true;
+        if (skippedWork.length < 20) skippedWork.push({ phase, url, reason: "request budget exhausted" });
+        return false;
+      }
+      used += 1;
+      return true;
+    },
+    recordWorkSkipped: (phase, url, reason) => {
+      exhausted = true;
+      if (skippedWork.length < 20) skippedWork.push({ phase, url, reason });
+    },
+    recordRateLimit: (phase, url, retryAfterHeader) => {
+      const parsed = parseBoundedStaticRetryAfter(retryAfterHeader);
+      const evidence: StaticDiscoveryRateLimitEvidence = {
+        phase,
+        url,
+        status: 429,
+        retryAfterAt: parsed.retryAfterAt,
+        retryAfterSource: parsed.source,
+      };
+      rateLimitEvidence.push(evidence);
+      return evidence;
+    },
+    snapshot: () => ({
+      limit: boundedLimit,
+      used,
+      remaining: Math.max(0, boundedLimit - used),
+      exhausted,
+      skippedWork: [...skippedWork],
+    }),
+    rateLimitEvidence,
+  };
+}
 
 const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
 
@@ -122,21 +261,62 @@ export type SitemapEntry = {
  * Fetch a URL and return the text body, or null on any failure.
  * Respects same-domain policy relative to the target origin.
  */
+export const readStaticResponseHeader = (response: { headers?: unknown } | null, name: string): string | null => {
+  const headers = response?.headers as {
+    get?: (headerName: string) => string | null;
+    [key: string]: unknown;
+  } | undefined;
+  if (!headers) return null;
+  if (typeof headers.get === "function") return headers.get(name);
+  const normalizedName = name.toLowerCase();
+  const matchingKey = Object.keys(headers).find((key) => key.toLowerCase() === normalizedName);
+  const value = matchingKey ? headers[matchingKey] : undefined;
+  return typeof value === "string" ? value : null;
+};
+
 const safeFetchText = async (
   url: string,
   targetOrigin: string,
   telemetry?: DiscoveryNetworkTelemetry,
+  requestBudget?: StaticDiscoveryRequestBudget,
+  phase: "robots" | "sitemap" = "sitemap",
 ): Promise<string | null> => {
+  let urlObj: URL;
+  let targetObj: URL;
   try {
-    const urlObj = new URL(url);
-    const targetObj = new URL(targetOrigin);
-    if (urlObj.hostname.replace(/^www\\./, "") !== targetObj.hostname.replace(/^www\\./, "")) {
-      return null;
-    }
+    urlObj = new URL(url);
+    targetObj = new URL(targetOrigin);
+  } catch {
+    // Invalid sitemap references are non-network rejections and must not
+    // consume a logical request slot.
+    return null;
+  }
+
+  // Only HTTP(S) URLs can be passed to the SSRF-guard fetch path. Rejecting
+  // other schemes here is a non-network validation outcome and must not spend
+  // a logical request slot.
+  if (!(["http:", "https:"].includes(urlObj.protocol) && ["http:", "https:"].includes(targetObj.protocol))) {
+    return null;
+  }
+
+  // Validate publisher scope before accounting or invoking safeFetch. A
+  // robots.txt directive to an external host is ignored without spending the
+  // target's budget or appearing as a publisher request failure.
+  if (urlObj.hostname.replace(/^www\\./, "") !== targetObj.hostname.replace(/^www\\./, "")) {
+    return null;
+  }
+
+  if (requestBudget && !requestBudget.consume(phase, url)) return null;
+  try {
     return await safeFetch(url, {
       headers: { "User-Agent": USER_AGENT, Accept: "application/xml, text/xml, text/plain" },
       telemetry,
     }).then(async (response) => {
+      if (response.status === 429) {
+        requestBudget?.recordRateLimit(phase, url, readStaticResponseHeader(response, "retry-after"));
+        telemetry?.recordRateLimited(429);
+        return null;
+      }
       if (!response.ok) return null;
       return await response.text();
     });
@@ -218,6 +398,7 @@ const extractRobotsSitemaps = (robotsTxt: string): string[] => {
 export async function discoverSitemapUrls(
   targetUrl: string,
   telemetry?: DiscoveryNetworkTelemetry,
+  requestBudget?: StaticDiscoveryRequestBudget,
 ): Promise<SitemapEntry[]> {
   const origin = new URL(targetUrl).origin;
   const allEntries: SitemapEntry[] = [];
@@ -231,7 +412,8 @@ export async function discoverSitemapUrls(
   }
 
   // Also try robots.txt for sitemap references
-  const robotsTxt = await safeFetchText(`${origin}/robots.txt`, origin, telemetry);
+  const robotsTxt = await safeFetchText(`${origin}/robots.txt`, origin, telemetry, requestBudget, "robots");
+  if (requestBudget?.rateLimitEvidence.some((e) => e.phase === "robots")) return [];
   if (robotsTxt) {
     for (const sitemapUrl of extractRobotsSitemaps(robotsTxt)) {
       if (!sitemapCandidates.includes(sitemapUrl)) {
@@ -251,8 +433,13 @@ export async function discoverSitemapUrls(
     visitedSitemaps.add(normalized);
     processedCount += 1;
 
-    const xml = await safeFetchText(sitemapUrl, origin, telemetry);
-    if (!xml) continue;
+    const xml = await safeFetchText(sitemapUrl, origin, telemetry, requestBudget, "sitemap");
+    if (!xml) {
+      // The first confirmed sitemap 429 stops all later sitemap probes for
+      // this target; continuing would amplify the publisher's rate limit.
+      if (requestBudget?.rateLimitEvidence.some((e) => e.phase === "sitemap" && e.url === sitemapUrl)) break;
+      continue;
+    }
 
     if (isSitemapIndex(xml)) {
       // Sitemap index → enqueue child sitemaps
@@ -474,6 +661,12 @@ export type ArticleDiscoveryCandidateOutcome = {
   freshnessCutoffIso?: string;
   ageDays?: number | null;
   staleReason?: StaleAuditMeta["staleReason"];
+  /** Structured static HTTP evidence for bounded request/retry handling. */
+  httpStatus?: number | null;
+  rateLimited?: boolean;
+  retryAfterAt?: string | null;
+  retryAfterSource?: StaticDiscoveryRetryAfterSource | null;
+  requestBudgetExhausted?: boolean;
 };
 
 export type ArticleDiscoveryOutcomeSummary = {
@@ -1521,12 +1714,27 @@ export async function evaluateArticleLinkCandidate(input: {
   freshnessMs?: number;
   listingDateFallbackRaw?: string | null;
   telemetry?: DiscoveryNetworkTelemetry;
+  requestBudget?: StaticDiscoveryRequestBudget;
   /** The authoritative verified host scope (preferred). */
   verifiedHostScope?: VerifiedHostScope | null;
   /** @deprecated compatibility-only input for isolated legacy callers. */
   verifiedHosts?: string[] | null;
 }): Promise<EvaluateArticleLinkResult> {
   const { articleUrl, sourcePageUrl, targetUrl, sourceId } = input;
+
+  if (input.requestBudget && !input.requestBudget.consume("article_detail", articleUrl)) {
+    return {
+      accepted: false,
+      candidate: null,
+      outcome: {
+        url: articleUrl,
+        sourceKind: resolveSourceKindFromSourcePageUrl(sourcePageUrl),
+        status: "fetch_failed",
+        reason: "request_budget_exhausted",
+        requestBudgetExhausted: true,
+      } as ArticleDiscoveryCandidateOutcome,
+    };
+  }
 
   const response = await safeFetch(articleUrl, {
     headers: {
@@ -1537,6 +1745,24 @@ export async function evaluateArticleLinkCandidate(input: {
   }).catch(() => null);
 
   if (!response || !response.ok) {
+    const rateLimited = response?.status === 429;
+    const retryAfterHeader = rateLimited ? readStaticResponseHeader(response, "retry-after") : null;
+    // A request budget owns phase-specific evidence when present. Without a
+    // budget (the headless queue path), parse the response header directly so
+    // every confirmed 429 still carries bounded structured cooldown data.
+    const rateLimitEvidence = rateLimited
+      ? input.requestBudget?.recordRateLimit("article_detail", articleUrl, retryAfterHeader)
+        ?? (() => {
+          const parsed = parseBoundedStaticRetryAfter(retryAfterHeader);
+          return {
+            phase: "article_detail" as const,
+            url: articleUrl,
+            status: 429 as const,
+            retryAfterAt: parsed.retryAfterAt,
+            retryAfterSource: parsed.source,
+          };
+        })()
+      : null;
     return {
       accepted: false,
       candidate: null,
@@ -1544,7 +1770,11 @@ export async function evaluateArticleLinkCandidate(input: {
         url: articleUrl,
         sourceKind: resolveSourceKindFromSourcePageUrl(sourcePageUrl),
         status: "fetch_failed",
-        reason: `HTTP ${response?.status || "no_response"}`,
+        reason: rateLimited ? "HTTP 429" : `HTTP ${response?.status || "no_response"}`,
+        httpStatus: response?.status ?? null,
+        rateLimited,
+        retryAfterAt: rateLimitEvidence?.retryAfterAt ?? null,
+        retryAfterSource: rateLimitEvidence?.retryAfterSource ?? null,
       } as ArticleDiscoveryCandidateOutcome,
     };
   }

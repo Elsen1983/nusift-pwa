@@ -73,6 +73,7 @@ export const outcomeKindToArtifact = (
     case "LOW_CONTENT_QUALITY":
     case "UNSUPPORTED_STRUCTURE":
     case "HTTP_ACCESS_BLOCKED":
+    case "INTERSTITIAL_OR_CHALLENGE":
       return {
         artifactType: "article_enrichment_rejection",
         status: "FAILED",
@@ -103,9 +104,20 @@ export const buildArticleEnrichmentUpdate = (
     existingBodyText?: string | null;
     existingTitle?: string | null;
     existingCanonicalUrl?: string | null;
+    /** Authoritative queue decision from the Agent 3 retry policy. */
+    retryDisposition?: { state: string } | null;
   },
 ): Prisma.ArticleUpdateInput => {
   const status = outcomeKindToStatus(outcome.kind);
+  // A recoverable interstitial (deferred / ready-retry / first attempt) must
+  // stay in PROCESSING so a later browser-capable run can still recover it.
+  // Only a policy-terminal interstitial (quarantined after the bounded attempt
+  // budget, or explicitly NON_RETRYABLE) is a rejection. The disposition is
+  // passed from the runtime — never inferred independently here.
+  const interstitialTerminal =
+    outcome.kind === "INTERSTITIAL_OR_CHALLENGE" &&
+    (options?.retryDisposition?.state === "QUARANTINED" ||
+      options?.retryDisposition?.state === "NON_RETRYABLE");
   const bodyTextUpdate =
     outcome.kind === "SUCCESS" &&
     outcome.fields.bodyText?.chosenFrom === "dom" &&
@@ -137,6 +149,7 @@ export const buildArticleEnrichmentUpdate = (
         Boolean(options?.existingCanonicalUrl?.trim()) &&
         hasUsableAgent3BodyText(finalBodyText),
       nonPublishableStatus:
+        interstitialTerminal ||
         outcome.kind === "PAYWALL_BLOCKED" ||
         outcome.kind === "CANONICAL_MISMATCH" ||
         outcome.kind === "LOW_CONTENT_QUALITY" ||
@@ -367,6 +380,7 @@ export const persistEnrichmentOutcome = async (
   pipelineRunId: string,
   claimToken: string,
   now: Date = new Date(),
+  options?: { retryDisposition?: { state: string } | null },
 ): Promise<{ artifactId: string | null; applied: boolean; claimLost: boolean }> => {
   return prisma.$transaction(async (tx) => {
     const claim = await tx.articleEnrichmentClaim.findUnique({
@@ -429,6 +443,7 @@ export const persistEnrichmentOutcome = async (
         existingBodyText: currentArticle.bodyText,
         existingTitle: currentArticle.title,
         existingCanonicalUrl: currentArticle.canonicalUrl,
+        retryDisposition: options?.retryDisposition ?? null,
       }),
     });
     if (updated.count !== 1) {
@@ -470,6 +485,7 @@ const emptyByKind = (): Record<EnrichmentOutcomeKind, number> => ({
   LOW_CONTENT_QUALITY: 0,
   UNSUPPORTED_STRUCTURE: 0,
   HTTP_ACCESS_BLOCKED: 0,
+  INTERSTITIAL_OR_CHALLENGE: 0,
 });
 
 export const createEmptyEnrichmentBatchPersistResult = (): EnrichmentBatchPersistResult => ({
@@ -512,6 +528,7 @@ export const persistEnrichmentBatch = async (
   outcomes: ArticleEnrichmentOutcome[],
   pipelineRunId: string,
   claimTokens: ReadonlyMap<number, string>,
+  options?: { retryDispositions?: ReadonlyMap<number, { state: string }> | null },
 ): Promise<EnrichmentBatchPersistResult> => {
   const result = createEmptyEnrichmentBatchPersistResult();
 
@@ -522,7 +539,9 @@ export const persistEnrichmentBatch = async (
       continue;
     }
     try {
-      const persisted = await persistEnrichmentOutcome(outcome, pipelineRunId, claimToken);
+      const persisted = await persistEnrichmentOutcome(outcome, pipelineRunId, claimToken, undefined, {
+        retryDisposition: options?.retryDispositions?.get(outcome.articleId) ?? null,
+      });
       if (persisted.claimLost) {
         result.claimLost += 1;
         continue;

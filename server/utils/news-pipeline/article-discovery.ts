@@ -28,6 +28,11 @@ import {
   type ArticleDiscoverySourceKind,
   type JsonLdArticle,
   type DiscoveryNetworkTelemetry,
+  createStaticDiscoveryRequestBudget,
+  type StaticDiscoveryRequestBudget,
+  type StaticDiscoveryRateLimitEvidence,
+  type StaticDiscoveryRequestBudgetSnapshot,
+  readStaticResponseHeader,
 } from "./article-discovery-helpers";
 import { Prisma } from "@prisma/client";
 import { isLikelyArticleUrl } from "./article-url-policy";
@@ -42,7 +47,9 @@ import { evaluateRssOwnedTargetForAgent2 } from "./rss-owned-target";
 // DISCOVERY_FRESHNESS_MS re-exported from article-discovery-helpers for backward compat
 const MAX_LISTING_PAGES = 3;
 const MAX_LINKS_PER_PAGE = 20;
-const MAX_TOTAL_CANDIDATES = 60;
+export const MAX_ACCEPTED_CANDIDATES = 60;
+export const MAX_EVALUATED_CANDIDATES = 30;
+export const MAX_STATIC_REQUESTS = 40;
 const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
 
 /**
@@ -134,6 +141,13 @@ export type ArticleDiscoveryResult = {
     via: string;
     trusted: boolean;
   }>;
+  /** Static discovery was interrupted by a bounded retryable condition. */
+  retryable: boolean;
+  /** False when HTTP 429 or request-budget exhaustion stopped the shortlist early. */
+  discoveryComplete: boolean;
+  detailEvaluationStoppedReason: "rate_limited" | "request_budget_exhausted" | "evaluation_cap" | "accepted_cap" | null;
+  rateLimitEvidence: StaticDiscoveryRateLimitEvidence[];
+  requestBudget: StaticDiscoveryRequestBudgetSnapshot;
 };
 
 type ListingArticleLink = {
@@ -159,8 +173,14 @@ export type ListingFetchDiagnostic = {
     | "no_links_found"
     | "no_article_like_links"
     | "ok"
-    | "parser_error";
+    | "parser_error"
+    | "rate_limited"
+    | "request_budget_exhausted";
   hints: string[];
+  rateLimited?: boolean;
+  retryAfterAt?: string | null;
+  retryAfterSource?: "delta_seconds" | "http_date" | "fallback" | null;
+  requestBudgetExhausted?: boolean;
 };
 
 const emptySkipSummary = (): IngestSkipSummary => ({
@@ -415,6 +435,7 @@ const crawlListingPages = async (
   categoryPathUrl?: string | null,
   deniedPathPrefixes?: string[] | null,
   telemetry?: DiscoveryNetworkTelemetry,
+  requestBudget?: StaticDiscoveryRequestBudget,
 ) => {
   const visitedPages: string[] = [];
   const diagnostics: ListingFetchDiagnostic[] = [];
@@ -430,6 +451,23 @@ const crawlListingPages = async (
     seenPages.add(normalizedPageUrl);
 
     let response: Response | null = null;
+    if (requestBudget && !requestBudget.consume("listing", pageUrl)) {
+      diagnostics.push({
+        url: pageUrl,
+        finalUrl: null,
+        status: null,
+        contentType: null,
+        htmlLength: null,
+        title: null,
+        rawLinkCount: 0,
+        articleLikeLinkCount: 0,
+        paginationLinkCount: 0,
+        reason: "request_budget_exhausted",
+        hints: ["static request budget exhausted"],
+        requestBudgetExhausted: true,
+      });
+      break;
+    }
     try {
       response = await safeFetch(pageUrl, {
         headers: {
@@ -459,6 +497,16 @@ const crawlListingPages = async (
       ? response.headers.get("content-type")
       : null;
     if (!response.ok) {
+      const rateLimited = response.status === 429;
+      const rateLimitEvidence = rateLimited
+        ? requestBudget?.recordRateLimit("listing", pageUrl, readStaticResponseHeader(response, "retry-after"))
+        : undefined;
+      if (rateLimited) telemetry?.recordRateLimited(429);
+      if (rateLimited) {
+        // A confirmed listing 429 invalidates the remaining pagination queue.
+        // Do not fetch page 3, robots, sitemaps, or details after this point.
+        queue.length = 0;
+      }
       diagnostics.push({
         url: pageUrl,
         finalUrl: response.url || null,
@@ -469,9 +517,13 @@ const crawlListingPages = async (
         rawLinkCount: 0,
         articleLikeLinkCount: 0,
         paginationLinkCount: 0,
-        reason: "fetch_failed",
+        reason: rateLimited ? "rate_limited" : "fetch_failed",
         hints: [`status=${response.status}`],
+        rateLimited,
+        retryAfterAt: rateLimitEvidence?.retryAfterAt ?? null,
+        retryAfterSource: rateLimitEvidence?.retryAfterSource ?? null,
       });
+      if (rateLimited) break;
       continue;
     }
 
@@ -593,6 +645,7 @@ const discoverArticleCandidatesForPage = async (
     freshnessMs?: number;
     deniedPathPrefixes?: string[] | null;
     telemetry?: DiscoveryNetworkTelemetry;
+    requestBudget?: StaticDiscoveryRequestBudget;
     /** Authoritative verified host scope established by discovery evidence. */
     verifiedHostScope?: VerifiedHostScope | null;
     /** @deprecated compatibility-only input for isolated callers. */
@@ -630,6 +683,7 @@ const discoverArticleCandidatesForPage = async (
     categoryId: target.categoryId,
     freshnessMs: overrides?.freshnessMs,
     telemetry: overrides?.telemetry,
+    requestBudget: overrides?.requestBudget,
     // The one authoritative scope is carried into metadata evaluation and URL
     // scoring; raw host arrays are not used by the production path.
     verifiedHostScope: overrides?.verifiedHostScope ?? null,
@@ -1105,6 +1159,7 @@ export async function persistArticleDiscoveryArtifact(input: {
   result: ArticleDiscoveryResult;
 }) {
   const payload = {
+    schemaVersion: 2,
     targetType: input.result.targetType,
     sourceId: input.result.sourceId,
     categoryId: input.result.categoryId || null,
@@ -1129,6 +1184,11 @@ export async function persistArticleDiscoveryArtifact(input: {
     ...(input.result.appliedProfileAudit ? { appliedProfileAudit: input.result.appliedProfileAudit } : {}),
     // Verified host-transition evidence (redirect/final-URL/document-canonical)
     canonicalHostEvidence: input.result.canonicalHostEvidence,
+    retryable: input.result.retryable,
+    discoveryComplete: input.result.discoveryComplete,
+    detailEvaluationStoppedReason: input.result.detailEvaluationStoppedReason,
+    rateLimitEvidence: input.result.rateLimitEvidence,
+    requestBudget: input.result.requestBudget,
   };
 
   return prisma.pipelineArtifact.create({
@@ -1137,13 +1197,21 @@ export async function persistArticleDiscoveryArtifact(input: {
       sourceId: input.result.sourceId,
       categoryId: input.result.categoryId || null,
       artifactType: "article_discovery_candidates",
-      status: input.result.failed > 0 && input.result.candidates.length === 0 ? "FAILED" : "CAPTURED",
+      status: input.result.retryable
+        ? input.result.detailEvaluationStoppedReason === "rate_limited"
+          ? "DEFERRED_RATE_LIMIT"
+          : "DEFERRED_STATIC_DISCOVERY"
+        : input.result.failed > 0 && input.result.candidates.length === 0
+          ? "FAILED"
+          : "CAPTURED",
       candidateCount: input.result.candidates.length,
       payload,
       errorLog:
-        input.result.failed > 0 && input.result.candidates.length === 0
-          ? `No article candidates discovered for ${input.result.targetUrl}.`
-          : null,
+        input.result.retryable
+          ? `Static discovery deferred for ${input.result.targetUrl}; retryable=${input.result.retryable}, stopReason=${input.result.detailEvaluationStoppedReason ?? "unknown"}.`
+          : input.result.failed > 0 && input.result.candidates.length === 0
+            ? `No article candidates discovered for ${input.result.targetUrl}.`
+            : null,
     },
   });
 }
@@ -1151,6 +1219,11 @@ export async function persistArticleDiscoveryArtifact(input: {
 export async function discoverArticlesFromTarget(
   target: ArticleDiscoveryTarget,
   telemetry?: DiscoveryNetworkTelemetry,
+  options?: {
+    maxAcceptedCandidates?: number;
+    maxEvaluatedCandidates?: number;
+    maxRequests?: number;
+  },
 ): Promise<ArticleDiscoveryResult> {
   const skipSummary = emptySkipSummary();
   const rejectedItems: IngestRejectedItem[] = [];
@@ -1159,6 +1232,9 @@ export async function discoverArticlesFromTarget(
   const seenCanonicalUrls = new Set<string>();
   const startedAt = Date.now();
   const discoverySources = { listingPages: 0, sitemapUrls: 0, jsonldUrls: 0 };
+  const maxAcceptedCandidates = Math.max(1, Math.floor(options?.maxAcceptedCandidates ?? MAX_ACCEPTED_CANDIDATES));
+  const maxEvaluatedCandidates = Math.max(1, Math.floor(options?.maxEvaluatedCandidates ?? MAX_EVALUATED_CANDIDATES));
+  const requestBudget = createStaticDiscoveryRequestBudget(options?.maxRequests ?? MAX_STATIC_REQUESTS);
   const tracker = new ArticleDiscoveryOutcomeTracker();
 
   // ── Lookup active discovery profile (if any) ──────────────────────────
@@ -1203,18 +1279,44 @@ export async function discoverArticlesFromTarget(
       (activeProfile ? ` activeProfile=${activeProfile.status}, profileId=${activeProfile.evidence.fromProfileArtifactId ?? "n/a"}, relaxScope=${relaxCategoryScope}, weakDates=${allowWeakDates}, deniedPrefixes=${deniedPathPrefixes?.length ?? 0}.` : ""),
   });
 
-  // ── Phase 1: Parallel source collection ────────────────────────────────
-  const [listing, sitemapEntries] = await Promise.all([
-    crawlListingPages(
-      target.targetUrl,
-      effectiveCategoryPathUrl,
-      deniedPathPrefixes,
-      telemetry,
-    ).catch((error: any) => {
-      throw new Error(`Article discovery fetch failed: ${error?.message || String(error)}`);
-    }),
-    discoverSitemapUrls(target.targetUrl, telemetry).catch(() => []),
-  ]);
+  // ── Phase 1: Listing-first static source collection ────────────────────
+  // A listing is sufficient when it exposes enough viable links to fill the
+  // detail evaluation cap. This is deliberately based on pre-evaluation link
+  // evidence, never on accepted candidates that have not been evaluated yet.
+  const listing = await crawlListingPages(
+    target.targetUrl,
+    effectiveCategoryPathUrl,
+    deniedPathPrefixes,
+    telemetry,
+    requestBudget,
+  ).catch((error: any) => {
+    throw new Error(`Article discovery fetch failed: ${error?.message || String(error)}`);
+  });
+  // A page is sufficient when it exposes the largest viable static batch the
+  // listing extractor can provide (20 links/page), or the caller's smaller
+  // evaluation cap. This avoids sitemap traffic merely because the default
+  // evaluation cap (30) exceeds the per-page listing-link cap (20).
+  const listingSufficiencyThreshold = Math.min(maxEvaluatedCandidates, MAX_LINKS_PER_PAGE);
+  const listingIsSufficient = listing.articleLinks.length >= listingSufficiencyThreshold;
+  const listingRateLimited = requestBudget.rateLimitEvidence.some((e) => e.phase === "listing");
+  const listingBudgetSnapshot = requestBudget.snapshot();
+  // A listing-level 429 is already a confirmed host cooldown. Do not amplify
+  // it with robots/sitemap probes. If the listing was sparse and no request
+  // slot remains, record the known skipped fallback explicitly rather than
+  // pretending the target completed normally.
+  const listingBudgetAvailable = listingBudgetSnapshot.remaining > 0;
+  const shouldProbeSitemap = !listingIsSufficient && !listingRateLimited && listingBudgetAvailable;
+  if (!listingIsSufficient && !listingRateLimited && !listingBudgetAvailable) {
+    requestBudget.recordWorkSkipped("sitemap", `${new URL(target.targetUrl).origin}/sitemap.xml`, "sparse listing requires sitemap fallback");
+  }
+  const sitemapEntries = shouldProbeSitemap
+    ? await discoverSitemapUrls(target.targetUrl, telemetry, requestBudget).catch(() => [])
+    : [];
+  const initialBudgetSnapshot = requestBudget.snapshot();
+  // Final-slot consumption is an exact boundary, not exhaustion evidence. A
+  // pre-detail budget stop exists only when known work was refused/skipped.
+  const initialBudgetExhausted = initialBudgetSnapshot.exhausted && initialBudgetSnapshot.skippedWork.length > 0;
+  const initialRateLimitEvidence = requestBudget.rateLimitEvidence.length > 0;
 
   const targetPageJsonLd = listing.firstPageHtml
     ? extractJsonLdArticles(listing.firstPageHtml, target.targetUrl)
@@ -1276,8 +1378,39 @@ export async function discoverArticlesFromTarget(
   }
 
   // ── Phase 3: Extract candidates from merged links with outcome tracking ─
+  let detailEvaluationStoppedReason: ArticleDiscoveryResult["detailEvaluationStoppedReason"] = initialRateLimitEvidence
+    ? "rate_limited"
+    : initialBudgetExhausted
+      ? "request_budget_exhausted"
+      : null;
+  let evaluatedCandidateCount = 0;
+  let discoveryComplete = detailEvaluationStoppedReason === null;
   for (const articleLink of allArticleLinks.values()) {
-    if (candidates.length >= MAX_TOTAL_CANDIDATES) break;
+    // Listing/sitemap/robots rate limits and pre-detail budget exhaustion are
+    // terminal for this static attempt. Do not turn them into synthetic detail
+    // evaluations or issue any later article requests.
+    if (detailEvaluationStoppedReason === "rate_limited" || detailEvaluationStoppedReason === "request_budget_exhausted") {
+      discoveryComplete = false;
+      break;
+    }
+    if (requestBudget.snapshot().exhausted) {
+      requestBudget.recordWorkSkipped("article_detail", articleLink.url, "article detail remained after request budget was exhausted");
+      detailEvaluationStoppedReason = "request_budget_exhausted";
+      discoveryComplete = false;
+      break;
+    }
+    if (candidates.length >= maxAcceptedCandidates) {
+      detailEvaluationStoppedReason = "accepted_cap";
+      break;
+    }
+    if (evaluatedCandidateCount >= maxEvaluatedCandidates) {
+      // Evaluation cap is intentional bounded completion. There is no cursor,
+      // so retrying the same first N URLs would not make forward progress.
+      detailEvaluationStoppedReason = "evaluation_cap";
+      discoveryComplete = true;
+      break;
+    }
+    evaluatedCandidateCount += 1;
     try {
       const result = await discoverArticleCandidatesForPage(
         articleLink,
@@ -1290,13 +1423,26 @@ export async function discoverArticlesFromTarget(
           // (the browser-only flag) still handles missing-date acceptance independently.
           ...(deniedPathPrefixes && deniedPathPrefixes.length > 0 ? { deniedPathPrefixes } : {}),
           telemetry,
+          requestBudget,
           verifiedHostScope,
         },
       );
 
-      // Record rejection/failure outcomes immediately.
+      // Every call above is one detail evaluation attempt, regardless of its
+      // eventual accepted/rejected/failed/stale/duplicate outcome.
       if (!result.candidate) {
         tracker.record(result.outcome);
+        if (result.outcome.rateLimited) {
+          detailEvaluationStoppedReason = "rate_limited";
+          discoveryComplete = false;
+          telemetry?.recordRateLimited?.(429);
+          break;
+        }
+        if (result.outcome.requestBudgetExhausted) {
+          detailEvaluationStoppedReason = "request_budget_exhausted";
+          discoveryComplete = false;
+          break;
+        }
         continue;
       }
 
@@ -1315,6 +1461,12 @@ export async function discoverArticlesFromTarget(
       seenCanonicalUrls.add(result.candidate.canonicalUrl);
       candidates.push(result.candidate);
       tracker.record(result.outcome);
+      if (result.outcome.rateLimited) {
+        detailEvaluationStoppedReason = "rate_limited";
+        discoveryComplete = false;
+        telemetry?.recordRateLimited?.(429);
+        break;
+      }
     } catch (error: any) {
       skipSummary.htmlFallbackNonArticle += 1;
       pushRejectedItem(rejectedItems, {
@@ -1332,11 +1484,22 @@ export async function discoverArticlesFromTarget(
   const topReason = summary.topRejectionReasons[0]?.reason || "none";
 
   // ── Quality assessment ─────────────────────────────────────────────────
+  // Consuming the final allowed request is not itself an incomplete outcome:
+  // the exact-boundary run is complete when no known work was skipped. The
+  // budget marks incompleteness only when consume() refused known work or the
+  // caller explicitly recorded skipped work.
+  const finalBudgetSnapshot = requestBudget.snapshot();
+  if (finalBudgetSnapshot.exhausted && finalBudgetSnapshot.skippedWork.length > 0 && !detailEvaluationStoppedReason) {
+    detailEvaluationStoppedReason = "request_budget_exhausted";
+    discoveryComplete = false;
+  }
+  const rateLimitEvidence = [...requestBudget.rateLimitEvidence];
+  const retryable = rateLimitEvidence.length > 0 || detailEvaluationStoppedReason === "request_budget_exhausted" || !discoveryComplete;
   const qualityAssessment = assessArticleDiscoveryQuality({
     acceptedCount: candidates.length,
     totalEvaluated: summary.totalEvaluated,
     pagesVisited: pagesVisited.length,
-    failed: candidates.length > 0 ? 0 : 1,
+    failed: candidates.length > 0 || retryable ? 0 : 1,
     byStatus: summary.byStatus,
   });
 
@@ -1350,9 +1513,10 @@ export async function discoverArticlesFromTarget(
   await logAgentScan({
     sourceId: target.sourceId,
     categoryId: target.categoryId || undefined,
-    status: candidates.length > 0 ? "ARTICLE_DISCOVERY_COMPLETED" : "ARTICLE_DISCOVERY_FAILED",
+    status: candidates.length > 0 && !retryable ? "ARTICLE_DISCOVERY_COMPLETED" : "ARTICLE_DISCOVERY_FAILED",
     executionTimeMs: Date.now() - startedAt,
     errorLog: `Discovered ${candidates.length} accepted, ${summary.rejected} rejected from ${summary.totalEvaluated} evaluated. ` +
+      `complete=${discoveryComplete}, retryable=${retryable}, stopReason=${detailEvaluationStoppedReason ?? "none"}, ` +
       `Sources: listing=${discoverySources.listingPages}, sitemap=${discoverySources.sitemapUrls}, jsonld=${discoverySources.jsonldUrls}. ` +
       `Top rejection: ${topReason}. ` +
       `Quality: ${qualityAssessment.quality} (confidence=${qualityAssessment.confidence}, escalate=${qualityAssessment.shouldEscalateToHeadless}). ` +
@@ -1371,7 +1535,9 @@ export async function discoverArticlesFromTarget(
     listingDiagnostics: listing.diagnostics,
     pagesVisited,
     candidates,
-    failed: candidates.length > 0 ? 0 : 1,
+    // A rate-limited/incomplete static attempt is retryable, not a hard
+    // discovery failure, even when it produced zero candidates.
+    failed: candidates.length > 0 || retryable ? 0 : 1,
     skipSummary,
     rejectedItems,
     outcomeSummary: summary,
@@ -1380,6 +1546,11 @@ export async function discoverArticlesFromTarget(
     qualityAssessment,
     appliedProfileAudit: profileAudit,
     canonicalHostEvidence,
+    retryable,
+    discoveryComplete,
+    detailEvaluationStoppedReason,
+    rateLimitEvidence,
+    requestBudget: requestBudget.snapshot(),
   };
 }
 
@@ -1785,7 +1956,6 @@ export async function runArticleDiscoveryBatch(input?: {
       const result = await discoverArticlesFromTarget(target, probe);
       for (const diagnostic of result.listingDiagnostics) {
         if (diagnostic.status === 403) probe.recordAccessDenied403();
-        if (diagnostic.status === 429) probe.recordRateLimited(429);
         // Only count fetch failures whose evidence mentions a timeout/abort;
         // DNS/connection errors are not timeouts.
         if (
@@ -1804,15 +1974,21 @@ export async function runArticleDiscoveryBatch(input?: {
       probe.recordDbOperation();
       artifactCount += 1;
 
-      // Persist escalation marker artifact when static discovery is insufficient.
-      if (result.qualityAssessment.shouldEscalateToHeadless) {
+      // Persist a marker whenever static discovery needs headless recovery or
+      // remains retryable/incomplete. A productive-quality partial result is
+      // still incomplete, so quality alone must never suppress the marker.
+      const needsHeadlessMarker = result.qualityAssessment.shouldEscalateToHeadless
+        || result.retryable
+        || result.discoveryComplete === false;
+      if (needsHeadlessMarker) {
+        const rateLimit = result.rateLimitEvidence[0] ?? null;
         const queued = await probe.timed("persistence", () => createHeadlessQueueArtifactIfAbsent({
           pipelineRunId: pipelineRun.id,
           sourceId: target.sourceId,
           categoryId: target.categoryId || null,
           targetUrl: target.targetUrl,
           payload: {
-              schemaVersion: 1,
+              schemaVersion: 2,
               artifactKind: "headless_escalation_marker",
               sourceId: target.sourceId,
               categoryId: target.categoryId || null,
@@ -1822,6 +1998,16 @@ export async function runArticleDiscoveryBatch(input?: {
               explanation: result.qualityAssessment.explanation,
               outcomeSummary: result.outcomeSummary,
               discoverySources: result.discoverySources,
+              stopReason: result.detailEvaluationStoppedReason,
+              rateLimitPhase: rateLimit?.phase ?? null,
+              retryAfterAt: rateLimit?.retryAfterAt ?? null,
+              retryAfterSource: rateLimit?.retryAfterSource ?? null,
+              rateLimitEvidence: result.rateLimitEvidence,
+              requestBudget: result.requestBudget,
+              discoveryComplete: result.discoveryComplete,
+              retryable: result.retryable,
+              acceptedCount: result.candidates.length,
+              evaluatedCount: result.outcomeSummary.totalEvaluated,
               createdAt: new Date().toISOString(),
           },
         }));
@@ -1838,22 +2024,26 @@ export async function runArticleDiscoveryBatch(input?: {
       skipped += persisted.skipped;
       failed += persisted.failed + result.failed;
 
-      if (persisted.failed === 0) {
+      if (persisted.failed === 0 && !result.retryable && result.discoveryComplete) {
+        // A fully completed productive static shortlist may resolve older
+        // headless markers. Partial/rate-limited static discovery must not
+        // claim the target was completely processed, even when candidates
+        // before the 429 were persisted successfully.
         await probe.timed("persistence", () => resolveStaleHeadlessMarkers({ result, artifactId: artifact.id, pipelineRunId: pipelineRun.id }));
         probe.recordDbOperation();
-      } else {
+      } else if (persisted.failed > 0) {
         await logAgentScan({
           sourceId: target.sourceId,
           categoryId: target.categoryId || undefined,
           status: "ARTICLE_DISCOVERY_PERSISTENCE_FAILED",
           executionTimeMs: 0,
-          errorLog: `Candidate persistence reported ${persisted.failed} failure(s) for ${target.targetUrl}; headless markers remain retryable.`,
+          errorLog: `Candidate persistence reported ${persisted.failed} failure(s) for ${target.targetUrl}; transient/incomplete headless marker remains retryable.`,
         });
       }
 
       processed += 1;
       if (persisted.failed > 0) targetPersistenceFailed += 1;
-      else if (result.failed > 0) targetFailedRetryable += 1;
+      else if (result.retryable || result.failed > 0) targetFailedRetryable += 1;
       else {
         succeeded += 1;
       }

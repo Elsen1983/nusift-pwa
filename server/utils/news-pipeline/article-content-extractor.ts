@@ -152,6 +152,50 @@ const PAYWALL_SIGNALS: Array<{ pattern: RegExp; strength: "strong" | "weak" }> =
   { pattern: /please\s+disable\s+your\s+ad\s*blocker/i, strength: "weak" },
 ];
 
+/**
+ * Generic text signals that a page is an interstitial, challenge, consent,
+ * queue, processing, or otherwise non-final shell rather than an article.
+ * Only meaningful when combined with an HTTP 202 status AND the absence of a
+ * usable article body — a real article page may contain some of these phrases
+ * (e.g. a cookie banner), but never without its body.
+ */
+const INTERSTITIAL_SIGNAL_PATTERNS: RegExp[] = [
+  /checking\s+your\s+browser/i,
+  /verify(ing)?\s+(you\s+are|that\s+you\s+are)\s+(human|not\s+a\s+robot)/i,
+  /are\s+you\s+a\s+robot/i,
+  /captcha/i,
+  /attention\s+required/i,
+  /please\s+wait\s+(while|for|a\s+moment)/i,
+  /you\s+will\s+(be\s+)?redirected/i,
+  /redirecting\s+(you|your\s+request)/i,
+  /(request|page)\s+(is\s+)?(processing|in\s+queue)/i,
+  /before\s+(accessing|proceeding|continuing)/i,
+  /powered\s+by\s+(cloudflare|incapsula|imperva)/i,
+  /accessing\s+(the\s+)?(site|website|page)/i,
+  /your\s+request\s+is\s+very\s+important\s+to\s+us/i,
+  /thank\s+you\s+for\s+your\s+patience/i,
+  /one\s+moment\s*(please)?/i,
+  /just\s+a\s+moment/i,
+  /you\s+are\s+being\s+(served|redirected)/i,
+  /page\s+is\s+loading/i,
+  /loading\s*\.{3}/i,
+  /we\s+value\s+your\s+privacy/i,
+  /manage\s+(your\s+)?(consent|cookies)/i,
+  /accept\s+(all\s+)?cookies/i,
+];
+
+/**
+ * JSON-LD schema types whose `articleBody` may be trusted as a complete
+ * article body. Explicit allow-list: generic traversal must never promote a
+ * navigation/consent/metadata object's text to bodyText.
+ */
+const SUPPORTED_JSONLD_ARTICLE_TYPES: ReadonlySet<string> = new Set([
+  "newsarticle",
+  "article",
+  "reportagenewsarticle",
+  "analysisnewsarticle",
+]);
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export type ArticleContentExtractionResult =
@@ -191,7 +235,8 @@ export interface ArticleContentExtractionFail {
     | "too_short"
     | "paywall_or_blocked"
     | "stale_or_invalid"
-    | "parse_error";
+    | "parse_error"
+    | "interstitial_or_challenge";
   detail: string;
   confidence: number;
   qualitySignals: string[];
@@ -233,7 +278,7 @@ export interface ExtractionDiagnostics {
   scoreReasons: string[];
   excerptLength: number | null;
   bodyEqualsExcerpt: boolean;
-  bodySource: "dom" | "expanded-dom" | "readability" | "existing-fallback" | "none";
+  bodySource: "dom" | "expanded-dom" | "readability" | "jsonld" | "existing-fallback" | "none";
   linkTextRatio: number | null;
   boilerplatePenalty: number | null;
   topCandidates: TopCandidateSummary[];
@@ -252,6 +297,8 @@ export interface ExtractionDiagnostics {
   excludedBlockCount: number;
   /** Reasons why higher-scoring candidates were skipped (e.g. 'lead_dominated', 'truncated_extraction'). */
   skippedCandidateReasons: string[];
+  /** Bounded trimmed HTML length (chars). Only set on failure diagnostics; never raw HTML. */
+  htmlLength?: number | null;
 }
 
 /** Score for a single body candidate container. */
@@ -561,6 +608,127 @@ function extractJsonLdField(doc: Document, field: string): string | null {
     // Malformed JSON-LD; skip
   }
   return null;
+}
+
+/**
+ * Decode common HTML entities and numeric character references safely.
+ * Used for JSON-LD `articleBody` values that may contain escaped markup.
+ */
+function decodeHtmlEntities(text: string): string {
+  const named: Record<string, string> = {
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&quot;": "\"",
+    "&apos;": "'",
+    "&nbsp;": " ",
+    "&hellip;": "…",
+    "&mdash;": "—",
+    "&ndash;": "–",
+    "&rsquo;": "'",
+    "&lsquo;": "'",
+    "&ldquo;": "\"",
+    "&rdquo;": "\"",
+  };
+  const codePoint = (n: number): string =>
+    Number.isFinite(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "";
+  return text
+    .replace(/&#(\d+);/g, (_, raw) => codePoint(Number(raw)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, raw) => codePoint(parseInt(raw, 16)))
+    .replace(/&(amp|lt|gt|quot|apos|nbsp|hellip|mdash|ndash|rsquo|lsquo|ldquo|rdquo);/gi, (match, name: string) => {
+      return named[`&${name.toLowerCase()};`] ?? match;
+    });
+}
+
+/**
+ * Normalize a JSON-LD `articleBody` value: decode entities, strip tags,
+ * collapse whitespace, remove boilerplate lines, and cap to the storage bound.
+ * Returns null when nothing meaningful remains.
+ */
+function normalizeJsonLdBodyText(raw: string): string | null {
+  const decoded = decodeHtmlEntities(raw);
+  const withoutTags = decoded.replace(/<[^>]*>/g, " ");
+  const normalized = normalizeExtractedText(withoutTags);
+  if (!normalized) return null;
+  return capBodyText(normalized);
+}
+
+/**
+ * Whether a JSON-LD object declares a supported article schema type.
+ * `@type` may be a string or an array of strings.
+ */
+function isJsonLdArticleObject(record: Record<string, unknown>): boolean {
+  const typeValue = record["@type"];
+  const typeList = Array.isArray(typeValue) ? typeValue : [typeValue];
+  return typeList.some(
+    (t) => typeof t === "string" && SUPPORTED_JSONLD_ARTICLE_TYPES.has(t.toLowerCase()),
+  );
+}
+
+/**
+ * Collect all JSON-LD objects (recursively, including @graph and arrays)
+ * that declare a supported article schema type.
+ */
+function collectJsonLdArticleObjects(
+  value: unknown,
+  out: Array<Record<string, unknown>> = [],
+): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) {
+    for (const item of value) collectJsonLdArticleObjects(item, out);
+    return out;
+  }
+  if (!value || typeof value !== "object") return out;
+  const record = value as Record<string, unknown>;
+  if (isJsonLdArticleObject(record)) out.push(record);
+  for (const nested of Object.values(record)) {
+    collectJsonLdArticleObjects(nested, out);
+  }
+  return out;
+}
+
+/**
+ * Extract a complete `articleBody` from supported Article/NewsArticle JSON-LD
+ * objects. Returns the longest normalized candidate that survives the same
+ * bounded-length normalization used for DOM text. Never reads `description`,
+ * `excerpt`, or navigation/consent objects — only the explicit `articleBody`
+ * field of a supported article schema. Returns null when unavailable.
+ */
+function extractJsonLdArticleBody(doc: Document): string | null {
+  try {
+    const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+    let best: string | null = null;
+    for (const script of scripts) {
+      const text = script.textContent?.trim();
+      if (!text) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        continue; // malformed JSON-LD → skip, never treat as article body
+      }
+      for (const obj of collectJsonLdArticleObjects(parsed)) {
+        const raw = obj.articleBody;
+        if (typeof raw !== "string" || raw.trim().length === 0) continue;
+        const normalized = normalizeJsonLdBodyText(raw);
+        if (!normalized) continue;
+        if (!best || normalized.length > best.length) best = normalized;
+      }
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Generic interstitial/challenge heuristic. Only called for HTTP 202 responses
+ * that already failed to produce a usable article body, so a normal article
+ * page (even one with a consent banner) cannot be misclassified here.
+ */
+function isLikelyInterstitialPage(rawPageText: string, doc: Document): boolean {
+  const title = doc.title?.trim() || "";
+  const haystack = title ? `${title}\n${rawPageText}` : rawPageText;
+  return INTERSTITIAL_SIGNAL_PATTERNS.some((pattern) => pattern.test(haystack));
 }
 
 function walkJsonForField(obj: unknown, field: string): unknown {
@@ -2082,13 +2250,34 @@ export async function extractArticleContentFromHtml(
   const { html, resolvedUrl, statusCode, existingTitle, existingBodyText, method } = input;
 
   // Step 1: Check for empty HTML
-  if (html.trim().length < 100) {
+  const htmlLength = html.trim().length;
+  if (htmlLength < 100) {
+    // HTTP 202 with empty/very short HTML and no usable article evidence is an
+    // interstitial/challenge shell (browser-recoverable, bounded-retryable) —
+    // never a terminal empty_html failure. HTTP 204/200 short bodies keep the
+    // existing empty_html classification; 403/429/5xx never reach this point.
+    // Note: this check runs before paywall detection, but an empty/short shell
+    // carries no DOM for paywall evidence, so a genuine 202 paywall page (a
+    // full-length document) still routes through paywall detection below.
+    if (statusCode === 202) {
+      return fail(
+        method,
+        resolvedUrl,
+        statusCode,
+        "interstitial_or_challenge",
+        `HTTP 202 response has no usable article HTML (${htmlLength} chars) — empty or short interstitial/challenge shell.`,
+        ["http_202_interstitial", "empty_or_short_interstitial_html", `htmlLength:${htmlLength}`],
+        { htmlLength, bodyRejectedReason: "empty_or_short_interstitial_html", bodySource: "none" },
+      );
+    }
     return fail(
       method,
       resolvedUrl,
       statusCode,
       "empty_html",
-      `HTML too short (${html.trim().length} chars)`,
+      `HTML too short (${htmlLength} chars)`,
+      [],
+      { htmlLength },
     );
   }
 
@@ -2162,7 +2351,22 @@ export async function extractArticleContentFromHtml(
       : bodyResult as BodyExtractionResult | null;
 
     let bodyText = effectiveResult?.text || null;
-    const bodySource = effectiveResult?.bodySource || "none";
+    let bodySource: ExtractionDiagnostics["bodySource"] = effectiveResult?.bodySource || "none";
+
+    // JSON-LD articleBody extraction: a complete, trustworthy structured-data
+    // body is accepted ONLY when the DOM produced nothing usable. It is never
+    // preferred over a stronger DOM/readability body. The candidate must pass
+    // the same quality gates as DOM-derived text (isUsableBody) and is bounded
+    // by the same storage cap.
+    let jsonLdBodyText: string | null = null;
+    if (!bodyText || !isUsableBody(bodyText, effectiveResult?.score)) {
+      const jsonLdCandidate = extractJsonLdArticleBody(doc);
+      if (jsonLdCandidate && isUsableBody(jsonLdCandidate)) {
+        jsonLdBodyText = jsonLdCandidate;
+        bodyText = jsonLdCandidate;
+        bodySource = "jsonld";
+      }
+    }
 
     // Merge diagnostics: always prefer captured DOM diagnostics (which include
     // candidate skip reasons from the full evaluation) over effectiveResult
@@ -2255,6 +2459,37 @@ export async function extractArticleContentFromHtml(
       );
     }
 
+    // Step 8.5: HTTP 202 interstitial/challenge classification.
+    // A 2xx response that carries NO usable article body, NO trustworthy
+    // structured-data body, and no acceptable existing body is an
+    // interstitial/challenge/consent/queue/non-final shell and must not become
+    // a terminal LOW_CONTENT_QUALITY failure — it stays browser-recoverable and
+    // bounded-retryable. Known interstitial text patterns only strengthen the
+    // evidence; they are never mandatory (an unknown provider shell with no
+    // article body is still classified). Paywall detection above takes
+    // precedence, and a valid 202 body (DOM, readability, or JSON-LD)
+    // short-circuits this check entirely.
+    const usableArticleBody = Boolean(bodyText) && (
+      ((bodyText ?? "").length >= 50 && isUsableBody(bodyText ?? "", effectiveResult?.score)) ||
+      (diagnostics.bodySource === "existing-fallback" && (bodyText ?? "").length >= 500)
+    );
+    if (statusCode === 202 && !jsonLdBodyText && !usableArticleBody) {
+      diagnostics.bodyRejectedReason = "interstitial_or_challenge";
+      const interstitialSignals = isLikelyInterstitialPage(rawPageText, doc)
+        ? ["http_202_interstitial", "interstitial_text_pattern"]
+        : ["http_202_interstitial"];
+      try { domWindow?.close(); } catch { /* cleanup is non-fatal */ }
+      return fail(
+        method,
+        resolvedUrl,
+        statusCode,
+        "interstitial_or_challenge",
+        "HTTP 202 response without a usable article body — page is an interstitial/challenge/non-final response.",
+        [...paywall.signals, ...interstitialSignals],
+        { ...diagnostics, htmlLength: html.trim().length },
+      );
+    }
+
     // Step 9: If no usable body text at all
     if (!bodyText || bodyText.length < 50) {
       diagnostics.bodyRejectedReason = "no_body_found";
@@ -2322,6 +2557,10 @@ export async function extractArticleContentFromHtml(
     if (paywall.isPaywall) {
       qualitySignals.push(...paywall.signals);
     }
+    if (jsonLdBodyText) {
+      qualitySignals.push(`bodySource:jsonld`);
+      qualitySignals.push(`jsonLdBodyLength:${jsonLdBodyText.length}`);
+    }
     if (bodyText.length > 0) qualitySignals.push(`bodyLength:${bodyText.length}`);
 
     const resultMethod = bodyResult ? method : "http-meta";
@@ -2378,6 +2617,20 @@ export async function extractArticleContentFromUrl(
   const fetchResult = await fetchArticleHtml(articleUrl, input.telemetry);
 
   if (!fetchResult.ok || !fetchResult.html) {
+    // HTTP 202 with an empty body is an interstitial/challenge shell (bounded
+    // evidence, browser-recoverable) — not a plain fetch/empty failure. HTTP
+    // 204/other empty responses keep their existing classification below.
+    if (fetchResult.statusCode === 202 && !fetchResult.html) {
+      return fail(
+        "none",
+        fetchResult.resolvedUrl,
+        202,
+        "interstitial_or_challenge",
+        "HTTP 202 response returned an empty body — interstitial/challenge shell.",
+        ["http_202_interstitial", "empty_or_short_interstitial_html", "htmlLength:0"],
+        { htmlLength: 0, bodyRejectedReason: "empty_or_short_interstitial_html", bodySource: "none" },
+      );
+    }
     const reason = categorizeFetchError(fetchResult);
     return fail(
       "none",

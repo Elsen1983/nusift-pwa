@@ -287,6 +287,7 @@ const ENRICHMENT_ARTICLE_SELECT = {
 type RecentBlockState = {
   articleIds: ReadonlySet<number>;
   hostnames: ReadonlySet<string>;
+  http403Hostnames: ReadonlySet<string>;
   retryAfterByArticleId: ReadonlyMap<number, string>;
   retryAfterByHostname: ReadonlyMap<string, string>;
 };
@@ -365,6 +366,7 @@ async function scanRecentBlockState(
 ): Promise<RecentBlockState> {
   const articleIds = new Set<number>();
   const hostnames = new Set<string>();
+  const http403Hostnames = new Set<string>();
   const retryAfterByArticleId = new Map<number, string>();
   const retryAfterByHostname = new Map<string, string>();
   let cursor: number | undefined;
@@ -399,6 +401,9 @@ async function scanRecentBlockState(
         : extractHostname(article.sourceUrl);
       if (hostname !== "unknown") {
         hostnames.add(hostname);
+        if (getAgent3HttpStatus(article) === 403) {
+          http403Hostnames.add(hostname);
+        }
         if (retryAfter) {
           const current = retryAfterByHostname.get(hostname);
           if (!current || Date.parse(retryAfter) > Date.parse(current)) {
@@ -412,7 +417,7 @@ async function scanRecentBlockState(
     if (page.length < PROGRESS_SCAN_PAGE_SIZE) break;
   }
 
-  return { articleIds, hostnames, retryAfterByArticleId, retryAfterByHostname };
+  return { articleIds, hostnames, http403Hostnames, retryAfterByArticleId, retryAfterByHostname };
 }
 
 async function countBlockedEligibleArticles(
@@ -540,6 +545,7 @@ export const selectEnrichmentEligibleArticles = async (
     : {
         articleIds: new Set<number>(),
         hostnames: new Set<string>(),
+        http403Hostnames: new Set<string>(),
         retryAfterByArticleId: new Map<number, string>(),
         retryAfterByHostname: new Map<string, string>(),
       };
@@ -551,10 +557,11 @@ export const selectEnrichmentEligibleArticles = async (
   const explicitlyTargeted = Boolean(hasExplicitArticleIds);
   const acceptsArticle = (article: EnrichmentEligibleArticle): boolean => {
     if (sameRunArticleIds.has(article.id)) return false;
-    const browserRecoverable403 =
-      allowBrowserRecoveryDuringHttp403Cooldown &&
-      article.enrichmentStatus === "ENRICHMENT_FAILED" &&
-      getAgent3HttpStatus(article) === 403;
+    const browserRecoverable403 = allowBrowserRecoveryDuringHttp403Cooldown && (
+      (article.enrichmentStatus === "ENRICHMENT_FAILED" && getAgent3HttpStatus(article) === 403)
+      || (article.enrichmentStatus === "INGESTED"
+        && recentBlockState.http403Hostnames.has(articleHostname(article)))
+    );
     if (
       shouldApplyRecentBlockFilter &&
       isBlockedByRecentBlockState(article, recentBlockState) &&
@@ -851,6 +858,8 @@ const extractorReasonToRejectionCode = (
     case "no_article_text":
     case "too_short":
       return "LOW_CONTENT_QUALITY";
+    case "interstitial_or_challenge":
+      return "INTERSTITIAL_OR_CHALLENGE";
     case "paywall_or_blocked":
       return "PAYWALL_BLOCKED";
     case "stale_or_invalid":
@@ -892,7 +901,7 @@ const buildOutcomeFromSuccess = (
   const titleProvenance = buildTitleProvenance(article.title, result.title);
   // Only consider extracted bodyText sources, not existing-fallback.
   const bodySource = result.diagnostics.bodySource;
-  const extractedBody = (bodySource === "dom" || bodySource === "expanded-dom" || bodySource === "readability")
+  const extractedBody = (bodySource === "dom" || bodySource === "expanded-dom" || bodySource === "readability" || bodySource === "jsonld")
     ? result.bodyText
     : null;
   const bodyTextProvenance = buildBodyTextProvenance(article.bodyText, extractedBody, forceReprocess);
@@ -2483,6 +2492,22 @@ export interface Agent3HttpEvidenceSummary {
   rateLimited429: number;
 }
 
+/**
+ * Authoritative retry-policy queue counts for INTERSTITIAL_OR_CHALLENGE
+ * outcomes only. These are incremented only after the per-article persistence
+ * result proves the Article/artifact transaction applied. The exact disposition
+ * computed once by `decideAgent3RetryDisposition` is used; it is never re-derived
+ * from the outcome kind, so failed or claim-lost transitions cannot look durable.
+ * INTERSTITIAL_OR_CHALLENGE is not inherently permanent; NON_RETRYABLE may
+ * legitimately be terminal.
+ */
+export type Agent3InterstitialDispositionCounts = {
+  deferred: number;
+  quarantined: number;
+  readyRetry: number;
+  nonRetryable: number;
+};
+
 export interface EnrichmentRunResult {
   pipelineRunId: string;
   /** Number of articles durably claimed and processed by this worker. */
@@ -2492,6 +2517,8 @@ export interface EnrichmentRunResult {
   /** Number of expired leases released before selection. */
   expiredClaimsRecovered: number;
   persist: EnrichmentBatchPersistResult;
+  /** Authoritative retry-policy queue counts for interstitial outcomes. */
+  interstitialDispositionCounts: Agent3InterstitialDispositionCounts;
   /** Per-outcome HTTP evidence; never reconstructed from aggregate counters. */
   httpEvidence: Agent3HttpEvidenceSummary;
   optionsUsed: {
@@ -2608,6 +2635,12 @@ export const runEnrichmentBatch = async (
     const outcomes: ArticleEnrichmentOutcome[] = [];
     const httpEvidence = emptyAgent3HttpEvidence();
     const persistResult = createEmptyEnrichmentBatchPersistResult();
+    const interstitialDispositionCounts: Agent3InterstitialDispositionCounts = {
+      deferred: 0,
+      quarantined: 0,
+      readyRetry: 0,
+      nonRetryable: 0,
+    };
     const attemptMarkerIds: string[] = [];
     const sourceCooldown = new SourceCooldownTracker();
     let claimSkipped = 0;
@@ -2719,21 +2752,46 @@ export const runEnrichmentBatch = async (
         forceReprocess,
         explicitlyTargeted: Boolean(options?.articleIds?.length),
       });
+      // Persist the computed bounded retry time on the rejection summary for
+      // interstitial outcomes so the row-level outcome carries the same
+      // deferral evidence as the artifact (browser-disabled / browser-failed
+      // interstitial articles stay recoverable by a future browser-capable run).
+      if (
+        outcome.kind === "INTERSTITIAL_OR_CHALLENGE" &&
+        outcome.rejection &&
+        !outcome.rejection.retryAfterAt &&
+        retryDisposition.state === "DEFERRED" &&
+        retryDisposition.retryAfter
+      ) {
+        outcome.rejection.retryAfterAt = retryDisposition.retryAfter;
+      }
+
+      // The exact retry disposition is passed unchanged to persistence below.
+      // Do not count it yet: before the transaction returns, Article CAS,
+      // claim ownership, and artifact creation may still fail.
+
       if (
         outcome.kind !== "SUCCESS" &&
         outcome.kind !== "SKIPPED" &&
         (retryDisposition.state === "DEFERRED" ||
           retryDisposition.state === "QUARANTINED" ||
-          retryDisposition.state === "NON_RETRYABLE")
+          retryDisposition.state === "NON_RETRYABLE" ||
+          (outcome.kind === "INTERSTITIAL_OR_CHALLENGE" && retryDisposition.state === "READY_RETRY"))
       ) {
         const detail = outcome.rejection?.detail ?? outcome.error ?? "";
         const browserFallbackCouldHelp =
           outcome.browserFallback?.runtimeUnavailable === true ||
           outcome.browserFallback?.browserFallbackSkippedReason === "browser_disabled" ||
-          outcome.kind === "HEADLESS_REQUIRED";
+          outcome.kind === "HEADLESS_REQUIRED" ||
+          outcome.kind === "INTERSTITIAL_OR_CHALLENGE";
+        // READY_RETRY (interstitial out of cooldown) carries no reasonCode on
+        // the disposition variant — fall back to the state label.
+        const retryReasonCode = "reasonCode" in retryDisposition
+          ? retryDisposition.reasonCode
+          : retryDisposition.state;
         outcome.retryDiagnostics = {
           disposition: retryDisposition.state,
-          reasonCode: retryDisposition.reasonCode,
+          reasonCode: retryReasonCode,
           attemptNumber,
           retryAfter: retryDisposition.state === "DEFERRED" ? retryDisposition.retryAfter : null,
           articleId: article.id,
@@ -2805,9 +2863,45 @@ export const runEnrichmentBatch = async (
         [outcome],
         pipelineRun!.id,
         new Map([[article.id, claim.token]]),
+        { retryDispositions: new Map([[article.id, retryDisposition]]) },
       ));
       probe.recordDbOperation();
       mergeEnrichmentBatchPersistResult(persistResult, articlePersistResult);
+
+      // Interstitial disposition telemetry is persisted-only. Because this
+      // runtime persists one article at a time, these aggregate fields prove
+      // this exact outcome was applied: one persisted outcome, no lost claim,
+      // no persistence failure, and one persisted interstitial by-kind entry.
+      // NON_RETRYABLE interstitials may legitimately be terminal and therefore
+      // belong in failedPermanent at the endpoint; interstitials are not
+      // inherently permanent.
+      if (
+        outcome.kind === "INTERSTITIAL_OR_CHALLENGE" &&
+        articlePersistResult.persisted === 1 &&
+        articlePersistResult.claimLost === 0 &&
+        articlePersistResult.failed === 0 &&
+        articlePersistResult.byKind.INTERSTITIAL_OR_CHALLENGE === 1
+      ) {
+        switch (retryDisposition.state) {
+          case "DEFERRED":
+            interstitialDispositionCounts.deferred += 1;
+            break;
+          case "READY_RETRY":
+            interstitialDispositionCounts.readyRetry += 1;
+            break;
+          case "QUARANTINED":
+            interstitialDispositionCounts.quarantined += 1;
+            break;
+          case "NON_RETRYABLE":
+            interstitialDispositionCounts.nonRetryable += 1;
+            break;
+          case "READY_NEW":
+            // Failed outcomes are evaluated with ENRICHMENT_FAILED, so this
+            // state is invalid here. Fail loudly rather than silently claiming
+            // a successfully persisted interstitial has no disposition bucket.
+            throw new Error("Unexpected READY_NEW disposition for an interstitial failure");
+        }
+      }
     }
 
     // Single PipelineRun update: finalize status + counts AND set the canonical
@@ -2926,6 +3020,7 @@ export const runEnrichmentBatch = async (
       claimSkipped,
       expiredClaimsRecovered,
       persist: persistResult,
+      interstitialDispositionCounts,
       httpEvidence,
       optionsUsed: {
         includeEnriched,

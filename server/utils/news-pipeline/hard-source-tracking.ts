@@ -90,6 +90,8 @@ export type HardSourceReport = {
   qualifyingHardSourceCount: number;
   /** Targets that were productive or resolved (excluded from report). */
   resolvedOrProductiveCount: number;
+  /** Targets with transient/incomplete Prompt 15A static evidence. */
+  deferredIncompleteCount: number;
 };
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -142,6 +144,10 @@ type AggregatedTarget = {
   lastStaticQuality: string | null;
   /** Whether the most recent static discovery quality assessment had shouldEscalateToHeadless=true. */
   lastStaticEscalated: boolean;
+  /** Prompt 15A completeness evidence; absent legacy fields remain quality-only. */
+  lastStaticRetryable: boolean;
+  lastStaticDiscoveryComplete: boolean;
+  lastStaticStopReason: string | null;
   lastBrowserStatus: string | null;
   lastAcceptedCount: number | null;
   lastInsertedCount: number | null;
@@ -232,13 +238,19 @@ function aggregateArtifact(
     const qa = isPlainObject(payload.qualityAssessment) ? payload.qualityAssessment : {};
     const quality = readString(qa.quality) ?? readString(payload.quality);
     const escalated = readBoolean(qa.shouldEscalateToHeadless);
+    const hasPrompt15AFields = "retryable" in payload || "discoveryComplete" in payload || "detailEvaluationStoppedReason" in payload;
+    const retryable = payload.retryable === true;
+    const discoveryComplete = payload.discoveryComplete !== false;
+    const stopReason = readString(payload.detailEvaluationStoppedReason);
+    const transientIncomplete = hasPrompt15AFields && (retryable || !discoveryComplete || stopReason === "rate_limited" || stopReason === "request_budget_exhausted");
 
-    const productive = quality === "productive";
+    const productive = quality === "productive" && !transientIncomplete;
     // A "weak" target only counts as a failed attempt when it actually
     // escalated (shouldEscalateToHeadless=true). Weak-but-stable targets
     // are NOT hard sources per the spec ("weak with escalation").
     const failed =
       quality !== null &&
+      !transientIncomplete &&
       NON_PRODUCTIVE_STATIC_QUALITIES.has(quality) &&
       (quality !== "weak" || escalated);
 
@@ -249,6 +261,9 @@ function aggregateArtifact(
       if (existing.lastStaticQuality === null && quality !== null) {
         existing.lastStaticQuality = quality;
         existing.lastStaticEscalated = escalated;
+        existing.lastStaticRetryable = retryable;
+        existing.lastStaticDiscoveryComplete = discoveryComplete;
+        existing.lastStaticStopReason = stopReason;
       }
       if (existing._streakActive) {
         if (productive) {
@@ -266,6 +281,9 @@ function aggregateArtifact(
         resolvedByAgent1ScopedRss: false,
         lastStaticQuality: quality,
         lastStaticEscalated: escalated,
+        lastStaticRetryable: retryable,
+        lastStaticDiscoveryComplete: discoveryComplete,
+        lastStaticStopReason: stopReason,
         lastBrowserStatus: null,
         lastAcceptedCount: null,
         lastInsertedCount: null,
@@ -318,6 +336,9 @@ function aggregateArtifact(
         resolvedByAgent1ScopedRss: false,
         lastStaticQuality: null,
         lastStaticEscalated: false,
+        lastStaticRetryable: false,
+        lastStaticDiscoveryComplete: true,
+        lastStaticStopReason: null,
         lastBrowserStatus: artifact.status,
         lastAcceptedCount: accepted,
         lastInsertedCount: inserted,
@@ -475,6 +496,7 @@ export async function buildHardSourceReport(input?: {
   let runtimeFailureOnlyCount = 0;
   let evidenceTargetCount = 0;
   let resolvedOrProductiveCount = 0;
+  let deferredIncompleteCount = 0;
   const nowMs = Date.now();
   for (const target of byTarget.values()) {
     const activeSource = activeSourceById.get(target.sourceId) || null;
@@ -499,8 +521,20 @@ export async function buildHardSourceReport(input?: {
       continue;
     }
 
+    // Prompt 15A transient/incomplete static evidence is deferred work, not
+    // publisher failure. It must not become a hard source even when an older
+    // or subsequent browser failure is also present.
+    const staticTransientIncomplete = target.lastStaticRetryable
+      || !target.lastStaticDiscoveryComplete
+      || target.lastStaticStopReason === "rate_limited"
+      || target.lastStaticStopReason === "request_budget_exhausted";
+    if (staticTransientIncomplete) {
+      deferredIncompleteCount += 1;
+      continue;
+    }
+
     // Filter out productive static targets — never hard sources.
-    if (target.lastStaticQuality === "productive") {
+    if (target.lastStaticQuality === "productive" && !target.lastStaticRetryable && target.lastStaticDiscoveryComplete && target.lastStaticStopReason !== "rate_limited" && target.lastStaticStopReason !== "request_budget_exhausted") {
       resolvedOrProductiveCount += 1;
       continue;
     }
@@ -542,6 +576,10 @@ export async function buildHardSourceReport(input?: {
     // are NOT hard sources per the spec ("weak with escalation").
     const staticFailed =
       target.lastStaticQuality !== null &&
+      !target.lastStaticRetryable &&
+      target.lastStaticDiscoveryComplete &&
+      target.lastStaticStopReason !== "rate_limited" &&
+      target.lastStaticStopReason !== "request_budget_exhausted" &&
       NON_PRODUCTIVE_STATIC_QUALITIES.has(target.lastStaticQuality) &&
       (target.lastStaticQuality !== "weak" || target.lastStaticEscalated);
     const browserFailed =
@@ -592,6 +630,7 @@ export async function buildHardSourceReport(input?: {
     evidenceTargetCount,
     qualifyingHardSourceCount: hardSources.length,
     resolvedOrProductiveCount,
+    deferredIncompleteCount,
   };
 }
 
@@ -613,6 +652,9 @@ export function classifyRecommendedNextAction(input: {
     categoryId: null,
     resolvedByAgent1ScopedRss: false,
     lastStaticEscalated: true,
+    lastStaticRetryable: false,
+    lastStaticDiscoveryComplete: true,
+    lastStaticStopReason: null,
     lastInsertedCount: null,
     lastSeenAt: new Date(0),
     _streakActive: true,
@@ -633,9 +675,16 @@ export function isProductiveOrResolved(input: {
   lastBrowserStatus: string | null;
   lastAcceptedCount: number | null;
   resolvedByAgent1ScopedRss?: boolean;
+  lastStaticRetryable?: boolean;
+  lastStaticDiscoveryComplete?: boolean;
+  lastStaticStopReason?: string | null;
 }): boolean {
   if (input.resolvedByAgent1ScopedRss === true) return true;
-  if (input.lastStaticQuality === "productive") return true;
+  const staticTransientIncomplete = input.lastStaticRetryable === true
+    || input.lastStaticDiscoveryComplete === false
+    || input.lastStaticStopReason === "rate_limited"
+    || input.lastStaticStopReason === "request_budget_exhausted";
+  if (input.lastStaticQuality === "productive" && !staticTransientIncomplete) return true;
   if (
     input.lastBrowserStatus === "RESOLVED" ||
     (input.lastAcceptedCount !== null && input.lastAcceptedCount > 0)

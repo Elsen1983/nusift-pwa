@@ -370,6 +370,9 @@ export async function buildAgent2HealthReport(input?: {
     categoryId: string | null;
     lastStaticQuality: string | null;
     lastStaticEscalated: boolean;
+    lastStaticIncomplete: boolean;
+    lastStaticRetryable: boolean;
+    lastStaticStopReason: string | null;
     lastBrowserStatus: string | null;
     lastAcceptedCount: number | null;
     lastInsertedCount: number | null;
@@ -404,14 +407,21 @@ export async function buildAgent2HealthReport(input?: {
       const qa = isPlainObject(payload.qualityAssessment) ? payload.qualityAssessment : {};
       const quality = readString(qa.quality) ?? readString(payload.quality);
       const escalated = qa.shouldEscalateToHeadless === true;
-      const productive = quality === "productive";
+      const staticRetryable = payload.retryable === true;
+      const staticIncomplete = payload.discoveryComplete === false;
+      const stopReason = readString(payload.detailEvaluationStoppedReason);
+      const transientIncomplete = staticRetryable || staticIncomplete || stopReason === "rate_limited" || stopReason === "request_budget_exhausted";
+      // Legacy artifacts omit these fields and retain the old quality-only
+      // behavior. Prompt 15A artifacts are completeness-aware.
+      const productive = quality === "productive" && !transientIncomplete;
+      const countsAsFailure = quality !== null && !productive && !transientIncomplete;
 
       if (existing) {
         // Older artifact: only contribute to failure streak if active.
         if (existing._streakActive) {
           if (productive) {
             existing._streakActive = false;
-          } else if (quality !== null && quality !== "productive") {
+          } else if (countsAsFailure) {
             existing.consecutiveFailures += 1;
             existing.lastFailureAt = artifact.createdAt;
           }
@@ -424,12 +434,15 @@ export async function buildAgent2HealthReport(input?: {
           categoryId: artifact.categoryId,
           lastStaticQuality: quality,
           lastStaticEscalated: escalated,
+          lastStaticIncomplete: staticIncomplete,
+          lastStaticRetryable: staticRetryable,
+          lastStaticStopReason: stopReason,
           lastBrowserStatus: null,
           lastAcceptedCount: null,
           lastInsertedCount: null,
-          consecutiveFailures: productive ? 0 : quality !== null ? 1 : 0,
+          consecutiveFailures: countsAsFailure ? 1 : 0,
           lastProductiveAt: productive ? artifact.createdAt : null,
-          lastFailureAt: !productive && quality !== null ? artifact.createdAt : null,
+          lastFailureAt: countsAsFailure ? artifact.createdAt : null,
           lastSeenAt: artifact.createdAt,
           inCooldown: false,
           browserCooldownUntil: null,
@@ -439,7 +452,7 @@ export async function buildAgent2HealthReport(input?: {
           lastBrowserCooldownSkipAt: null,
           lastBrowserAttemptAt: null,
           lastBrowserFinishedAt: null,
-          _streakActive: !productive,
+          _streakActive: countsAsFailure,
         });
       }
     } else if (artifact.artifactType === "article_discovery_headless_required") {
@@ -486,6 +499,9 @@ export async function buildAgent2HealthReport(input?: {
           categoryId: artifact.categoryId,
           lastStaticQuality: null,
           lastStaticEscalated: false,
+          lastStaticIncomplete: false,
+          lastStaticRetryable: false,
+          lastStaticStopReason: null,
           lastBrowserStatus: artifact.status,
           lastAcceptedCount: accepted,
           lastInsertedCount: inserted,
@@ -551,6 +567,9 @@ export async function buildAgent2HealthReport(input?: {
       resolvedByAgent1ScopedRss: false,
       lastStaticQuality: target.lastStaticQuality,
       lastStaticEscalated: target.lastStaticEscalated,
+      lastStaticRetryable: target.lastStaticRetryable,
+      lastStaticDiscoveryComplete: !target.lastStaticIncomplete,
+      lastStaticStopReason: target.lastStaticStopReason,
       lastBrowserStatus: target.lastBrowserStatus,
       lastAcceptedCount: target.lastAcceptedCount,
       lastInsertedCount: target.lastInsertedCount,
@@ -599,10 +618,15 @@ export async function buildAgent2HealthReport(input?: {
       continue;
     }
 
-    const { health, score, recommendedAction } = computeHealthScore({
+    const staticTransientIncomplete = target.lastStaticRetryable
+      || target.lastStaticIncomplete
+      || target.lastStaticStopReason === "rate_limited"
+      || target.lastStaticStopReason === "request_budget_exhausted";
+    const scoredStaticQuality = staticTransientIncomplete ? null : target.lastStaticQuality;
+    const computedHealth = computeHealthScore({
       rssActive: rssActive ?? false,
       rssProductive,
-      lastStaticQuality: target.lastStaticQuality,
+      lastStaticQuality: scoredStaticQuality,
       lastBrowserStatus: target.lastBrowserStatus,
       lastAcceptedCount: target.lastAcceptedCount,
       consecutiveFailures: target.consecutiveFailures,
@@ -611,6 +635,11 @@ export async function buildAgent2HealthReport(input?: {
       inCooldown: target.inCooldown,
       hardSourceLifecycleState: null,
     });
+    const health = computedHealth.health;
+    const score = computedHealth.score;
+    const recommendedAction = staticTransientIncomplete
+      ? "Static discovery incomplete — retry pending."
+      : computedHealth.recommendedAction;
 
     const cooldown = deriveCooldownState({
       browserCooldownUntil: target.browserCooldownUntil,

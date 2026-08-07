@@ -59,6 +59,10 @@ export type Agent2LifecycleInput = {
   resolvedByAgent1ScopedRss: boolean;
   /** Latest static discovery quality: productive, weak, failed, blocked, null. */
   lastStaticQuality: string | null;
+  /** Prompt 15A completeness evidence; omitted means legacy quality-only behavior. */
+  lastStaticRetryable?: boolean;
+  lastStaticDiscoveryComplete?: boolean;
+  lastStaticStopReason?: string | null;
   /** Whether the latest static discovery escalated to headless. */
   lastStaticEscalated: boolean;
   /** Latest browser artifact status string. */
@@ -124,7 +128,13 @@ export function classifyAgent2TargetLifecycle(input: Agent2LifecycleInput): Agen
     return "rss_owned";
   }
 
-  // 3. Browser accepted candidates → browser_productive or resolved
+  // 3. An active browser cooldown is the current operational state even if
+  // candidates were accepted before detail evaluation hit the rate limit.
+  if (input.inBrowserCooldown) {
+    return "cooldown";
+  }
+
+  // 4. Browser accepted candidates → browser_productive or resolved
   if (input.lastBrowserStatus === "RESOLVED" ||
     (input.lastAcceptedCount !== null && input.lastAcceptedCount > 0)) {
     return input.lastInsertedCount !== null && input.lastInsertedCount > 0
@@ -132,24 +142,25 @@ export function classifyAgent2TargetLifecycle(input: Agent2LifecycleInput): Agen
       : "browser_productive";
   }
 
-  // 4. Static productive → static_productive or resolved
-  if (input.lastStaticQuality === "productive") {
+  // 5. A productive-quality static artifact is not resolved when Prompt 15A
+  // says the shortlist is transiently incomplete. Missing fields preserve the
+  // legacy quality-only behavior.
+  const staticTransientIncomplete = input.lastStaticRetryable === true
+    || input.lastStaticDiscoveryComplete === false
+    || input.lastStaticStopReason === "rate_limited"
+    || input.lastStaticStopReason === "request_budget_exhausted";
+  if (input.lastStaticQuality === "productive" && !staticTransientIncomplete) {
     return "static_productive";
   }
 
-  // 5. Discovery profile active → profile_active
+  // 6. Discovery profile active → profile_active
   if (input.discoveryProfileStatus === "active") {
     return "profile_active";
   }
 
-  // 6. Discovery profile draft → profile_draft
+  // 7. Discovery profile draft → profile_draft
   if (input.discoveryProfileStatus === "draft") {
     return "profile_draft";
-  }
-
-  // 7. In browser cooldown
-  if (input.inBrowserCooldown) {
-    return "cooldown";
   }
 
   // 8. Browser pending (PENDING_HEADLESS status not yet claimed)

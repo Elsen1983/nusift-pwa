@@ -29,6 +29,7 @@ function makePlaywrightPage(overrides: {
   url?: string;
   ok?: boolean;
   status?: number;
+  headers?: Record<string, string>;
   gotoError?: string;
 } = {}) {
   const {
@@ -38,12 +39,14 @@ function makePlaywrightPage(overrides: {
     url = "https://example.com/news",
     ok = true,
     status = 200,
+    headers = {},
     gotoError,
   } = overrides;
 
   const mockResponse = {
     ok: () => ok,
     status: () => status,
+    headers: () => headers,
   };
 
   if (gotoError) {
@@ -999,6 +1002,62 @@ describe("evaluateArticleLinkCandidateWithBrowser", () => {
     return base;
   }
 
+  it("returns structured evidence for a real Playwright HTTP 429 response", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+
+    makePlaywrightPage({
+      ok: false,
+      status: 429,
+      headers: { "Retry-After": "120", "X-Do-Not-Persist": "secret" },
+    });
+
+    const fn = await loadFn();
+    const result = await fn({
+      articleUrl: "https://example.com/news/2026/07/20/rate-limited",
+      sourcePageUrl: "browser:https://example.com/news",
+      targetUrl: "https://example.com",
+      sourceId: "src-1",
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.outcome).toMatchObject({
+      status: "fetch_failed",
+      httpStatus: 429,
+      rateLimited: true,
+      retryAfterSource: "delta_seconds",
+    });
+    expect(Date.parse(result.outcome.retryAfterAt!)).toBeGreaterThan(Date.now());
+    expect(result.outcome).not.toHaveProperty("headers");
+    expect(result.outcome).not.toHaveProperty("body");
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("returns structured HTTP-date evidence for a real Playwright HTTP 429 response", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    const retryAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    makePlaywrightPage({
+      ok: false,
+      status: 429,
+      headers: { "retry-after": retryAt.toUTCString() },
+    });
+
+    const fn = await loadFn();
+    const result = await fn({
+      articleUrl: "https://example.com/news/2026/07/20/rate-limited-date",
+      sourcePageUrl: "browser:https://example.com/news",
+      targetUrl: "https://example.com",
+      sourceId: "src-1",
+    });
+
+    expect(result.outcome).toMatchObject({ httpStatus: 429, rateLimited: true, retryAfterSource: "http_date" });
+    expect(Date.parse(result.outcome.retryAfterAt!)).toBeGreaterThan(Date.now());
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
   it("returns rejected when browser fallback is disabled", async () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     delete process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
@@ -1818,6 +1877,177 @@ describe("page.evaluate and extractArticleDetailFromDocument equivalence", () =>
     expect(candidate.publishedAt).not.toBeNull();
     expect(candidate.rawSignals).toContain("agent2-browser-detail-recovery");
 
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("reuses one browser process while isolating each detail in a fresh context", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    makePlaywrightPage({ ok: false, status: 429, headers: { "Retry-After": "60" } });
+
+    const mod = await import("./article-discovery-browser");
+    mod.setArticleDiscoveryBrowserImporterForTest(async () => ({
+      chromium: { launch: (...args: any[]) => mockChromiumLaunch(...args) },
+    }));
+    const { session } = await mod.createBrowserArticleDetailSession({ timeBudgetMs: 60_000 });
+    expect(session).not.toBeNull();
+
+    const shared = {
+      sourcePageUrl: "browser:https://example.com/news",
+      targetUrl: "https://example.com",
+      sourceId: "src-1",
+    };
+    await session!.evaluate({ ...shared, articleUrl: "https://example.com/news/one" });
+    await session!.evaluate({ ...shared, articleUrl: "https://example.com/news/two" });
+    await session!.close();
+    await session!.close();
+
+    expect(mockChromiumLaunch).toHaveBeenCalledTimes(1);
+    expect(mockBrowserNewContext).toHaveBeenCalledTimes(2);
+    expect(mockContextNewPage).toHaveBeenCalledTimes(2);
+    expect(mockPageRoute).toHaveBeenCalledTimes(2);
+    expect(mockPageClose).toHaveBeenCalledTimes(2);
+    expect(mockContextClose).toHaveBeenCalledTimes(2);
+    expect(mockBrowserClose).toHaveBeenCalledTimes(1);
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("closes the isolated page/context and shared browser after navigation failure", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    makePlaywrightPage({ gotoError: "navigation exploded" });
+
+    const mod = await import("./article-discovery-browser");
+    mod.setArticleDiscoveryBrowserImporterForTest(async () => ({
+      chromium: { launch: (...args: any[]) => mockChromiumLaunch(...args) },
+    }));
+    const { session } = await mod.createBrowserArticleDetailSession();
+    const result = await session!.evaluate({
+      articleUrl: "https://example.com/news/exception",
+      sourcePageUrl: "browser:https://example.com/news",
+      targetUrl: "https://example.com",
+      sourceId: "src-1",
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.outcome.status).toBe("fetch_failed");
+    await session!.close();
+    expect(mockPageClose).toHaveBeenCalledTimes(1);
+    expect(mockContextClose).toHaveBeenCalledTimes(1);
+    expect(mockBrowserClose).toHaveBeenCalledTimes(1);
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("exposes a bounded target-session deadline", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    makePlaywrightPage({ ok: false, status: 429, headers: { "Retry-After": "60" } });
+
+    const mod = await import("./article-discovery-browser");
+    mod.setArticleDiscoveryBrowserImporterForTest(async () => ({
+      chromium: { launch: (...args: any[]) => mockChromiumLaunch(...args) },
+    }));
+    let now = 1_000;
+    const { session } = await mod.createBrowserArticleDetailSession({
+      deadlineAt: 1_100,
+      now: () => now,
+    });
+    expect(session!.hasTimeRemaining()).toBe(true);
+    now = 1_100;
+    expect(session!.hasTimeRemaining()).toBe(false);
+    await session!.close();
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("does not launch a browser when the injected deadline is already exhausted", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    const clock = vi.fn(() => 1_000);
+
+    const mod = await import("./article-discovery-browser");
+    mod.setArticleDiscoveryBrowserImporterForTest(async () => ({
+      chromium: { launch: (...args: any[]) => mockChromiumLaunch(...args) },
+    }));
+    const result = await mod.createBrowserArticleDetailSession({
+      deadlineAt: 1_000,
+      now: clock,
+    });
+
+    expect(result.session).toBeNull();
+    expect(result.timeBudgetExhausted).toBe(true);
+    expect(mockChromiumLaunch).not.toHaveBeenCalled();
+
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("clamps detail navigation timeout to the remaining target budget", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    let now = 1_000;
+    makePlaywrightPage({ ok: false, status: 429, headers: { "Retry-After": "60" } });
+
+    const mod = await import("./article-discovery-browser");
+    mod.setArticleDiscoveryBrowserImporterForTest(async () => ({
+      chromium: { launch: (...args: any[]) => mockChromiumLaunch(...args) },
+    }));
+    const { session } = await mod.createBrowserArticleDetailSession({
+      deadlineAt: 1_125,
+      now: () => now,
+    });
+
+    await session!.evaluate({
+      articleUrl: "https://example.com/news/2026/07/20/budget-clamped",
+      sourcePageUrl: "browser:https://example.com/news",
+      targetUrl: "https://example.com",
+      sourceId: "src-1",
+      timeoutMs: 15_000,
+    });
+
+    expect(mockPageGoto).toHaveBeenCalledWith(
+      "https://example.com/news/2026/07/20/budget-clamped",
+      expect.objectContaining({ timeout: 125 }),
+    );
+    await session!.close();
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("recognizes deadline expiration during navigation as a typed time-budget result", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    let now = 2_000;
+    makePlaywrightPage();
+    mockPageGoto.mockImplementation(async () => {
+      now = 2_100;
+      throw new Error("navigation timeout");
+    });
+
+    const mod = await import("./article-discovery-browser");
+    mod.setArticleDiscoveryBrowserImporterForTest(async () => ({
+      chromium: { launch: (...args: any[]) => mockChromiumLaunch(...args) },
+    }));
+    const { session } = await mod.createBrowserArticleDetailSession({
+      deadlineAt: 2_100,
+      now: () => now,
+    });
+
+    await expect(session!.evaluate({
+      articleUrl: "https://example.com/news/2026/07/20/budget-during-navigation",
+      sourcePageUrl: "browser:https://example.com/news",
+      targetUrl: "https://example.com",
+      sourceId: "src-1",
+    })).rejects.toMatchObject({ code: "BROWSER_DETAIL_TIME_BUDGET_EXHAUSTED" });
+
+    expect(mockPageGoto).toHaveBeenCalledWith(
+      "https://example.com/news/2026/07/20/budget-during-navigation",
+      expect.objectContaining({ timeout: 100 }),
+    );
+    expect(mockPageClose).toHaveBeenCalledTimes(1);
+    expect(mockContextClose).toHaveBeenCalledTimes(1);
+    await session!.close();
+    expect(mockBrowserClose).toHaveBeenCalledTimes(1);
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
 });

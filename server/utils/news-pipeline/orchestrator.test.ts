@@ -135,6 +135,21 @@ describe("orchestrator – Agent 1 / Agent 2 split", () => {
     expect(isOperationalFeedResult({ failed: 1, feedUrl: "https://example.com/rss", feedFormat: "rss" })).toBe(false);
   });
 
+  it("does not count a rate-limited deferral as a non-productive feed run", async () => {
+    const { shouldTrackFeedProductivity } = await import("./orchestrator");
+
+    expect(shouldTrackFeedProductivity({
+      feedUrl: "https://example.com/rss",
+      feedFormat: null,
+      deferredReason: "rate_limited",
+    })).toBe(false);
+    expect(shouldTrackFeedProductivity({
+      feedUrl: "https://example.com/rss",
+      feedFormat: "rss",
+      deferredReason: null,
+    })).toBe(true);
+  });
+
   // ── runAgent2Afterwards: true ─────────────────────────────────────────
 
   it("calls runArticleDiscoveryBatch when runAgent2Afterwards=true (global)", async () => {

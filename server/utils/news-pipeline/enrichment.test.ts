@@ -266,6 +266,7 @@ describe("buildFailureOutcome", () => {
       ["LOW_CONTENT_QUALITY", "LOW_CONTENT_QUALITY"],
       ["UNSUPPORTED_STRUCTURE", "UNSUPPORTED_STRUCTURE"],
       ["HEADLESS_REQUIRED", "HEADLESS_REQUIRED"],
+      ["INTERSTITIAL_OR_CHALLENGE", "INTERSTITIAL_OR_CHALLENGE"],
       ["HTTP_FORBIDDEN", "HTTP_ACCESS_BLOCKED"],
       ["HTTP_NOT_FOUND", "UNSUPPORTED_STRUCTURE"],
       ["FETCH_TIMEOUT", "UNSUPPORTED_STRUCTURE"],
@@ -546,5 +547,6 @@ describe("outcomeKindToStatus", () => {
     expect(outcomeKindToStatus("CANONICAL_MISMATCH")).toBe("ENRICHMENT_FAILED");
     expect(outcomeKindToStatus("LOW_CONTENT_QUALITY")).toBe("ENRICHMENT_FAILED");
     expect(outcomeKindToStatus("UNSUPPORTED_STRUCTURE")).toBe("ENRICHMENT_FAILED");
+    expect(outcomeKindToStatus("INTERSTITIAL_OR_CHALLENGE")).toBe("ENRICHMENT_FAILED");
   });
 });

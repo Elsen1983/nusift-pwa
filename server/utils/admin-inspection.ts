@@ -270,6 +270,10 @@ export const readInspectionOutcomeSummary = (value: unknown): InspectionOutcomeS
 };
 const isRetryableSummary = (summary: InspectionOutcomeSummary) => summary.kind === "RETRYABLE_FAILURE" || summary.retryDiagnostics?.disposition === "READY_RETRY" || (summary.retryAfterAt ? Date.parse(summary.retryAfterAt) > Date.now() : false);
 const isDeferredSummary = (summary: InspectionOutcomeSummary) => summary.kind === "HEADLESS_REQUIRED" || summary.retryDiagnostics?.disposition === "DEFERRED";
+// INTERSTITIAL_OR_CHALLENGE is intentionally NOT a rejected summary: only the
+// durable publicationStatus (REJECTED for quarantined interstitials, PROCESSING
+// while browser recovery is still possible) decides its state. Deferred/ready-
+// retry interstitials are classified below via retryDiagnostics.
 const isRejectedSummary = (summary: InspectionOutcomeSummary) => ["PAYWALL_BLOCKED", "CANONICAL_MISMATCH", "LOW_CONTENT_QUALITY", "UNSUPPORTED_STRUCTURE", "HTTP_ACCESS_BLOCKED"].includes(summary.kind || "") || ["PAYWALL_BLOCKED", "CANONICAL_MISMATCH", "LOW_CONTENT_QUALITY", "UNSUPPORTED_STRUCTURE", "HTTP_ACCESS_BLOCKED"].includes(summary.rejectionCode || "");
 
 /** PUBLISHED always validates the actual durable body; omitted body is never publishable. */

@@ -5,6 +5,8 @@ export const AGENT3_RETRY_COOLDOWN_MS = {
   http403: 24 * 60 * 60 * 1000,
   http429: 60 * 60 * 1000,
   browserRuntimeUnavailable: 30 * 60 * 1000,
+  /** Bounded pacing for INTERSTITIAL_OR_CHALLENGE while browser recovery is pending. */
+  interstitialBrowserPending: 30 * 60 * 1000,
 } as const;
 
 export type Agent3RetryDisposition =
@@ -62,13 +64,22 @@ export function getAgent3RetryAfter(input: Agent3RetryInput): string | null {
   const browser = asRecord(outcomeValue(input, "browserFallback"));
   const runtimeUnavailable = browser?.runtimeUnavailable === true
     || browser?.browserRejectedReason === "browser_runtime_unavailable";
+  // INTERSTITIAL_OR_CHALLENGE stays recoverable: while browser recovery is
+  // pending (disabled/unavailable/failed) it is paced by a bounded cooldown so
+  // it is neither retried immediately nor parked forever. HTTP 403/429 always
+  // take precedence so their cooldowns are never bypassed.
+  const kind = outcomeValue(input, "kind");
+  const code = reasonCode(input);
+  const interstitial = kind === "INTERSTITIAL_OR_CHALLENGE" || code === "INTERSTITIAL_OR_CHALLENGE";
   const cooldown = status === 429
     ? AGENT3_RETRY_COOLDOWN_MS.http429
     : status === 403
       ? AGENT3_RETRY_COOLDOWN_MS.http403
       : runtimeUnavailable
         ? AGENT3_RETRY_COOLDOWN_MS.browserRuntimeUnavailable
-        : null;
+        : interstitial
+          ? AGENT3_RETRY_COOLDOWN_MS.interstitialBrowserPending
+          : null;
   if (cooldown === null) return null;
   return new Date(finishedAt.getTime() + cooldown).toISOString();
 }
@@ -146,6 +157,14 @@ export function decideAgent3RetryDisposition(input: Agent3RetryInput): Agent3Ret
   }
   if (kind === "RETRYABLE_FAILURE" || code === "FETCH_TIMEOUT" || code === "HTTP_FORBIDDEN" ||
       code === "HTTP_429" || getAgent3HttpStatus(input) === 403 || getAgent3HttpStatus(input) === 429) {
+    return { state: "READY_RETRY", priority: Math.min(attemptNumber, 2) + 1, attemptNumber };
+  }
+
+  // INTERSTITIAL_OR_CHALLENGE is browser-recoverable in principle, so it stays
+  // bounded-retryable rather than terminal: DEFERRED during the interstitial
+  // cooldown (handled above), READY_RETRY afterwards, and QUARANTINED once the
+  // automatic attempt budget is exhausted (handled before this branch).
+  if (kind === "INTERSTITIAL_OR_CHALLENGE" || code === "INTERSTITIAL_OR_CHALLENGE") {
     return { state: "READY_RETRY", priority: Math.min(attemptNumber, 2) + 1, attemptNumber };
   }
 

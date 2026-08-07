@@ -3,6 +3,7 @@ import { prisma } from "../../utils/prisma";
 import { ISO_LANG_CODES } from "../../utils/langCodes";
 import { safeFetch, SSRFError } from "../../utils/ssrf-guard"; // Globális, gyorsítótárazott import
 import { assertRateLimit } from "../../utils/rate-limit";
+import { isLikelyIndividualArticleUrl } from "../../utils/source-url-policy";
 
 // ANCHOR: WAF & Paywall Trap Signatures
 const WAF_AND_PAYWALL_PATTERNS = [
@@ -40,40 +41,6 @@ const WAF_AND_PAYWALL_PATTERNS = [
   "/register",
   "/sign-up", // Auth
 ];
-
-// Cikk URL felismerő heurisztika
-const isArticleUrl = (urlString: string): boolean => {
-  try {
-    const urlObj = new URL(urlString);
-    const path = urlObj.pathname.replace(/^\/|\/$/g, "");
-    
-    if (!path) return false; // Gyökér domain (pl. hvg.hu) - MINDIG VALID
-    
-    const segments = path.split('/');
-    
-    // 1. Túl mély útvonal (pl. /rovat/alrovat/cikk-cime -> 3 szegmens)
-    if (segments.length > 2) return true;
-    
-    // 2. Szabványos Dátum minta a path-ban (pl. /2026/06/09/...)
-    const hasDateSignature = /\/(19|20)\d{2}\/[01]\d\/[0-3]\d\//.test(urlObj.pathname);
-    if (hasDateSignature) return true;
-
-    // 3. ÚJ: Hosszú számok (Dátum ID-k vagy Cikk ID-k) az első két szegmensben
-    // Kiszűri a "20260609_cikk_neve" típusú egybefüggő számsorokat (min. 6 számjegy)
-    const hasLongNumbersInEarlySegments = segments.slice(0, 2).some(segment => /\d{6,}/.test(segment));
-    if (hasLongNumbersInEarlySegments) return true;
-    
-    // 4. Tipikus cikk "slug" felismerése (túl hosszú vagy túl sok kötőjel)
-    // Egy normál kategória (pl. /tech-tudomany) ritkán hosszabb 20 karakternél és 1-2 kötőjelnél.
-    const lastSegment = segments[segments.length - 1] || "";
-    const hyphenCount = (lastSegment.match(/-/g) || []).length;
-    if (lastSegment.length > 40 || hyphenCount > 4) return true;
-
-    return false; // Ha átment a szűrőkön, valószínűleg egy valid kategória
-  } catch {
-    return false;
-  }
-};
 
 // URL Heuristics: Guess language from TLD, Subdomain, or Path
 const guessLanguageFromUrl = (urlString: string): string | null => {
@@ -170,7 +137,7 @@ export default defineEventHandler(async (event) => {
     // Egy utolsó biztonsági ellenőrzés, hogy a URL formátuma helyes-e, mielőtt megpróbálnánk elérni
     const targetUrl = cleanedUrl;
 
-    if (isArticleUrl(targetUrl)) {
+    if (isLikelyIndividualArticleUrl(targetUrl)) {
       console.warn(`[Check-Source] Article URL rejected: ${targetUrl}`);
       throw createError({
         statusCode: 400,

@@ -111,4 +111,64 @@ describe("Agent 3 retry policy", () => {
     expect(decideAgent3RetryDisposition(failed({ enrichmentOutcome: null, enrichmentAttemptCount: 3 })).state)
       .toBe("QUARANTINED");
   });
+
+  it("paces INTERSTITIAL_OR_CHALLENGE with a bounded cooldown instead of terminal failure", () => {
+    const input = failed({
+      enrichmentOutcome: {
+        extractorVersion: AGENT3_EXTRACTOR_VERSION,
+        kind: "INTERSTITIAL_OR_CHALLENGE",
+        rejectionCode: "INTERSTITIAL_OR_CHALLENGE",
+        rejectionHttpStatus: 202,
+        browserFallback: {
+          attempted: false,
+          browserFallbackSkippedReason: "browser_disabled",
+        },
+      },
+    });
+    // finishedAt 10:00 + 30min interstitial cooldown → 10:30
+    expect(getAgent3RetryAfter(input)).toBe("2026-08-01T10:30:00.000Z");
+    // Inside the cooldown window it is deferred (no immediate retry loop)…
+    expect(decideAgent3RetryDisposition(input).state).toBe("DEFERRED");
+    // …and after the cooldown it becomes bounded-retryable, never terminal.
+    expect(decideAgent3RetryDisposition({
+      ...input,
+      now: new Date("2026-08-01T10:45:00.000Z"),
+    }).state).toBe("READY_RETRY");
+    // The deterministic interstitial must not be retried forever: the attempt
+    // budget still caps it at QUARANTINED.
+    expect(decideAgent3RetryDisposition({
+      ...input,
+      enrichmentAttemptCount: 3,
+      now: new Date("2026-08-01T10:45:00.000Z"),
+    }).state).toBe("QUARANTINED");
+  });
+
+  it("does not let INTERSTITIAL_OR_CHALLENGE bypass HTTP 429/403 cooldowns", () => {
+    const input = failed({
+      enrichmentOutcome: {
+        extractorVersion: AGENT3_EXTRACTOR_VERSION,
+        kind: "INTERSTITIAL_OR_CHALLENGE",
+        rejectionCode: "INTERSTITIAL_OR_CHALLENGE",
+        rejectionHttpStatus: 429,
+      },
+    });
+    // HTTP 429 cooldown (1h) wins over the interstitial 30min cooldown.
+    expect(getAgent3RetryAfter(input)).toBe("2026-08-01T11:00:00.000Z");
+    expect(decideAgent3RetryDisposition(input).state).toBe("DEFERRED");
+  });
+
+  it("keeps browser-runtime-unavailable interstitial deferred with runtime reason", () => {
+    const input = failed({
+      enrichmentOutcome: {
+        extractorVersion: AGENT3_EXTRACTOR_VERSION,
+        kind: "INTERSTITIAL_OR_CHALLENGE",
+        browserFallback: { runtimeUnavailable: true },
+      },
+    });
+    expect(decideAgent3RetryDisposition(input)).toMatchObject({
+      state: "DEFERRED",
+      reasonCode: "BROWSER_RUNTIME_UNAVAILABLE",
+    });
+    expect(getAgent3RetryAfter(input)).toBe("2026-08-01T10:30:00.000Z");
+  });
 });

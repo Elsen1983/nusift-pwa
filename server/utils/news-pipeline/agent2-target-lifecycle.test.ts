@@ -68,6 +68,16 @@ describe("agent2-target-lifecycle", () => {
       expect(classifyAgent2TargetLifecycle({ ...baseInput, inBrowserCooldown: true })).toBe("cooldown");
     });
 
+    it("keeps partial browser success in cooldown until retry is allowed", () => {
+      expect(classifyAgent2TargetLifecycle({
+        ...baseInput,
+        lastBrowserStatus: "PENDING_HEADLESS",
+        lastAcceptedCount: 1,
+        lastInsertedCount: 1,
+        inBrowserCooldown: true,
+      })).toBe("cooldown");
+    });
+
     it("returns browser_pending when headless status is PENDING_HEADLESS", () => {
       expect(classifyAgent2TargetLifecycle({ ...baseInput, lastBrowserStatus: "PENDING_HEADLESS" })).toBe("browser_pending");
     });

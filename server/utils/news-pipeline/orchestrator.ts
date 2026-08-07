@@ -41,6 +41,15 @@ export const isOperationalFeedResult = (result: {
   Boolean(result.feedUrl) &&
   (result.feedFormat === "rss" || result.feedFormat === "atom" || result.feedFormat === "json");
 
+export const shouldTrackFeedProductivity = (result: {
+  feedUrl?: string | null;
+  feedFormat?: string | null;
+  deferredReason?: string | null;
+}) =>
+  result.deferredReason !== "rate_limited" &&
+  Boolean(result.feedUrl) &&
+  result.feedFormat !== "html_fallback";
+
 /**
  * Legacy full-pipeline entry point.
  *
@@ -116,8 +125,7 @@ export async function runNewsPipeline(
         categoryId: target.categoryId || undefined,
         feedUrl: result.feedUrl || null,
         productive: isOperationalFeedResult(result),
-        shouldTrackFeedProductivity:
-          Boolean(result.feedUrl) && result.feedFormat !== "html_fallback",
+        shouldTrackFeedProductivity: shouldTrackFeedProductivity(result),
       });
     } catch {
       failed += 1;
@@ -488,8 +496,7 @@ export async function runAgent1Batch(input?: {
         categoryId: target.categoryId || undefined,
         feedUrl: result.feedUrl || null,
         productive: isOperationalFeedResult(result),
-        shouldTrackFeedProductivity:
-          Boolean(result.feedUrl) && result.feedFormat !== "html_fallback",
+        shouldTrackFeedProductivity: shouldTrackFeedProductivity(result),
       }));
       probe.recordDbOperation();
       processed += 1;

@@ -2018,3 +2018,434 @@ describe("text normalization helpers", () => {
     expect(paragraphs[0]).toContain("meaningful paragraph");
   });
 });
+
+// ─── HTTP 202 interstitial/challenge + JSON-LD articleBody ──────────────────
+
+describe("HTTP 202 interstitial/challenge classification", () => {
+  const interstitialHtml = `<!DOCTYPE html>
+<html><head><title>Just a moment...</title>
+<meta property="og:description" content="A test article description" />
+</head>
+<body>
+  <div class="challenge-shell">
+    <p>Checking your browser before accessing the website.</p>
+    <p>This process is automatic. You will be redirected shortly.</p>
+    <p>Please allow up to five seconds for the verification to complete.</p>
+  </div>
+</body></html>`;
+
+  it("A: classifies HTTP 202 interstitial HTML as interstitial_or_challenge, not terminal LOW_CONTENT_QUALITY", async () => {
+    safeFetchMock.mockResolvedValue(makeResponse(interstitialHtml, true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 900,
+      articleUrl: "https://challenge.example/article",
+      existingTitle: "Just a moment...",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.statusCode).toBe(202);
+      expect(result.rejectedReason).toBe("interstitial_or_challenge");
+      // Must not collapse into the terminal low-content path.
+      expect(result.rejectedReason).not.toBe("no_article_text");
+      expect(result.rejectedReason).not.toBe("too_short");
+      expect(result.diagnostics.bodyRejectedReason).toBe("interstitial_or_challenge");
+      expect(result.qualitySignals).toContain("http_202_interstitial");
+    }
+  });
+
+  it("B: HTTP 202 with a complete semantic article DOM still succeeds without browser fallback", async () => {
+    safeFetchMock.mockResolvedValue(makeResponse(articleHtml(), true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 901,
+      articleUrl: "https://example.com/article",
+      existingTitle: "Test Article Title",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.statusCode).toBe(202);
+      expect(result.bodyText!.length).toBeGreaterThan(100);
+      expect(result.diagnostics.bodySource).toBe("dom");
+    }
+  });
+
+  it("C: HTTP 202 with a complete NewsArticle JSON-LD articleBody succeeds with the full body", async () => {
+    const p1 = `The first paragraph of the article explains the main topic in considerable detail with supporting context and background information about the event. `.repeat(3);
+    const p2 = `The second paragraph examines the evidence and presents multiple perspectives from experts and witnesses interviewed during the investigation. `.repeat(3);
+    const p3 = `The third paragraph concludes with implications for the region and what observers expect to happen next in this developing situation. `.repeat(3);
+    const html = `<!DOCTYPE html>
+<html><head><title>JSON-LD Article</title>
+<meta property="og:description" content="Short excerpt only" />
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "NewsArticle",
+  "headline": "JSON-LD Headline",
+  "articleBody": ${JSON.stringify(`${p1}\n\n${p2}\n\n${p3}`)}
+}
+</script>
+</head>
+<body>
+  <div id="app-shell"><p>Loading content...</p></div>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html, true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 902,
+      articleUrl: "https://example.com/jsonld-article",
+      existingTitle: "JSON-LD Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.statusCode).toBe(202);
+      expect(result.bodyText).toContain("first paragraph of the article");
+      expect(result.bodyText).toContain("third paragraph concludes");
+      expect(result.bodyText!.length).toBeGreaterThan(600);
+      // The excerpt must never become the body.
+      expect(result.bodyText).not.toBe("Short excerpt only");
+      expect(result.diagnostics.bodySource).toBe("jsonld");
+      expect(result.qualitySignals).toContain("bodySource:jsonld");
+    }
+  });
+
+  it("regression: HTTP 200 with a complete NewsArticle JSON-LD articleBody remains accepted", async () => {
+    const p1 = `A fully qualified article body recovered from structured data with sufficient detail to stand alone as complete article content. `.repeat(3);
+    const p2 = `A second complete paragraph with further analysis and supporting facts that make the structured body trustworthy and complete. `.repeat(3);
+    const html = `<!DOCTYPE html>
+<html><head><title>JSON-LD Only</title>
+<meta property="og:description" content="Excerpt" />
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "ReportageNewsArticle",
+  "headline": "Reportage",
+  "articleBody": ${JSON.stringify(`${p1}\n\n${p2}\n\n${p1.replace("first", "final")}`)}
+}
+</script>
+</head>
+<body><main><p>JavaScript required to view this page.</p></main></body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 903,
+      articleUrl: "https://example.com/jsonld-200",
+      existingTitle: "JSON-LD Only",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.bodyText).toContain("structured data");
+      expect(result.diagnostics.bodySource).toBe("jsonld");
+    }
+  });
+
+  it("rejects unrelated JSON-LD schema objects (WebPage) — articleBody is never trusted from them", async () => {
+    const html = `<!DOCTYPE html>
+<html><head><title>WebPage</title>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "name": "Not an article",
+  "mainEntity": { "@type": "WebPageElement", "articleBody": "This text must never become body text because the schema type is not a supported article type." }
+}
+</script>
+</head>
+<body><div><p>Short.</p></div></body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html, true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 904,
+      articleUrl: "https://example.com/webpage",
+      existingTitle: "WebPage",
+    });
+
+    // No usable body and no supported JSON-LD body on the 202 → classified as
+    // an interstitial/challenge (browser-recoverable, never terminal). The
+    // unrelated WebPage JSON-LD text is never used as body text (a failure
+    // carries no bodyText at all).
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("interstitial_or_challenge");
+    }
+  });
+
+  it("skips malformed JSON-LD articleBody without treating it as evidence", async () => {
+    const html = `<!DOCTYPE html>
+<html><head><title>Malformed</title>
+<script type="application/ld+json">{"@type": "NewsArticle", "articleBody": </script>
+</head>
+<body><div class="challenge"><p>Checking your browser before accessing the website.</p><p>You will be redirected shortly.</p></div></body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html, true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 905,
+      articleUrl: "https://example.com/malformed",
+      existingTitle: "Malformed",
+    });
+
+    // Malformed JSON-LD is skipped; the 202 challenge page is still classified.
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("interstitial_or_challenge");
+    }
+  });
+
+  it("classifies an HTTP 202 with an EMPTY body as interstitial_or_challenge, not a plain failure", async () => {
+    safeFetchMock.mockResolvedValue(makeResponse("", true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 906,
+      articleUrl: "https://challenge.example/empty",
+      existingTitle: "Challenge",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.statusCode).toBe(202);
+      expect(result.rejectedReason).toBe("interstitial_or_challenge");
+      expect(result.rejectedReason).not.toBe("empty_html");
+      expect(result.qualitySignals).toContain("http_202_interstitial");
+      expect(result.qualitySignals).toContain("empty_or_short_interstitial_html");
+      expect(result.qualitySignals).toContain("htmlLength:0");
+      expect(result.diagnostics.htmlLength).toBe(0);
+    }
+  });
+
+  it("classifies an HTTP 202 with fewer than 100 chars as interstitial_or_challenge, not empty_html", async () => {
+    safeFetchMock.mockResolvedValue(makeResponse("<html><body><p>tiny shell</p></body></html>", true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 907,
+      articleUrl: "https://challenge.example/short",
+      existingTitle: "Challenge",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.statusCode).toBe(202);
+      expect(result.rejectedReason).toBe("interstitial_or_challenge");
+      expect(result.qualitySignals).toContain("empty_or_short_interstitial_html");
+      expect(result.diagnostics.htmlLength).toBeLessThan(100);
+    }
+  });
+
+  it("keeps HTTP 200 with the same short body as empty_html (never interstitial)", async () => {
+    safeFetchMock.mockResolvedValue(makeResponse("<html><body><p>tiny shell</p></body></html>", true, "text/html", 200));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 908,
+      articleUrl: "https://example.com/short-200",
+      existingTitle: "Short",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("empty_html");
+      expect(result.rejectedReason).not.toBe("interstitial_or_challenge");
+    }
+  });
+
+  it("classifies an unknown HTTP 202 shell WITHOUT any known challenge phrase as interstitial_or_challenge", async () => {
+    // A provider shell with no recognizable challenge text and no usable
+    // article body must still be classified — the text-pattern list is only
+    // evidence, never a requirement.
+    const html = `<!DOCTYPE html>
+<html><head><title>Provider Portal</title>
+<meta property="og:description" content="Provider portal" />
+</head>
+<body>
+  <div id="app">
+    <header><nav><a href="/">Home</a><a href="/news">News</a><a href="/sport">Sport</a></nav></header>
+    <section class="widget"><p>Loading latest content...</p></section>
+    <footer>© 2026 Provider Network</footer>
+  </div>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html, true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 909,
+      articleUrl: "https://provider.example/article",
+      existingTitle: "Provider Portal",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("interstitial_or_challenge");
+      expect(result.qualitySignals).toContain("http_202_interstitial");
+      expect(result.qualitySignals).not.toContain("interstitial_text_pattern");
+    }
+  });
+
+  it("classifies an HTTP 202 navigation-only document as interstitial_or_challenge", async () => {
+    const html = `<!DOCTYPE html>
+<html><head><title>Menu</title></head>
+<body>
+  <nav><ul><li><a href="/1">Section One</a></li><li><a href="/2">Section Two</a></li><li><a href="/3">Section Three</a></li></ul></nav>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html, true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 910,
+      articleUrl: "https://provider.example/nav",
+      existingTitle: "Menu",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("interstitial_or_challenge");
+      expect(result.rejectedReason).not.toBe("no_article_text");
+    }
+  });
+});
+
+describe("HTTP 202 interstitial false-positive guard", () => {
+  it("HTTP 200 page with a genuinely short article stays too_short (not interstitial)", async () => {
+    const shortPara = "This paragraph is just long enough to pass the meaningful paragraph filter but not long enough to qualify as a usable article body for extraction purposes.";
+    const html = `<!DOCTYPE html>
+<html><head><title>Short Article</title>
+<meta property="og:description" content="A short genuine article" />
+</head>
+<body><article><h1>Short</h1><p>${shortPara}</p><p>${shortPara}</p></article></body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 910,
+      articleUrl: "https://example.com/short",
+      existingTitle: "Short Article",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Duplicate paragraphs collapse to a single candidate → the plain
+      // low-content path. Either low-content reason is correct; it must never
+      // be misclassified as an interstitial/challenge.
+      expect(["too_short", "no_article_text"]).toContain(result.rejectedReason);
+      expect(result.rejectedReason).not.toBe("interstitial_or_challenge");
+    }
+  });
+
+  it("HTTP 204 empty response stays a plain fetch/empty failure (not interstitial)", async () => {
+    safeFetchMock.mockResolvedValue(makeResponse("", true, "text/html", 204));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 911,
+      articleUrl: "https://example.com/empty",
+      existingTitle: "Empty",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(["fetch_failed", "empty_html"]).toContain(result.rejectedReason);
+      expect(result.rejectedReason).not.toBe("interstitial_or_challenge");
+    }
+  });
+
+  it("HTTP 403 and HTTP 429 stay http_error (not interstitial)", async () => {
+    for (const status of [403, 429] as const) {
+      safeFetchMock.mockResolvedValue(makeResponse("<html><body>blocked</body></html>", true, "text/html", status));
+      const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+      const result = await extractArticleContentFromUrl({
+        articleId: status,
+        articleUrl: "https://example.com/blocked",
+        existingTitle: "Blocked",
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.rejectedReason).toBe("http_error");
+        expect(result.statusCode).toBe(status);
+      }
+    }
+  });
+
+  it("HTTP 5xx stays fetch_failed (not interstitial)", async () => {
+    safeFetchMock.mockResolvedValue(makeResponse("<html><body>error</body></html>", true, "text/html", 500));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 912,
+      articleUrl: "https://example.com/error",
+      existingTitle: "Error",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.rejectedReason).toBe("fetch_failed");
+  });
+
+  it("malformed non-HTML response stays non_html_response", async () => {
+    safeFetchMock.mockResolvedValue(makeResponse(nonHtmlResponse, true, "text/plain", 200));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 913,
+      articleUrl: "https://example.com/plain",
+      existingTitle: "Plain",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.rejectedReason).toBe("non_html_response");
+  });
+
+  it("genuine paywall response on HTTP 202 stays paywall_or_blocked (paywall wins over interstitial)", async () => {
+    safeFetchMock.mockResolvedValue(makeResponse(paywallHtml, true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 914,
+      articleUrl: "https://example.com/paywall",
+      existingTitle: "Premium Article",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("paywall_or_blocked");
+      expect(result.rejectedReason).not.toBe("interstitial_or_challenge");
+    }
+  });
+
+  it("HTTP 202 unsupported structure WITHOUT challenge evidence is still interstitial_or_challenge (no pattern required)", async () => {
+    // A 202 that yields no usable article body from any trusted source is an
+    // interstitial/challenge shell regardless of whether a known challenge
+    // phrase appears — the text-pattern list only strengthens diagnostics.
+    const html = `<!DOCTYPE html>
+<html><head><title>Generic</title>
+<meta property="og:description" content="Description" />
+</head>
+<body><article><p>This page contains only a short generic message.</p></article></body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html, true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 915,
+      articleUrl: "https://example.com/generic",
+      existingTitle: "Generic",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("interstitial_or_challenge");
+      expect(result.rejectedReason).not.toBe("no_article_text");
+      expect(result.rejectedReason).not.toBe("too_short");
+      expect(result.qualitySignals).toContain("http_202_interstitial");
+      // No known challenge phrase matched → the text-pattern evidence is absent.
+      expect(result.qualitySignals).not.toContain("interstitial_text_pattern");
+    }
+  });
+});

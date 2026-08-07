@@ -24,6 +24,8 @@ import {
   scoreCandidateUrl,
   isBlockedDiscoveryPath,
   evaluateArticleLinkCandidateFromExtractedMetadata,
+  parseBoundedStaticRetryAfter,
+  readStaticResponseHeader,
 } from "./article-discovery-helpers";
 import type {
   EvaluateArticleLinkResult,
@@ -1039,6 +1041,59 @@ export type BrowserArticleDetailExtraction = {
 
 const DETAIL_PAGE_TIMEOUT_MS = 15_000;
 const MAX_DETAIL_PAGE_TIMEOUT_MS = 15_000;
+export const MAX_BROWSER_DETAIL_EVALUATIONS = 10;
+export const DEFAULT_BROWSER_DETAIL_TARGET_TIME_BUDGET_MS = 60_000;
+
+/**
+ * Detail evaluations use a fresh browser context per URL inside one
+ * target-scoped browser process. Context isolation prevents cookies, storage,
+ * redirect state, and page mutations from leaking while avoiding repeated
+ * Chromium startup for every article.
+ */
+export type BrowserArticleDetailRuntime = {
+  browser: any;
+  launchResult: {
+    viewport?: { width: number; height: number } | null;
+  };
+  /** Target-scoped deadline shared by every detail navigation in the session. */
+  deadlineAt: number;
+  /** Injectable clock keeps deadline behavior deterministic in tests. */
+  now: () => number;
+};
+
+/** Typed control-flow signal: the target browser budget, not the publisher, stopped evaluation. */
+export class BrowserDetailTimeBudgetExceeded extends Error {
+  readonly code = "BROWSER_DETAIL_TIME_BUDGET_EXHAUSTED" as const;
+
+  constructor(message = "browser detail target time budget exhausted") {
+    super(message);
+    this.name = "BrowserDetailTimeBudgetExceeded";
+  }
+}
+
+export type BrowserArticleDetailSession = {
+  evaluate: (input: Omit<BrowserArticleDetailInput, "runtime">) => Promise<EvaluateArticleLinkResult>;
+  hasTimeRemaining: () => boolean;
+  getRemainingTimeMs: () => number;
+  close: () => Promise<void>;
+};
+
+export function isBrowserDetailTimeBudgetExceeded(error: unknown): error is BrowserDetailTimeBudgetExceeded {
+  return error instanceof BrowserDetailTimeBudgetExceeded
+    || (typeof error === "object" && error !== null && (error as { code?: unknown }).code === "BROWSER_DETAIL_TIME_BUDGET_EXHAUSTED");
+}
+
+export type BrowserArticleDetailInput = {
+  articleUrl: string;
+  sourcePageUrl: string;
+  targetUrl: string;
+  sourceId: string;
+  categoryId?: string | null;
+  timeoutMs?: number;
+  listingDateFallbackRaw?: string | null;
+  verifiedHostScope?: VerifiedHostScope | null;
+  runtime?: BrowserArticleDetailRuntime;
+};
 
 // ─── Raw DOM data extraction + Node-side normalization ─────────────────────
 
@@ -1265,24 +1320,81 @@ export function extractArticleDetailFromDocument(
  * failed (usually HTTP 403), so we render the page and extract metadata from
  * the live DOM. No raw HTML, screenshots, or DOM dumps are persisted.
  */
-export async function evaluateArticleLinkCandidateWithBrowser(input: {
-  articleUrl: string;
-  sourcePageUrl: string;
-  targetUrl: string;
-  sourceId: string;
-  categoryId?: string | null;
-  timeoutMs?: number;
-  listingDateFallbackRaw?: string | null;
-  /** Authoritative scope established by the listing render/caller. */
-  verifiedHostScope?: VerifiedHostScope | null;
-}): Promise<EvaluateArticleLinkResult> {
+export async function createBrowserArticleDetailSession(input: {
+  timeBudgetMs?: number;
+  /** Absolute deadline supplied by the queue so listing/static work is included. */
+  deadlineAt?: number;
+  /** Injectable clock for deterministic budget tests. */
+  now?: () => number;
+} = {}): Promise<{ session: BrowserArticleDetailSession | null; blockedReason?: string; timeBudgetExhausted?: boolean }> {
+  const now = input.now ?? Date.now;
+  const deadlineAt = input.deadlineAt ?? (now() + Math.max(1, input.timeBudgetMs ?? DEFAULT_BROWSER_DETAIL_TARGET_TIME_BUDGET_MS));
+
+  // Preserve the feature-gate result for standalone callers. The deadline is
+  // only meaningful once browser recovery is actually enabled.
+  if (!isBrowserFallbackEnabled()) {
+    return { session: null, blockedReason: "browser fallback disabled" };
+  }
+
+  if (now() >= deadlineAt) {
+    return {
+      session: null,
+      blockedReason: "browser detail target time budget exhausted",
+      timeBudgetExhausted: true,
+    };
+  }
+
+  const launchResult = await launchBrowser();
+  if (!launchResult.browser) {
+    return {
+      session: null,
+      blockedReason: launchResult.blockedReason || "browser runtime unavailable",
+    };
+  }
+
+  const runtime: BrowserArticleDetailRuntime = {
+    browser: launchResult.browser,
+    launchResult: { viewport: launchResult.viewport },
+    deadlineAt,
+    now,
+  };
+  let closed = false;
+
+  return {
+    session: {
+      evaluate: (detailInput) => {
+        if (closed) return Promise.reject(new Error("browser detail session is closed"));
+        return evaluateArticleLinkCandidateWithBrowser({ ...detailInput, runtime });
+      },
+      hasTimeRemaining: () => !closed && now() < deadlineAt,
+      getRemainingTimeMs: () => closed ? 0 : Math.max(0, deadlineAt - now()),
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        await runtime.browser.close();
+      },
+    },
+  };
+}
+
+export async function evaluateArticleLinkCandidateWithBrowser(input: BrowserArticleDetailInput): Promise<EvaluateArticleLinkResult> {
   const startedAt = Date.now();
   const { articleUrl, sourcePageUrl, targetUrl, sourceId, categoryId } = input;
-  const timeoutMs = Math.min(input.timeoutMs || DETAIL_PAGE_TIMEOUT_MS, MAX_DETAIL_PAGE_TIMEOUT_MS);
+  const configuredTimeoutMs = Math.min(input.timeoutMs || DETAIL_PAGE_TIMEOUT_MS, MAX_DETAIL_PAGE_TIMEOUT_MS);
+  const runtimeRemainingMs = input.runtime
+    ? Math.max(0, input.runtime.deadlineAt - input.runtime.now())
+    : null;
+  if (runtimeRemainingMs !== null && runtimeRemainingMs <= 0) {
+    throw new BrowserDetailTimeBudgetExceeded();
+  }
+  const timeoutMs = runtimeRemainingMs === null
+    ? configuredTimeoutMs
+    : Math.min(configuredTimeoutMs, runtimeRemainingMs);
 
   const reject = (
     status: ArticleDiscoveryCandidateOutcome["status"],
     reason: string,
+    overrides: Partial<ArticleDiscoveryCandidateOutcome> = {},
   ): EvaluateArticleLinkResult => ({
     accepted: false,
     candidate: null,
@@ -1292,6 +1404,7 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
       status,
       reason,
       canonicalUrl: normalizeUrl(articleUrl),
+      ...overrides,
     } as ArticleDiscoveryCandidateOutcome,
   });
 
@@ -1299,41 +1412,97 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
     return reject("fetch_failed", "browser fallback disabled");
   }
 
-  const launchResult = await launchBrowser();  const browser = launchResult.browser;
+  const ownsBrowser = !input.runtime;
+  const launchResult = input.runtime
+    ? { browser: input.runtime.browser, viewport: input.runtime.launchResult.viewport, blockedReason: undefined }
+    : await launchBrowser();
+  const browser = launchResult.browser;
 
   if (!browser) {
     return reject("detail_validation_failed", launchResult.blockedReason || "browser runtime unavailable");
   }
 
+  let context: any = null;
+  let page: any = null;
   try {
-    const context = await browser.newContext({
+    context = await browser.newContext({
       userAgent: BROWSER_USER_AGENT,
       ...(launchResult.viewport ? { viewport: launchResult.viewport } : {}),
     });
-    const page = await context.newPage();
+    page = await context.newPage();
 
     // Block heavy resources just like the listing browser path.
     await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,mp4,mp3,woff,woff2,ttf}", (route: any) =>
       route.abort(),
     );
 
-    const response = await page
-      .goto(articleUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs })
-      .catch((err: any) => {
-        return null;
-      });
+    // Context/page setup and route registration also consume the target budget.
+    // Recalculate immediately before navigation so the page timeout cannot be
+    // stale or larger than the remaining target wall-clock budget.
+    const navigationRemainingMs = input.runtime
+      ? Math.max(0, input.runtime.deadlineAt - input.runtime.now())
+      : null;
+    if (navigationRemainingMs !== null && navigationRemainingMs <= 0) {
+      throw new BrowserDetailTimeBudgetExceeded();
+    }
+    const navigationTimeoutMs = navigationRemainingMs === null
+      ? configuredTimeoutMs
+      : Math.min(configuredTimeoutMs, navigationRemainingMs);
 
-    if (!response) {
+    let response: any = null;
+    try {
+      response = await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
+    } catch (error) {
+      // A navigation timeout at the target deadline is control flow, not a
+      // publisher/article failure. Preserve other navigation failures as-is.
+      if (input.runtime && input.runtime.now() >= input.runtime.deadlineAt) {
+        throw new BrowserDetailTimeBudgetExceeded();
+      }
       return reject("fetch_failed", "navigation failed");
     }
 
+    if (!response) {
+      if (input.runtime && input.runtime.now() >= input.runtime.deadlineAt) {
+        throw new BrowserDetailTimeBudgetExceeded();
+      }
+      return reject("fetch_failed", "navigation failed");
+    }
+
+    // Check HTTP status before the deadline so a confirmed 429 retains its
+    // precedence over generic time-budget handling.
     if (!response.ok()) {
-      return reject("fetch_failed", `HTTP ${response.status()}`);
+      const status = response.status();
+      if (status === 429) {
+        const headers = typeof response.headers === "function"
+          ? await Promise.resolve().then(() => response.headers()).catch(() => null)
+          : response.headers ?? null;
+        const parsed = parseBoundedStaticRetryAfter(
+          readStaticResponseHeader(headers ? { headers } : null, "retry-after"),
+        );
+        return reject("fetch_failed", "HTTP 429", {
+          httpStatus: 429,
+          rateLimited: true,
+          retryAfterAt: parsed.retryAfterAt,
+          retryAfterSource: parsed.source,
+        });
+      }
+      return reject("fetch_failed", `HTTP ${status}`, { httpStatus: status });
+    }
+
+    if (input.runtime && input.runtime.now() >= input.runtime.deadlineAt) {
+      throw new BrowserDetailTimeBudgetExceeded();
     }
 
     const renderedUrl = page.url();
     if (typeof page.waitForTimeout === "function") {
-      await page.waitForTimeout(500).catch(() => {});
+      const remaining = input.runtime
+        ? Math.max(0, input.runtime.deadlineAt - input.runtime.now())
+        : 500;
+      if (remaining <= 0) throw new BrowserDetailTimeBudgetExceeded();
+      await page.waitForTimeout(Math.min(500, remaining)).catch(() => {});
+      if (input.runtime && input.runtime.now() >= input.runtime.deadlineAt) {
+        throw new BrowserDetailTimeBudgetExceeded();
+      }
     }
 
     // Extract raw primitive data from the live DOM. The page.evaluate()
@@ -1399,6 +1568,10 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
       };
     })()`)) as RawArticleDetailData;
 
+    if (input.runtime && input.runtime.now() >= input.runtime.deadlineAt) {
+      throw new BrowserDetailTimeBudgetExceeded();
+    }
+
     const extracted = normalizeArticleDetailFromRaw(raw);
     const publishedAtRaw = extracted.publishedAtRaw || input.listingDateFallbackRaw || null;
     const publishedAtSource = extracted.publishedAtRaw
@@ -1426,14 +1599,31 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: {
       effectiveTargetUrl: renderedUrl || null,
     });
 
+    if (input.runtime && input.runtime.now() >= input.runtime.deadlineAt) {
+      throw new BrowserDetailTimeBudgetExceeded();
+    }
+
     return evaluation;
   } catch (error: any) {
+    if (isBrowserDetailTimeBudgetExceeded(error)) throw error;
     return reject("detail_validation_failed", error?.message || String(error));
   } finally {
     try {
-      await browser.close();
+      await page?.close?.();
     } catch {
-      // ignore close errors
+      // Ignore per-article page close errors.
+    }
+    try {
+      await context?.close?.();
+    } catch {
+      // Ignore per-article context close errors.
+    }
+    if (ownsBrowser) {
+      try {
+        await browser.close();
+      } catch {
+        // ignore close errors
+      }
     }
   }
 }

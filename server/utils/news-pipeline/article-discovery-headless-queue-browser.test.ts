@@ -13,6 +13,7 @@ const persistCandidatesMock = vi.fn();
 const createOrUpdateHardSourceProfileMock = vi.fn();
 const resolveHardSourceProfilesForTargetMock = vi.fn();
 const loadPersistedHostCooldownsMock = vi.fn();
+const createBrowserArticleDetailSessionMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -32,9 +33,16 @@ vi.mock("./article-discovery-browser", () => ({
   discoverArticleLinksWithBrowser: (...args: any[]) => discoverArticleLinksWithBrowserMock(...args),
   evaluateArticleLinkCandidateWithBrowser: (...args: any[]) =>
     evaluateArticleLinkCandidateWithBrowserMock(...args),
+  MAX_BROWSER_DETAIL_EVALUATIONS: 10,
+  DEFAULT_BROWSER_DETAIL_TARGET_TIME_BUDGET_MS: 60_000,
+  createBrowserArticleDetailSession: (...args: any[]) => createBrowserArticleDetailSessionMock(...args),
+  isBrowserDetailTimeBudgetExceeded: (error: unknown) => (error as any)?.code === "BROWSER_DETAIL_TIME_BUDGET_EXHAUSTED",
 }));
 
-vi.mock("./article-discovery-helpers", () => ({
+vi.mock("./article-discovery-helpers", async () => {
+  const actual = await vi.importActual<typeof import("./article-discovery-helpers")>("./article-discovery-helpers");
+  return {
+    ...actual,
   evaluateArticleLinkCandidate: (...args: any[]) => evaluateArticleLinkCandidateMock(...args),
   ArticleDiscoveryOutcomeTracker: class {
     private accepted: any[] = [];
@@ -71,7 +79,8 @@ vi.mock("./article-discovery-helpers", () => ({
     }
     return { quality: "failed", shouldEscalateToHeadless: true, escalationReasons: ["no_candidates"], confidence: "high", explanation: "failed" };
   },
-}));
+  };
+});
 
 vi.mock("./ingest", () => ({
   persistCandidates: (...args: any[]) => persistCandidatesMock(...args),
@@ -180,6 +189,26 @@ const makeRejectedEvaluation = (url: string, status: string, reason: string) => 
   outcome: { url, sourceKind: "browser", status, reason },
 });
 
+const makeTelemetryProbe = () => ({
+  recordFetch: vi.fn(),
+  recordLogicalRequestDuration: vi.fn(),
+  recordExtraction: vi.fn(),
+  recordBrowser: vi.fn(),
+  recordPersistence: vi.fn(),
+  recordSleep: vi.fn(),
+  recordNetworkRequest: vi.fn(),
+  recordBrowserAttempt: vi.fn(),
+  recordDbOperation: vi.fn(),
+  recordAccessDenied403: vi.fn(),
+  recordRateLimited: vi.fn(),
+  recordTimeout: vi.fn(),
+  recordHostCooldown: vi.fn(),
+  observeConcurrency: vi.fn(),
+  beginOperation: vi.fn(() => vi.fn()),
+  beginLogicalRequest: vi.fn(() => vi.fn()),
+  timed: vi.fn(async (_kind: string, fn: () => Promise<unknown>) => fn()),
+});
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", () => {
@@ -196,12 +225,20 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     createOrUpdateHardSourceProfileMock.mockReset();
     resolveHardSourceProfilesForTargetMock.mockReset();
     loadPersistedHostCooldownsMock.mockReset();
+    createBrowserArticleDetailSessionMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
     isBrowserFallbackEnabledMock.mockReturnValue(true);
     persistCandidatesMock.mockResolvedValue({ inserted: 0, skipped: 0, failed: 0 });
     createOrUpdateHardSourceProfileMock.mockResolvedValue("profile-1");
     resolveHardSourceProfilesForTargetMock.mockResolvedValue(0);
     loadPersistedHostCooldownsMock.mockResolvedValue(new Map());
+    createBrowserArticleDetailSessionMock.mockResolvedValue({
+      session: {
+        evaluate: (...args: any[]) => evaluateArticleLinkCandidateWithBrowserMock(...args),
+        hasTimeRemaining: () => true,
+        close: vi.fn().mockResolvedValue(undefined),
+      },
+    });
   });
 
   async function loadFn() {
@@ -1039,6 +1076,159 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
 
   // ── browser detail recovery ─────────────────────────────────────────────
 
+  it("defers before browser session launch when the injected target budget is exhausted", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/prelaunch-timeout";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    let now = 0;
+    discoverArticleLinksWithBrowserMock.mockImplementation(async () => {
+      now = 60_000;
+      return makeBrowserResultOk([makeBrowserLink(articleUrl)]);
+    });
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
+      makeRejectedEvaluation(articleUrl, "fetch_failed", "HTTP 403"),
+    );
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true, now: () => now });
+
+    expect(result.dryRun).toBe(false);
+    expect(createBrowserArticleDetailSessionMock).not.toHaveBeenCalled();
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
+    expect(finalCall.data.payload.browserDetailEvaluationStoppedReason).toBe("time_budget_exhausted");
+    expect(finalCall.data.payload.browserDetailTimeBudgetExhausted).toBe(true);
+    expect(finalCall.data.payload.browserDetailRuntimeUnavailable).toBe(false);
+    expect(resolveHardSourceProfilesForTargetMock).not.toHaveBeenCalled();
+    expect(createOrUpdateHardSourceProfileMock).not.toHaveBeenCalled();
+  });
+
+  it("defers when listing discovery consumes the target budget before detail evaluation", async () => {
+    let now = 0;
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockImplementation(async () => {
+      now = 60_000;
+      return makeBrowserResultOk([]);
+    });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true, now: () => now });
+
+    expect(result.dryRun).toBe(false);
+    expect(evaluateArticleLinkCandidateMock).not.toHaveBeenCalled();
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
+    expect(finalCall.data.payload.browserDetailEvaluationStoppedReason).toBe("time_budget_exhausted");
+    expect(finalCall.data.payload.browserDetailTimeBudgetExhausted).toBe(true);
+    expect(result.dryRun || result.browserNoCandidates).not.toBe(1);
+    expect(createOrUpdateHardSourceProfileMock).not.toHaveBeenCalled();
+  });
+
+  it("stops between links after the target budget expires without no-candidate completion", async () => {
+    const first = "https://example.com/news/2026/07/20/first-timeout";
+    const second = "https://example.com/news/2026/07/21/second-timeout";
+    let now = 0;
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(makeBrowserResultOk([
+      makeBrowserLink(first), makeBrowserLink(second),
+    ]));
+    evaluateArticleLinkCandidateMock
+      .mockImplementationOnce(async () => {
+        now = 60_000;
+        return makeRejectedEvaluation(first, "rejected_stale", "stale");
+      });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true, now: () => now });
+
+    expect(result.dryRun).toBe(false);
+    expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledTimes(1);
+    expect(evaluateArticleLinkCandidateMock).not.toHaveBeenCalledWith(expect.objectContaining({ articleUrl: second }));
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
+    expect(finalCall.data.payload.browserDetailEvaluationStoppedReason).toBe("time_budget_exhausted");
+    expect(result.dryRun || result.browserNoCandidates).not.toBe(1);
+    expect(createOrUpdateHardSourceProfileMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps an accepted candidate pending when the target budget expires before the next link", async () => {
+    const first = "https://example.com/news/2026/07/20/accepted-timeout";
+    const second = "https://example.com/news/2026/07/21/unprocessed-timeout";
+    let now = 0;
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(makeBrowserResultOk([
+      makeBrowserLink(first), makeBrowserLink(second),
+    ]));
+    evaluateArticleLinkCandidateMock
+      .mockImplementationOnce(async () => {
+        now = 60_000;
+        return makeAcceptedEvaluation(first);
+      });
+    persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true, now: () => now });
+
+    expect(result.dryRun).toBe(false);
+    expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledTimes(1);
+    expect(persistCandidatesMock).toHaveBeenCalledTimes(1);
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
+    expect(finalCall.data.payload.browserDetailEvaluationStoppedReason).toBe("time_budget_exhausted");
+    expect(finalCall.data.payload.resolvedAt).toBeNull();
+    expect(result.dryRun || result.browserResolved).not.toBe(1);
+    expect(resolveHardSourceProfilesForTargetMock).not.toHaveBeenCalled();
+  });
+
+  it("recognizes in-navigation typed timeout as deferred time-budget exhaustion", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/navigation-timeout";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(makeBrowserResultOk([makeBrowserLink(articleUrl)]));
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeRejectedEvaluation(articleUrl, "fetch_failed", "HTTP 403"));
+    const timeoutError = Object.assign(new Error("deadline"), { code: "BROWSER_DETAIL_TIME_BUDGET_EXHAUSTED" });
+    createBrowserArticleDetailSessionMock.mockResolvedValue({
+      session: {
+        evaluate: vi.fn().mockRejectedValue(timeoutError),
+        hasTimeRemaining: () => true,
+        close: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
+    expect(finalCall.data.payload.browserDetailEvaluationStoppedReason).toBe("time_budget_exhausted");
+    expect(finalCall.data.payload.browserDetailTimeBudgetExhausted).toBe(true);
+    expect(finalCall.data.payload.browserDetailRuntimeUnavailable).toBe(false);
+    expect(resolveHardSourceProfilesForTargetMock).not.toHaveBeenCalled();
+    expect(createOrUpdateHardSourceProfileMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps browser runtime failure distinct from a time-budget stop", async () => {
+    const articleUrl = "https://example.com/news/2026/07/20/runtime-failure";
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(makeBrowserResultOk([makeBrowserLink(articleUrl)]));
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(makeRejectedEvaluation(articleUrl, "fetch_failed", "HTTP 403"));
+    createBrowserArticleDetailSessionMock.mockResolvedValue({ session: null, blockedReason: "Playwright missing" });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    expect(result.dryRun).toBe(false);
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.payload.browserDetailEvaluationStoppedReason).toBeNull();
+    expect(finalCall.data.payload.browserDetailTimeBudgetExhausted).toBe(false);
+    expect(finalCall.data.payload.browserDetailRuntimeUnavailable).toBe(true);
+  });
+
   it("attempts browser detail recovery when static evaluation fails with fetch_failed", async () => {
     const articleUrl = "https://example.com/news/2026/07/20/recovered";
     findManyMock.mockResolvedValue([makeArtifact()]);
@@ -1293,7 +1483,7 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
 
   // ── MAX_BROWSER_ACCEPTED_CANDIDATES stops early ────────────────────────
 
-  it("short-circuits browser detail evaluation after repeated HTTP 429 responses", async () => {
+  it("does not launch browser recovery after static HTTP 429 and stops remaining links", async () => {
     const links = Array.from({ length: 5 }, (_, i) =>
       makeBrowserLink(`https://example.com/news/2026/07/2${i}/rate-limited-story`),
     );
@@ -1302,29 +1492,36 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     discoverArticleLinksWithBrowserMock.mockResolvedValue(makeBrowserResultOk(links));
 
     evaluateArticleLinkCandidateMock
-      .mockResolvedValueOnce(makeRejectedEvaluation(links[0]!.url, "fetch_failed", "HTTP 429"))
-      .mockResolvedValueOnce(makeRejectedEvaluation(links[1]!.url, "fetch_failed", "HTTP 429"))
-      .mockResolvedValueOnce(makeAcceptedEvaluation(links[2]!.url));
-    evaluateArticleLinkCandidateWithBrowserMock
-      .mockResolvedValueOnce(makeRejectedEvaluation(links[0]!.url, "fetch_failed", "HTTP 429"))
-      .mockResolvedValueOnce(makeRejectedEvaluation(links[1]!.url, "fetch_failed", "HTTP 429"));
+      .mockResolvedValueOnce({
+        ...makeRejectedEvaluation(links[0]!.url, "fetch_failed", "HTTP 429"),
+        outcome: {
+          ...makeRejectedEvaluation(links[0]!.url, "fetch_failed", "HTTP 429").outcome,
+          httpStatus: 429,
+          rateLimited: true,
+          retryAfterAt: "2099-07-30T13:00:00.000Z",
+          retryAfterSource: "delta_seconds",
+        },
+      });
 
+    const telemetry = makeTelemetryProbe();
     const fn = await loadFn();
-    const result = await fn({ dryRun: false, runBrowser: true });
+    const result = await fn({ dryRun: false, runBrowser: true, telemetry: telemetry as any });
 
     expect(result.dryRun).toBe(false);
     if (!result.dryRun) {
-      expect(result.browserNoCandidates).toBe(1);
+      expect(result.browserNoCandidates).toBe(0);
       expect(result.browserResolved).toBe(0);
     }
-    // With first-429 semantics, the loop breaks after the first 429
-    // (link 0 evaluation + link 0 recovery = 1 call each, then break)
+    // Static 429 is authoritative: only the first static evaluation runs and
+    // browser detail recovery is never launched.
     expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledTimes(1);
-    expect(evaluateArticleLinkCandidateWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(evaluateArticleLinkCandidateWithBrowserMock).not.toHaveBeenCalled();
     expect(persistCandidatesMock).not.toHaveBeenCalled();
+    expect(telemetry.recordRateLimited).toHaveBeenCalledTimes(1);
+    expect(telemetry.recordRateLimited).toHaveBeenCalledWith(429);
 
     const finalCall = updateManyMock.mock.calls[1]![0];
-    expect(finalCall.data.status).toBe("BROWSER_NO_CANDIDATES");
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
     expect(finalCall.data.payload.browserBlockedReason).toBe("http_429");
     expect(finalCall.data.payload.browserRateLimited).toBe(true);
     expect(finalCall.data.payload.browserRateLimitReason).toBe("http_429");
@@ -1334,6 +1531,120 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     expect(finalCall.data.payload.browserRateLimitedCount).toBe(1);
     expect(finalCall.data.payload.browserError).toContain("rate-limited");
     expect(finalCall.data.payload.browserEvaluated).toBe(1);
+    expect(finalCall.data.payload.rateLimitEvidence).toEqual([
+      expect.objectContaining({
+        phase: "article_detail",
+        url: links[0]!.url,
+        status: 429,
+        retryAfterAt: expect.any(String),
+        retryAfterSource: "delta_seconds",
+      }),
+    ]);
+  });
+
+  it("stops after a browser detail HTTP 429 and records rate-limit telemetry once", async () => {
+    const firstLink = makeBrowserLink("https://example.com/news/2026/07/20/browser-recoverable");
+    const rateLimitedLink = makeBrowserLink("https://example.com/news/2026/07/21/browser-rate-limited");
+    const laterLink = makeBrowserLink("https://example.com/news/2026/07/22/must-not-evaluate");
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([firstLink, rateLimitedLink, laterLink]),
+    );
+    evaluateArticleLinkCandidateMock.mockResolvedValueOnce(
+      makeRejectedEvaluation(firstLink.url, "fetch_failed", "HTTP 403"),
+    );
+    evaluateArticleLinkCandidateWithBrowserMock.mockResolvedValueOnce({
+      ...makeRejectedEvaluation(firstLink.url, "fetch_failed", "429"),
+      outcome: {
+        ...makeRejectedEvaluation(firstLink.url, "fetch_failed", "429").outcome,
+        httpStatus: 429,
+        rateLimited: true,
+        retryAfterAt: "2099-07-30T13:00:00.000Z",
+        retryAfterSource: "http_date",
+      },
+    });
+
+    const telemetry = makeTelemetryProbe();
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true, telemetry: telemetry as any });
+
+    if (result.dryRun) throw new Error("Expected queue processing result.");
+    expect(result.browserResolved).toBe(0);
+    expect(evaluateArticleLinkCandidateMock).toHaveBeenCalledTimes(1);
+    expect(evaluateArticleLinkCandidateWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(evaluateArticleLinkCandidateMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ articleUrl: laterLink.url }),
+    );
+    expect(telemetry.recordRateLimited).toHaveBeenCalledTimes(1);
+    expect(telemetry.recordRateLimited).toHaveBeenCalledWith(429);
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
+    expect(finalCall.data.payload.browserDetailEvaluationStoppedReason).toBe("rate_limited");
+    expect(finalCall.data.payload.browserRetryAfterAt).toEqual(expect.any(String));
+    expect(finalCall.data.payload.rateLimitEvidence).toEqual([
+      expect.objectContaining({
+        phase: "article_detail",
+        url: firstLink.url,
+        status: 429,
+        retryAfterAt: expect.any(String),
+        retryAfterSource: "http_date",
+      }),
+    ]);
+    expect(resolveHardSourceProfilesForTargetMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps partial productive results pending when detail evaluation hits HTTP 429", async () => {
+    const acceptedLink = makeBrowserLink("https://example.com/news/2026/07/20/accepted-story");
+    const rateLimitedLink = makeBrowserLink("https://example.com/news/2026/07/21/rate-limited-story");
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue(
+      makeBrowserResultOk([acceptedLink, rateLimitedLink]),
+    );
+    evaluateArticleLinkCandidateMock
+      .mockResolvedValueOnce(makeAcceptedEvaluation(acceptedLink.url))
+      .mockResolvedValueOnce({
+        ...makeRejectedEvaluation(rateLimitedLink.url, "fetch_failed", "HTTP 429"),
+        outcome: {
+          ...makeRejectedEvaluation(rateLimitedLink.url, "fetch_failed", "HTTP 429").outcome,
+          httpStatus: 429,
+          rateLimited: true,
+          retryAfterAt: "2099-07-30T13:00:00.000Z",
+          retryAfterSource: "http_date",
+        },
+      });
+    persistCandidatesMock.mockResolvedValue({ inserted: 1, skipped: 0, failed: 0 });
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true });
+
+    if (result.dryRun) throw new Error("Expected queue processing result.");
+    expect(result.browserResolved).toBe(0);
+    expect(result.browserCandidatesFound).toBe(1);
+    expect(result.productivity.insertedCandidates).toBe(1);
+    expect(persistCandidatesMock).toHaveBeenCalledTimes(1);
+    expect(evaluateArticleLinkCandidateWithBrowserMock).not.toHaveBeenCalled();
+    expect(resolveHardSourceProfilesForTargetMock).not.toHaveBeenCalled();
+
+    const finalCall = updateManyMock.mock.calls[1]![0];
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
+    expect(finalCall.data.payload.browserInserted).toBe(1);
+    expect(finalCall.data.payload.browserRateLimited).toBe(true);
+    expect(finalCall.data.payload.browserDetailEvaluationStoppedReason).toBe("rate_limited");
+    expect(finalCall.data.payload.browserCooldownUntil).toBe(
+      finalCall.data.payload.browserRetryAfterAt,
+    );
+    expect(finalCall.data.payload.resolvedAt).toBeNull();
+
+    const finalAudit = logAgentScanMock.mock.calls
+      .map((call: any[]) => call[0])
+      .find((entry: any) => entry.status === "ARTICLE_DISCOVERY_BROWSER_FAILED");
+    expect(finalAudit.status).toBe("ARTICLE_DISCOVERY_BROWSER_FAILED");
+    expect(finalAudit.errorLog).toContain("rate-limited");
+    expect(finalAudit.errorLog).toContain("remains retryable in PENDING_HEADLESS after cooldown");
+    expect(finalAudit.errorLog).not.toContain("Candidate persistence failed");
   });
 
   // ── Browser cooldown (Approach A) ───────────────────────────────────

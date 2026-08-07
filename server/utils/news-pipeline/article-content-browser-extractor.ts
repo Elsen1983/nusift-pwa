@@ -356,6 +356,7 @@ export function isBrowserFallbackEligibleForFailure(result: {
     case "no_article_text":
     case "empty_html":
     case "too_short":
+    case "interstitial_or_challenge":
       return true;
     case "fetch_failed": {
       // Narrow: only eligible when signals indicate browser-recoverable problems
