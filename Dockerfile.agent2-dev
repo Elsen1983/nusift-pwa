@@ -52,6 +52,7 @@ RUN npx prisma generate
 COPY tsconfig.json ./
 COPY scripts/dev/ ./scripts/dev/
 COPY server/ ./server/
+COPY shared/ ./shared/
 
 # Default environment: simulate Vercel runtime so the production
 # browser code path (playwright-core + @sparticuz/chromium) is used

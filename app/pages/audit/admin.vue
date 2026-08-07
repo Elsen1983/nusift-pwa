@@ -1660,14 +1660,13 @@
           </div>
           <div v-if="agent3Progress" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-on-surface-variant">
             <span>Total in scope: <strong>{{ agent3Progress.totalInScope }}</strong></span>
-            <span>Eligible now: <strong class="text-violet-300">{{ agent3Progress.eligibleNow }}</strong></span>
+            <span>Policy eligible: <strong class="text-violet-300">{{ agent3Progress.eligibleNow }}</strong></span>
             <span>Retryable now: <strong class="text-emerald-300">{{ agent3Progress.retryableNow ?? agent3Progress.eligibleNow }}</strong></span>
             <span v-if="(agent3Progress.recentlyBlocked ?? 0) > 0" class="text-amber-300">Recently blocked: <strong>{{ agent3Progress.recentlyBlocked }}</strong></span>
             <span v-if="(agent3Progress.nonRetryableCurrentVersionFailures ?? 0) > 0" class="text-rose-300/80">Non-retryable failures: <strong>{{ agent3Progress.nonRetryableCurrentVersionFailures }}</strong></span>
             <span>Needs initial enrichment: <strong>{{ agent3Progress.needingInitialEnrichment }}</strong></span>
             <span>Needs extractor reprocess: <strong class="text-amber-300">{{ agent3Progress.needsCurrentVersionReprocess }}</strong></span>
             <span>Current version complete: <strong class="text-emerald-300">{{ agent3Progress.currentVersionComplete }}</strong></span>
-            <span>Ready now: <strong :class="(agent3Progress.retryableNow ?? 0) > 0 ? 'text-violet-300' : 'text-emerald-300'">{{ agent3Progress.retryableNow ?? 0 }}</strong></span>
             <span v-if="(agent3Progress.deferred ?? 0) > 0" class="text-amber-200">Deferred: <strong>{{ agent3Progress.deferred }}</strong></span>
           </div>
           <p v-if="(agent3Progress?.nonRetryableCurrentVersionFailures ?? 0) > 0" class="mt-1 text-[10px] text-on-surface-variant/60">
@@ -1714,7 +1713,7 @@
             More Agent 3 articles remain for the current extractor version. Run Agent 3 again.
           </p>
           <p v-else-if="agent3Progress && (agent3Progress.deferred ?? 0) > 0" class="mt-2 text-xs text-amber-200">
-            No Agent 3 work is ready now. Deferred articles become eligible after publisher cooldowns expire<span v-if="agent3Progress.nextRetryAt"> (next retry: {{ formatLogTime(agent3Progress.nextRetryAt) }})</span>.
+            No Agent 3 work is ready now. Deferred articles become eligible after publisher cooldowns expire<span v-if="agent3Progress.nextRetryAt"> (next retry: {{ formatRetryDateTime(agent3Progress.nextRetryAt) }})</span>.
           </p>
           <p v-else-if="agent3Progress" class="mt-2 text-xs text-emerald-300">
             No retryable Agent 3 articles remain for the selected mode.
@@ -2921,6 +2920,34 @@ const DEV_PANEL_POLL_MS = 10000;
 
 const formatLogTime = (value: string) =>
   new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+const formatRetryDateTime = (value: string): string => {
+  const retryAt = new Date(value);
+  if (!Number.isFinite(retryAt.getTime())) return "unknown";
+
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const sameLocalDay = (left: Date, right: Date) =>
+    left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+  const relativeDay = sameLocalDay(retryAt, now)
+    ? "today"
+    : sameLocalDay(retryAt, tomorrow)
+      ? "tomorrow"
+      : null;
+  const formatted = retryAt.toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
+  return relativeDay ? `${formatted}, ${relativeDay}` : formatted;
+};
 
 const agent1Summary = computed(() => {
   const run = agent1RunSummary.value.run;
