@@ -4,7 +4,7 @@
   >
     <div class="w-full max-w-2xl min-w-0 relative min-h-screen">
       <div
-        class="fixed top-0 inset-x-0 mx-auto w-full max-w-2xl bg-background z-[100] border-b border-white/5"
+        class="fixed top-0 inset-x-0 mx-auto w-full max-w-2xl bg-background z-[200] border-b border-white/5"
       >
         <header
           class="flex justify-between items-center px-6 py-3 w-full h-[60px]"
@@ -71,7 +71,7 @@
             <transition name="dropdown">
               <div
                 v-if="isProfileMenuOpen"
-                class="absolute top-14 right-0 w-[290px] overflow-hidden rounded-[28px] border border-white/10 bg-surface-container-low/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.45)] z-[110]"
+                class="absolute top-14 right-0 z-[210] w-[290px] overflow-hidden rounded-[28px] border border-white/10 bg-surface-container-low shadow-[0_20px_60px_rgba(0,0,0,0.55)]"
               >
                 <div class="p-2 space-y-1">
                   <button
