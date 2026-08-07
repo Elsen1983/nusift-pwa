@@ -1,10 +1,17 @@
 <template>
-  <div
-    v-if="accessState === 'allowed'"
-    class="relative z-[80] mx-auto w-full max-w-5xl px-4 pt-3"
-  >
+  <div v-if="accessState === 'allowed'">
+    <button
+      v-if="!inspectionMode"
+      type="button"
+      class="fixed bottom-5 right-5 z-[110] inline-flex items-center gap-2 rounded-full border border-violet-300/35 bg-surface-container-high px-4 py-2.5 text-xs font-bold text-violet-100 shadow-xl shadow-black/30 transition hover:border-violet-200/60 hover:bg-violet-300/15"
+      @click="toggleMode"
+    >
+      <span class="material-symbols-outlined text-[18px] text-violet-200">admin_panel_settings</span>
+      Admin Inspection
+    </button>
     <section
-      class="rounded-2xl border border-violet-400/25 bg-violet-500/5 px-4 py-3 shadow-lg shadow-violet-950/10"
+      v-else
+      class="relative z-[100] mx-auto w-full max-w-5xl rounded-2xl border border-violet-400/25 bg-violet-500/5 px-4 py-3 shadow-lg shadow-violet-950/10"
     >
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="min-w-0">
@@ -30,7 +37,7 @@
           class="rounded-lg border border-violet-300/25 bg-violet-300/10 px-3 py-1.5 text-xs font-bold text-violet-100 transition hover:bg-violet-300/20"
           @click="toggleMode"
         >
-          {{ inspectionMode ? "My Sources" : "Admin Inspection" }}
+          My Sources
         </button>
       </div>
       <div v-if="inspectionMode" class="mt-4 space-y-4">
