@@ -451,7 +451,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onMounted, onBeforeUnmount, ref, watch } from "vue";
 import { $api } from "~/utils/api";
 import { useAuthStore } from "~/stores/auth";
 
@@ -907,9 +907,9 @@ const sourceSummary = computed(() => {
   ];
 });
 let accessRequestSequence = 0;
-const loadInspectionAccess = async (userId: string | null) => {
+const loadInspectionAccess = async (hasClientUser: boolean) => {
   const seq = ++accessRequestSequence;
-  if (!userId) {
+  if (!hasClientUser) {
     accessState.value = "unknown";
     return;
   }
@@ -954,10 +954,15 @@ watch(
       articleRequestSequence++;
       detailRequestSequence++;
     }
-    void loadInspectionAccess(userId);
+    void loadInspectionAccess(Boolean(userId));
   },
   { immediate: true },
 );
+onMounted(() => {
+  // The server-side cookie is authoritative. Always probe it on mount because
+  // legacy persisted client profiles may be authenticated but omit `user.id`.
+  void loadInspectionAccess(true);
+});
 onBeforeUnmount(() => {
   accessRequestSequence++;
   if (debounceTimer) clearTimeout(debounceTimer);
