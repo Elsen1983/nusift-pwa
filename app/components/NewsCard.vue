@@ -51,7 +51,7 @@
         </div>
         <!-- Paywall Badge -->
         <div
-          v-if="article.isPaywall"
+          v-if="isConfirmedBlockingPaywall(article)"
           class="flex items-center gap-1 bg-semantic-paywall/10 px-1.5 py-0.5 rounded-full mr-1 border border-semantic-paywall/20"
         >
           <span
@@ -230,6 +230,7 @@
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { formatDateByLocale } from "~/utils/date";
+import { isConfirmedBlockingPaywall } from "~/utils/paywall";
 
 // Define what data the parent needs to pass in
 const props = defineProps<{

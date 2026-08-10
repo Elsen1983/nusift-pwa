@@ -329,6 +329,7 @@ import { ref, computed, watch, onMounted } from "vue";
 import { useAuthStore } from "~/stores/auth";
 import { useFeedStore } from "~/stores/feedStore";
 import { $api } from "~/utils/api";
+import { isConfirmedBlockingPaywall } from "~/utils/paywall";
 
 const { t } = useI18n();
 const authStore = useAuthStore();
@@ -721,6 +722,9 @@ const escapeHtml = (text: string): string =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 
+const isConfirmedPaywall = (article: any): boolean =>
+  isConfirmedBlockingPaywall(article);
+
 const readerContent = computed(() => {
   if (!activeArticleData.value) return "";
 
@@ -732,7 +736,7 @@ const readerContent = computed(() => {
       .map((p: string) => p.trim())
       .filter((p: string) => p.length > 0);
 
-    if (activeArticleData.value.isPaywall) {
+    if (isConfirmedPaywall(activeArticleData.value)) {
       // Show first 2 paragraphs, then a fading preview of the third
       const preview = paragraphs.slice(0, 2).map((p: string) => `<p>${escapeHtml(p)}</p>`).join("");
       const faded = paragraphs[2] ? `<p class="opacity-30 pb-40">${escapeHtml(paragraphs[2])}</p>` : "";
@@ -748,7 +752,7 @@ const readerContent = computed(() => {
 
 const handleReadNow = (article: any) => {
   activeArticleData.value = article;
-  if (article.isPaywall) {
+  if (isConfirmedPaywall(article)) {
     showPaywallModal.value = true;
   } else {
     showReaderModal.value = true;

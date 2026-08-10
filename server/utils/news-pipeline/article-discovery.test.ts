@@ -2769,4 +2769,98 @@ describe("article-discovery", () => {
     expect(prismaArtifactCreateMock.mock.calls[0]?.[0]?.data?.status).toBe("DEFERRED_RATE_LIMIT");
     expect(prismaArtifactCreateMock.mock.calls[0]?.[0]?.data?.payload?.discoveryComplete).toBe(false);
   });
+
+  it("Agent 2 retains matching canonical JSON-LD access evidence in the discovery artifact without setting isPaywall", async () => {
+    const { discoverArticlesFromTarget, persistArticleDiscoveryArtifact } = await import("./article-discovery");
+    const articleUrl = "https://example.com/news/2026/07/20/metered-story";
+    const listing = `<html><body><article><a href="/news/2026/07/20/metered-story">Metered story title long enough</a></article></body></html>`;
+    const article = `<html><head>
+      <title>Metered story title long enough</title>
+      <meta name="description" content="A readable article description with enough context." />
+      <meta property="article:published_time" content="2026-07-29T09:00:00Z" />
+      <script type="application/ld+json">${JSON.stringify({
+        "@type": ["WebPage", "NewsArticle"],
+        url: `${articleUrl}?utm_source=feed`,
+        headline: "Metered story title long enough",
+        isAccessibleForFree: false,
+      })}</script>
+    </head><body><p>A readable article body remains available to readers.</p></body></html>`;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url === articleUrl) return makeResponse(article);
+      return makeResponse("", false, 404);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    expect(result.candidates).toHaveLength(1);
+    const candidate = result.candidates[0]!;
+    expect(candidate.canonicalUrl).toBe(articleUrl);
+    expect(candidate.isPaywall).toBe(false);
+    expect(candidate.accessEvidence).toMatchObject({
+      classification: "METERED_OR_DECLARED",
+      sourceStage: "agent2",
+    });
+    expect(candidate.accessEvidence?.evidenceCodes).toContain("jsonld_declared_paywall");
+
+    await persistArticleDiscoveryArtifact({ pipelineRunId: "run-agent2-metered", result });
+    const payload = prismaArtifactCreateMock.mock.calls.at(-1)?.[0]?.data?.payload as any;
+    expect(payload.candidates).toHaveLength(1);
+    expect(payload.candidates[0].isPaywall).toBe(false);
+    expect(payload.candidates[0].accessEvidence).toMatchObject({
+      classification: "METERED_OR_DECLARED",
+      sourceStage: "agent2",
+    });
+    expect(payload.candidates[0].accessEvidence.evidenceCodes).toContain("jsonld_declared_paywall");
+  });
+
+  it("Agent 2 ignores unrelated Article JSON-LD access declarations on the current detail page", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const articleUrl = "https://example.com/news/2026/07/20/free-story";
+    const listing = `<html><body><article><a href="/news/2026/07/20/free-story">Free story title long enough</a></article></body></html>`;
+    const article = `<html><head>
+      <title>Free story title long enough</title>
+      <meta name="description" content="This article is openly available and discusses the publication industry." />
+      <meta property="article:published_time" content="2026-07-29T09:00:00Z" />
+      <script type="application/ld+json">${JSON.stringify({
+        "@graph": [{
+          "@type": "NewsArticle",
+          url: "https://example.com/recommendations/other-story",
+          headline: "Unrelated recommendation",
+          isAccessibleForFree: false,
+        }],
+      })}</script>
+    </head><body><p>This full article remains readable without an account or subscription.</p></body></html>`;
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url === articleUrl) return makeResponse(article);
+      return makeResponse("", false, 404);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.isPaywall).toBe(false);
+    expect(result.candidates[0]?.accessEvidence?.classification).not.toBe("PAYWALL_BLOCKED");
+    expect(result.candidates[0]?.accessEvidence?.classification).not.toBe("METERED_OR_DECLARED");
+    expect(result.candidates[0]?.accessEvidence?.evidenceCodes).not.toContain("jsonld_declared_paywall");
+  });
 });

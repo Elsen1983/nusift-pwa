@@ -11,10 +11,10 @@ const publishableArticle = (overrides: Record<string, unknown> = {}) => ({
   title: "Published",
   canonicalUrl: "https://example.com/1",
   date: new Date("2026-08-01T00:00:00.000Z"),
-  score: 5,
-  isPaywall: false,
-  tags: [],
-  signals: [],
+  score: 5,      isPaywall: false,
+      accessClassification: null,
+      tags: [],
+      signals: [],
   reasoning: null,
   bodyText: "A".repeat(600),
   source: { frontPageUrl: "https://example.com", mediaName: "Example" },
@@ -66,11 +66,30 @@ describe("shared user-feed service", () => {
       date: "2026-08-01T00:00:00.000Z",
       score: 5,
       isPaywall: false,
+      accessClassification: null,
       tags: [],
       signals: [],
       reasoning: "",
       bodyText: "A".repeat(600),
     }]);
+  });
+
+  it("maps only validated structured access classifications and never exposes raw evidence", async () => {
+    const db = makeDb();
+    db.user.findUnique.mockResolvedValue({ sourceSubscriptions: [{ sourceId: "source-a" }], categorySubscriptions: [] });
+    db.article.findMany.mockResolvedValue([
+      publishableArticle({ id: 1, isPaywall: true, enrichmentOutcome: { access: { classification: "PAYWALL_BLOCKED", evidenceCodes: ["secret raw evidence"] } } }),
+      publishableArticle({ id: 2, isPaywall: true, enrichmentOutcome: { access: { classification: "METERED_OR_DECLARED", evidenceCodes: ["secret raw evidence"] } } }),
+      publishableArticle({ id: 3, isPaywall: true, enrichmentOutcome: { access: { classification: "not-valid", rawHtml: "secret" } } }),
+    ]);
+    const result = await loadUserFeed(db, "user-1");
+    expect(result.map((article: { accessClassification: unknown }) => article.accessClassification)).toEqual([
+      "PAYWALL_BLOCKED",
+      "METERED_OR_DECLARED",
+      null,
+    ]);
+    expect(JSON.stringify(result)).not.toContain("secret raw evidence");
+    expect(JSON.stringify(result)).not.toContain("rawHtml");
   });
 
   it("defensively excludes malformed legacy rows from the returned feed", async () => {

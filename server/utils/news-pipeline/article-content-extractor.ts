@@ -24,6 +24,16 @@
 
 import { safeFetch } from "../ssrf-guard";
 import {
+  classifyArticleAccess,
+  extractJsonLdPaywallSignalsFromValue,
+  matchAdBlockerWarningPatterns,
+  matchArticleAccessCtaPatterns,
+  matchChallengeTextPatterns,
+  type ArticleAccessClassificationResult,
+  type JsonLdPaywallSignal,
+  type JsonLdPaywallSignalScan,
+} from "./article-access-classification";
+import {
   detectStrongInterstitialSignals,
   hasBlockingInterstitialSignalPair,
 } from "./article-body-policy";
@@ -58,6 +68,25 @@ const STRIP_TAGS = [
   "iframe",
   "svg",
 ];
+
+/**
+ * Tags treated as chrome by the access-evidence analyzer. Deliberately does
+ * NOT include button/input/form — interactive access CTAs are exactly the
+ * candidates the analyzer must detect, never chrome.
+ */
+const ACCESS_CHROME_TAGS: ReadonlySet<string> = new Set([
+  "script",
+  "style",
+  "nav",
+  "footer",
+  "header",
+  "aside",
+  "select",
+  "textarea",
+  "noscript",
+  "iframe",
+  "svg",
+]);
 
 /** Class/id patterns that suggest a lead/summary container, not the full body. */
 const LEAD_LIKE_PATTERNS: RegExp[] = [
@@ -139,22 +168,12 @@ const BOILERPLATE_SELECTORS = [
   ".sponsored",
 ];
 
-/** Paywall / blocker signal phrases (case-insensitive, generic). */
-const PAYWALL_SIGNALS: Array<{ pattern: RegExp; strength: "strong" | "weak" }> = [
-  { pattern: /subscribe\s+to\s+(continue|read|unlock|access)/i, strength: "strong" },
-  { pattern: /sign\s+in\s+to\s+(continue|read|access)/i, strength: "strong" },
-  { pattern: /log\s*in\s+to\s+(continue|read|access)/i, strength: "strong" },
-  { pattern: /become\s+a\s+(subscriber|member)\s+to/i, strength: "strong" },
-  { pattern: /premium\s+(article|content|subscriber)/i, strength: "strong" },
-  { pattern: /this\s+(article|content|story)\s+is\s+(for|available\s+to)\s+(subscribers|members)/i, strength: "strong" },
-  { pattern: /paywall/i, strength: "strong" },
-  { pattern: /access\s+denied/i, strength: "strong" },
-  { pattern: /enable\s+javascript\s+to\s+(continue|read|view)/i, strength: "weak" },
-  { pattern: /are\s+you\s+a\s+robot/i, strength: "strong" },
-  { pattern: /captcha/i, strength: "weak" },
-  { pattern: /blocked\s+by\s+security/i, strength: "strong" },
-  { pattern: /please\s+disable\s+your\s+ad\s*blocker/i, strength: "weak" },
-];
+// NOTE (Prompt 15A): the generic /paywall/i keyword signal list that previously
+// lived here has been removed. Authoritative paywall/blocker classification now
+// lives in ./article-access-classification.ts. Generic topic words (paywall,
+// subscription, premium, ...) and technical access failures (CAPTCHA, robot
+// challenge, JS interstitial, ad-blocker warning, access denied) can never
+// classify an article as paywalled on their own.
 
 /**
  * Generic text signals that a page is an interstitial, challenge, consent,
@@ -221,6 +240,8 @@ export interface ArticleContentExtractionOk {
   confidence: number;
   qualitySignals: string[];
   diagnostics: ExtractionDiagnostics;
+  /** Structured Agent 3 access classification; bounded and non-sensitive. */
+  access?: ArticleAccessClassificationResult;
   rejectedReason?: never;
 }
 
@@ -245,6 +266,8 @@ export interface ArticleContentExtractionFail {
   confidence: number;
   qualitySignals: string[];
   diagnostics: ExtractionDiagnostics;
+  /** Structured Agent 3 access classification when page analysis reached it. */
+  access?: ArticleAccessClassificationResult;
   retryAfterAt?: string | null;
 }
 
@@ -2095,55 +2118,733 @@ function countSentenceEnders(text: string): number {
   return matches ? matches.length : 0;
 }
 
-// ─── Paywall Detection ──────────────────────────────────────────────────────
+// ─── Article Access Classification (Prompt 15A) ─────────────────────────────
+//
+// Replaces the keyword-driven paywall detection. The DOM-side analysis here
+// only COLLECTS article-scoped evidence (gate/overlay, CTA texts, scoped
+// JSON-LD); the decision is made by the centralized classifier in
+// ./article-access-classification.ts.
 
-interface PaywallDetection {
-  isPaywall: boolean | null;
-  signals: string[];
+/**
+ * Normalize a class/id value into bounded semantic tokens.
+ *
+ * Handles whitespace, hyphens, underscores, dots, camelCase boundaries,
+ * common BEM separators (`__` / `--`), and numeric suffixes (`menu2` →
+ * `menu`, `ad-container-1` → `ad` `container`). Matching is done against
+ * COMPLETE tokens only — an arbitrary substring like `nav` inside
+ * `navy-report` or `image` inside `imagery-analysis` never matches.
+ */
+export function tokenizeClassId(value: string): Set<string> {
+  const tokens = new Set<string>();
+  // camelCase boundaries: moreStories -> "more Stories", mediaModal -> "media Modal".
+  const spaced = value.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  for (const raw of spaced.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (!raw) continue;
+    // Numeric suffixes: "menu2" -> "menu"; "list-2024" drops the "2024" part.
+    const token = raw.replace(/\d+$/, "");
+    if (!token || /^\d+$/.test(token)) continue;
+    tokens.add(token);
+  }
+  return tokens;
 }
 
-function detectPaywallSignals(bodyText: string, doc: Document): PaywallDetection {
-  const signals: string[] = [];
-  let strongCount = 0;
-  let weakCount = 0;
+/**
+ * Chrome tokens that exclude an element from access-evidence collection when
+ * they appear as COMPLETE normalized tokens. Intentionally does NOT include
+ * ambiguous tokens (`form`, `modal`, `story`, `media`, ...) that also appear
+ * in genuine article/gate identifiers — those are handled via explicit token
+ * groups below.
+ */
+const ACCESS_CHROME_TOKEN_SINGLES: ReadonlySet<string> = new Set([
+  // navigation / layout
+  "nav", "navbar", "navigation", "menu", "menubar", "header", "footer", "sidebar", "aside",
+  // newsletter chrome (auth actions are context-sensitive below)
+  "newsletter",
+  // related / recommended
+  "related", "recommended", "recommendation", "recommendations",
+  // advertisements / sponsored
+  "ad", "ads", "advert", "adverts", "advertisement", "advertising", "advertorial",
+  "sponsored", "promoted", "promo",
+  // gallery / lightbox / media modal containers
+  "gallery", "lightbox", "carousel",
+  // cookie / consent
+  "cookie", "consent", "gdpr", "ccpa", "privacy",
+  // site chrome
+  "search", "breadcrumb", "pagination", "image", "img", "video",
+]);
 
-  // Check body text against paywall patterns
-  for (const { pattern, strength } of PAYWALL_SIGNALS) {
-    if (pattern.test(bodyText)) {
-      signals.push(`paywall_signal:${pattern.source.slice(0, 40)}`);
-      if (strength === "strong") strongCount++;
-      else weakCount++;
+/**
+ * Explicit chrome token combinations. Every position must contain at least one
+ * of its tokens. These encode exclusions whose bare tokens would be ambiguous
+ * in a genuine article context (e.g. "modal" is a gate signal on its own, but
+ * a media/image/video modal is page chrome).
+ */
+const AUTH_CHROME_TOKEN_SINGLES: ReadonlySet<string> = new Set([
+  "account", "auth", "authn", "login", "logout", "logon", "signin", "signout",
+  "signup", "register", "registration",
+]);
+
+const ACCESS_CHROME_TOKEN_GROUPS: ReadonlyArray<ReadonlyArray<ReadonlySet<string>>> = [
+  [new Set(["more"]), new Set(["stories", "news"])],
+  [new Set(["also"]), new Set(["read"])],
+  [new Set(["you"]), new Set(["may"]), new Set(["also"])],
+  [new Set(["media", "image", "video"]), new Set(["modal"])],
+  // Auth/account tokens are context-sensitive and handled by
+  // hasAuthChromeTokenEvidence + isInExcludedChrome, not as unconditional
+  // page-chrome combinations.
+  [new Set(["cookie"]), new Set(["banner", "notice", "wall", "bar"])],
+  [new Set(["consent"]), new Set(["banner", "notice"])],
+  // Generic article cards that represent ANOTHER article (prompt: "article-card
+  // when it represents another article"). Real <article> cards are rejected
+  // structurally; this closes the gap for div/section cards with a CTA.
+  [new Set(["article"]), new Set(["card"])],
+];
+
+/** Gate/overlay tokens that mark an article-scoped access wall. */
+const ACCESS_GATE_TOKEN_SINGLES: ReadonlySet<string> = new Set([
+  "paywall", "overlay", "modal", "regwall", "gate", "metered", "unlock",
+]);
+
+/**
+ * Explicit gate token combinations (e.g. "subscription-wall", "member-gate",
+ * "premium-wall") — `wall`/`gate` alone would be too ambiguous.
+ */
+const ACCESS_GATE_TOKEN_GROUPS: ReadonlyArray<ReadonlyArray<ReadonlySet<string>>> = [
+  [new Set(["subscription"]), new Set(["wall", "gate"])],
+  [new Set(["member"]), new Set(["gate", "wall"])],
+  [new Set(["premium"]), new Set(["wall", "gate"])],
+];
+
+function hasTokenEvidence(
+  value: string,
+  singles: ReadonlySet<string>,
+  groups: ReadonlyArray<ReadonlyArray<ReadonlySet<string>>>,
+): boolean {
+  const tokens = tokenizeClassId(value);
+  if (tokens.size === 0) return false;
+  for (const token of tokens) {
+    if (singles.has(token)) return true;
+  }
+  for (const group of groups) {
+    let matched = true;
+    for (const position of group) {
+      let any = false;
+      for (const token of position) {
+        if (tokens.has(token)) {
+          any = true;
+          break;
+        }
+      }
+      if (!any) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) return true;
+  }
+  return false;
+}
+
+/** Token-level chrome evidence (exported for regression tests). */
+export function hasAccessChromeTokenEvidence(value: string): boolean {
+  // This exported token predicate describes unconditional page chrome only.
+  // Auth/account tokens are deliberately context-sensitive and are handled by
+  // isInExcludedChrome after article-gate validation.
+  return hasPageChromeTokenEvidence(value);
+}
+
+function hasPageChromeTokenEvidence(value: string): boolean {
+  return hasTokenEvidence(value, ACCESS_CHROME_TOKEN_SINGLES, ACCESS_CHROME_TOKEN_GROUPS);
+}
+
+function hasAuthChromeTokenEvidence(value: string): boolean {
+  return hasTokenEvidence(value, AUTH_CHROME_TOKEN_SINGLES, []);
+}
+
+/** Token-level gate/overlay evidence (exported for regression tests). */
+export function hasAccessGateTokenEvidence(value: string): boolean {
+  return hasTokenEvidence(value, ACCESS_GATE_TOKEN_SINGLES, ACCESS_GATE_TOKEN_GROUPS);
+}
+
+const ACCESS_INTERACTIVE_SELECTOR = 'button, a[href], [role="button"], input[type="submit"]';
+const ACCESS_CTA_EVIDENCE_MAX = 6;
+const ACCESS_CTA_TEXT_MAX = 160;
+
+/** Whether an element looks like page chrome (nav/menu/footer/...) — excluded from evidence. */
+function isAccessChromeElement(el: Element): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (ACCESS_CHROME_TAGS.has(tag)) return true;
+  const cls = el.getAttribute("class") || "";
+  const id = el.getAttribute("id") || "";
+  // Auth/account tokens are intentionally not checked here. They are page
+  // chrome unless the caller proves that the element is inside a validated
+  // article-scoped gate; see isInExcludedChrome below.
+  return hasPageChromeTokenEvidence(`${cls} ${id}`);
+}
+
+/** Whether an element's class/id marks an article-scoped gate or overlay. */
+function isGateOverlayElement(el: Element): boolean {
+  if (isAccessChromeElement(el)) return false;
+  const cls = el.getAttribute("class") || "";
+  const id = el.getAttribute("id") || "";
+  const identity = `${cls} ${id}`;
+  // A bare `modal`/`overlay` token on an account/login panel is page chrome,
+  // not an article gate. Auth-bearing elements need an independent strong gate
+  // identity such as subscription-wall, paywall, gate, or metered.
+  if (hasAuthChromeTokenEvidence(identity) && !hasStrongArticleGateTokenEvidence(identity)) {
+    return false;
+  }
+  // The chrome filter already excludes nav/menu/newsletter/etc., so a token
+  // match here is strong article-scoped gate/overlay evidence.
+  return hasAccessGateTokenEvidence(identity);
+}
+
+function hasStrongArticleGateTokenEvidence(value: string): boolean {
+  const tokens = tokenizeClassId(value);
+  if (tokens.has("paywall") || tokens.has("regwall") || tokens.has("gate") ||
+      tokens.has("metered") || tokens.has("unlock")) {
+    return true;
+  }
+  return (
+    (tokens.has("subscription") || tokens.has("member") || tokens.has("premium")) &&
+    (tokens.has("wall") || tokens.has("gate"))
+  );
+}
+
+function normalizeCtaText(raw: string): string {
+  return collapseWhitespace(raw || "").trim().slice(0, ACCESS_CTA_TEXT_MAX);
+}
+
+/**
+ * Resolve the deterministic current-article root for access evidence.
+ *
+ * Rules (Prompt 15A-1):
+ *  - The root is the nearest <article> ancestor of the selected container, or
+ *    the selected container itself. A full <main> or generic <section> subtree
+ *    is NEVER promoted to article scope merely because the selected element is
+ *    inside it.
+ *  - No document-wide scan of every <article> element: other article cards are
+ *    unrelated and cannot contribute evidence to the selected article.  *  - When the selected element belongs to a separate Readability document, the
+  *    corresponding root is resolved in the original document using extraction
+  *    evidence (body-text overlap against article/main containers). If no safe
+  *    match exists, access evidence is empty: the Readability body is preserved,
+  *    but no original-document gate or CTA evidence is imported.
+
+ */
+interface ArticleAccessRoot {
+  root: Element | null;
+  /** Ancestors of the root up to body — chrome wrappers reject evidence. */
+  rootAncestors: Element[];
+  /** True when the root lives in the original document (full checks apply). */
+  originalDocument: boolean;
+}
+
+function collectAncestorsToBody(el: Element): Element[] {
+  const ancestors: Element[] = [];
+  let current = el.parentElement;
+  while (current && current.tagName.toLowerCase() !== "body") {
+    ancestors.push(current);
+    current = current.parentElement;
+  }
+  return ancestors;
+}
+
+// ─── Readability root resolution (Prompt 15A-2) ─────────────────────────────
+//
+// Access-evidence root attribution FAILS CLOSED: a false root can turn an
+// unrelated Subscribe/Sign-in CTA into blocking paywall evidence for the
+// extracted article, so root resolution only succeeds when the original
+// document contains an unambiguous, substantial match for the Readability
+// body. When in doubt we keep the Readability extraction and import NO
+// gate/CTA evidence from the original document.
+
+/** Content-word filter so repetitive boilerplate cannot dominate similarity. */
+const ROOT_MATCH_STOPWORDS: ReadonlySet<string> = new Set([
+  "with", "from", "that", "this", "have", "will", "would", "your", "about", "which",
+  "where", "when", "what", "more", "most", "some", "than", "then", "into", "over",
+  "also", "only", "just", "very", "such", "each", "other", "their", "there", "these",
+  "those", "while", "still", "even", "both", "after", "before", "they", "them", "were",
+  "been", "being", "could", "should", "might", "must", "shall", "because", "between",
+  "during", "under", "without", "through", "against", "within", "around", "among",
+  "across", "toward", "along", "upon", "said", "says", "told", "made", "make", "used",
+  "using", "according", "first", "last", "next", "every", "many", "much", "same", "new",
+]);
+
+const MIN_CANDIDATE_TEXT_LENGTH = 300;
+const MIN_SHARED_UNIQUE_WORDS = 12;
+const MIN_SAMPLE_COVERAGE = 0.6;
+const MIN_CANDIDATE_COVERAGE = 0.6;
+const MIN_LENGTH_RATIO = 0.5;
+const MAX_LENGTH_RATIO = 3;
+const MIN_LEXICAL_DIVERSITY = 0.15;
+const COVERAGE_AMBIGUITY_TOLERANCE = 0.05;
+const RATIO_AMBIGUITY_TOLERANCE = 0.15;
+
+/** Unique content words of a text (stopwords and short words excluded). */
+function contentWords(text: string): Set<string> {
+  const words = new Set<string>();
+  for (const w of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (w.length <= 3) continue;
+    if (ROOT_MATCH_STOPWORDS.has(w)) continue;
+    words.add(w);
+  }
+  return words;
+}
+
+function countWords(text: string): number {
+  return text.toLowerCase().split(/\s+/).filter(Boolean).length;
+}
+
+interface RootResolutionMetrics {
+  el: Element;
+  sampleCoverage: number;
+  candidateCoverage: number;
+  lengthRatio: number;
+  isArticle: boolean;
+  headingAgreement: boolean;
+}
+
+/** Normalized heading/title agreement — an optional bounded tie-break signal. */
+function headingAgrees(el: Element, sampleWords: Set<string>): boolean {
+  try {
+    const heading = el.querySelector("h1, h2, h3");
+    if (!heading) return false;
+    const headingWords = contentWords((heading.textContent || "").slice(0, 200));
+    let shared = 0;
+    for (const w of headingWords) {
+      if (sampleWords.has(w)) shared++;
+    }
+    return shared >= 3;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Select a root with one global, ordered ambiguity policy. Each tier keeps all
+ * candidates effectively tied with the best value in that tier; only after a
+ * tier is exhausted may the next criterion decide. This avoids non-transitive
+ * pairwise tolerance comparisons allowing DOM order to resolve a three-way tie.
+ */
+function selectRootResolutionCandidate(candidates: RootResolutionMetrics[]): RootResolutionMetrics | null {
+  if (candidates.length === 0) return null;
+
+  const maxCoverage = Math.max(...candidates.map((candidate) => candidate.sampleCoverage));
+  let remaining = candidates.filter((candidate) =>
+    maxCoverage - candidate.sampleCoverage < COVERAGE_AMBIGUITY_TOLERANCE,
+  );
+
+  const minRatioCloseness = Math.min(
+    ...remaining.map((candidate) => Math.abs(candidate.lengthRatio - 1)),
+  );
+  remaining = remaining.filter((candidate) =>
+    Math.abs(Math.abs(candidate.lengthRatio - 1) - minRatioCloseness) < RATIO_AMBIGUITY_TOLERANCE,
+  );
+
+  const hasArticle = remaining.some((candidate) => candidate.isArticle);
+  const hasGeneric = remaining.some((candidate) => !candidate.isArticle);
+  if (hasArticle && hasGeneric) {
+    remaining = remaining.filter((candidate) => candidate.isArticle);
+  }
+
+  const hasHeadingMatch = remaining.some((candidate) => candidate.headingAgreement);
+  const hasHeadingMiss = remaining.some((candidate) => !candidate.headingAgreement);
+  if (hasHeadingMatch && hasHeadingMiss) {
+    remaining = remaining.filter((candidate) => candidate.headingAgreement);
+  }
+
+  return remaining.length === 1 ? remaining[0]! : null;
+}
+
+/**
+ * Resolve a Readability extraction to its corresponding original-document
+ * root using extraction evidence (body-text overlap). The readability sample
+ * text is passed in explicitly because the Readability element's own document
+ * is closed before analysis runs, so its textContent is no longer readable.
+ * Returns null when no safe match exists; the caller then falls back
+ * conservatively (keeping the Readability body but importing NO original-doc
+ * gate/CTA evidence).
+ *
+ * Safety (bidirectional, not subset-only):
+ *  - sampleCoverage: the candidate must contain a substantial proportion of
+ *    the Readability sample's unique content words;
+ *  - candidateCoverage: the candidate's words must mostly come from the sample;
+ *  - minimum absolute shared unique word count;
+ *  - the candidate/sample text-length ratio must not be extremely small (a
+ *    short teaser can never match a much longer Readability article);
+ *  - lexical diversity guards against repetitive/template text dominating;
+ *  - stopwords never contribute to any score.
+ *
+ * Deterministic selection uses global tolerance tiers: best sample coverage,
+ * then safest length ratio (closest to 1), then semantic <article> over generic
+ * <main>, then normalized heading/title agreement. DOM order is never decisive;
+ * if more than one candidate remains after every tier, resolution fails closed.
+ */
+export function resolveCorrespondingRootByText(doc: Document, sampleText: string): Element | null {
+  const sample = sampleText.trim();
+  if (sample.length < 300) return null;
+  const sampleWords = contentWords(sample);
+  if (sampleWords.size < 20) return null;
+
+  const metricize = (candidate: Element): RootResolutionMetrics | null => {
+    const candText = (candidate.textContent || "").trim();
+    if (candText.length < MIN_CANDIDATE_TEXT_LENGTH) return null;
+    const candWords = contentWords(candText);
+    if (candWords.size < MIN_SHARED_UNIQUE_WORDS) return null;
+    // Repetitive boilerplate guard: unique content words must form a
+    // meaningful fraction of all words in the candidate.
+    const lexicalDiversity = candWords.size / Math.max(1, countWords(candText));
+    if (lexicalDiversity < MIN_LEXICAL_DIVERSITY) return null;
+
+    let shared = 0;
+    for (const w of candWords) {
+      if (sampleWords.has(w)) shared++;
+    }
+    if (shared < MIN_SHARED_UNIQUE_WORDS) return null;
+
+    const sampleCoverage = shared / sampleWords.size;
+    const candidateCoverage = shared / candWords.size;
+    if (sampleCoverage < MIN_SAMPLE_COVERAGE) return null;
+    if (candidateCoverage < MIN_CANDIDATE_COVERAGE) return null;
+
+    const lengthRatio = candText.length / sample.length;
+    if (lengthRatio < MIN_LENGTH_RATIO || lengthRatio > MAX_LENGTH_RATIO) return null;
+
+    return {
+      el: candidate,
+      sampleCoverage,
+      candidateCoverage,
+      lengthRatio,
+      isArticle: candidate.tagName.toLowerCase() === "article",
+      headingAgreement: headingAgrees(candidate, sampleWords),
+    };
+  };
+
+  try {
+    const articles = Array.from(doc.querySelectorAll("article"))
+      .map(metricize)
+      .filter((m): m is RootResolutionMetrics => m !== null);
+
+    // A generic <main> may compete only when it contains no article-like
+    // subtree. A failed nested teaser must never be bypassed by promoting its
+    // parent main and importing the teaser's access CTA. Safe article and
+    // article-free main roots can therefore be compared using the explicit
+    // semantic <article> tie-breaker rather than DOM order.
+    const mains = Array.from(doc.querySelectorAll("main"))
+      .filter((main) => main.querySelectorAll("article").length === 0)
+      .map(metricize)
+      .filter((m): m is RootResolutionMetrics => m !== null);
+
+    const candidates = [...articles, ...mains];
+    if (candidates.length === 0) return null;
+
+    // Apply one global, tolerance-aware policy: coverage, ratio closeness,
+    // semantic <article>, then heading agreement. DOM order is never a
+    // decisive criterion, including when three or more candidates overlap.
+    const selected = selectRootResolutionCandidate(candidates);
+    return selected?.el ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveArticleAccessRoot(
+  doc: Document,
+  selectedElement: Element | null,
+  sampleText: string | null,
+): ArticleAccessRoot {
+  if (!selectedElement) {
+    // When a Readability body exists, resolve it against the original
+    // document first. A single original <article> may be a teaser, so it is
+    // not safe to treat it as the current article without text validation.
+    if (sampleText?.trim()) {
+      const resolved = resolveCorrespondingRootByText(doc, sampleText);
+      if (resolved) {
+        return { root: resolved, rootAncestors: collectAncestorsToBody(resolved), originalDocument: true };
+      }
+      return { root: null, rootAncestors: [], originalDocument: false };
+    }
+
+    // No usable body container was selected and no body sample exists — this
+    // is the missing/truncated-body case where a single article is the only
+    // conservative DOM anchor available. Multiple articles remain ambiguous.
+    try {
+      const articles = doc.querySelectorAll("article");
+      if (articles.length === 1) {
+        const single = articles[0]!;
+        return { root: single, rootAncestors: collectAncestorsToBody(single), originalDocument: true };
+      }
+    } catch { /* non-fatal */ }
+    return { root: null, rootAncestors: [], originalDocument: false };
+  }
+
+  const sameDocument = selectedElement.ownerDocument === doc;
+  if (sameDocument) {
+    // Walk up to the nearest <article> ancestor (the canonical "this article"
+    // container). Do NOT promote <main>/<section>.
+    let root: Element = selectedElement;
+    let el: Element | null = selectedElement.parentElement;
+    for (let depth = 0; el && depth < 4 && el.tagName.toLowerCase() !== "body"; depth++) {
+      if (el.tagName.toLowerCase() === "article") {
+        root = el;
+        break;
+      }
+      el = el.parentElement;
+    }
+    return { root, rootAncestors: collectAncestorsToBody(root), originalDocument: true };
+  }
+
+  // Readability cross-document element → resolve a safe original-doc root by
+  // body-text overlap using the extracted body text (the element's own
+  // document is closed at this point). If no safe original root exists, return
+  // an empty scope: preserve the Readability body, but import no original-doc
+  // gate or CTA evidence at all.
+  const resolved = resolveCorrespondingRootByText(doc, sampleText ?? "");
+  if (resolved) {
+    return { root: resolved, rootAncestors: collectAncestorsToBody(resolved), originalDocument: true };
+  }
+  return { root: null, rootAncestors: [], originalDocument: false };
+}
+
+interface ArticleScopedAccessEvidence {
+  gateOrOverlayDetected: boolean;
+  ctaTexts: string[];
+}
+
+/**
+ * Whether an element (or any ancestor up to and including the current-article
+ * root, plus the root's own ancestors) represents excluded chrome. The
+ * exclusion never depends solely on the candidate element's own class name.
+ */
+function isInExcludedChrome(
+  el: Element,
+  root: Element,
+  rootAncestors: Element[],
+  validatedGates: Element[] = [],
+): boolean {
+  const isInsideValidatedGate = (candidate: Element): boolean =>
+    validatedGates.some((gate) => gate === candidate || gate.contains(candidate));
+  let current: Element | null = el;
+  let depth = 0;
+  while (current && depth < 16) {
+    if (isAccessChromeElement(current)) return true;
+    if (hasAuthChromeTokenEvidence(`${current.getAttribute("class") || ""} ${current.getAttribute("id") || ""}`) &&
+        !isInsideValidatedGate(current)) {
+      return true;
+    }
+    if (current === root) break;
+    current = current.parentElement;
+    depth++;
+  }
+  for (const ancestor of rootAncestors) {
+    if (isAccessChromeElement(ancestor)) return true;
+    if (hasAuthChromeTokenEvidence(`${ancestor.getAttribute("class") || ""} ${ancestor.getAttribute("id") || ""}`) &&
+        !isInsideValidatedGate(ancestor)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Detect article-scoped gate/overlay and access CTA evidence.
+ *
+ * Scope (Prompt 15A-1):
+ *  - Evidence comes ONLY from the validated current-article root subtree or
+ *    from validated adjacent gate/overlay siblings. No document-wide <article>
+ *    scan and no generic <main>/<section> promotion; other article cards,
+ *    recommendation content, advertisements, and account/navigation UI are
+ *    excluded via the ancestor-aware chrome check.
+ *  - An immediate sibling qualifies ONLY when it has an explicit
+ *    gate/overlay/access-wall identity (never mere adjacency).
+ *  - An interactive CTA counts only inside the article root or inside a
+ *    validated gate/overlay. Plain text blocks count only when no usable body
+ *    was extracted, so a quoted access phrase inside full article prose stays
+ *    non-decisive.
+ */
+function detectArticleScopedAccessEvidence(
+  doc: Document,
+  selectedElement: Element | null,
+  usableBodyExtracted: boolean,
+  bodyText: string | null,
+): ArticleScopedAccessEvidence {
+  const { root, rootAncestors, originalDocument } = resolveArticleAccessRoot(doc, selectedElement, bodyText);
+  const ctaTexts: string[] = [];
+  const gateContainers: Element[] = [];
+  let gateOrOverlayDetected = false;
+  const seenCta = new Set<string>();
+
+  if (!root) return { gateOrOverlayDetected: false, ctaTexts: [] };
+
+  const isArticleRoot = root.tagName.toLowerCase() === "article";
+  // Any descendant <article> is a separate article-like subtree unless it is
+  // the validated root itself. This remains structural for generic roots such
+  // as <main>; class names are not required for exclusion.
+  const inOtherArticleCard = (el: Element): boolean => {
+    if (!root.contains(el)) return false;
+    const nearestArticle = el.closest("article");
+    return nearestArticle !== null && (!isArticleRoot || nearestArticle !== root);
+  };
+
+  // Pass 0: validated adjacent gate/overlay siblings (original document only).
+  if (originalDocument && root.parentElement) {
+    const children = Array.from(root.parentElement.children);
+    const idx = children.indexOf(root);
+    for (const sib of [children[idx - 1], children[idx + 1]]) {
+      if (!sib) continue;
+      // An <article> sibling is another article card — never the current
+      // article's gate, even with a gate-like class (Prompt 15A-1).
+      if (sib.tagName.toLowerCase() === "article") continue;
+      // Mere adjacency is never enough — explicit gate/overlay identity required.
+      if (!isGateOverlayElement(sib)) continue;
+      if (isInExcludedChrome(sib, root, rootAncestors, [sib])) continue;
+      gateOrOverlayDetected = true;
+      gateContainers.push(sib);
+    }
+    // A gate that directly WRAPS the root is part of the same article.
+    if (isGateOverlayElement(root.parentElement) &&
+        !isInExcludedChrome(root.parentElement, root, rootAncestors, [root.parentElement])) {
+      gateOrOverlayDetected = true;
+      gateContainers.push(root.parentElement);
     }
   }
 
-  // Also check meta tags for paywall hints
+  // Pass 1: gate/overlay containers inside the root subtree (ancestor-aware).
+  if (isGateOverlayElement(root)) {
+    gateOrOverlayDetected = true;
+    gateContainers.push(root);
+  }
   try {
-    const isAccessibleForFree = getMetaContent(doc, 'meta[name="isAccessibleForFree"]');
-    if (isAccessibleForFree && isAccessibleForFree.toLowerCase() === "false") {
-      signals.push("paywall_meta:isAccessibleForFree=false");
-      strongCount++;
+    for (const child of root.querySelectorAll("div, section, aside, [class], [id]")) {
+      if (inOtherArticleCard(child)) continue;
+      if (!isGateOverlayElement(child)) continue;
+      // Evaluate gate identity before auth-token filtering: a genuine
+      // subscription-wall registration container is not page auth chrome.
+      if (isInExcludedChrome(child, root, rootAncestors, [child])) continue;
+      gateOrOverlayDetected = true;
+      gateContainers.push(child);
     }
-  } catch { /* skip */ }
+  } catch { /* non-fatal */ }
 
-  // Check for metered/soft paywall indicators in JSON-LD
+  const isInsideValidatedGate = (el: Element): boolean =>
+    gateContainers.some((gate) => gate === el || gate.contains(el));
+
+  const considerCta = (el: Element, interactive: boolean): void => {
+    if (inOtherArticleCard(el)) return;
+    if (isInExcludedChrome(el, root, rootAncestors, gateContainers)) return;
+    const text = normalizeCtaText(el.textContent || "");
+    if (!text) return;
+    if (matchArticleAccessCtaPatterns(text).length === 0) return;
+    const inGate = isInsideValidatedGate(el);
+    // Plain in-body text with a usable body is never decisive (quoted phrases).
+    if (!interactive && !inGate && usableBodyExtracted) return;
+    const key = text.toLowerCase();
+    if (!seenCta.has(key) && ctaTexts.length < ACCESS_CTA_EVIDENCE_MAX) {
+      seenCta.add(key);
+      ctaTexts.push(text);
+    }
+  };
+
+  const scanSubtree = (container: Element): void => {
+    // Interactive CTAs (buttons/links) inside the root or a validated gate.
+    try {
+      for (const el of container.querySelectorAll(ACCESS_INTERACTIVE_SELECTOR)) {
+        if (inOtherArticleCard(el)) continue;
+        if (isInExcludedChrome(el, root, rootAncestors, gateContainers)) continue;
+        considerCta(el, true);
+      }
+    } catch { /* non-fatal */ }
+    // Short plain-text blocks count only when no usable body was extracted.
+    if (!usableBodyExtracted) {
+      try {
+        for (const el of container.querySelectorAll("p, div, h1, h2, h3, h4, h5, h6, span")) {
+          if (inOtherArticleCard(el)) continue;
+          if ((el.textContent || "").length > 240) continue;
+          considerCta(el, false);
+        }
+      } catch { /* non-fatal */ }
+    }
+  };
+
+  scanSubtree(root);
+  for (const gate of gateContainers) {
+    if (gate !== root) scanSubtree(gate);
+  }
+
+  return { gateOrOverlayDetected, ctaTexts };
+}
+
+/**
+ * Parse JSON-LD safely and collect paywall signals from supported article
+ * nodes ONLY, scoped to the current canonical URL. Conflicting article nodes
+ * are dropped; unstated (identity-less) nodes are honored only when they are
+ * the page's single unambiguous article node.
+ */
+function extractScopedJsonLdPaywallSignals(doc: Document, canonicalUrl: string): JsonLdPaywallSignal[] {
   try {
     const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+    let merged: JsonLdPaywallSignalScan = { signals: [], articleNodeCount: 0, conflictingNodeCount: 0 };
     for (const script of scripts) {
-      const text = script.textContent || "";
-      if (/"isAccessibleForFree"\s*:\s*false/i.test(text)) {
-        signals.push("paywall_jsonld:isAccessibleForFree=false");
-        strongCount++;
+      const text = script.textContent?.trim();
+      if (!text) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        continue; // malformed JSON-LD → never classify from it
       }
-      if (/"hasPart"[^{]*"@type"\s*:\s*"PaywalledContent"/i.test(text)) {
-        signals.push("paywall_jsonld:PaywalledContent");
-        strongCount++;
-      }
+      const scan = extractJsonLdPaywallSignalsFromValue(parsed, canonicalUrl);
+      merged = {
+        signals: [...merged.signals, ...scan.signals],
+        articleNodeCount: merged.articleNodeCount + scan.articleNodeCount,
+        conflictingNodeCount: merged.conflictingNodeCount + scan.conflictingNodeCount,
+      };
     }
-  } catch { /* skip */ }
+    const hasMatched = merged.signals.some((s) => s.nodeIdentityState === "matched");
+    return merged.signals.filter(
+      (s) =>
+        s.nodeIdentityState === "matched" ||
+        // A single unambiguous identity-less article node is clearly related.
+        // Conflicting article nodes always disqualify identity-less signals.
+        (s.nodeIdentityState === "unstated" &&
+          !hasMatched &&
+          merged.articleNodeCount <= 1 &&
+          merged.conflictingNodeCount === 0),
+    ).slice(0, 8);
+  } catch {
+    return [];
+  }
+}
 
-  if (strongCount >= 1) return { isPaywall: true, signals };
-  if (weakCount >= 2) return { isPaywall: true, signals };
-  return { isPaywall: null, signals };
+/**
+ * Run the centralized article-access classifier with DOM-collected evidence.
+ * Returns the structured result; classification drives isPaywall and the
+ * paywall_or_blocked rejection decision.
+ */
+function analyzeArticleAccess(input: {
+  doc: Document;
+  canonicalUrl: string;
+  statusCode: number;
+  bodyText: string | null;
+  usableBodyExtracted: boolean;
+  bodyTruncationDetected: boolean;
+  rawPageText: string;
+  selectedElement: Element | null;
+}): ArticleAccessClassificationResult {
+  const scopedEvidence = detectArticleScopedAccessEvidence(input.doc, input.selectedElement, input.usableBodyExtracted, input.bodyText);
+  const jsonLdSignals = extractScopedJsonLdPaywallSignals(input.doc, input.canonicalUrl);
+  return classifyArticleAccess({
+    statusCode: input.statusCode,
+    bodyText: input.bodyText,
+    usableBodyExtracted: input.usableBodyExtracted,
+    bodyTruncationDetected: input.bodyTruncationDetected,
+    rawPageText: input.rawPageText,
+    articleScopedGateOrOverlayDetected: scopedEvidence.gateOrOverlayDetected,
+    articleScopedCtaTexts: scopedEvidence.ctaTexts,
+    jsonLdPaywallSignals: jsonLdSignals,
+    challengeTextSignals: matchChallengeTextPatterns(input.rawPageText),
+    adBlockerWarningDetected: matchAdBlockerWarningPatterns(input.rawPageText).length > 0,
+  });
 }
 
 // ─── Quality Scoring ────────────────────────────────────────────────────────
@@ -2410,14 +3111,10 @@ export async function extractArticleContentFromHtml(
       skippedCandidateReasons: mergedSkippedReasons,
     };
 
-    // Also extract raw text from the page for paywall detection.
+    // Also extract raw text from the page for access classification.
     // This runs even when bodyText is below the minimum threshold, so short
-    // paywall pages are still detected.
+    // paywall/challenge pages are still classified correctly.
     const rawPageText = extractRawPageText(doc);
-
-    // Step 5: Paywall detection (runs on whatever text is available, even below
-    // minimum threshold, so short paywall pages are detected correctly)
-    const paywall = detectPaywallSignals(rawPageText || bodyText || excerpt || "", doc);
 
     // Step 6: Excerpt-vs-body guard (runs BEFORE quality gate so we catch
     // excerpt-as-body even when the excerpt is too short to pass quality checks)
@@ -2448,8 +3145,36 @@ export async function extractArticleContentFromHtml(
       }
     }
 
-    // Step 8: If strong paywall signals AND very short or no body, reject
-    if (paywall.isPaywall && (!bodyText || bodyText.length < 200)) {
+    // Step 7.5: Article access classification (Prompt 15A). Runs after the
+    // existing-body fallback so the classifier sees the final body text.
+    // Evidence is DOM-collected and article-scoped (gate/overlay, CTA texts,
+    // scoped JSON-LD); generic topic words and technical access failures are
+    // never decisive on their own.
+    const usableBodyExtracted = diagnostics.bodySource !== "existing-fallback" &&
+      Boolean(bodyText) && isUsableBody(bodyText ?? "", effectiveResult?.score);
+    const bodyTruncationDetected = Boolean(
+      diagnostics.stopReason ||
+      diagnostics.stoppedAtClassOrId ||
+      diagnostics.stoppedAtText ||
+      (bodyText && bodyText.length >= MAX_BODY_TEXT_CHARS),
+    );
+    const access = analyzeArticleAccess({
+      doc,
+      canonicalUrl,
+      statusCode,
+      bodyText,
+      usableBodyExtracted,
+      bodyTruncationDetected,
+      rawPageText,
+      selectedElement: effectiveResult?.score.element ?? null,
+    });
+    const accessEvidenceCodes = access.evidence.map((e) => `access_evidence:${e.code}`);
+
+    // Step 8: A decisive PAYWALL_BLOCKED classification (article-scoped CTA with
+    // missing/truncated body) rejects. LOW-confidence gate-only evidence falls
+    // through to the regular body-quality gates so JS-rendered pages stay
+    // browser-recoverable.
+    if (access.classification === "PAYWALL_BLOCKED" && access.confidence !== "LOW") {
       diagnostics.bodyRejectedReason = "paywall_short_body";
       try { domWindow?.close(); } catch { /* non-fatal */ }
       return fail(
@@ -2457,9 +3182,11 @@ export async function extractArticleContentFromHtml(
         resolvedUrl,
         statusCode,
         "paywall_or_blocked",
-        "Strong paywall signals detected and body text is very short.",
-        paywall.signals,
+        "Article-scoped access gate detected with missing or truncated body text.",
+        [`access_classification:PAYWALL_BLOCKED`, `access_confidence:${access.confidence}`, ...accessEvidenceCodes],
         diagnostics,
+        undefined,
+        access,
       );
     }
 
@@ -2517,7 +3244,7 @@ export async function extractArticleContentFromHtml(
         statusCode,
         "interstitial_or_challenge",
         "HTTP 202 response without a usable article body — page is an interstitial/challenge/non-final response.",
-        [...paywall.signals, ...interstitialSignals],
+        [...accessEvidenceCodes, ...interstitialSignals],
         { ...diagnostics, htmlLength: html.trim().length },
       );
     }
@@ -2532,7 +3259,7 @@ export async function extractArticleContentFromHtml(
         statusCode,
         "no_article_text",
         "No meaningful body text could be extracted from the page.",
-        paywall.signals,
+        accessEvidenceCodes,
         diagnostics,
       );
     }
@@ -2559,7 +3286,7 @@ export async function extractArticleContentFromHtml(
         statusCode,
         "too_short",
         `Extracted body text too short or low quality (${bodyText.length} chars).`,
-        [`bodyRejected:${diagnostics.bodyRejectedReason}`],
+        [`bodyRejected:${diagnostics.bodyRejectedReason}`, ...accessEvidenceCodes],
         diagnostics,
       );
     }
@@ -2575,7 +3302,7 @@ export async function extractArticleContentFromHtml(
       !!excerpt,
       !!author,
       !!publishedAt,
-      paywall.isPaywall,
+      access.isPaywall,
     );
 
     const qualitySignals: string[] = [];
@@ -2586,8 +3313,11 @@ export async function extractArticleContentFromHtml(
       qualitySignals.push(`paragraphs:${effectiveResult!.score.paragraphCount}`);
       qualitySignals.push(`linkRatio:${effectiveResult!.score.linkTextRatio.toFixed(2)}`);
     }
-    if (paywall.isPaywall) {
-      qualitySignals.push(...paywall.signals);
+    if (access.classification !== "UNKNOWN") {
+      qualitySignals.push(`access_classification:${access.classification}`);
+      qualitySignals.push(`access_confidence:${access.confidence}`);
+      qualitySignals.push(`access_detector:${access.detectorVersion}`);
+      qualitySignals.push(...accessEvidenceCodes);
     }
     if (jsonLdBodyText) {
       qualitySignals.push(`bodySource:jsonld`);
@@ -2608,7 +3338,8 @@ export async function extractArticleContentFromHtml(
       imageUrl,
       author,
       publishedAt,
-      isPaywall: paywall.isPaywall,
+      isPaywall: access.isPaywall,
+      access,
       confidence,
       qualitySignals,
       diagnostics,
@@ -2727,6 +3458,7 @@ function fail(
   qualitySignals: string[] = [],
   diagnostics?: Partial<ExtractionDiagnostics>,
   retryAfterAt?: string | null,
+  access?: ArticleAccessClassificationResult,
 ): ArticleContentExtractionFail {
   return {
     ok: false,
@@ -2738,6 +3470,7 @@ function fail(
     confidence: 0,
     qualitySignals,
     diagnostics: { ...emptyDiagnostics(), ...diagnostics },
+    access,
     retryAfterAt: retryAfterAt ?? null,
   };
 }

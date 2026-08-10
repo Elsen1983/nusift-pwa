@@ -424,10 +424,17 @@
                   {{ item.evidenceSummary }}
                 </p>
                 <p
-                  v-if="item.bodyPreview"
-                  class="mt-1 line-clamp-2 text-[10px] text-on-surface-variant"
+                  v-if="item.fullBodyExtracted !== null && item.fullBodyExtracted !== undefined"
+                  class="mt-1 text-[10px] text-on-surface-variant"
                 >
-                  {{ item.bodyPreview }}
+                  Full body extracted: {{ item.fullBodyExtracted ? "yes" : "no" }} (text withheld)
+                </p>
+                <p
+                  v-if="item.agent3Enrichment?.access?.classification"
+                  class="mt-1 text-[10px] text-violet-200/80"
+                >
+                  Access: {{ item.agent3Enrichment.access.classification }}
+                  <span v-if="item.agent3Enrichment.access.confidence">· {{ item.agent3Enrichment.access.confidence }}</span>
                 </p>
               </button>
             </div>
@@ -490,7 +497,26 @@
           <p>
             {{ detail.item.durableState }} · {{ detail.item.pipelineStage }}
           </p>
-          <p v-if="detail.item.bodyPreview">{{ detail.item.bodyPreview }}</p>
+          <p v-if="detail.item.fullBodyExtracted !== null && detail.item.fullBodyExtracted !== undefined">Full body extracted: {{ detail.item.fullBodyExtracted ? "yes" : "no" }} (text withheld)</p>
+          <div
+            v-if="detail.item.agent3Enrichment?.access"
+            class="rounded border border-violet-300/15 bg-violet-400/5 p-2"
+          >
+            <p class="text-on-surface">
+              Access: {{ detail.item.agent3Enrichment.access.classification || "UNKNOWN" }}
+              · {{ detail.item.agent3Enrichment.access.confidence || "n/a" }}
+              · {{ detail.item.agent3Enrichment.access.sourceStage || "n/a" }}
+            </p>
+            <p>Detector: {{ detail.item.agent3Enrichment.access.detectorVersion || "n/a" }}</p>
+            <p>Full body: {{ detail.item.agent3Enrichment.access.fullBodyExtracted === true ? "yes" : "no" }} · Article gate: {{ detail.item.agent3Enrichment.access.articleScopedGate === true ? "yes" : "no" }}</p>
+            <p>isPaywall: {{ String(detail.item.agent3Enrichment.access.previousIsPaywall) }} → {{ String(detail.item.agent3Enrichment.access.finalIsPaywall) }}</p>
+            <p v-if="detail.item.agent3Enrichment.access.earlyStageClassification">Early: {{ detail.item.agent3Enrichment.access.earlyStageClassification }} · {{ detail.item.agent3Enrichment.access.earlyStageSource || "n/a" }}</p>
+            <p v-if="detail.item.agent3Enrichment.access.overrideReason">Override: {{ detail.item.agent3Enrichment.access.overrideReason }}</p>
+            <p v-if="detail.item.agent3Enrichment.access.evidenceCodes.length">Evidence: {{ detail.item.agent3Enrichment.access.evidenceCodes.join(", ") }}</p>
+            <p v-if="detail.item.agent3Enrichment.access.contradictingEvidenceCodes.length">Contradictions: {{ detail.item.agent3Enrichment.access.contradictingEvidenceCodes.join(", ") }}</p>
+            <p v-if="detail.item.agent3Enrichment.access.earlyStageEvidenceCodes.length">Early evidence: {{ detail.item.agent3Enrichment.access.earlyStageEvidenceCodes.join(", ") }}</p>
+            <p v-if="detail.item.agent3Enrichment.access.earlyStageContradictingEvidenceCodes.length">Early contradictions: {{ detail.item.agent3Enrichment.access.earlyStageContradictingEvidenceCodes.join(", ") }}</p>
+          </div>
           <p v-if="detail.item.evidenceSummary">
             {{ detail.item.evidenceSummary }}
           </p>
@@ -528,7 +554,27 @@ type Article = {
   category: { label: string | null } | null;
   discoveredAt: string;
   evidenceSummary: string | null;
-  bodyPreview: string | null;
+  bodyEvidenceTruncated?: boolean;
+  fullBodyExtracted?: boolean | null;
+  agent3Enrichment?: {
+    access?: {
+      classification: string | null;
+      detectorVersion: string | null;
+      confidence: string | null;
+      sourceStage: string | null;
+      evidenceCodes: string[];
+      contradictingEvidenceCodes: string[];
+      fullBodyExtracted: boolean | null;
+      articleScopedGate: boolean | null;
+      previousIsPaywall: boolean | null;
+      finalIsPaywall: boolean | null;
+      earlyStageClassification: string | null;
+      earlyStageSource: string | null;
+      earlyStageEvidenceCodes: string[];
+      earlyStageContradictingEvidenceCodes: string[];
+      overrideReason: string | null;
+    };
+  };
 };
 const authStore = useAuthStore();
 const accessState = ref<"unknown" | "allowed" | "denied">("unknown");

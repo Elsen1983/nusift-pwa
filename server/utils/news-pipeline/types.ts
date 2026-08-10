@@ -286,6 +286,16 @@ export const validateDiscoveryEvidence = (
 
 
 
+export interface IngestAccessEvidence {
+  /** Early Agent 1/2 hint only; Agent 3 remains authoritative. */
+  classification: "PAYWALL_BLOCKED" | "METERED_OR_DECLARED" | "ACCESSIBLE" | "UNKNOWN";
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  detectorVersion: string;
+  evidenceCodes: string[];
+  contradictingEvidenceCodes: string[];
+  sourceStage: "agent1" | "agent2";
+}
+
 export interface IngestCandidateProvenance {
   origin: "rss" | "atom" | "json" | "html_fallback" | "web_discovery";
   feedUrl?: string | null;
@@ -720,7 +730,10 @@ export interface IngestCandidate {
   rawBodyText?: string | null;
   bodyText?: string | null;
   contentHash: string;
+  /** Legacy compatibility value; Agent 1/2 early hints never make this true. */
   isPaywall: boolean;
+  /** Bounded early access evidence; not an authoritative blocking decision. */
+  accessEvidence?: IngestAccessEvidence;
   rawTags: string[];
   rawSignals: string[];
   reasoning: string;

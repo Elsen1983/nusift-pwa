@@ -258,14 +258,91 @@ export const buildInspectionAllActiveArticleWhere = (targetType: "ALL" | "SOURCE
 };
 
 export const normalizeInspectionSearch = (value: unknown): string | null => typeof value === "string" ? boundedString(value, 120) : null;
-export type InspectionOutcomeSummary = { kind: string | null; rejectionCode: string | null; retryAfterAt: string | null; browserFallback: Record<string, unknown> | null; retryDiagnostics: Record<string, unknown> | null };
+export type InspectionAccessDiagnostics = {
+  classification: string | null;
+  detectorVersion: string | null;
+  confidence: string | null;
+  sourceStage: string | null;
+  evidenceCodes: string[];
+  contradictingEvidenceCodes: string[];
+  fullBodyExtracted: boolean | null;
+  articleScopedGate: boolean | null;
+  previousIsPaywall: boolean | null;
+  finalIsPaywall: boolean | null;
+  earlyStageClassification: string | null;
+  earlyStageSource: string | null;
+  earlyStageEvidenceCodes: string[];
+  earlyStageContradictingEvidenceCodes: string[];
+  overrideReason: string | null;
+};
+
+const readAccessDiagnostics = (value: unknown): InspectionAccessDiagnostics => {
+  const raw = asRecord(value);
+  const access = asRecord(raw?.access);
+  const evidenceCodes = Array.isArray(access?.evidenceCodes)
+    ? access.evidenceCodes.filter((code): code is string => typeof code === "string").slice(0, 12)
+    : [];
+  const contradictingEvidenceCodes = Array.isArray(access?.contradictingEvidenceCodes)
+    ? access.contradictingEvidenceCodes.filter((code): code is string => typeof code === "string").slice(0, 12)
+    : [];
+  return {
+    classification: typeof access?.classification === "string" ? access.classification : null,
+    detectorVersion: typeof access?.detectorVersion === "string" ? access.detectorVersion : null,
+    confidence: typeof access?.confidence === "string" ? access.confidence : null,
+    sourceStage: typeof access?.sourceStage === "string" ? access.sourceStage : null,
+    evidenceCodes,
+    contradictingEvidenceCodes,
+    fullBodyExtracted: typeof access?.usableBodyExtracted === "boolean" ? access.usableBodyExtracted : null,
+    articleScopedGate: typeof access?.articleScopedGateOrOverlayDetected === "boolean" ? access.articleScopedGateOrOverlayDetected : null,
+    previousIsPaywall: typeof access?.previousIsPaywall === "boolean" ? access.previousIsPaywall : null,
+    finalIsPaywall: typeof access?.finalIsPaywall === "boolean" ? access.finalIsPaywall : null,
+    earlyStageClassification: typeof access?.earlyStageClassification === "string" ? access.earlyStageClassification : null,
+    earlyStageSource: typeof access?.earlyStageSource === "string" ? access.earlyStageSource : null,
+    earlyStageEvidenceCodes: Array.isArray(access?.earlyStageEvidenceCodes)
+      ? access.earlyStageEvidenceCodes.filter((code): code is string => typeof code === "string").slice(0, 12)
+      : [],
+    earlyStageContradictingEvidenceCodes: Array.isArray(access?.earlyStageContradictingEvidenceCodes)
+      ? access.earlyStageContradictingEvidenceCodes.filter((code): code is string => typeof code === "string").slice(0, 12)
+      : [],
+    overrideReason: boundedString(access?.overrideReason, 240),
+  };
+};
+
+export type InspectionOutcomeSummary = {
+  kind: string | null;
+  rejectionCode: string | null;
+  retryAfterAt: string | null;
+  browserFallback: Record<string, unknown> | null;
+  retryDiagnostics: Record<string, unknown> | null;
+  access: InspectionAccessDiagnostics;
+};
+
+export const emptyInspectionAccessDiagnostics = (): InspectionAccessDiagnostics => ({
+  classification: null,
+  detectorVersion: null,
+  confidence: null,
+  sourceStage: null,
+  evidenceCodes: [],
+  contradictingEvidenceCodes: [],
+  fullBodyExtracted: null,
+  articleScopedGate: null,
+  previousIsPaywall: null,
+  finalIsPaywall: null,
+  earlyStageClassification: null,
+  earlyStageSource: null,
+  earlyStageEvidenceCodes: [],
+  earlyStageContradictingEvidenceCodes: [],
+  overrideReason: null,
+});
 export const readInspectionOutcomeSummary = (value: unknown): InspectionOutcomeSummary => {
   const raw = asRecord(value);
   return {
     kind: typeof raw?.kind === "string" ? raw.kind : null,
     rejectionCode: typeof raw?.rejectionCode === "string" ? raw.rejectionCode : null,
     retryAfterAt: typeof raw?.retryAfterAt === "string" ? raw.retryAfterAt : null,
-    browserFallback: asRecord(raw?.browserFallback), retryDiagnostics: asRecord(raw?.retryDiagnostics),
+    browserFallback: asRecord(raw?.browserFallback),
+    retryDiagnostics: asRecord(raw?.retryDiagnostics),
+    access: readAccessDiagnostics(value),
   };
 };
 const isRetryableSummary = (summary: InspectionOutcomeSummary) => summary.kind === "RETRYABLE_FAILURE" || summary.retryDiagnostics?.disposition === "READY_RETRY" || (summary.retryAfterAt ? Date.parse(summary.retryAfterAt) > Date.now() : false);

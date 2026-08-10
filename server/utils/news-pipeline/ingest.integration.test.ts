@@ -1420,6 +1420,177 @@ describe("generic RSS fallback integration", () => {
   });
 });
 
+// ── Prompt 16D-1: real Agent 1 access-classification integration ────────────
+describe("Agent 1 access classification integration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaNewsSourceFindUniqueMock.mockResolvedValue(SOURCE_BASE);
+    prismaSourceCategoryFindUniqueMock.mockResolvedValue(null);
+    prismaSourceCategoryUpdateMock.mockResolvedValue({});
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    prismaArticleFindManyMock.mockResolvedValue([]);
+    prismaArticleCreateManyMock.mockResolvedValue({ count: 0 });
+    prismaArticleUpdateMock.mockResolvedValue({});
+    prismaTransactionMock.mockResolvedValue([]);
+    prismaFeedReviewUpdateManyMock.mockResolvedValue({});
+    prismaNewsSourceUpdateMock.mockResolvedValue({});
+    prismaPipelineArtifactFindManyMock.mockResolvedValue([]);
+    prismaPipelineArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
+    prismaPipelineArtifactUpdateManyMock.mockResolvedValue({ count: 0 });
+    discoverFeedForUrlMock.mockResolvedValue({
+      feedUrl: null,
+      scopeMatch: "generic",
+      detection: "none",
+      score: 0,
+      scopeConfidence: "low",
+    });
+  });
+
+  const persistAgent1CandidateArtifact = async (result: Awaited<ReturnType<typeof import("./ingest").ingestSource>>) => {
+    const { persistCandidates } = await import("./ingest");
+    const { persistPipelineArtifact } = await import("./artifacts");
+    prismaArticleCreateManyMock.mockResolvedValue({ count: result.candidates.length });
+    const persisted = await persistCandidates(result.candidates);
+    await persistPipelineArtifact({ pipelineRunId: "run-agent1", result });
+    return persisted;
+  };
+
+  it("evaluates each RSS item independently and persists bounded versioned evidence", async () => {
+    const { ingestSource } = await import("./ingest");
+    const feed = rssXml([
+      {
+        title: "Netflix subscription paywall economics explained in detail",
+        link: "https://example.com/news/2026/netflix-subscription-paywall-economics-explained",
+        pubDate: freshDate().toISOString(),
+      },
+      {
+        title: "Newsletter subscription schedule and newsroom updates",
+        link: "https://example.com/news/2026/newsletter-subscription-schedule-newsroom-updates",
+        pubDate: freshDate().toISOString(),
+      },
+    ]);
+    safeFetchMock.mockImplementation(async (url: string) =>
+      url === "https://example.com/rss" ? makeResponse(feed) : makeResponse("", false),
+    );
+
+    const result = await ingestSource("src-1");
+    expect(result.feedFormat).toBe("rss");
+    expect(result.candidates).toHaveLength(2);
+    expect(result.candidates.every((candidate) => candidate.isPaywall === false)).toBe(true);
+    expect(result.candidates.every((candidate) => candidate.accessEvidence?.sourceStage === "agent1")).toBe(true);
+    expect(result.candidates.every((candidate) => candidate.accessEvidence?.detectorVersion)).toBe(true);
+    expect(result.candidates.every((candidate) => !["PAYWALL_BLOCKED", "METERED_OR_DECLARED"].includes(candidate.accessEvidence?.classification || ""))).toBe(true);
+    expect(result.candidates[0]?.accessEvidence?.evidenceCodes).not.toContain("newsletter");
+    expect(result.candidates[1]?.accessEvidence?.evidenceCodes).not.toContain("netflix");
+
+    const persisted = await persistAgent1CandidateArtifact(result);
+    expect(persisted).toEqual({ inserted: 2, skipped: 0, failed: 0, enriched: 0 });
+    const articleRows = prismaArticleCreateManyMock.mock.calls.at(-1)?.[0]?.data as Array<Record<string, any>>;
+    expect(articleRows).toHaveLength(2);
+    expect(articleRows.map((row) => row.canonicalUrl)).toEqual(result.candidates.map((candidate) => candidate.canonicalUrl));
+    expect(articleRows.every((row) => row.isPaywall === false)).toBe(true);
+    const artifactData = prismaPipelineArtifactCreateMock.mock.calls.at(-1)?.[0]?.data as Record<string, any>;
+    const artifactCandidates = artifactData.payload.candidates as Array<Record<string, any>>;
+    expect(artifactCandidates).toHaveLength(2);
+    expect(artifactCandidates.every((candidate) => candidate.accessEvidence?.sourceStage === "agent1")).toBe(true);
+    expect(artifactCandidates.every((candidate) => candidate.accessEvidence?.detectorVersion)).toBe(true);
+    expect(JSON.stringify(artifactCandidates[0])).not.toContain("newsletter");
+    expect(JSON.stringify(artifactCandidates[1])).not.toContain("Netflix");
+  });
+
+  it("persists an HTML detail fallback candidate while ignoring unrelated Article JSON-LD", async () => {
+    const { ingestSource } = await import("./ingest");
+    const articleUrl = "https://example.com/news/2026/current-detail-fallback-article";
+    const listingHtml = `<a href="${articleUrl}">Current detail fallback article with a long title</a>`;
+    const detailHtml = `
+      <html><head>
+        <title>Current detail fallback article with a long title</title>
+        <meta name="description" content="A current article remains freely available while unrelated recommendations and newsletter navigation appear on the page.">
+        <meta property="article:published_time" content="${new Date().toISOString()}">
+        <script type="application/ld+json">${JSON.stringify({
+          "@type": "NewsArticle",
+          url: "https://example.com/recommendations/unrelated-premium-story",
+          isAccessibleForFree: false,
+        })}</script>
+      </head><body>
+        <nav>Subscribe to our newsletter</nav>
+        <article><p>Current article body preview.</p></article>
+      </body></html>`;
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com") return makeResponse(listingHtml, true, 200, { "content-type": "text/html" });
+      if (url === articleUrl) return makeResponse(detailHtml, true, 200, { "content-type": "text/html" });
+      return makeResponse(rssXml([]));
+    });
+
+    const result = await ingestSource("src-1");
+    expect(result.feedFormat).toBe("html_fallback");
+    expect(result.candidates).toHaveLength(1);
+    const candidate = result.candidates[0]!;
+    expect(candidate.canonicalUrl).toBe(articleUrl);
+    expect(candidate.isPaywall).toBe(false);
+    expect(candidate.accessEvidence?.classification).not.toBe("PAYWALL_BLOCKED");
+    expect(candidate.accessEvidence?.classification).not.toBe("METERED_OR_DECLARED");
+    expect(candidate.accessEvidence?.evidenceCodes).not.toContain("jsonld_declared_paywall");
+
+    const persisted = await persistAgent1CandidateArtifact(result);
+    expect(persisted.inserted).toBe(1);
+    const articleRows = prismaArticleCreateManyMock.mock.calls.at(-1)?.[0]?.data as Array<Record<string, any>>;
+    expect(articleRows).toHaveLength(1);
+    expect(articleRows[0]).toMatchObject({ canonicalUrl: articleUrl, isPaywall: false });
+    const artifactData = prismaPipelineArtifactCreateMock.mock.calls.at(-1)?.[0]?.data as Record<string, any>;
+    const persistedCandidate = (artifactData.payload.candidates as Array<Record<string, any>>)[0]!;
+    expect(persistedCandidate.isPaywall).toBe(false);
+    expect(persistedCandidate.accessEvidence?.classification).not.toBe("PAYWALL_BLOCKED");
+    expect(persistedCandidate.accessEvidence?.classification).not.toBe("METERED_OR_DECLARED");
+  });
+
+  it("preserves bounded METERED_OR_DECLARED evidence for matching current Article JSON-LD", async () => {
+    const { ingestSource } = await import("./ingest");
+    const articleUrl = "https://example.com/news/2026/current-declared-article";
+    const listingHtml = `<a href="${articleUrl}">Current declared article with a long title</a>`;
+    const detailHtml = `
+      <html><head>
+        <title>Current declared article with a long title</title>
+        <meta name="description" content="A readable current article with a publisher access declaration.">
+        <meta property="article:published_time" content="${new Date().toISOString()}">
+        <script type="application/ld+json">${JSON.stringify({
+          "@type": "NewsArticle",
+          url: articleUrl,
+          isAccessibleForFree: false,
+        })}</script>
+      </head><body><nav>Subscribe to our newsletter</nav><article>Article preview.</article></body></html>`;
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com") return makeResponse(listingHtml, true, 200, { "content-type": "text/html" });
+      if (url === articleUrl) return makeResponse(detailHtml, true, 200, { "content-type": "text/html" });
+      return makeResponse(rssXml([]));
+    });
+
+    const result = await ingestSource("src-1");
+    expect(result.feedFormat).toBe("html_fallback");
+    expect(result.candidates).toHaveLength(1);
+    const candidate = result.candidates[0]!;
+    expect(candidate.isPaywall).toBe(false);
+    expect(candidate.accessEvidence).toMatchObject({
+      classification: "METERED_OR_DECLARED",
+      sourceStage: "agent1",
+    });
+    expect(candidate.accessEvidence?.detectorVersion).toBeTruthy();
+    expect(candidate.accessEvidence?.evidenceCodes).toContain("jsonld_declared_paywall");
+
+    await persistAgent1CandidateArtifact(result);
+    const artifactData = prismaPipelineArtifactCreateMock.mock.calls.at(-1)?.[0]?.data as Record<string, any>;
+    const persistedCandidate = (artifactData.payload.candidates as Array<Record<string, any>>)[0]!;
+    expect(persistedCandidate).toMatchObject({
+      isPaywall: false,
+      accessEvidence: {
+        classification: "METERED_OR_DECLARED",
+        sourceStage: "agent1",
+      },
+    });
+    expect(persistedCandidate.accessEvidence.detectorVersion).toBeTruthy();
+  });
+});
+
 // ── URL policy integration: real ingest-path tests ─────────────────────
 describe("URL policy integration (Agent 1 RSS ingest path)", () => {
   beforeEach(() => {

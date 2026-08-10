@@ -170,8 +170,15 @@ export const buildArticleEnrichmentUpdate = (
     }
   }
 
-  // Phase 2: persist isPaywall when the extractor produced a definitive value.
-  if (outcome.kind === "SUCCESS" && outcome.fields.isPaywall) {
+  // Agent 3 is authoritative for the compatibility boolean. A confirmed
+  // article-scoped PAYWALL_BLOCKED result sets true even when Agent 1/2 did
+  // not hint; strong ACCESSIBLE evidence clears an earlier true. UNKNOWN and
+  // technical blockers deliberately preserve the existing row value.
+  if (outcome.access?.classification === "PAYWALL_BLOCKED") {
+    update.isPaywall = true;
+  } else if (outcome.access?.classification === "ACCESSIBLE" && outcome.access.usableBodyExtracted && !outcome.access.articleScopedGateOrOverlayDetected) {
+    update.isPaywall = false;
+  } else if (outcome.kind === "SUCCESS" && outcome.fields.isPaywall) {
     const pp = outcome.fields.isPaywall;
     if (pp.chosenFrom === "dom" && typeof pp.chosenValue === "boolean") {
       update.isPaywall = pp.chosenValue;

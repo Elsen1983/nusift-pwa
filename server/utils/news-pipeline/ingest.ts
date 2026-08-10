@@ -29,7 +29,7 @@ import {
   resolveRedirectRetryState,
 } from "./redirect-retry-state";
 import type { StageBatchProbe } from "./stage-telemetry";
-import { hasStrongPaywallHint } from "./paywall-detection";
+import { classifyEarlyAccessHint } from "./paywall-detection";
 
 type ParsedFeedItem = {
   title: string;
@@ -678,6 +678,12 @@ const extractHtmlCandidates = async (
     const itemTitle = normalizedTitle.value || canonicalUrl;
     const bodyText = normalizedBody.value;
     const contentHash = await hashText([itemTitle, canonicalUrl, bodyText].filter(Boolean).join("|"));
+    const accessEvidence = classifyEarlyAccessHint({
+      articleText: `${rawTitle}\n${rawBodyText}`,
+      structuredMarkup: detailHtml,
+      articleUrl: canonicalUrl,
+      sourceStage: "agent1",
+    });
 
     candidates.push({
       sourceId,
@@ -690,10 +696,10 @@ const extractHtmlCandidates = async (
       rawBodyText,
       bodyText: bodyText || null,
       contentHash,
-      isPaywall: hasStrongPaywallHint({
-        articleText: `${rawTitle}\n${rawBodyText}`,
-        structuredMarkup: html,
-      }),
+      // Agent 1 may preserve the hint in accessEvidence, but only a
+      // high-confidence current-item block is allowed to set the legacy flag.
+      isPaywall: accessEvidence.classification === "PAYWALL_BLOCKED" && accessEvidence.confidence === "HIGH",
+      accessEvidence,
       rawTags: [],
       rawSignals: [],
       reasoning: `HTML detail fallback from ${link}`,
@@ -2027,6 +2033,12 @@ export async function ingestSource(
       const contentHash = await hashText(
         [title, canonicalUrl, bodyText].filter(Boolean).join("|"),
       );
+      const accessEvidence = classifyEarlyAccessHint({
+        articleText: `${rawTitle}\n${rawBodyText}`,
+        structuredMarkup: rawBodyText,
+        articleUrl: canonicalUrl,
+        sourceStage: "agent1",
+      });
 
       candidates.push({
         sourceId: source.id,
@@ -2042,10 +2054,10 @@ export async function ingestSource(
         contentHash,
         // Evaluate only this feed item. A newsletter CTA elsewhere in the
         // feed must not mark every item as paywalled.
-        isPaywall: hasStrongPaywallHint({
-          articleText: `${rawTitle}\n${rawBodyText}`,
-          structuredMarkup: rawBodyText,
-        }),
+        // Feed text can carry an early hint, never a definitive runtime
+        // block. Agent 3 owns the final compatibility boolean.
+        isPaywall: accessEvidence.classification === "PAYWALL_BLOCKED" && accessEvidence.confidence === "HIGH",
+        accessEvidence,
         rawTags: item.categories || [],
         rawSignals: [],
         reasoning: `${parsedCandidateOrigin.toUpperCase()} ingest from ${source.mediaName || source.frontPageUrl}${

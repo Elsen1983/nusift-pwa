@@ -54,9 +54,10 @@ describe("Prompt 13A inspection endpoint behavior", () => {
     const handler = (await import("./admin-article-inspection.get")).default;
     const result = await handler({ query: { targetIds: "source-1", targetType: "SOURCE", limit: "1" } } as any);
     expect(result.items[0]?.durableState).toBe("PUBLISHED");
-    expect(result.items[0]?.bodyPreview.length).toBeLessThanOrEqual(320);
+    expect(result.items[0]?.bodyPreview).toBeUndefined();
+    expect(result.items[0]?.fullBodyExtracted).toBe(true);
+    expect(result.items[0]?.bodyEvidenceTruncated).toBe(true);
     expect(result.items[0]?.canonicalUrl).toBe("https://example.com/a");
-    expect(result.items[0]?.bodyPreview).not.toContain("\u0000");
   });
 
   it("returns sanitized bounded detail evidence and body preview", async () => {
@@ -65,7 +66,8 @@ describe("Prompt 13A inspection endpoint behavior", () => {
     const handler = (await import("./admin-article-inspection/[id].get")).default;
     const result = await handler({ params: { id: "2" } } as any);
     expect(result.item.canonicalUrl).toBe("https://example.com/a");
-    expect(result.item.bodyPreview).toHaveLength(320);
+    expect(result.item.bodyPreview).toBeUndefined();
+    expect(result.item.fullBodyExtracted).toBe(true);
     expect(result.item.evidenceTimeline[0]?.type).toBe("article_enrichment_result");
   });
 

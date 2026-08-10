@@ -7,7 +7,11 @@ import {
   buildSkippedOutcome,
   buildSuccessOutcome,
   createEnrichmentOutcome,
+  sanitizeEnrichmentEvidenceText,
+  sanitizeEnrichmentEvidenceUrl,
+  summarizeArticleAccess,
   type ArticleEnrichmentOutcome,
+  type EarlyAccessRecoveryDiagnostics,
   type ArticleFieldProvenance,
   type ArticleUpstreamProvenance,
   type EnrichmentTiming,
@@ -26,6 +30,7 @@ import {
   type EnrichmentBatchPersistResult,
 } from "./enrichment-persist";
 import { createPipelineRun } from "./artifacts";
+import { normalizeTargetUrl } from "./text";
 import { logAgentScan } from "./log";
 import {
   extractArticleContentFromUrl,
@@ -244,6 +249,13 @@ type EnrichmentEligibleArticle = {
   enrichmentAttemptCount: number;
   enrichmentFinishedAt?: Date | null;
   enrichmentOutcome?: unknown;
+  /** Bounded Agent 1/2 access hint recovered from a candidate artifact. */
+  accessEvidence?: {
+    classification: "PAYWALL_BLOCKED" | "METERED_OR_DECLARED" | "ACCESSIBLE" | "UNKNOWN";
+    sourceStage: "agent1" | "agent2";
+    evidenceCodes: string[];
+    contradictingEvidenceCodes: string[];
+  } | null;
 };
 
 /**
@@ -693,143 +705,270 @@ export const buildArticleProvenance = (
   ingestedAt: article.createdAt.toISOString(),
 });
 
+const MAX_UPSTREAM_RECOVERY_ARTIFACTS = 200;
+const MAX_UPSTREAM_RECOVERY_CANDIDATES_PER_ARTIFACT = 100;
+const MAX_UPSTREAM_RECOVERY_QUERY_CONCURRENCY = 4;
+const RECOVERY_ARTIFACT_TYPES = ["rss_candidates", "article_discovery_candidates"] as const;
+
+type RecoveryArtifact = {
+  id?: string;
+  pipelineRunId?: string;
+  sourceId?: string | null;
+  artifactType?: string;
+  createdAt?: Date | string | null;
+  payload: unknown;
+};
+
+type RecoveryCandidateMatch = {
+  candidate: Record<string, unknown>;
+  matchType: "canonical" | "source";
+  artifact: RecoveryArtifact;
+  candidateIndex: number;
+  earlyAccessEvidence: ReturnType<typeof readEarlyAccessEvidence>;
+};
+
+type RecoverySourceWindow = {
+  artifacts: RecoveryArtifact[];
+  windowTruncated: boolean;
+  queryFailed: boolean;
+};
+
+const normalizeRecoveryUrl = (value: unknown): string | null => {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return normalizeTargetUrl(value.trim());
+};
+
+const recoveryArtifactTime = (artifact: RecoveryArtifact): number => {
+  const value = artifact.createdAt instanceof Date
+    ? artifact.createdAt.getTime()
+    : typeof artifact.createdAt === "string"
+      ? Date.parse(artifact.createdAt)
+      : Number.NEGATIVE_INFINITY;
+  return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+};
+
+const compareRecoveryArtifactRecency = (a: RecoveryArtifact, b: RecoveryArtifact): number =>
+  recoveryArtifactTime(b) - recoveryArtifactTime(a);
+
+const compareRecoveryArtifacts = (a: RecoveryArtifact, b: RecoveryArtifact): number => {
+  const byTime = compareRecoveryArtifactRecency(a, b);
+  if (byTime !== 0) return byTime;
+  return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+};
+
+const readRecoveryCandidates = (payload: unknown): {
+  candidates: Array<Record<string, unknown>>;
+  truncated: boolean;
+} => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { candidates: [], truncated: false };
+  const raw = (payload as Record<string, unknown>).candidates;
+  if (!Array.isArray(raw)) return { candidates: [], truncated: false };
+  return {
+    candidates: raw.slice(0, MAX_UPSTREAM_RECOVERY_CANDIDATES_PER_ARTIFACT)
+      .filter((candidate): candidate is Record<string, unknown> => Boolean(candidate) && typeof candidate === "object" && !Array.isArray(candidate)),
+    truncated: raw.length > MAX_UPSTREAM_RECOVERY_CANDIDATES_PER_ARTIFACT,
+  };
+};
+
+const readEarlyAccessEvidence = (candidate: Record<string, unknown>) => {
+  const raw = candidate.accessEvidence;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const classifications = new Set(["PAYWALL_BLOCKED", "METERED_OR_DECLARED", "ACCESSIBLE", "UNKNOWN"]);
+  if (!classifications.has(String(value.classification)) || (value.sourceStage !== "agent1" && value.sourceStage !== "agent2")) return null;
+  const boundedCodes = (input: unknown) => Array.isArray(input)
+    ? input.map((code) => sanitizeEnrichmentEvidenceText(code, 80)).filter((code): code is string => Boolean(code)).slice(0, 12)
+    : [];
+  return {
+    classification: value.classification as "PAYWALL_BLOCKED" | "METERED_OR_DECLARED" | "ACCESSIBLE" | "UNKNOWN",
+    sourceStage: value.sourceStage as "agent1" | "agent2",
+    evidenceCodes: boundedCodes(value.evidenceCodes),
+    contradictingEvidenceCodes: boundedCodes(value.contradictingEvidenceCodes),
+  };
+};
+
+const makeRecoveryDiagnostics = (input: Partial<EarlyAccessRecoveryDiagnostics> & { status: EarlyAccessRecoveryDiagnostics["status"] }): EarlyAccessRecoveryDiagnostics => ({
+  status: input.status,
+  artifactTypesQueried: [...RECOVERY_ARTIFACT_TYPES],
+  artifactsScanned: input.artifactsScanned ?? 0,
+  artifactWindowLimit: MAX_UPSTREAM_RECOVERY_ARTIFACTS,
+  candidateLimitPerArtifact: MAX_UPSTREAM_RECOVERY_CANDIDATES_PER_ARTIFACT,
+  matchingArtifactType: input.matchingArtifactType ?? null,
+  matchingArtifactId: input.matchingArtifactId ?? null,
+  candidateMatchType: input.candidateMatchType ?? null,
+  windowTruncated: input.windowTruncated ?? false,
+});
+
 /**
- * Recover precise upstream provenance from Agent 1 ingest artifacts.
- *
- * Queries the most recent `rss_candidates` PipelineArtifact for each
- * unique sourceId in the batch, then looks up the matching candidate by
- * canonicalUrl to extract the exact feed origin, feed URL, and
- * discoveredFromCategoryFeed flag that Agent 1 recorded.
- *
- * Falls back to the explicit-unknown `buildArticleProvenance` values when:
- *  - no ingest artifact exists for the source
- *  - no candidate matches the article's canonicalUrl
- *  - the candidate provenance is malformed
- *  - any DB query fails
- *
- * `arrivedViaHardCaseRerun` remains `null` unless the available evidence proves
- * it; determining it precisely requires cross-referencing pipeline run timelines,
- * which is deferred to Phase 2.
- *
- * Returns a Map from article.id → recovered provenance.
+ * Recover bounded upstream provenance from both Agent 1 and Agent 2 candidate
+ * artifacts. Agent 3 remains authoritative: this function only carries early
+ * evidence forward and never selects the final access boolean.
  */
 export const recoverUpstreamProvenanceBatch = async (
   articles: EnrichmentEligibleArticle[],
 ): Promise<Map<number, ArticleUpstreamProvenance>> => {
   const result = new Map<number, ArticleUpstreamProvenance>();
-
   if (articles.length === 0) return result;
+  const sourceIds = [...new Set(articles.map((article) => article.sourceId))];
 
-  const sourceIds = [...new Set(articles.map((a) => a.sourceId))];
-
-  try {
-    // Pre-fetch all ingest artifacts for these sources in a single query.
-    // Ordered by recency so the first payload per sourceId is the most recent.
-    const ingestArtifacts = await prisma.pipelineArtifact.findMany({
-      where: {
-        sourceId: { in: sourceIds },
-        artifactType: "rss_candidates",
-        status: "CAPTURED",
-      },
-      orderBy: { createdAt: "desc" },
-      select: { id: true, pipelineRunId: true, sourceId: true, payload: true },
-    });
-
-    // Build lookup: sourceId → list of payloads (most recent first).
-    // We search through all payloads for the source because an article
-    // may have been ingested in an earlier run, not just the most recent.
-    // Note: PipelineArtifact.sourceId is nullable; filter out nulls.
-    const ingestBySource = new Map<string, Array<{
-      id?: string;
-      pipelineRunId?: string;
-      payload: Record<string, unknown>;
-    }>>();
-    for (const artifact of ingestArtifacts) {
-      if (!artifact.sourceId) continue;
-      const existing = ingestBySource.get(artifact.sourceId) ?? [];
-      existing.push({
-        id: typeof artifact.id === "string" ? artifact.id : undefined,
-        pipelineRunId: typeof artifact.pipelineRunId === "string" ? artifact.pipelineRunId : undefined,
-        payload: artifact.payload as Record<string, unknown>,
+  const sourceWindows = new Map<string, RecoverySourceWindow>();
+  let nextSourceIndex = 0;
+  const recoverOneSource = async (sourceId: string): Promise<void> => {
+    try {
+      const rows = await prisma.pipelineArtifact.findMany({
+        where: {
+          sourceId,
+          artifactType: { in: [...RECOVERY_ARTIFACT_TYPES] },
+          status: "CAPTURED",
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        // One sentinel row is fetched independently for every source.
+        take: MAX_UPSTREAM_RECOVERY_ARTIFACTS + 1,
+        select: { id: true, pipelineRunId: true, sourceId: true, artifactType: true, createdAt: true, payload: true },
       });
-      ingestBySource.set(artifact.sourceId, existing);
+
+      const artifacts = rows
+        .slice(0, MAX_UPSTREAM_RECOVERY_ARTIFACTS)
+        .map((row) => ({
+          id: typeof row.id === "string" ? row.id : undefined,
+          pipelineRunId: typeof row.pipelineRunId === "string" ? row.pipelineRunId : undefined,
+          // Legacy mocked rows may omit sourceId; the query itself scopes them
+          // to this source, so use the requested source as the safe fallback.
+          sourceId: typeof row.sourceId === "string" ? row.sourceId : sourceId,
+          artifactType: typeof row.artifactType === "string" ? row.artifactType : "rss_candidates",
+          createdAt: row.createdAt,
+          payload: row.payload,
+        } satisfies RecoveryArtifact))
+        .filter((artifact) => artifact.sourceId === sourceId && RECOVERY_ARTIFACT_TYPES.includes(artifact.artifactType as typeof RECOVERY_ARTIFACT_TYPES[number]))
+        .sort(compareRecoveryArtifacts);
+
+      sourceWindows.set(sourceId, {
+        artifacts,
+        windowTruncated: rows.length > MAX_UPSTREAM_RECOVERY_ARTIFACTS,
+        queryFailed: false,
+      });
+    } catch {
+      // Isolate a failed source query. Other sources in the same bounded batch
+      // remain recoverable and retain their own truthful diagnostics.
+      sourceWindows.set(sourceId, {
+        artifacts: [],
+        windowTruncated: false,
+        queryFailed: true,
+      });
     }
+  };
 
-    const validOrigins: ReadonlySet<string> = new Set([
-      "rss",
-      "atom",
-      "json",
-      "html_fallback",
-      "web_discovery",
-    ]);
+  const workerCount = Math.min(MAX_UPSTREAM_RECOVERY_QUERY_CONCURRENCY, sourceIds.length);
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const sourceIndex = nextSourceIndex++;
+      if (sourceIndex >= sourceIds.length) return;
+      await recoverOneSource(sourceIds[sourceIndex]!);
+    }
+  };
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-    for (const article of articles) {
-      const conservative = buildArticleProvenance(article);
-      const articleUrl = article.canonicalUrl || article.sourceUrl;
+  const validOrigins = new Set(["rss", "atom", "json", "html_fallback", "web_discovery"]);
+  for (const article of articles) {
+    const conservative = buildArticleProvenance(article);
+    const articleCanonical = normalizeRecoveryUrl(article.canonicalUrl);
+    const articleSource = normalizeRecoveryUrl(article.sourceUrl);
+    const sourceWindow = sourceWindows.get(article.sourceId);
+    const candidates = sourceWindow?.artifacts ?? [];
+    if (sourceWindow?.queryFailed) {
+      result.set(article.id, {
+        ...conservative,
+        earlyAccessRecovery: makeRecoveryDiagnostics({ status: "QUERY_FAILED" }),
+      });
+      continue;
+    }
+    const matches: RecoveryCandidateMatch[] = [];
+    let candidateWindowTruncated = false;
 
-      if (!articleUrl) {
-        result.set(article.id, conservative);
-        continue;
-      }
+    for (const artifact of candidates) {
+      const read = readRecoveryCandidates(artifact.payload);
+      candidateWindowTruncated ||= read.truncated;
+      read.candidates.forEach((candidate, candidateIndex) => {
+        const candidateSourceId = candidate.sourceId;
+        if (typeof candidateSourceId === "string" && candidateSourceId !== article.sourceId) return;
+        const candidateCategoryId = candidate.categoryId;
+        if (typeof candidateCategoryId === "string" && article.categoryId && candidateCategoryId !== article.categoryId) return;
+        const candidateCanonical = normalizeRecoveryUrl(candidate.canonicalUrl);
+        const candidateSource = normalizeRecoveryUrl(candidate.sourceUrl);
+        const earlyAccessEvidence = readEarlyAccessEvidence(candidate);
+        let matchType: RecoveryCandidateMatch["matchType"] | null = null;
 
-      const payloads = ingestBySource.get(article.sourceId);
-      if (!payloads || payloads.length === 0) {
-        result.set(article.id, conservative);
-        continue;
-      }
-
-      // Search through artifacts (most recent first) for the matching candidate.
-      let matched = false;
-      for (const artifact of payloads) {
-        const payload = artifact.payload;
-        const candidates = Array.isArray(payload.candidates)
-          ? (payload.candidates as Array<Record<string, unknown>>)
-          : [];
-
-        const match = candidates.find(
-          (c) => c?.canonicalUrl === articleUrl || c?.canonicalUrl === article.canonicalUrl,
-        );
-
-        if (!match || typeof match.provenance !== "object" || match.provenance === null) {
-          continue;
+        if (articleCanonical && candidateCanonical === articleCanonical) {
+          matchType = "canonical";
+        } else if (articleCanonical && !candidateCanonical && candidateSource === articleCanonical) {
+          matchType = "source";
+        } else if (!articleCanonical && articleSource && candidateCanonical === articleSource) {
+          matchType = "canonical";
+        } else if (!articleCanonical && articleSource && !candidateCanonical && candidateSource === articleSource) {
+          matchType = "source";
         }
 
-        const prov = match.provenance as Record<string, unknown>;
-        const origin = typeof prov.origin === "string" ? prov.origin : null;
-
-        result.set(article.id, {
-          sourceId: article.sourceId,
-          categoryId: article.categoryId,
-          feedOrigin: origin && validOrigins.has(origin)
-            ? (origin as ArticleUpstreamProvenance["feedOrigin"])
-            : null,
-          feedUrl: typeof prov.feedUrl === "string" ? prov.feedUrl : null,
-          discoveredFromCategoryFeed:
-            typeof prov.discoveredFromCategoryFeed === "boolean"
-              ? prov.discoveredFromCategoryFeed
-              : null,
-          // The artifact/run references identify the evidence used for this
-          // recovery; they are never inferred when the mock/legacy row lacks them.
-          ingestArtifactId: artifact.id ?? null,
-          ingestPipelineRunId: artifact.pipelineRunId ?? null,
-          arrivedViaHardCaseRerun: null,
-          ingestedAt: article.createdAt.toISOString(),
-        });
-        matched = true;
-        break;
-      }
-
-      if (!matched) {
-        result.set(article.id, conservative);
-      }
+        if (matchType) matches.push({ candidate, matchType, artifact, candidateIndex, earlyAccessEvidence });
+      });
     }
-  } catch {
-    // DB query failed — fall back to conservative provenance for all articles.
-    for (const article of articles) {
-      if (!result.has(article.id)) {
-        result.set(article.id, buildArticleProvenance(article));
-      }
+
+    matches.sort((a, b) => {
+      // Valid bounded evidence is preferred over malformed/missing evidence.
+      const byEvidence = Number(Boolean(b.earlyAccessEvidence)) - Number(Boolean(a.earlyAccessEvidence));
+      if (byEvidence !== 0) return byEvidence;
+      // Among valid exact matches, recency is the primary ordering criterion,
+      // independent of canonicalUrl versus legacy sourceUrl identity.
+      const byRecency = compareRecoveryArtifactRecency(a.artifact, b.artifact);
+      if (byRecency !== 0) return byRecency;
+      // Identity strength may only break an artifact-timestamp tie.
+      const typeRank = (value: RecoveryCandidateMatch["matchType"]) => value === "canonical" ? 0 : 1;
+      const byType = typeRank(a.matchType) - typeRank(b.matchType);
+      if (byType !== 0) return byType;
+      const byArtifactId = String(b.artifact.id ?? "").localeCompare(String(a.artifact.id ?? ""));
+      if (byArtifactId !== 0) return byArtifactId;
+      return a.candidateIndex - b.candidateIndex;
+    });
+
+    const match = matches[0];
+    const windowTruncated = Boolean(sourceWindow?.windowTruncated) || candidateWindowTruncated;
+    if (!match) {
+      result.set(article.id, {
+        ...conservative,
+        earlyAccessRecovery: makeRecoveryDiagnostics({
+          status: windowTruncated ? "WINDOW_TRUNCATED" : "NO_MATCH",
+          artifactsScanned: candidates.length,
+          windowTruncated,
+        }),
+        earlyAccessRecoveryWindowTruncated: windowTruncated,
+      });
+      continue;
     }
+
+    const provenance = match.candidate.provenance && typeof match.candidate.provenance === "object" && !Array.isArray(match.candidate.provenance)
+      ? match.candidate.provenance as Record<string, unknown>
+      : {};
+    const origin = typeof provenance.origin === "string" && validOrigins.has(provenance.origin) ? provenance.origin as ArticleUpstreamProvenance["feedOrigin"] : null;
+    result.set(article.id, {
+      sourceId: article.sourceId,
+      categoryId: article.categoryId,
+      feedOrigin: origin,
+      feedUrl: sanitizeEnrichmentEvidenceUrl(provenance.feedUrl),
+      discoveredFromCategoryFeed: typeof provenance.discoveredFromCategoryFeed === "boolean" ? provenance.discoveredFromCategoryFeed : null,
+      ingestArtifactId: match.artifact.id ?? null,
+      ingestPipelineRunId: match.artifact.pipelineRunId ?? null,
+      arrivedViaHardCaseRerun: null,
+      ingestedAt: article.createdAt.toISOString(),
+      earlyAccessEvidence: match.earlyAccessEvidence,
+      earlyAccessRecovery: makeRecoveryDiagnostics({
+        status: "MATCHED",
+        artifactsScanned: candidates.length,
+        matchingArtifactType: match.artifact.artifactType as "rss_candidates" | "article_discovery_candidates",
+        matchingArtifactId: match.artifact.id ?? null,
+        candidateMatchType: match.matchType,
+        windowTruncated,
+      }),
+      earlyAccessRecoveryWindowTruncated: windowTruncated,
+    });
   }
 
   return result;
@@ -951,6 +1090,21 @@ const buildOutcomeFromSuccess = (
   }
   if (isPaywallProvenance) fields.isPaywall = isPaywallProvenance;
 
+  const earlyAccess = provenance.earlyAccessEvidence;
+  const finalIsPaywall = isPaywallProvenance?.chosenValue ?? result.isPaywall ?? article.isPaywall;
+  const accessSummary = result.access
+    ? summarizeArticleAccess(result.access, {
+        previousIsPaywall: article.isPaywall,
+        earlyStageClassification: earlyAccess?.classification ?? (article.isPaywall ? "PAYWALL_BLOCKED" : null),
+        earlyStageSource: earlyAccess?.sourceStage ?? (article.isPaywall ? "agent1" : null),
+        earlyStageEvidenceCodes: earlyAccess?.evidenceCodes,
+        earlyStageContradictingEvidenceCodes: earlyAccess?.contradictingEvidenceCodes,
+        sourceStage: "agent3",
+        finalIsPaywall,
+        overrideReason: isPaywallProvenance?.overrideReason ?? null,
+      })
+    : undefined;
+
   return buildSuccessOutcome({
     articleId: article.id,
     articleUrl,
@@ -969,6 +1123,7 @@ const buildOutcomeFromSuccess = (
       bodyLength: result.bodyText?.length ?? null,
     },
     fields,
+    ...(accessSummary ? { access: accessSummary } : {}),
   });
 };
 
@@ -1264,6 +1419,21 @@ export const extractAndBuildArticleOutcome = async (
     result.diagnostics,
     article.title,
   );
+  if (result.access) {
+    const earlyAccess = provenance.earlyAccessEvidence;
+    failureOutcome.access = summarizeArticleAccess(result.access, {
+      previousIsPaywall: article.isPaywall,
+      earlyStageClassification: earlyAccess?.classification ?? (article.isPaywall ? "PAYWALL_BLOCKED" : null),
+      earlyStageSource: earlyAccess?.sourceStage ?? (article.isPaywall ? "agent1" : null),
+      earlyStageEvidenceCodes: earlyAccess?.evidenceCodes,
+      earlyStageContradictingEvidenceCodes: earlyAccess?.contradictingEvidenceCodes,
+      sourceStage: "agent3",
+      finalIsPaywall: result.access.isPaywall ?? article.isPaywall,
+      overrideReason: result.access.classification === "PAYWALL_BLOCKED"
+        ? "Agent 3 confirmed article-scoped blocking evidence."
+        : null,
+    });
+  }
 
   // Determine browser fallback skipped reason and attempt if eligible
   if (browserFallback?.skippedReason) {

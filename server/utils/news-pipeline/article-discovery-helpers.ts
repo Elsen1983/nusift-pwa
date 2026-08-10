@@ -27,7 +27,7 @@ import {
   type VerifiedHostScope,
 } from "./canonical-host-scope";
 import type { StageBatchProbe } from "./stage-telemetry";
-import { hasStrongPaywallHint } from "./paywall-detection";
+import { classifyEarlyAccessHint } from "./paywall-detection";
 
 /** Agent 2 counts one logical request per safeFetch call; redirects remain one logical request. */
 export type DiscoveryNetworkTelemetry = Pick<
@@ -1314,6 +1314,7 @@ type EvaluatedCandidate = {
   bodyText: string | null;
   contentHash: string;
   isPaywall: boolean;
+  accessEvidence?: import("./types").IngestAccessEvidence;
   rawTags: string[];
   rawSignals: string[];
   reasoning: string;
@@ -1642,10 +1643,13 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
   const finalTitle = normalizedTitle.value || canonicalUrl;
   const bodyText = normalizedBody.value;
   const contentHash = await hashText([finalTitle, canonicalUrl, bodyText].filter(Boolean).join("|"));
-  const isPaywall = hasStrongPaywallHint({
+  const accessEvidence = classifyEarlyAccessHint({
     articleText: `${title}\n${description}`,
     structuredMarkup: html,
+    articleUrl: canonicalUrl,
+    sourceStage: "agent2",
   });
+  const isPaywall = accessEvidence.classification === "PAYWALL_BLOCKED" && accessEvidence.confidence === "HIGH";
   const rawTags = [...new Set(keywords.filter(Boolean))];
 
   const candidate: EvaluatedCandidate = {
@@ -1661,6 +1665,7 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
     bodyText: bodyText || null,
     contentHash,
     isPaywall,
+    accessEvidence,
     rawTags,
     rawSignals: [
       "agent2-web-discovery",

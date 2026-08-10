@@ -4,7 +4,7 @@ import {
   ADMIN_INSPECTION_ARTICLE_SCAN_CAP, ADMIN_INSPECTION_MAX_TARGETS, ADMIN_INSPECTION_REASON_LIMIT,
   clampInspectionLimit, classifyInspectionArticleState, deriveInspectionFlags, emptyInspectionStats,
   getInspectionPipelineStage, hostnameFromUrl, loadArticleInspectionEvidence, loadArticleInspectionEvidenceForArticles,
-  loadBodyReadinessEvidence, normalizeBodyPreview, normalizeInspectionDateRange, normalizeInspectionSearch,
+  loadBodyReadinessEvidence,  normalizeInspectionDateRange, normalizeInspectionSearch,
   parseInspectionDate, validateInspectionDateRange, readArtifactArticleId, readArtifactFailureReason,
   readBrowserFallbackUsed, readInspectionOutcomeSummary, safeInspectionUrl, inspectionStageMatches,
   inspectionStateMatches, type AdminInspectionStats, type AdminInspectionTargetType,
@@ -153,7 +153,7 @@ const makeStats = (articles: any[], artifacts: any[], target: Target): AdminInsp
     // inferred from the mere existence of an Article row.
     if (!stats.latestArticleCreatedAt || article.createdAt > stats.latestArticleCreatedAt) stats.latestArticleCreatedAt = article.createdAt;
     const evidence = latestArtifactByArticle.get(article.id); const payload = asRecord(evidence?.payload); const rejection = asRecord(payload?.rejection);
-    const state = classifyInspectionArticleState(article, evidence ? { kind: typeof payload?.kind === "string" ? payload.kind : null, rejectionCode: typeof rejection?.code === "string" ? rejection.code : null, retryAfterAt: typeof payload?.retryAfterAt === "string" ? payload.retryAfterAt : null, browserFallback: asRecord(payload?.browserFallback), retryDiagnostics: asRecord(payload?.retryDiagnostics) } : null);
+    const state = classifyInspectionArticleState(article, evidence ? { kind: typeof payload?.kind === "string" ? payload.kind : null, rejectionCode: typeof rejection?.code === "string" ? rejection.code : null, retryAfterAt: typeof payload?.retryAfterAt === "string" ? payload.retryAfterAt : null, browserFallback: asRecord(payload?.browserFallback), retryDiagnostics: asRecord(payload?.retryDiagnostics), access: readInspectionOutcomeSummary(payload).access } : null);
     if (state === "PUBLISHED") { stats.publishedArticlesInWindow++; stats.agent3PublishedCount++; if (article.publicationReadyAt && (!stats.latestPublishedArticleAt || article.publicationReadyAt > stats.latestPublishedArticleAt)) stats.latestPublishedArticleAt = article.publicationReadyAt; }
     else if (state === "DEFERRED") { stats.deferredArticlesInWindow++; stats.deferredCount++; }
     else if (state === "REJECTED") { stats.rejectedArticlesInWindow++; stats.agent3RejectedCount++; }
@@ -375,6 +375,7 @@ const evidenceSummary = (evidence: any, outcome: ReturnType<typeof readInspectio
     retryAfterAt: typeof rejection?.retryAfterAt === "string" ? rejection.retryAfterAt : outcome.retryAfterAt,
     browserFallback: asRecord(payload?.browserFallback) || outcome.browserFallback,
     retryDiagnostics: asRecord(payload?.retryDiagnostics) || outcome.retryDiagnostics,
+    access: outcome.access,
   };
 };
 
@@ -398,12 +399,25 @@ const mapItem = (article: any, evidence: any, requestedState: string, requestedS
     publishedAt: article.publishedAt?.toISOString() ?? null, publicationReadyAt: article.publicationReadyAt?.toISOString() ?? null,
     agent1Provenance: { sourceId: article.sourceId, categoryId: article.categoryId, sourceUrl: safeInspectionUrl(article.sourceUrl) },
     agent2Discovery: { processingStage: bounded(article.processingStage, 40), processingStatus: bounded(article.processingStatus, 40) },
-    agent3Enrichment: { status: bounded(article.enrichmentStatus, 60), method: bounded(asRecord(article.enrichmentOutcome)?.method, 60), confidence: typeof asRecord(article.enrichmentOutcome)?.confidence === "number" ? asRecord(article.enrichmentOutcome)?.confidence : null },
+    agent3Enrichment: {
+      status: bounded(article.enrichmentStatus, 60),
+      method: bounded(asRecord(article.enrichmentOutcome)?.method, 60),
+      confidence: typeof asRecord(article.enrichmentOutcome)?.confidence === "number" ? asRecord(article.enrichmentOutcome)?.confidence : null,
+      access: outcome.access,
+      previousIsPaywall: outcome.access.previousIsPaywall,
+      finalIsPaywall: outcome.access.finalIsPaywall ?? article.isPaywall,
+      overrideReason: outcome.access.overrideReason,
+    },
     retry: { nextRetryAt: summary.retryAfterAt, deferred: state === "DEFERRED", retryable: state === "RETRYABLE_FAILURE" },
     rejectionReason: bounded(summary.rejectionCode || asRecord(article.enrichmentOutcome)?.rejectionDetail || readArtifactFailureReason(evidence || {})),
     browserFallback: browserFallback ? { attempted: browserFallback.attempted === true, succeeded: browserFallback.succeeded === true } : null,
-    paywallClassification: article.isPaywall ? "PAYWALL" : "NOT_PAYWALL",
-    bodyPreview: normalizeBodyPreview(article.bodyText ?? article.bodyPrefix),
+    paywallClassification: outcome.access.classification || (article.isPaywall ? "PAYWALL" : "NOT_PAYWALL"),
+
+    // Never return body text to the admin client. Access diagnostics expose
+    // only the bounded boolean/length facts needed for inspection.
+    fullBodyExtracted: typeof article.bodyLength === "number"
+      ? article.bodyLength >= 500
+      : null,
     bodyEvidenceTruncated: typeof article.bodyPrefix === "string" && article.bodyPrefix.length >= 520,
     evidenceSummary: bounded(summary.rejectionCode || evidence?.errorLog || asRecord(article.enrichmentOutcome)?.rejectionDetail || article.processingStatus),
   };
@@ -600,12 +614,22 @@ export async function runAdminArticleInspectionDetail(db: any, userId: string, a
       publicationGate: { status: article.publicationStatus, stage: article.publicationStage, readyAt: article.publicationReadyAt?.toISOString() ?? null, ready: state === "PUBLISHED" },
       agent1Provenance: { sourceId: article.sourceId, categoryId: article.categoryId, sourceUrl: safeInspectionUrl(article.sourceUrl) },
       agent2Discovery: { processingStage: bounded(article.processingStage, 40), processingStatus: bounded(article.processingStatus, 40) },
-      agent3Enrichment: { status: bounded(article.enrichmentStatus, 60), method: bounded(asRecord(article.enrichmentOutcome)?.method, 60), confidence: typeof asRecord(article.enrichmentOutcome)?.confidence === "number" ? asRecord(article.enrichmentOutcome)?.confidence : null },
+      agent3Enrichment: {
+        status: bounded(article.enrichmentStatus, 60),
+        method: bounded(asRecord(article.enrichmentOutcome)?.method, 60),
+        confidence: typeof asRecord(article.enrichmentOutcome)?.confidence === "number" ? asRecord(article.enrichmentOutcome)?.confidence : null,
+        access: outcome.access,
+        previousIsPaywall: outcome.access.previousIsPaywall,
+        finalIsPaywall: outcome.access.finalIsPaywall ?? article.isPaywall,
+        overrideReason: outcome.access.overrideReason,
+      },
       retry: { nextRetryAt: outcome.retryAfterAt, deferred: state === "DEFERRED", retryable: state === "RETRYABLE_FAILURE" },
       rejectionReason: bounded(outcome.rejectionCode || asRecord(article.enrichmentOutcome)?.rejectionDetail || readArtifactFailureReason(latest || {})),
       browserFallback: outcome.browserFallback ? { attempted: outcome.browserFallback.attempted === true, succeeded: outcome.browserFallback.succeeded === true } : null,
-      paywallClassification: article.isPaywall ? "PAYWALL" : "NOT_PAYWALL",
-      bodyPreview: normalizeBodyPreview(article.bodyText),
+      paywallClassification: outcome.access.classification || (article.isPaywall ? "PAYWALL" : "NOT_PAYWALL"),
+      // Never return body text to the admin client; retain only bounded
+      // readiness/access facts and artifact summaries.
+      fullBodyExtracted: typeof article.bodyText === "string" && article.bodyText.trim().length >= 500,
       evidenceCoverage,
       evidenceTimelineTruncated,
       evidenceScannedCount: artifacts.length,

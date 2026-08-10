@@ -1119,6 +1119,7 @@ const serializeDiscoveryCandidate = (candidate: IngestCandidate) => ({
   bodyText: candidate.bodyText || null,
   contentHash: candidate.contentHash,
   isPaywall: candidate.isPaywall,
+  ...(candidate.accessEvidence ? { accessEvidence: candidate.accessEvidence } : {}),
   rawTags: candidate.rawTags,
   rawSignals: candidate.rawSignals,
   reasoning: candidate.reasoning,
@@ -1205,7 +1206,11 @@ export async function persistArticleDiscoveryArtifact(input: {
           ? "FAILED"
           : "CAPTURED",
       candidateCount: input.result.candidates.length,
-      payload,
+      // The payload is assembled from bounded serializer outputs and plain
+      // diagnostic primitives. Prisma cannot infer the nested candidate
+      // records as InputJsonValue because their source interfaces have index
+      // signatures only at runtime; keep the cast at this JSON boundary.
+      payload: payload as unknown as Prisma.InputJsonValue,
       errorLog:
         input.result.retryable
           ? `Static discovery deferred for ${input.result.targetUrl}; retryable=${input.result.retryable}, stopReason=${input.result.detailEvaluationStoppedReason ?? "unknown"}.`

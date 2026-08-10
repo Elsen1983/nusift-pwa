@@ -47,7 +47,7 @@
             </button>
           </div>
           
-          <div v-if="article.isPaywall" class="absolute bottom-0 left-0 w-full h-[400px] bg-gradient-to-t from-background via-background/95 to-transparent flex flex-col items-center justify-end pb-12 px-6 z-10">
+          <div v-if="isConfirmedBlockingPaywall(article)" class="absolute bottom-0 left-0 w-full h-[400px] bg-gradient-to-t from-background via-background/95 to-transparent flex flex-col items-center justify-end pb-12 px-6 z-10">
             <div class="pointer-events-auto flex flex-col items-center w-full pb-12">
               <div class="w-14 h-14 bg-surface-container-lowest rounded-full flex items-center justify-center mb-5 border border-outline-variant/20">
                 <span class="material-symbols-outlined text-[28px] text-primary-container" :style="{ fontVariationSettings: '\'FILL\' 1' }">lock</span>
@@ -69,6 +69,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { stripAllTags } from '~/composables/useSanitizeHtml'
+import { isConfirmedBlockingPaywall } from '~/utils/paywall'
 
 const props = defineProps<{ modelValue: boolean, article: any, content: string }>();
 defineEmits(['update:modelValue', 'browser']);

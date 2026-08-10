@@ -1,4 +1,8 @@
 import type { Prisma } from "@prisma/client";
+import type {
+  ArticleAccessClassification,
+  ArticleAccessClassificationResult,
+} from "./article-access-classification";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent 3 — Article enrichment runtime outcome contract (Phase 1)
@@ -136,6 +140,20 @@ export interface ArticleFieldProvenance {
  */
 export type FeedOrigin = "rss" | "atom" | "json" | "html_fallback" | "web_discovery";
 
+export type EarlyAccessRecoveryStatus = "MATCHED" | "NO_MATCH" | "WINDOW_TRUNCATED" | "QUERY_FAILED";
+
+export interface EarlyAccessRecoveryDiagnostics {
+  status: EarlyAccessRecoveryStatus;
+  artifactTypesQueried: Array<"rss_candidates" | "article_discovery_candidates">;
+  artifactsScanned: number;
+  artifactWindowLimit: number;
+  candidateLimitPerArtifact: number;
+  matchingArtifactType: "rss_candidates" | "article_discovery_candidates" | null;
+  matchingArtifactId: string | null;
+  candidateMatchType: "canonical" | "source" | null;
+  windowTruncated: boolean;
+}
+
 export interface ArticleUpstreamProvenance {
   sourceId: string;
   /** Category id when the article was ingested from a category-scoped feed. */
@@ -157,6 +175,17 @@ export interface ArticleUpstreamProvenance {
   ingestPipelineRunId?: string | null;
   /** ISO-8601 timestamp of the original Agent 1 ingest. */
   ingestedAt?: string | null;
+  /** Bounded early access hint from Agent 1/2; never authoritative. */
+  earlyAccessEvidence?: {
+    classification: "PAYWALL_BLOCKED" | "METERED_OR_DECLARED" | "ACCESSIBLE" | "UNKNOWN";
+    sourceStage: "agent1" | "agent2";
+    evidenceCodes: string[];
+    contradictingEvidenceCodes: string[];
+  } | null;
+  /** Truthful bounded diagnostics for the Agent 1/2 recovery window. */
+  earlyAccessRecovery?: EarlyAccessRecoveryDiagnostics;
+  /** True when the bounded artifact window may have omitted older rows. */
+  earlyAccessRecoveryWindowTruncated?: boolean;
 }
 
 /**
@@ -225,6 +254,58 @@ export interface ExtractionQuality {
  * Stable string — do not include timestamps.
  */
 export const AGENT3_EXTRACTOR_VERSION = "a3-serverless-linkedom-v4";
+
+const EVIDENCE_TEXT_LIMIT = 240;
+
+/**
+ * Sanitize human-readable evidence before it enters a JSON artifact. This is
+ * deliberately conservative: control characters, markup, credentials, and
+ * token-like values are removed or redacted, and the result is bounded.
+ */
+export const sanitizeEnrichmentEvidenceText = (value: unknown, max = EVIDENCE_TEXT_LIMIT): string | null => {
+  if (typeof value !== "string") return null;
+  // Diagnostic strings that contain markup are not safe evidence; discard
+  // them rather than preserving arbitrary inner text from raw HTML.
+  if (/<[a-z!/][^>]*>/i.test(value)) return null;
+  const sanitized = value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/(https?:\/\/[^\s\"'<>?]+)\?[^\s\"'<>]*/gi, "$1")
+    .replace(/(?:authorization|cookie|token|password|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return sanitized ? sanitized.slice(0, Math.max(1, max)) : null;
+};
+
+/** Store only credential-free URL origin/path in diagnostic artifacts. */
+export const sanitizeEnrichmentEvidenceUrl = (value: unknown): string | null => {
+  if (typeof value !== "string" || value.length > 4_000) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString().slice(0, 1_000);
+  } catch {
+    return sanitizeEnrichmentEvidenceText(value, 1_000);
+  }
+};
+
+/** Recursively bound diagnostic-only JSON without retaining raw markup/secrets. */
+const sanitizeEnrichmentEvidenceJson = (value: unknown, depth = 0): unknown => {
+  if (depth > 5) return null;
+  if (typeof value === "string") return sanitizeEnrichmentEvidenceText(value);
+  if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeEnrichmentEvidenceJson(item, depth + 1));
+  if (typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 40).map(([key, item]) => [
+      sanitizeEnrichmentEvidenceText(key, 80) || "field",
+      sanitizeEnrichmentEvidenceJson(item, depth + 1),
+    ]));
+  }
+  return null;
+};
 
 /**
  * Compact extraction diagnostics stored on rejection artifacts.
@@ -350,6 +431,67 @@ export interface Agent3RetryDiagnostics {
   previousAttemptAt?: string | null;
 }
 
+export interface ArticleAccessOutcomeSummary {
+  classification: ArticleAccessClassification;
+  /** Agent stage that produced this access decision; Agent 3 is authoritative. */
+  sourceStage: "agent1" | "agent2" | "agent3";
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  detectorVersion: string;
+  evidenceCodes: string[];
+  contradictingEvidenceCodes: string[];
+  evidenceArticleScoped: boolean;
+  usableBodyExtracted: boolean;
+  bodyTruncationDetected: boolean;
+  articleScopedGateOrOverlayDetected: boolean;
+  decisive: boolean;
+  previousIsPaywall: boolean;
+  earlyStageClassification: ArticleAccessClassification | null;
+  earlyStageSource: "agent1" | "agent2" | null;
+  earlyStageEvidenceCodes: string[];
+  earlyStageContradictingEvidenceCodes: string[];
+  finalIsPaywall: boolean | null;
+  overrideReason: string | null;
+}
+
+export const summarizeArticleAccess = (
+  access: ArticleAccessClassificationResult,
+  input?: {
+    previousIsPaywall?: boolean;
+    earlyStageClassification?: ArticleAccessClassification | null;
+    earlyStageSource?: "agent1" | "agent2" | null;
+    earlyStageEvidenceCodes?: string[];
+    earlyStageContradictingEvidenceCodes?: string[];
+    sourceStage?: "agent1" | "agent2" | "agent3";
+    finalIsPaywall?: boolean | null;
+    overrideReason?: string | null;
+  },
+): ArticleAccessOutcomeSummary => ({
+  classification: access.classification,
+  sourceStage: input?.sourceStage ?? "agent3",
+  confidence: access.confidence,
+  detectorVersion: access.detectorVersion,
+  evidenceCodes: access.evidence.map((entry) => entry.code).slice(0, 12),
+  contradictingEvidenceCodes: access.contradictingEvidence.map((entry) => entry.code).slice(0, 12),
+  evidenceArticleScoped: access.evidenceArticleScoped,
+  usableBodyExtracted: access.usableBodyExtracted,
+  bodyTruncationDetected: access.bodyTruncationDetected,
+  articleScopedGateOrOverlayDetected: access.articleScopedGateOrOverlayDetected,
+  decisive: access.decisive,
+  previousIsPaywall: input?.previousIsPaywall ?? false,
+  earlyStageClassification: input?.earlyStageClassification ?? null,
+  earlyStageSource: input?.earlyStageSource ?? null,
+    earlyStageEvidenceCodes: (input?.earlyStageEvidenceCodes ?? [])
+      .map((code) => sanitizeEnrichmentEvidenceText(code, 80))
+      .filter((code): code is string => Boolean(code))
+      .slice(0, 12),
+    earlyStageContradictingEvidenceCodes: (input?.earlyStageContradictingEvidenceCodes ?? [])
+      .map((code) => sanitizeEnrichmentEvidenceText(code, 80))
+      .filter((code): code is string => Boolean(code))
+      .slice(0, 12),
+  finalIsPaywall: input?.finalIsPaywall ?? access.isPaywall,
+  overrideReason: input?.overrideReason ?? null,
+});
+
 export interface ArticleEnrichmentOutcome {
   /** Schema version for forward-compatible deserialization. */
   schemaVersion: 1;
@@ -371,6 +513,8 @@ export interface ArticleEnrichmentOutcome {
   quality: ExtractionQuality;
   /** Field-by-field provenance for touched fields. */
   fields: ArticleFieldProvenance;
+  /** Bounded Agent 3 access classification and compatibility decision. */
+  access?: ArticleAccessOutcomeSummary;
   /** Structured rejection / skip reason, present for non-SUCCESS kinds. */
   rejection: EnrichmentRejectionReason | null;
   /** Free-form error message for unexpected exceptions (audit only). */
@@ -454,6 +598,7 @@ export interface CreateEnrichmentOutcomeInput {
   timing: EnrichmentTiming;
   quality?: Partial<ExtractionQuality>;
   fields?: ArticleFieldProvenance;
+  access?: ArticleAccessOutcomeSummary;
   rejection?: EnrichmentRejectionReason | null;
   error?: string | null;
 }
@@ -488,6 +633,22 @@ export const createEnrichmentOutcome = (
       ? { ingestPipelineRunId: input.provenance.ingestPipelineRunId }
       : {}),
     ingestedAt: input.provenance.ingestedAt ?? null,
+    ...(input.provenance.earlyAccessEvidence
+      ? {
+          earlyAccessEvidence: {
+            classification: input.provenance.earlyAccessEvidence.classification,
+            sourceStage: input.provenance.earlyAccessEvidence.sourceStage,
+            evidenceCodes: input.provenance.earlyAccessEvidence.evidenceCodes.slice(0, 12),
+            contradictingEvidenceCodes: input.provenance.earlyAccessEvidence.contradictingEvidenceCodes.slice(0, 12),
+          },
+        }
+      : {}),
+    ...(input.provenance.earlyAccessRecovery
+      ? { earlyAccessRecovery: input.provenance.earlyAccessRecovery }
+      : {}),
+    ...(input.provenance.earlyAccessRecoveryWindowTruncated !== undefined
+      ? { earlyAccessRecoveryWindowTruncated: input.provenance.earlyAccessRecoveryWindowTruncated }
+      : {}),
   },
   method: {
     method: input.method?.method ?? "none",
@@ -516,6 +677,7 @@ export const createEnrichmentOutcome = (
       typeof input.quality?.bodyLength === "number" ? input.quality.bodyLength : null,
   },
   fields: input.fields ?? {},
+  access: input.access,
   rejection: input.rejection ?? null,
   error: input.error ?? null,
 });
@@ -529,25 +691,98 @@ export const createEnrichmentOutcome = (
  * so callers never need unsafe casts. Mirrors Agent 1's
  * `serializeDiscoveryPayload`.
  */
+const serializeAccessSummary = (access: ArticleAccessOutcomeSummary | undefined): ArticleAccessOutcomeSummary | null => access
+  ? {
+      ...access,
+      detectorVersion: access.detectorVersion.slice(0, 80),
+      evidenceCodes: access.evidenceCodes
+        .map((code) => sanitizeEnrichmentEvidenceText(code, 80))
+        .filter((code): code is string => Boolean(code))
+        .slice(0, 12),
+      contradictingEvidenceCodes: access.contradictingEvidenceCodes
+        .map((code) => sanitizeEnrichmentEvidenceText(code, 80))
+        .filter((code): code is string => Boolean(code))
+        .slice(0, 12),
+      overrideReason: sanitizeEnrichmentEvidenceText(access.overrideReason),
+    }
+  : null;
+
+const serializeEvidenceFields = (fields: ArticleFieldProvenance): Record<string, unknown> => {
+  const result: Record<string, unknown> = { ...fields };
+  // Evidence must never persist raw HTML or the full article body. Keep the
+  // provenance decision and bounded metadata, but redact large content values
+  // at the artifact boundary. The Article row remains the content store.
+  for (const key of ["bodyText", "bodyHtml"] as const) {
+    const field = fields[key];
+    if (!field) continue;
+    result[key] = {
+      raw: null,
+      chosenValue: null,
+      chosenFrom: field.chosenFrom,
+      overrideReason: sanitizeEnrichmentEvidenceText(field.overrideReason),
+    };
+  }
+  return result;
+};
+
 export const serializeEnrichmentPayload = (
   outcome: ArticleEnrichmentOutcome,
 ): Prisma.InputJsonValue =>
   ({
     schemaVersion: outcome.schemaVersion,
-    extractorVersion: outcome.extractorVersion,
+    extractorVersion: sanitizeEnrichmentEvidenceText(outcome.extractorVersion, 80),
     kind: outcome.kind,
     articleId: outcome.articleId,
-    articleUrl: outcome.articleUrl,
-    provenance: outcome.provenance,
-    method: outcome.method,
+    articleUrl: sanitizeEnrichmentEvidenceUrl(outcome.articleUrl),
+    provenance: {
+      sourceId: sanitizeEnrichmentEvidenceText(outcome.provenance.sourceId, 120),
+      categoryId: sanitizeEnrichmentEvidenceText(outcome.provenance.categoryId, 120),
+      feedOrigin: outcome.provenance.feedOrigin ?? null,
+      feedUrl: sanitizeEnrichmentEvidenceUrl(outcome.provenance.feedUrl),
+      discoveredFromCategoryFeed: outcome.provenance.discoveredFromCategoryFeed ?? null,
+      arrivedViaHardCaseRerun: outcome.provenance.arrivedViaHardCaseRerun ?? null,
+      ingestArtifactId: sanitizeEnrichmentEvidenceText(outcome.provenance.ingestArtifactId, 120),
+      ingestPipelineRunId: sanitizeEnrichmentEvidenceText(outcome.provenance.ingestPipelineRunId, 120),
+      ingestedAt: sanitizeEnrichmentEvidenceText(outcome.provenance.ingestedAt, 80),
+      ...(outcome.provenance.earlyAccessEvidence
+        ? {
+            earlyAccessEvidence: {
+              classification: outcome.provenance.earlyAccessEvidence.classification,
+              sourceStage: outcome.provenance.earlyAccessEvidence.sourceStage,
+              evidenceCodes: outcome.provenance.earlyAccessEvidence.evidenceCodes.slice(0, 12),
+              contradictingEvidenceCodes: outcome.provenance.earlyAccessEvidence.contradictingEvidenceCodes.slice(0, 12),
+            },
+          }
+        : {}),
+      ...(outcome.provenance.earlyAccessRecovery
+        ? { earlyAccessRecovery: outcome.provenance.earlyAccessRecovery }
+        : {}),
+      ...(outcome.provenance.earlyAccessRecoveryWindowTruncated !== undefined
+        ? { earlyAccessRecoveryWindowTruncated: outcome.provenance.earlyAccessRecoveryWindowTruncated }
+        : {}),
+    },
+    method: {
+      ...outcome.method,
+      detail: sanitizeEnrichmentEvidenceText(outcome.method.detail),
+      resolvedCanonicalUrl: sanitizeEnrichmentEvidenceUrl(outcome.method.resolvedCanonicalUrl),
+    },
     timing: outcome.timing,
-    quality: outcome.quality,
-    fields: outcome.fields,
-    rejection: outcome.rejection,
-    error: outcome.error,
-    rejectionDiagnostics: outcome.rejectionDiagnostics ?? null,
-    browserFallback: outcome.browserFallback ?? null,
-    retryDiagnostics: outcome.retryDiagnostics ?? null,
+    quality: {
+      ...outcome.quality,
+      signals: outcome.quality.signals?.map((signal) => sanitizeEnrichmentEvidenceText(signal, 120)).filter((signal): signal is string => Boolean(signal)).slice(0, 20),
+    },
+    fields: serializeEvidenceFields(outcome.fields),
+    access: serializeAccessSummary(outcome.access),
+    rejection: outcome.rejection
+      ? {
+          ...outcome.rejection,
+          detail: sanitizeEnrichmentEvidenceText(outcome.rejection.detail),
+        }
+      : null,
+    error: sanitizeEnrichmentEvidenceText(outcome.error),
+    rejectionDiagnostics: sanitizeEnrichmentEvidenceJson(outcome.rejectionDiagnostics),
+    browserFallback: sanitizeEnrichmentEvidenceJson(outcome.browserFallback),
+    retryDiagnostics: sanitizeEnrichmentEvidenceJson(outcome.retryDiagnostics),
     // The nested generic FieldProvenance<T> types prevent a direct
     // Prisma.InputJsonValue assertion (TS2352). Double-cast through
     // `unknown` is safe here: every value is JSON-primitive-compatible
@@ -575,7 +810,7 @@ export const serializeOutcomeSummary = (
     confidence: outcome.quality.confidence,
     rejectionCode: outcome.rejection?.code ?? null,
     rejectionHttpStatus: outcome.rejection?.httpStatus ?? null,
-    rejectionDetail: outcome.rejection?.detail ?? null,
+    rejectionDetail: sanitizeEnrichmentEvidenceText(outcome.rejection?.detail),
     retryAfterAt: outcome.rejection?.retryAfterAt ?? null,
     browserFallback: outcome.browserFallback
       ? {
@@ -588,15 +823,32 @@ export const serializeOutcomeSummary = (
           browserFallbackSkippedReason: outcome.browserFallback.browserFallbackSkippedReason ?? null,
         }
       : null,
+    access: serializeAccessSummary(outcome.access),
     provenance: {
-      sourceId: outcome.provenance.sourceId,
-      categoryId: outcome.provenance.categoryId,
+      sourceId: sanitizeEnrichmentEvidenceText(outcome.provenance.sourceId, 120),
+      categoryId: sanitizeEnrichmentEvidenceText(outcome.provenance.categoryId, 120),
       feedOrigin: outcome.provenance.feedOrigin ?? null,
-      feedUrl: outcome.provenance.feedUrl ?? null,
-      ingestArtifactId: outcome.provenance.ingestArtifactId ?? null,
-      ingestPipelineRunId: outcome.provenance.ingestPipelineRunId ?? null,
+      feedUrl: sanitizeEnrichmentEvidenceUrl(outcome.provenance.feedUrl),
+      ingestArtifactId: sanitizeEnrichmentEvidenceText(outcome.provenance.ingestArtifactId, 120),
+      ingestPipelineRunId: sanitizeEnrichmentEvidenceText(outcome.provenance.ingestPipelineRunId, 120),
+      ...(outcome.provenance.earlyAccessEvidence
+        ? {
+            earlyAccessEvidence: {
+              classification: outcome.provenance.earlyAccessEvidence.classification,
+              sourceStage: outcome.provenance.earlyAccessEvidence.sourceStage,
+              evidenceCodes: outcome.provenance.earlyAccessEvidence.evidenceCodes.slice(0, 12),
+              contradictingEvidenceCodes: outcome.provenance.earlyAccessEvidence.contradictingEvidenceCodes.slice(0, 12),
+            },
+          }
+        : {}),
+      ...(outcome.provenance.earlyAccessRecovery
+        ? { earlyAccessRecovery: outcome.provenance.earlyAccessRecovery }
+        : {}),
+      ...(outcome.provenance.earlyAccessRecoveryWindowTruncated !== undefined
+        ? { earlyAccessRecoveryWindowTruncated: outcome.provenance.earlyAccessRecoveryWindowTruncated }
+        : {}),
     },
-  }) as Prisma.InputJsonValue;
+  }) as unknown as Prisma.InputJsonValue;
 
 // ─── Validation / deserialization ────────────────────────────────────────────
 
@@ -673,6 +925,51 @@ const normalizeFields = (
   return out;
 };
 
+const normalizeAccessSummary = (
+  value: unknown,
+): ArticleAccessOutcomeSummary | undefined => {
+  if (!isPlainObject(value) || typeof value.classification !== "string") return undefined;
+  const classifications: ReadonlySet<string> = new Set([
+    "ACCESSIBLE", "PAYWALL_BLOCKED", "METERED_OR_DECLARED",
+    "INTERSTITIAL_OR_CHALLENGE", "HTTP_ACCESS_BLOCKED", "UNKNOWN",
+  ]);
+  const confidence = value.confidence === "HIGH" || value.confidence === "MEDIUM" || value.confidence === "LOW"
+    ? value.confidence
+    : "LOW";
+  return {
+    classification: classifications.has(value.classification)
+      ? value.classification as ArticleAccessClassification
+      : "UNKNOWN",
+    sourceStage: value.sourceStage === "agent1" || value.sourceStage === "agent2" || value.sourceStage === "agent3"
+      ? value.sourceStage
+      : "agent3",
+    confidence,
+    detectorVersion: typeof value.detectorVersion === "string" ? value.detectorVersion.slice(0, 80) : "",
+    evidenceCodes: Array.isArray(value.evidenceCodes) ? value.evidenceCodes.filter((code): code is string => typeof code === "string").slice(0, 12) : [],
+    contradictingEvidenceCodes: Array.isArray(value.contradictingEvidenceCodes) ? value.contradictingEvidenceCodes.filter((code): code is string => typeof code === "string").slice(0, 12) : [],
+    evidenceArticleScoped: value.evidenceArticleScoped === true,
+    usableBodyExtracted: value.usableBodyExtracted === true,
+    bodyTruncationDetected: value.bodyTruncationDetected === true,
+    articleScopedGateOrOverlayDetected: value.articleScopedGateOrOverlayDetected === true,
+    decisive: value.decisive === true,
+    previousIsPaywall: value.previousIsPaywall === true,
+    earlyStageClassification: classifications.has(String(value.earlyStageClassification))
+      ? value.earlyStageClassification as ArticleAccessClassification
+      : null,
+    earlyStageSource: value.earlyStageSource === "agent1" || value.earlyStageSource === "agent2"
+      ? value.earlyStageSource
+      : null,
+    earlyStageEvidenceCodes: Array.isArray(value.earlyStageEvidenceCodes)
+      ? value.earlyStageEvidenceCodes.filter((code): code is string => typeof code === "string").slice(0, 12)
+      : [],
+    earlyStageContradictingEvidenceCodes: Array.isArray(value.earlyStageContradictingEvidenceCodes)
+      ? value.earlyStageContradictingEvidenceCodes.filter((code): code is string => typeof code === "string").slice(0, 12)
+      : [],
+    finalIsPaywall: typeof value.finalIsPaywall === "boolean" ? value.finalIsPaywall : null,
+    overrideReason: typeof value.overrideReason === "string" ? value.overrideReason.slice(0, 240) : null,
+  };
+};
+
 const normalizeRejection = (
   value: unknown,
 ): EnrichmentRejectionReason | null => {
@@ -719,6 +1016,38 @@ const normalizeProvenance = (
     ingestArtifactId: typeof value.ingestArtifactId === "string" ? value.ingestArtifactId : null,
     ingestPipelineRunId: typeof value.ingestPipelineRunId === "string" ? value.ingestPipelineRunId : null,
     ingestedAt: typeof value.ingestedAt === "string" ? value.ingestedAt : null,
+    earlyAccessEvidence: isPlainObject(value.earlyAccessEvidence)
+      && (value.earlyAccessEvidence.sourceStage === "agent1" || value.earlyAccessEvidence.sourceStage === "agent2")
+      && typeof value.earlyAccessEvidence.classification === "string"
+      ? {
+          classification: value.earlyAccessEvidence.classification as NonNullable<ArticleUpstreamProvenance["earlyAccessEvidence"]>["classification"],
+          sourceStage: value.earlyAccessEvidence.sourceStage,
+          evidenceCodes: Array.isArray(value.earlyAccessEvidence.evidenceCodes)
+            ? value.earlyAccessEvidence.evidenceCodes.filter((code): code is string => typeof code === "string").slice(0, 12)
+            : [],
+          contradictingEvidenceCodes: Array.isArray(value.earlyAccessEvidence.contradictingEvidenceCodes)
+            ? value.earlyAccessEvidence.contradictingEvidenceCodes.filter((code): code is string => typeof code === "string").slice(0, 12)
+            : [],
+        }
+      : null,
+    earlyAccessRecovery: isPlainObject(value.earlyAccessRecovery)
+      ? {
+          status: value.earlyAccessRecovery.status === "MATCHED" || value.earlyAccessRecovery.status === "NO_MATCH" || value.earlyAccessRecovery.status === "WINDOW_TRUNCATED" || value.earlyAccessRecovery.status === "QUERY_FAILED"
+            ? value.earlyAccessRecovery.status
+            : "QUERY_FAILED",
+          artifactTypesQueried: Array.isArray(value.earlyAccessRecovery.artifactTypesQueried)
+            ? value.earlyAccessRecovery.artifactTypesQueried.filter((type): type is "rss_candidates" | "article_discovery_candidates" => type === "rss_candidates" || type === "article_discovery_candidates").slice(0, 2)
+            : [],
+          artifactsScanned: typeof value.earlyAccessRecovery.artifactsScanned === "number" ? Math.max(0, Math.min(200, Math.floor(value.earlyAccessRecovery.artifactsScanned))) : 0,
+          artifactWindowLimit: typeof value.earlyAccessRecovery.artifactWindowLimit === "number" ? Math.max(1, Math.min(200, Math.floor(value.earlyAccessRecovery.artifactWindowLimit))) : 200,
+          candidateLimitPerArtifact: typeof value.earlyAccessRecovery.candidateLimitPerArtifact === "number" ? Math.max(1, Math.min(100, Math.floor(value.earlyAccessRecovery.candidateLimitPerArtifact))) : 100,
+          matchingArtifactType: value.earlyAccessRecovery.matchingArtifactType === "rss_candidates" || value.earlyAccessRecovery.matchingArtifactType === "article_discovery_candidates" ? value.earlyAccessRecovery.matchingArtifactType : null,
+          matchingArtifactId: typeof value.earlyAccessRecovery.matchingArtifactId === "string" ? value.earlyAccessRecovery.matchingArtifactId.slice(0, 120) : null,
+          candidateMatchType: value.earlyAccessRecovery.candidateMatchType === "canonical" || value.earlyAccessRecovery.candidateMatchType === "source" ? value.earlyAccessRecovery.candidateMatchType : null,
+          windowTruncated: value.earlyAccessRecovery.windowTruncated === true,
+        }
+      : undefined,
+    earlyAccessRecoveryWindowTruncated: value.earlyAccessRecoveryWindowTruncated === true,
   };
 };
 
@@ -808,6 +1137,7 @@ export const validateEnrichmentOutcome = (
         typeof qualityRaw.bodyLength === "number" ? qualityRaw.bodyLength : null,
     },
     fields: normalizeFields(raw.fields),
+    access: normalizeAccessSummary(raw.access),
     rejection: normalizeRejection(raw.rejection),
     error: typeof raw.error === "string" ? raw.error : null,
   };
@@ -838,6 +1168,7 @@ export const buildSuccessOutcome = (input: {
   timing?: EnrichmentTiming;
   quality?: Partial<ExtractionQuality>;
   fields: ArticleFieldProvenance;
+  access?: ArticleAccessOutcomeSummary;
 }): ArticleEnrichmentOutcome =>
   createEnrichmentOutcome({
     kind: "SUCCESS",
@@ -848,6 +1179,7 @@ export const buildSuccessOutcome = (input: {
     timing: input.timing ?? baseTiming(),
     quality: { confidence: 0.8, ...input.quality },
     fields: input.fields,
+    access: input.access,
     rejection: null,
   });
 

@@ -1,239 +1,170 @@
-# Report: Paywall Detection — Hamis Pozitív Elemzés
+# Paywall classification and false-positive repair
 
-**Dátum:** 2026-08-01
-**Probléma:** Olyan cikkek is `isPaywall = true` jelölést kapnak, amelyek szabadon elérhetők subscription nélkül.
-**Példák:** Bleacher Report, independent.ie
+**Status:** current implementation reference
+**Updated:** 2026-08-09
 
----
+This document describes the access-classification pipeline and the bounded workflow for auditing older records whose legacy `isPaywall` value may be a false positive. It replaces the earlier report that described whole-document `/paywall|subscribe|premium/` matching as the active design.
 
-## 1. A `isPaywall` jelölés keletkezési helyei
+## 1. Classification model
 
-A rendszer **3 helyen** dönti el, hogy egy cikk fizetős-e:
+The authoritative classifier is:
 
-| Fázis | Fájl | Sor | Megoldás |
-|-------|------|-----|----------|
-| Agent 1 (RSS Import) | `server/utils/news-pipeline/ingest.ts` | 676, 1861 | `/paywall\|subscribe\|premium/i` regex a teljes HTML/XML-en |
-| Agent 2 (Discovery) | `server/utils/news-pipeline/article-discovery-helpers.ts` | 1368 | `/paywall\|subscribe\|premium/i` regex a HTML-en vagy title+description-en |
-| Agent 3 (Enrichment) | `server/utils/news-pipeline/article-content-extractor.ts` | 137–149, 1896–1937 | Specifikus paywall minták keresése a bodyText-ben és a DOM-ban |
+- `server/utils/news-pipeline/article-access-classification.ts`
+- access detector version: `ARTICLE_ACCESS_DETECTOR_VERSION` (persisted under access evidence, separate from `extractorVersion`)
 
----
+It returns one of:
 
-## 2. Agent 1 — A fő probléma forrása
+- `ACCESSIBLE`
+- `PAYWALL_BLOCKED`
+- `METERED_OR_DECLARED`
+- `INTERSTITIAL_OR_CHALLENGE`
+- `HTTP_ACCESS_BLOCKED`
+- `UNKNOWN`
 
-### `ingest.ts:676`
+The classifier returns bounded evidence codes, contradicting evidence, confidence, detector version, article-scoping information, body usability, and the compatibility `isPaywall` value.
 
-```typescript
-isPaywall: /paywall|subscribe|premium/i.test(html),
+Generic words such as `paywall`, `subscription`, `premium`, `subscriber`, `newsletter`, or `Netflix subscription` are context only. A generic `/paywall/i` test is not decisive evidence. The classifier requires article-specific access evidence for `PAYWALL_BLOCKED`.
+
+## 2. Stage responsibilities
+
+### Agent 1 and Agent 2
+
+Ingest and discovery may emit early, bounded hints. They must evaluate only the current feed item or current discovered article candidate. They must not classify an entire RSS/XML/HTML document from navigation, footer, recommendation, newsletter, or unrelated page chrome.
+
+Early evidence is preserved with:
+
+- classification;
+- `sourceStage` (`agent1` or `agent2`);
+- evidence codes;
+- contradicting evidence codes;
+- detector version.
+
+An early hint is not authoritative and does not by itself establish a blocking paywall.
+
+### Agent 3
+
+Agent 3 is authoritative. It evaluates the extracted body, selected article container, article-scoped CTA/gate evidence, structured metadata, HTTP result, browser result, and contradicting evidence. It may confirm, downgrade, or clear an early hint.
+
+A substantial usable body with no article-scoped gate is strong accessibility evidence. A full readable body plus a genuine article-scoped restriction is `METERED_OR_DECLARED`, not a blocking overlay. Technical failures remain separate from paywalls.
+
+## 3. Evidence rules
+
+### Article-scoped runtime evidence
+
+`PAYWALL_BLOCKED` requires article-specific access evidence together with a missing or materially truncated body. Examples include a subscription/login action inside the selected article gate or an adjacent gate proven to belong to that article.
+
+Navigation, header/footer actions, account panels, login modals, advertisements, newsletter widgets, recommendations, and unrelated article cards are excluded structurally.
+
+### Structured JSON-LD
+
+JSON-LD is parsed safely and scoped to supported article nodes. `isAccessibleForFree:false` and `PaywalledContent` are honored only when the article identity matches or the page has a clearly related unstated single article node. Unrelated or conflicting article nodes do not create a blocking decision. Structured declaration alone normally yields `METERED_OR_DECLARED`.
+
+### Technical access states
+
+CAPTCHA, robot checks, JavaScript challenges, ad-blocker interstitials, HTTP 401/403, explicit request denial, and similar failures are not paywalls. They produce `INTERSTITIAL_OR_CHALLENGE` or `HTTP_ACCESS_BLOCKED` and do not infer `isPaywall=true`.
+
+### Full-body contradiction
+
+A substantial usable body is contrary evidence against a blocking paywall. Agent 3 can clear an earlier `true` compatibility value when the body is usable and no confirmed article-scoped blocking evidence remains. It does not clear a genuine truncated-body article gate merely because a short preview was exposed.
+
+## 4. Compatibility mapping
+
+The structured result maps to the legacy boolean as follows:
+
+| Classification | `isPaywall` |
+|---|---:|
+| `PAYWALL_BLOCKED` | `true` |
+| `METERED_OR_DECLARED` | `false` |
+| `ACCESSIBLE` | `false` |
+| `INTERSTITIAL_OR_CHALLENGE` | no inference (`null`) |
+| `HTTP_ACCESS_BLOCKED` | no inference (`null`) |
+| `UNKNOWN` | preserve the stronger existing value |
+
+Public blocking UI is controlled only by the explicit structured check `accessClassification === "PAYWALL_BLOCKED"`. The legacy `isPaywall` boolean remains a persistence/API compatibility field; missing or malformed `accessClassification` must not fall back to `isPaywall=true`. `METERED_OR_DECLARED` is always readable and non-blocking. Its evidence remains available to Agent 3 diagnostics and admin inspection without covering a readable article.
+
+## 5. Provenance and diagnostics
+
+Agent 3 outcomes preserve bounded provenance in both the Article summary and detailed PipelineArtifact payload. Diagnostics include:
+
+- previous and final `isPaywall`;
+- early-stage classification and source;
+- Agent 3 classification;
+- access detector version (`ARTICLE_ACCESS_DETECTOR_VERSION`), kept separate from `extractorVersion`;
+- confidence;
+- evidence and contradicting evidence codes;
+- usable body and article-scoped gate flags;
+- override reason;
+- bounded artifact-recovery status.
+
+Raw HTML, full article text, credentials, cookies, authorization headers, and unredacted query values are not stored as evidence.
+
+## 6. Existing-data repair workflow
+
+The maintained entry point is:
+
+- utility: `server/utils/news-pipeline/paywall-repair.ts`
+- CLI: `scripts/repair-paywall-classification.ts`
+- package command: `npm run db:paywall:audit`
+
+Dry-run is the default and performs no Article updates, publication-state changes, or artifact writes. It scans only a bounded, deterministic set of existing `isPaywall=true` articles with stored body text and Agent 3 outcome status. It reports inspected counts, likely false positives, confirmed blocks, metered cases, unknown/skipped cases, access detector-version mismatches, per-source summaries, sanitized samples, proposed classifications, proposed boolean changes, and evidence codes.
+
+Exact dry-run command:
+
+```bash
+npm run db:paywall:audit -- --limit=100
 ```
 
-### `ingest.ts:1861`
+Local apply requires both the apply flag and exact token:
 
-```typescript
-isPaywall: /paywall|subscribe|premium/i.test(xml),
+```bash
+npm run db:paywall:audit -- \
+  --apply \
+  --confirmation=APPLY_PAYWALL_CLASSIFICATION_REPAIR \
+  --limit=100
 ```
 
-**Miért problémás?**
+Apply mode is bounded, requires a local database by default, uses an optimistic current-row check, and creates one bounded `paywall_classification_repair` artifact per successfully updated article within the same transaction. A repair may update only `Article.isPaywall`, bounded `enrichmentOutcome.access`, bounded `paywallRepair` metadata, and `updatedAt` through the normal database update, plus that one artifact. It preserves the outcome kind, enrichment status, publication status, body text, and publication fields; it does not publish, reject, delete, or automatically re-enrich articles. Repeated application is idempotent because repaired rows no longer match the `isPaywall=true` scan and the current-state check fails closed.
 
-Ez a regex a **teljes HTML tartalmat** vizsgálja. Bárhol az oldalon ha szerepel a "subscribe", "premium" vagy "paywall" szó, azonnal `isPaywall = true` lesz.
+Production mode is deliberately blocked unless all of the following are explicitly supplied:
 
-A legtöbb híroldalon ezek a szavak természetes kontextusban jelennek meg:
-- **Navigation:** "Subscribe to our newsletter"
-- **Footer:** "Subscribe for exclusive content"
-- **Hirdetések:** "Go Premium" banner
-- **CTA gombok:** "Subscribe now"
-- **Cookie banner:** "premium content"
+- `--production`;
+- `--production-confirmation=PRODUCTION_PAYWALL_CLASSIFICATION_REPAIR`;
+- `PAYWALL_REPAIR_ALLOW_PRODUCTION=true`.
 
-Ezek egyike sem jelent tényleges paywallt a cikk tartalmára nézve.
+No production repair has been executed. Commented or copied environment values are never treated as authorization.
 
-### `article-discovery-helpers.ts:1368`
+Automatic `true -> false` repair requires all of:
 
-```typescript
-const isPaywall = /paywall|subscribe|premium/i.test(html || `${title} ${description}`);
-```
+- substantial stored body (`hasUsableAgent3BodyText`, currently 500+ usable characters);
+- a coherent successful or supported partial Agent 3 outcome with substantial stored body text and valid current access evidence. Supported durable combinations are `SUCCESS + ENRICHED` and `LOW_CONTENT_QUALITY + ENRICHMENT_FAILED` when the stored body is substantially usable;
+- current classifier `ACCESSIBLE` with `HIGH` confidence;
+- no article-scoped gate;
+- no confirmed blocking evidence;
+- no same-time conflicting artifact history;
+- Article row still matches the inspected `isPaywall=true` and `updatedAt` state.
 
-Ugyanaz a széles körű regex, itt is hasonló hamis pozitívakat ad.
+Unknown, short-preview, HTTP-blocked, challenge, declared/metered, conflicting, malformed, and genuine blocking cases are skipped. In particular, `PAYWALL_BLOCKED` lifecycle outcomes fail closed and are not automatically rewritten.
 
----
+## 7. Detector versioning and reprocessing
 
-## 3. Agent 3 — A pontosabb detekció (ami nem tudja visszavonni a hamis pozitívat)
+Agent 3 outcomes record the access classifier detector version under the bounded access evidence. Existing rows with another or missing access detector version are reported as access detector-version mismatches by the repair audit. `extractorVersion` and the access `detectorVersion` are separate version domains: Agent 3 persists `ARTICLE_ACCESS_DETECTOR_VERSION` under access evidence and never copies it into `extractorVersion`. The utility does not force a table-wide reprocess. Re-evaluation is explicit, bounded, and operator-triggered. Normal Agent 3 extractor-version selection remains available for its existing bounded enrichment queue.
 
-### `article-content-extractor.ts:137–149` — PAYWALL_SIGNALS
+## 8. Known limitations
 
-```typescript
-const PAYWALL_SIGNALS: Array<{ pattern: RegExp; strength: "strong" | "weak" }> = [
-  { pattern: /subscribe\s+to\s+(continue|read|unlock|access)/i, strength: "strong" },
-  { pattern: /sign\s+in\s+to\s+(continue|read|access)/i, strength: "strong" },
-  { pattern: /log\s*in\s+to\s+(continue|read|access)/i, strength: "strong" },
-  { pattern: /become\s+a\s+(subscriber|member)\s+to/i, strength: "strong" },
-  { pattern: /premium\s+(article|content|subscriber)/i, strength: "strong" },
-  { pattern: /this\s+(article|content|story)\s+is\s+(for|available\s+to)\s+(subscribers|members)/i, strength: "strong" },
-  { pattern: /paywall/i, strength: "strong" },
-  { pattern: /access\s+denied/i, strength: "strong" },
-  { pattern: /enable\s+javascript\s+to\s+(continue|read|view)/i, strength: "weak" },
-  { pattern: /are\s+you\s+a\s+robot/i, strength: "strong" },
-  { pattern: /captcha/i, strength: "weak" },
-  { pattern: /blocked\s+by\s+security/i, strength: "strong" },
-  { pattern: /please\s+disable\s+your\s+ad\s*blocker/i, strength: "weak" },
-];
-```
+- A stored body cannot recover evidence that was never captured in an older outcome or artifact.
+- Ambiguous or malformed histories fail closed rather than being auto-repaired.
+- A declaration can be visible to the reader while still representing publisher metering; it is intentionally not treated as a blocking overlay.
+- The repair utility does not attempt live-network re-fetches and does not apply publisher-specific rules.
+- The repair scan is bounded per invocation; operators must run separate explicitly bounded batches for larger reviews.
 
-### `article-content-extractor.ts:1896–1937` — Detekciós logika
+## 9. Validation fixtures
 
-```typescript
-function detectPaywallSignals(bodyText: string, doc: Document): PaywallDetection {
-  // bodyText és a DOM ellenőrzése a PAYWALL_SIGNALS mintákra
-  // ...
-  if (strongCount >= 1) return { isPaywall: true, signals };   // 1 erős jel → paywall
-  if (weakCount >= 2) return { isPaywall: true, signals };     // 2 gyenge jel → paywall
-  return { isPaywall: null, signals };                          // nincs elég bizonyíték
-}
-```
+The classifier and repair tests include generic fixtures for:
 
-Ez a detekció **helyesen** működne, de van egy kritikus probléma...
-
----
-
-## 4. A KULCS PROBLÉMA — Agent 3 nem tudja visszavonni Agent 1 hamis pozitívját
-
-### `enrichment-runtime.ts:937–945` — `buildIsPaywallProvenance`
-
-```typescript
-function buildIsPaywallProvenance(
-  existingIsPaywall: boolean,
-  extractedIsPaywall: boolean | null,
-) {
-  if (extractedIsPaywall === null) return null;
-
-  // ❌ DON'T overwrite existing true with extracted false
-  if (existingIsPaywall && !extractedIsPaywall) {
-    return {
-      raw: existingIsPaywall,
-      chosenValue: existingIsPaywall,  // MEGTARTJA A TRUE-T!
-      chosenFrom: "unchanged",
-      overrideReason: "Kept Agent 1 paywall=true; extractor found no paywall signal.",
-    };
-  }
-  // ...
-}
-```
-
-**Ez a kritikus pont:**
-
-1. Agent 1 `isPaywall = true`-t állított (a tág regexszel) → `existingIsPaywall = true`
-2. Agent 3 nem talál paywall jeleket → `extractedIsPaywall = false` (vagy `null`)
-3. A provenance logika **megtagadja a visszavonást** — megtartja az eredeti `true` értéket
-4. **Eredmény:** a cikk véglegesen fizetősnek van jelölve, még ha szabadon elérhető is
-
----
-
-## 5. Mi történik a UI-ban `isPaywall = true` esetén?
-
-### `app/components/NewsCard.vue:54`
-```vue
-v-if="article.isPaywall"
-```
-Fizetős ikon/jelzés megjelenítése a kártyán.
-
-### `app/components/ArticleReaderModal.vue:50`
-```vue
-<div v-if="article.isPaywall" class="absolute bottom-0 left-0 w-full h-[400px] bg-gradient-to-t from-background via-background/95 to-transparent ...">
-```
-Az olvasó modalban egy gradiens overlay jelenik meg, ami elfedi a cikk tartalmát és subscription-t kér.
-
-### `app/pages/dashboard/dashboard-main.vue:731, 747`
-```typescript
-if (activeArticleData.value.isPaywall) {
-  // Paywall modal megjelenítése
-}
-if (article.isPaywall) {
-  // Paywall kezelés
-}
-```
-
----
-
-## 6. Példa: Bleacher Report
-
-A felhasználó által megadott cikk:
-`https://bleacherreport.com/articles/25460391-lebron-james-recruited-use-amtrak-trending-post-amyc-nyc-travel-rumors-after-76ers-contract`
-
-Valószínű trigger:
-- A Bleacher Report oldalán a navigation-ban, footer-ben vagy hírlevél szekcióban szerepel a "subscribe" szó
-- A `/paywall|subscribe|premium/i` regex triggereli a teljes HTML-ben
-- Agent 1 `isPaywall = true`-t állít
-- Agent 3 soha nem tudja visszavonni
-
-Ugyanez vonatkozik az **independent.ie**-re is.
-
----
-
-## 7. Statisztika
-
-A `PAYWALL_BLOCKED` kimenetel az enrichment pipeline-ban:
-- `enrichment-persist.ts:468` — `PAYWALL_BLOCKED: 0` alapértelmezett számláló
-- `enrichment.ts:376` — A `PAYWALL_BLOCKED` végleges elutasítási kód
-
----
-
-## 8./javaslatok
-
-### Megoldás 1: Agent 1 regex szűkítése (LEGGYORSABB)
-
-```typescript
-// INNEN (tág):
-isPaywall: /paywall|subscribe|premium/i.test(html),
-
-// IDE (specifikusabb):
-isPaywall: /paywall|subscribe\s+to\s+(continue|read|unlock)|this\s+(article|content)\s+is\s+(for|available\s+to)\s+(subscribers|members)|premium\s+(article|content)/i.test(html),
-```
-
-**Előny:** Egyszerű, egy soros változtatás
-**Hátrány:** Nem tökéletes, de drasztikusan csökkenti a hamis pozitívokat
-
-### Megoldás 2: Agent 3 engedélyezése a visszavonásra
-
-```typescript
-// INNEN (soha nem cáfolja meg):
-if (existingIsPaywall && !extractedIsPaywall) {
-  return { chosenValue: existingIsPaywall, ... };
-}
-
-// IDE (engedélyezi a visszavonást ha a cikk sikeresen extrahálható):
-if (existingIsPaywall && !extractedIsPaywall) {
-  // Ha Agent 3 sikeresen kinyerte a bodyText-et (nincs paywall blokkolás),
-  // akkor megbízunk benne hogy a cikk elérhető
-  return {
-    chosenValue: false,
-    chosenFrom: "dom",
-    overrideReason: "Extractor found no paywall signal; article body fully extracted.",
-  };
-}
-```
-
-**Előny:** Pontos, Agent 3 tudása alapján dönt
-**Hátrány:** Nagyobb hatású változtatás
-
-### Megoldás 3: Mindkettő együtt (LEGBIZTOSABB)
-
-Mindkét fenti változtatás egyszerre alkalmazása.
-
----
-
-## 9. Érintett fájlok
-
-| Fájl | Változtatás szükséges |
-|------|----------------------|
-| `server/utils/news-pipeline/ingest.ts` | Agent 1 regex szűkítése (sor 676, 1861) |
-| `server/utils/news-pipeline/article-discovery-helpers.ts` | Agent 2 regex szűkítése (sor 1368) |
-| `server/utils/news-pipeline/enrichment-runtime.ts` | Agent 3 provenance engedélyezése (sor 937–945) |
-| `server/utils/news-pipeline/article-content-extractor.ts` | Meglévő pontos detekció — változtatás nem szükséges |
-
----
-
-## 10. Tesztelés
-
-A változtatások után:
-
-1. **Unit tesztek futtatása:** `npx vitest run` (a `article-content-extractor.test.ts` és `enrichment-runtime.test.ts` fájlok)
-2. **Manuális teszt:** Bleacher Report és independent.ie cikkek ellenőrzése
-3. **Adatbázis ellenőrzés:** Meglévő `isPaywall = true` cikkek számának csökkenése
+- topic discussion of paywalls or Netflix subscriptions with a full readable body;
+- quoted third-party subscription CTAs;
+- navigation/footer CTAs;
+- genuine article-scoped gates with truncated bodies;
+- structured JSON-LD declarations;
+- CAPTCHA, HTTP 403, and interstitial responses;
+- Bytepoint-style accessible false-positive repair without a publisher-specific exception.

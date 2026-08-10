@@ -14,6 +14,28 @@ import { buildSubscriptionArticleScope, getSubscriptionScope, type SubscriptionS
  * imported from ../utils/prisma.
  */
 
+const PUBLIC_ACCESS_CLASSIFICATIONS: ReadonlySet<string> = new Set([
+  "ACCESSIBLE",
+  "PAYWALL_BLOCKED",
+  "METERED_OR_DECLARED",
+  "INTERSTITIAL_OR_CHALLENGE",
+  "HTTP_ACCESS_BLOCKED",
+  "UNKNOWN",
+]);
+
+type PublicAccessClassification =
+  | "ACCESSIBLE"
+  | "PAYWALL_BLOCKED"
+  | "METERED_OR_DECLARED"
+  | "INTERSTITIAL_OR_CHALLENGE"
+  | "HTTP_ACCESS_BLOCKED"
+  | "UNKNOWN";
+
+const toPublicAccessClassification = (value: unknown): PublicAccessClassification | null =>
+  typeof value === "string" && PUBLIC_ACCESS_CLASSIFICATIONS.has(value)
+    ? value as PublicAccessClassification
+    : null;
+
 export type FeedDb = {
   user: { findUnique: (args: any) => Promise<any> };
   article: { findMany: (args: any) => Promise<any[]> };
@@ -79,6 +101,7 @@ export async function loadUserFeed(db: FeedDb, userId: string): Promise<any[]> {
       signals: true,
       reasoning: true,
       bodyText: true,
+      enrichmentOutcome: true,
       source: {
         select: {
           frontPageUrl: true,
@@ -109,6 +132,7 @@ export async function loadUserFeed(db: FeedDb, userId: string): Promise<any[]> {
     date: article.date.toISOString(),
     score: article.score,
     isPaywall: article.isPaywall,
+    accessClassification: toPublicAccessClassification((article as any).enrichmentOutcome?.access?.classification),
     tags: article.tags,
     signals: article.signals,
     reasoning: article.reasoning || "",

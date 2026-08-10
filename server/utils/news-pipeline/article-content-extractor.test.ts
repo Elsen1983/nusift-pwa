@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
 
 // ─── Mock safeFetch ─────────────────────────────────────────────────────────
 const safeFetchMock = vi.hoisted(() => vi.fn());
@@ -2498,6 +2498,1016 @@ describe("HTTP 202 interstitial false-positive guard", () => {
       expect(result.qualitySignals).toContain("http_202_interstitial");
       // No known challenge phrase matched → the text-pattern evidence is absent.
       expect(result.qualitySignals).not.toContain("interstitial_text_pattern");
+    }
+  });
+});
+
+describe("Prompt 15A evidence-based paywall detection regressions", () => {
+  const richBody = () => [
+    `<p>${"The first paragraph introduces the main topic of this free article with sufficient detail to be meaningful. ".repeat(3)}</p>`,
+    `<p>${"The second paragraph elaborates on the key points and provides supporting evidence for the claims made. ".repeat(3)}</p>`,
+    `<p>${"The third paragraph concludes the discussion with additional context and perspective on the broader topic. ".repeat(3)}</p>`,
+  ].join("\n  ");
+
+  it("A: accessible article whose topic repeatedly mentions paywall/Netflix subscription → isPaywall=false", async () => {
+    const body = [
+      `<p>${"This analysis examines how the paywall at The Herald changed their revenue model for digital news. ".repeat(3)}</p>`,
+      `<p>${"Netflix subscription pricing is compared against traditional newspaper paywalls in this industry review. ".repeat(3)}</p>`,
+      `<p>${"Being behind a paywall reduces readership, which is a recurring debate across publishing houses. ".repeat(3)}</p>`,
+    ].join("\n  ");
+    const html = articleHtml({ title: "Paywalls and Media Economics", body });
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 700,
+      articleUrl: "https://example.com/paywall-topic",
+      existingTitle: "Paywalls and Media Economics",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("B: free article quoting another website's 'Subscribe to continue reading' → isPaywall=false", async () => {
+    const body = [
+      `<p>${"According to Streaming Weekly, non-members now see 'Subscribe to continue reading' on their site. ".repeat(3)}</p>`,
+      `<p>${"The quoted message describes the other service's registration wall, not this publication's policy. ".repeat(3)}</p>`,
+      `<p>${"This article stays free and openly available to every reader without any account or subscription. ".repeat(3)}</p>`,
+    ].join("\n  ");
+    const html = articleHtml({ title: "Third-Party Subscription Practices", body });
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 701,
+      articleUrl: "https://example.com/quoted-paywall",
+      existingTitle: "Third-Party Subscription Practices",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("C: navigation/footer Subscribe CTA plus full article body → isPaywall=false", async () => {
+    const html = `<!DOCTYPE html>
+<html>
+<head><title>Free Article With Nav CTA</title></head>
+<body>
+  <header><nav><a href="/subscribe">Subscribe to continue reading</a></nav></header>
+  <article>
+    <h1>Free Article With Nav CTA</h1>
+    ${richBody()}
+  </article>
+  <footer><a href="/subscribe">Subscribe</a> · <a href="/newsletter">Newsletter</a></footer>
+</body>
+</html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 702,
+      articleUrl: "https://example.com/nav-cta",
+      existingTitle: "Free Article With Nav CTA",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("D: article-scoped gate with 'Subscribe to continue reading' plus truncated body → paywall_or_blocked", async () => {
+    const html = `<!DOCTYPE html>
+<html>
+<head><title>Premium Story</title></head>
+<body>
+  <article>
+    <h1>Premium Story</h1>
+    <div class="paywall-overlay">
+      <p>Subscribe to continue reading this article.</p>
+    </div>
+    <p>Only a short preview paragraph remains visible.</p>
+  </article>
+</body>
+</html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 703,
+      articleUrl: "https://example.com/premium-story",
+      existingTitle: "Premium Story",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("paywall_or_blocked");
+      expect(result.qualitySignals).toContain("access_classification:PAYWALL_BLOCKED");
+      expect(result.qualitySignals.some((s) => s.startsWith("access_evidence:article_scoped_cta"))).toBe(true);
+    }
+  });
+
+  it("E: article-scoped JSON-LD isAccessibleForFree:false with full readable body → METERED, isPaywall=false, never PAYWALL_BLOCKED", async () => {
+    const jsonLd = `<script type="application/ld+json">
+      {
+        "@type": "NewsArticle",
+        "url": "https://example.com/metered",
+        "headline": "Metered Story",
+        "isAccessibleForFree": false
+      }
+    </script>`;
+    const html = articleHtml({ title: "Metered Story", body: richBody(), jsonLd });
+    // resolvedUrl must equal the JSON-LD node identity for scoping to match.
+    safeFetchMock.mockResolvedValue(makeResponse(html, true, "text/html", 200, "https://example.com/metered"));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 704,
+      articleUrl: "https://example.com/metered",
+      existingTitle: "Metered Story",
+    });
+
+    // Successful readable extraction, structured classification preserved,
+    // but the legacy blocking boolean stays false (Prompt 15A-1).
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.bodyText).toBeTruthy();
+      expect(result.bodyText!.length).toBeGreaterThan(500);
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:METERED_OR_DECLARED");
+      expect(result.qualitySignals).not.toContain("access_classification:PAYWALL_BLOCKED");
+      expect(result.qualitySignals.some((s) => s.startsWith("access_evidence:jsonld_declared_paywall"))).toBe(true);
+    }
+  });
+
+  it("F: isAccessibleForFree:false on an unrelated JSON-LD article is ignored → isPaywall=false", async () => {
+    const jsonLd = `<script type="application/ld+json">
+      {
+        "@graph": [
+          {
+            "@type": "NewsArticle",
+            "url": "https://other.example.com/unrelated",
+            "headline": "Unrelated story",
+            "isAccessibleForFree": false
+          }
+        ]
+      }
+    </script>`;
+    const html = articleHtml({ title: "Our Free Story", body: richBody(), jsonLd });
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 705,
+      articleUrl: "https://example.com/our-free-story",
+      existingTitle: "Our Free Story",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("J: malformed JSON-LD never crashes and never classifies", async () => {
+    const html = articleHtml({
+      title: "Malformed LD",
+      body: richBody(),
+      jsonLd: '<script type="application/ld+json">{ this is not valid json </script>',
+    });
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 706,
+      articleUrl: "https://example.com/malformed-ld",
+      existingTitle: "Malformed LD",
+    });
+
+    expect(result).toBeDefined();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+    }
+  });
+
+  it("I: HTTP 202 interstitial keeps Prompt 14 interstitial_or_challenge behavior", async () => {
+    const html = `<!DOCTYPE html>
+<html><head><title>Challenge</title></head>
+<body><p>Checking your browser before accessing the site. Please wait a moment.</p></body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html, true, "text/html", 202));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 707,
+      articleUrl: "https://example.com/202-challenge",
+      existingTitle: "Challenge",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("interstitial_or_challenge");
+      expect(result.qualitySignals).toContain("http_202_interstitial");
+    }
+  });
+
+  it("technical blocker text (CAPTCHA) never sets paywall=true", async () => {
+    const html = `<!DOCTYPE html>
+<html>
+<head><title>Robot Check</title></head>
+<body>
+  <main>
+    <p>Please verify you are a human — CAPTCHA required to continue.</p>
+    <p>This page protects against automated access to the site.</p>
+  </main>
+</body>
+</html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 708,
+      articleUrl: "https://example.com/captcha",
+      existingTitle: "Robot Check",
+    });
+
+    // Not a paywall: rejected by quality gates (or classified) but never
+    // paywall_or_blocked and never isPaywall=true.
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).not.toBe("paywall_or_blocked");
+    }
+  });
+});
+
+describe("Prompt 15A-1 DOM scoping regressions", () => {
+  const scopedRichBody = () => [
+    `<p>${"The opening paragraph of this current article provides detailed context about the main topic at hand. ".repeat(3)}</p>`,
+    `<p>${"The middle section of the article expands the analysis with supporting facts and expert commentary. ".repeat(3)}</p>`,
+    `<p>${"The closing paragraph summarizes the findings and points toward future developments in the field. ".repeat(3)}</p>`,
+  ].join("\n  ");
+
+  const wrap = (articleInner: string) => `<!DOCTYPE html>
+<html>
+<head><title>Scoped Article</title></head>
+<body>
+  ${articleInner}
+</body>
+</html>`;
+
+  it("A: unrelated recommendation <article> with a subscribe CTA is ignored → ACCESSIBLE, isPaywall=false", async () => {
+    const html = wrap(`
+  <article>
+    <h1>Scoped Article</h1>
+    ${scopedRichBody()}
+  </article>
+  <section class="recommended">
+    <article>
+      <p>Subscribe to continue reading this article.</p>
+      <p>Another story card.</p>
+    </article>
+  </section>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 801,
+      articleUrl: "https://example.com/a",
+      existingTitle: "Scoped Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("B: CTA link inside a related-content ancestor (generic button class) is ignored", async () => {
+    const html = wrap(`
+  <article>
+    <h1>Scoped Article</h1>
+    <div class="related-content">
+      <a class="button" href="/subscribe">Subscribe to continue reading</a>
+    </div>
+    ${scopedRichBody()}
+  </article>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 802,
+      articleUrl: "https://example.com/b",
+      existingTitle: "Scoped Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("C: CTA inside an advertisement/sponsored ancestor is ignored", async () => {
+    const html = wrap(`
+  <article>
+    <h1>Scoped Article</h1>
+    <div class="advertisement">
+      <button>Subscribe to continue reading this article</button>
+    </div>
+    ${scopedRichBody()}
+  </article>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 803,
+      articleUrl: "https://example.com/c",
+      existingTitle: "Scoped Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("D: CTA inside navigation/account/login modal is ignored", async () => {
+    const html = wrap(`
+  <article>
+    <h1>Scoped Article</h1>
+    <div class="login-modal">
+      <a href="/login">Sign in to continue reading this article</a>
+    </div>
+    ${scopedRichBody()}
+  </article>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 804,
+      articleUrl: "https://example.com/d",
+      existingTitle: "Scoped Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("E: multiple <article> elements — only the selected content article may provide evidence", async () => {
+    const html = wrap(`
+  <article>
+    <h1>Scoped Article</h1>
+    ${scopedRichBody()}
+  </article>
+  <article class="paywall-overlay">
+    <p>Subscribe to continue reading this article.</p>
+    <p>Gate card.</p>
+  </article>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 805,
+      articleUrl: "https://example.com/e",
+      existingTitle: "Scoped Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // The other article cannot classify the selected one.
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("F: generic immediate sibling containing a subscription CTA is ignored (no gate identity)", async () => {
+    const html = wrap(`
+  <article>
+    <h1>Scoped Article</h1>
+    ${scopedRichBody()}
+  </article>
+  <div>
+    <a href="/subscribe">Subscribe to continue reading this article</a>
+  </div>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 806,
+      articleUrl: "https://example.com/f",
+      existingTitle: "Scoped Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("G: explicit adjacent paywall gate associated with the selected article and truncated body → PAYWALL_BLOCKED", async () => {
+    const html = wrap(`
+  <article>
+    <p>Only a short preview paragraph remains visible.</p>
+  </article>
+  <div class="paywall-gate">
+    <p>Subscribe to continue reading this article.</p>
+  </div>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 807,
+      articleUrl: "https://example.com/g",
+      existingTitle: "Gated Story",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("paywall_or_blocked");
+      expect(result.qualitySignals).toContain("access_classification:PAYWALL_BLOCKED");
+    }
+  });
+
+  it("H: CTA inside the selected article's genuine gate → PAYWALL_BLOCKED when body is truncated", async () => {
+    const html = wrap(`
+  <article>
+    <h1>Gated Story</h1>
+    <div class="subscription-wall">
+      <p>Subscribe to continue reading this article.</p>
+    </div>
+    <p>Only a teaser is visible.</p>
+  </article>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 808,
+      articleUrl: "https://example.com/h",
+      existingTitle: "Gated Story",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("paywall_or_blocked");
+      expect(result.qualitySignals).toContain("access_classification:PAYWALL_BLOCKED");
+    }
+  });
+
+  it("I: full selected body plus article-scoped metered CTA → METERED_OR_DECLARED, isPaywall=false", async () => {
+    const html = wrap(`
+  <article>
+    <h1>Metered Story</h1>
+    <button>Subscribe to continue reading this article</button>
+    ${scopedRichBody()}
+  </article>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 809,
+      articleUrl: "https://example.com/i",
+      existingTitle: "Metered Story",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.bodyText!.length).toBeGreaterThan(500);
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:METERED_OR_DECLARED");
+    }
+  });
+
+  it("J: Readability-selected content from a separate document ignores unrelated original article cards (conservative fallback)", async () => {
+    vi.resetModules();
+    vi.doMock("@mozilla/readability", () => ({
+      Readability: class {
+        parse() {
+          const paragraphs = Array.from({ length: 5 }, (_, index) =>
+            `<p>${`Readability paragraph ${index + 1} contains detailed article body text with enough substance to pass the quality gate and represent real content. `.repeat(3)}</p>`,
+          ).join("");
+          return {
+            title: "Readability Scoped",
+            content: paragraphs,
+            textContent: paragraphs.replace(/<[^>]+>/g, " "),
+          };
+        }
+      },
+    }));
+
+    const html = wrap(`
+  <article class="promo-card">
+    <p>Subscribe to continue reading this article.</p>
+    <p>Promo card text.</p>
+  </article>
+  <article class="promo-card">
+    <a href="/login">Sign in to continue reading this article</a>
+  </article>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 810,
+      articleUrl: "https://example.com/j",
+      existingTitle: "Readability Scoped",
+    });
+
+    vi.doUnmock("@mozilla/readability");
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diagnostics.bodySource).toBe("readability");
+      // Unrelated article cards in the original document are never scanned;
+      // the conservative fallback yields ACCESSIBLE with isPaywall=false.
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("J2: Readability content resolved to its original <article> root finds the genuine corresponding gate only", async () => {
+    vi.resetModules();
+    // Production-realistic relationship: the original document contains the
+    // FULL body text (as div-based markup, so DOM extraction cannot produce a
+    // usable body and Readability stays preferred) — NOT an artificial small
+    // subset of a much larger mocked Readability body.
+    const fullBody = [
+      "The Senate approved a sweeping climate and energy bill on Tuesday evening, capping months of negotiations between progressive and moderate lawmakers that at times threatened to collapse the entire package.",
+      "The legislation allocates more than four hundred billion dollars for renewable energy projects, electric vehicle infrastructure, and grid modernization across rural and urban communities alike.",
+      "Critics argue the compromise waters down emissions targets and hands generous subsidies to established fossil fuel producers, while supporters insist the measure represents the most significant federal action on climate in decades.",
+      "Economists remain divided over the projected impact, with some forecasting meaningful reductions in household energy costs by the end of the decade and others warning that supply chain constraints could blunt the early gains.",
+      "The bill now moves to the House, where leadership expects a vote before the summer recess, although several swing-district members have not yet publicly committed their support.",
+      "Analysts note that similar legislation stalled twice in the past five years, making the current momentum unusually fragile and difficult to predict.",
+    ];
+    vi.doMock("@mozilla/readability", () => ({
+      Readability: class {
+        parse() {
+          return {
+            title: "Senate Approves Sweeping Climate Legislation",
+            content: fullBody.map((p) => `<p>${p}</p>`).join(""),
+            textContent: fullBody.join(" "),
+          };
+        }
+      },
+    }));
+
+    // Production-realistic metered-page pattern: the original document
+    // contains the FULL corresponding body — the lede is visible and the rest
+    // ships hidden (revealed by JS), which is exactly why Readability stays
+    // preferred. This is NOT an artificial small subset of a much larger mock:
+    // the mocked Readability body is the same complete text. Its in-article
+    // subscribe button and hidden gate container are the genuine corresponding
+    // evidence; the unrelated promo card CTA must still be ignored.
+    const [p1, p2, p3, p4, p5, p6] = fullBody;
+    const html = wrap(`
+  <article>
+    <h1>Senate Approves Sweeping Climate Legislation</h1>
+    <button class="subscribe-cta">Subscribe to continue reading this article</button>
+    <p>${p1}</p>
+    <p>${p2}</p>
+    <div id="paywall-content" style="display:none">
+      <p>${p3}</p>
+      <p>${p4}</p>
+      <p>${p5}</p>
+      <p>${p6}</p>
+    </div>
+  </article>
+  <article class="promo-card">
+    <a href="/subscribe">Subscribe for unlimited access</a>
+    <p>Check out our latest features.</p>
+  </article>`);
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 811,
+      articleUrl: "https://example.com/j2",
+      existingTitle: "Senate Approves Sweeping Climate Legislation",
+    });
+
+    vi.doUnmock("@mozilla/readability");
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diagnostics.bodySource).toBe("readability");
+      // The resolved original-article root provides the genuine gate CTA
+      // (metered, readable) while the unrelated card stays ignored.
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:METERED_OR_DECLARED");
+    }
+  });
+});
+
+describe("resolveCorrespondingRootByText (Prompt 15A-2 root resolution)", () => {
+  const fullBody = [
+    "The Senate approved a sweeping climate and energy bill on Tuesday evening, capping months of negotiations between progressive and moderate lawmakers that at times threatened to collapse the entire package.",
+    "The legislation allocates more than four hundred billion dollars for renewable energy projects, electric vehicle infrastructure, and grid modernization across rural and urban communities alike.",
+    "Critics argue the compromise waters down emissions targets and hands generous subsidies to established fossil fuel producers, while supporters insist the measure represents the most significant federal action on climate in decades.",
+    "Economists remain divided over the projected impact, with some forecasting meaningful reductions in household energy costs by the end of the decade and others warning that supply chain constraints could blunt the early gains.",
+    "The bill now moves to the House, where leadership expects a vote before the summer recess, although several swing-district members have not yet publicly committed their support.",
+    "Analysts note that similar legislation stalled twice in the past five years, making the current momentum unusually fragile and difficult to predict.",
+  ];
+  const sample = fullBody.join(" ");
+  const paragraphsHtml = () => fullBody.map((p) => `<p>${p}</p>`).join("");
+
+  let JSDOMClass: { new (html: string): { window: { document: Document } } };
+  let resolveRoot: (doc: Document, sampleText: string) => Element | null;
+
+  beforeAll(async () => {
+    const module = await import("./jsdom-runtime").then((m) => m.loadJsdom());
+    JSDOMClass = module.JSDOM;
+    ({ resolveCorrespondingRootByText: resolveRoot } = await import("./article-content-extractor"));
+  });
+
+  const doc = (inner: string) => new JSDOMClass(`<!DOCTYPE html><html><head><title>T</title></head><body>${inner}</body></html>`).window.document;
+
+  it("A: teaser subset before the full article → the full article root wins and the teaser CTA is never imported", () => {
+    const d = doc(`
+  <article class="teaser">
+    <h2>Teaser headline</h2>
+    <p>${fullBody[0]} ${fullBody[1]}</p>
+    <a href="/subscribe">Subscribe to continue reading</a>
+  </article>
+  <article class="full-article">
+    <h1>Senate Approves Sweeping Climate Legislation</h1>
+    ${paragraphsHtml()}
+  </article>`);
+    const root = resolveRoot(d, sample);
+    expect(root).not.toBeNull();
+    expect(root!.getAttribute("class")).toBe("full-article");
+  });
+
+  it("B: teaser subset is the only candidate → no safe root, conservative fallback", () => {
+    const d = doc(`
+  <article class="teaser">
+    <h2>Teaser headline</h2>
+    <p>${fullBody[0]} ${fullBody[1]}</p>
+    <a href="/subscribe">Subscribe to continue reading</a>
+  </article>`);
+    expect(resolveRoot(d, sample)).toBeNull();
+  });
+
+  it("C: two nearly identical candidates are effectively tied → fail closed (null)", () => {
+    const d = doc(`
+  <article class="dup-a">
+    <h1>Senate Approves Sweeping Climate Legislation</h1>
+    ${paragraphsHtml()}
+  </article>
+  <article class="dup-b">
+    <h1>Senate Approves Sweeping Climate Legislation</h1>
+    ${paragraphsHtml()}
+  </article>`);
+    expect(resolveRoot(d, sample)).toBeNull();
+  });
+
+  it("D: full article appears AFTER the teaser (same old min-set overlap) → deterministic scoring picks the full article, not DOM order", () => {
+    const d = doc(`
+  <article class="teaser">
+    <p>${fullBody[0]} ${fullBody[1]} ${fullBody[2]}</p>
+  </article>
+  <article class="full-article">
+    <h1>Senate Approves Sweeping Climate Legislation</h1>
+    ${paragraphsHtml()}
+  </article>`);
+    const root = resolveRoot(d, sample);
+    expect(root).not.toBeNull();
+    expect(root!.getAttribute("class")).toBe("full-article");
+  });
+
+  it("E: repetitive teaser/template text cannot pass using repeated common words", () => {
+    const repetitive = "Read our latest market analysis and opinion pieces. ".repeat(30);
+    const d = doc(`
+  <article class="teaser">
+    <p>${repetitive}</p>
+    <a href="/subscribe">Subscribe to continue reading</a>
+  </article>`);
+    expect(resolveRoot(d, sample)).toBeNull();
+  });
+
+  it("F: a safe semantic <article> candidate wins over a broad <main>", () => {
+    const d = doc(`
+  <main>
+    <article class="real-article">
+      <h1>Senate Approves Sweeping Climate Legislation</h1>
+      ${paragraphsHtml()}
+    </article>
+    <div class="sidebar">More headlines and newsletters here.</div>
+  </main>`);
+    const root = resolveRoot(d, sample);
+    expect(root).not.toBeNull();
+    expect(root!.tagName.toLowerCase()).toBe("article");
+    expect(root!.getAttribute("class")).toBe("real-article");
+  });
+
+  it("G: <main> containing multiple article cards is rejected as ambiguous", () => {
+    const d = doc(`
+  <main>
+    <article class="card"><h2>Card one</h2><p>${fullBody[0]} ${fullBody[1]}</p></article>
+    <article class="card"><h2>Card two</h2><p>${fullBody[2]} ${fullBody[3]}</p></article>
+  </main>`);
+    expect(resolveRoot(d, sample)).toBeNull();
+  });
+
+  it("H: one unambiguous <main> containing the complete text may resolve when all thresholds pass", () => {
+    const d = doc(`
+  <main>
+    <h1>Senate Approves Sweeping Climate Legislation</h1>
+    ${paragraphsHtml()}
+  </main>`);
+    const root = resolveRoot(d, sample);
+    expect(root).not.toBeNull();
+    expect(root!.tagName.toLowerCase()).toBe("main");
+  });
+
+  it("I: no safe root → null (caller keeps the Readability body, imports no original-doc evidence)", () => {
+    const d = doc(`
+  <article class="promo">
+    <a href="/subscribe">Subscribe for unlimited access</a>
+    <p>Check out our latest features and newsletters.</p>
+  </article>`);
+    expect(resolveRoot(d, sample)).toBeNull();
+  });
+
+  it("J: same coverage and ratio — semantic <article> beats generic <main>", () => {
+    const body = paragraphsHtml();
+    const d = doc(`
+  <main class="generic-root">
+    <h1>Senate Approves Sweeping Climate Legislation</h1>
+    ${body}
+  </main>
+  <article class="semantic-root">
+    <h1>Senate Approves Sweeping Climate Legislation</h1>
+    ${body}
+  </article>`);
+    const root = resolveRoot(d, sample);
+    expect(root).not.toBeNull();
+    expect(root!.tagName.toLowerCase()).toBe("article");
+    expect(root!.getAttribute("class")).toBe("semantic-root");
+  });
+
+  it("K: same coverage, ratio, and semantic type — heading agreement breaks the tie", () => {
+    const body = paragraphsHtml();
+    const d = doc(`
+  <article class="unrelated-heading">
+    <h1>Local Sports Results Today</h1>
+    ${body}
+  </article>
+  <article class="matching-heading">
+    <h1>Senate Climate Legislation</h1>
+    ${body}
+  </article>`);
+    const root = resolveRoot(d, sample);
+    expect(root).not.toBeNull();
+    expect(root!.getAttribute("class")).toBe("matching-heading");
+  });
+
+  it("L: candidates tied across coverage, ratio, semantic type, and heading agreement fail closed in either DOM order", () => {
+    const body = paragraphsHtml();
+    const article = (className: string) => `<article class="${className}">
+      <h1>Senate Approves Sweeping Climate Legislation</h1>
+      ${body}
+    </article>`;
+    expect(resolveRoot(doc(`${article("duplicate-a")}${article("duplicate-b")}`), sample)).toBeNull();
+    expect(resolveRoot(doc(`${article("duplicate-b")}${article("duplicate-a")}`), sample)).toBeNull();
+  });
+
+  it("M: reversing DOM order does not resolve an otherwise semantic tie", () => {
+    const body = paragraphsHtml();
+    const resolve = (first: string, second: string) => resolveRoot(doc(`
+      ${first}
+      ${second}`), sample);
+    const article = `<article class="article-root">
+      <h1>Senate Approves Sweeping Climate Legislation</h1>
+      ${body}
+    </article>`;
+    const main = `<main class="main-root">
+      <h1>Senate Approves Sweeping Climate Legislation</h1>
+      ${body}
+    </main>`;
+
+    const articleFirst = resolve(article, main);
+    const mainFirst = resolve(main, article);
+    expect(articleFirst?.getAttribute("class")).toBe("article-root");
+    expect(mainFirst?.getAttribute("class")).toBe("article-root");
+  });
+});
+
+describe("token-aware chrome class/id filtering (Prompt 15A-2)", () => {
+  let hasChrome: (value: string) => boolean;
+  let hasGate: (value: string) => boolean;
+
+  beforeAll(async () => {
+    const module = await import("./article-content-extractor");
+    hasChrome = module.hasAccessChromeTokenEvidence;
+    hasGate = module.hasAccessGateTokenEvidence;
+  });
+
+  it("does NOT exclude identifiers that merely contain a coincidental substring", () => {
+    const safe = [
+      "article-author",
+      "author-information",
+      "article-information",
+      "imagery-analysis",
+      "navy-report",
+      "transformative-story",
+      "platform-article",
+    ];
+    for (const id of safe) {
+      expect(hasChrome(id), id).toBe(false);
+    }
+  });
+
+  it("excludes real semantic chrome tokens and supported token combinations", () => {
+    const excluded = [
+      "article-card",
+      "related-articles",
+      "recommended_story",
+      "moreStories",
+      "newsletter-signup",
+      "sponsored-card",
+      "ad-container",
+      "mediaModal",
+      "cookie-consent",
+      "sidebar-navigation",
+    ];
+    for (const id of excluded) {
+      expect(hasChrome(id), id).toBe(true);
+    }
+  });
+
+  it("keeps auth tokens context-sensitive rather than unconditional chrome", () => {
+    for (const id of ["article-auth-panel", "login-form", "signin-action", "registration-action"]) {
+      expect(hasChrome(id), id).toBe(false);
+    }
+  });
+
+  it("keeps genuine gate/overlay tokens recognizable and token-exact", () => {
+    expect(hasGate("paywall-gate")).toBe(true);
+    expect(hasGate("subscription-wall")).toBe(true);
+    expect(hasGate("member-gate")).toBe(true);
+    expect(hasGate("article-unlocked")).toBe(false); // unlocked ≠ unlock
+    expect(hasGate("whitewall-news")).toBe(false); // wall alone is not a gate
+  });
+});
+
+describe("Prompt 15A-3 main fallback and auth-gate regressions", () => {
+  const bodyParagraphs = [
+    "The first substantive paragraph explains the current story with detailed reporting, evidence, and context for readers who need the full account.",
+    "The second substantive paragraph adds independent background and quotes from sources, expanding the analysis beyond the opening summary.",
+    "The third substantive paragraph examines the consequences of the decision and describes what analysts expect to happen next.",
+    "The fourth substantive paragraph concludes the report with additional facts, implications, and a clear outlook for the months ahead.",
+  ];
+
+  it("rejects a main fallback when it contains one nested teaser article", async () => {
+    const module = await import("./article-content-extractor");
+    const { loadJsdom } = await import("./jsdom-runtime");
+    const { JSDOM } = await loadJsdom();
+    const doc = new JSDOM(`<!DOCTYPE html><main>
+      <article class="teaser"><p>${bodyParagraphs[0]}</p><a href="/subscribe">Subscribe to continue reading</a></article>
+      ${bodyParagraphs.slice(1).map((p) => `<p>${p}</p>`).join("")}
+    </main>`).window.document;
+
+    expect(module.resolveCorrespondingRootByText(doc, bodyParagraphs.join(" "))).toBeNull();
+  });
+
+  it("keeps body extraction successful while excluding CTA evidence from a nested article under main", async () => {
+    const html = `<!DOCTYPE html><html><head><title>Main article</title></head><body>
+      <main>
+        <article class="teaser-card">
+          <p>Short related teaser content.</p>
+          <a href="/subscribe">Subscribe to continue reading this article.</a>
+        </article>
+        ${bodyParagraphs.map((p) => `<p>${p.repeat(3)}</p>`).join("\n")}
+      </main>
+    </body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 1503,
+      articleUrl: "https://example.com/main-nested-teaser",
+      existingTitle: "Main article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diagnostics.bodySource).toMatch(/dom|expanded-dom/);
+      expect(result.bodyText).toContain("first substantive paragraph");
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+    }
+  });
+
+  it("preserves the Readability body but imports no CTA evidence when original root resolution fails", async () => {
+    vi.resetModules();
+    vi.doMock("@mozilla/readability", () => ({
+      Readability: class {
+        parse() {
+          const paragraphs = bodyParagraphs.map((paragraph, index) =>
+            `<p>Readability fallback paragraph ${index + 1}: ${paragraph.repeat(3)}</p>`,
+          ).join("");
+          return {
+            title: "Readability fallback",
+            content: paragraphs,
+            textContent: paragraphs.replace(/<[^>]+>/g, " "),
+          };
+        }
+      },
+    }));
+
+    const html = `<!DOCTYPE html><html><head><title>Readability fallback</title></head><body>
+      <main>
+        <article class="unrelated-teaser">
+          <p>Unrelated short teaser.</p>
+          <a href="/subscribe">Subscribe to continue reading this article.</a>
+        </article>
+      </main>
+    </body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 1506,
+      articleUrl: "https://example.com/ambiguous-readability",
+      existingTitle: "Readability fallback",
+    });
+
+    vi.doUnmock("@mozilla/readability");
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diagnostics.bodySource).toBe("readability");
+      expect(result.bodyText).toContain("Readability fallback paragraph 1");
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
+      // A normal classifier evidence code (for example, usable_full_body)
+      // is expected; original-document CTA/gate evidence is not.
+      expect(result.qualitySignals.some((signal) =>
+        /access_evidence:(?:article_scoped_cta|article_scoped_gate|gate|cta)/.test(signal),
+      )).toBe(false);
+    }
+  });
+
+  it("preserves a login action inside a validated article-scoped registration gate", async () => {
+    const html = `<!DOCTYPE html><html><head><title>Registration Gate</title></head><body>
+      <article>
+        <div class="subscription-wall registration">
+          <a class="login" href="/login">Sign in to continue reading this article.</a>
+        </div>
+        <p>Only a short preview remains visible before the subscription gate blocks the rest.</p>
+      </article>
+    </body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 1504,
+      articleUrl: "https://example.com/registration-gate",
+      existingTitle: "Registration Gate",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("paywall_or_blocked");
+      expect(result.qualitySignals).toContain("access_classification:PAYWALL_BLOCKED");
+      expect(result.qualitySignals.some((s) => s.startsWith("access_evidence:article_scoped_cta"))).toBe(true);
+    }
+  });
+
+  it("continues excluding an account/login panel outside the article gate", async () => {
+    const html = `<!DOCTYPE html><html><head><title>Free Article</title></head><body>
+      <div class="account-menu login-modal"><a href="/login">Sign in to continue reading this article.</a></div>
+      <article>
+        <div class="login-modal"><a href="/login">Sign in to continue reading this article.</a></div>
+        ${bodyParagraphs.map((p) => `<p>${p.repeat(3)}</p>`).join("\n")}
+      </article>
+    </body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 1505,
+      articleUrl: "https://example.com/account-panel",
+      existingTitle: "Free Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.isPaywall).toBe(false);
+      expect(result.qualitySignals).toContain("access_classification:ACCESSIBLE");
     }
   });
 });

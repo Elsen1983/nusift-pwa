@@ -35,6 +35,16 @@ const serializeCandidate = (candidate: IngestCandidate): Prisma.InputJsonObject 
   bodyText: candidate.bodyText || null,
   contentHash: candidate.contentHash,
   isPaywall: candidate.isPaywall,
+  ...(candidate.accessEvidence ? {
+    accessEvidence: {
+      classification: candidate.accessEvidence.classification,
+      confidence: candidate.accessEvidence.confidence,
+      detectorVersion: candidate.accessEvidence.detectorVersion,
+      evidenceCodes: candidate.accessEvidence.evidenceCodes.slice(0, 8),
+      contradictingEvidenceCodes: candidate.accessEvidence.contradictingEvidenceCodes.slice(0, 8),
+      sourceStage: candidate.accessEvidence.sourceStage,
+    },
+  } : {}),
   rawTags: candidate.rawTags,
   rawSignals: candidate.rawSignals,
   reasoning: candidate.reasoning,

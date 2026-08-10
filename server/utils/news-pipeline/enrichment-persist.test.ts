@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ArticleEnrichmentOutcome, ArticleUpstreamProvenance } from "./enrichment";
+import type {
+  ArticleAccessOutcomeSummary,
+  ArticleEnrichmentOutcome,
+  ArticleUpstreamProvenance,
+} from "./enrichment";
 import {
   buildFailureOutcome,
   buildHeadlessRequiredOutcome,
@@ -47,6 +51,31 @@ const baseProvenance: ArticleUpstreamProvenance = {
   arrivedViaHardCaseRerun: false,
   ingestedAt: "2026-07-15T08:00:00.000Z",
 };
+
+const makeAccess = (
+  classification: ArticleAccessOutcomeSummary["classification"],
+  overrides: Partial<ArticleAccessOutcomeSummary> = {},
+): ArticleAccessOutcomeSummary => ({
+  classification,
+  sourceStage: "agent3",
+  confidence: classification === "PAYWALL_BLOCKED" ? "HIGH" : "MEDIUM",
+  detectorVersion: "article-access-v1.0.0",
+  evidenceCodes: ["article_scoped_cta", "body_truncated", ...Array.from({ length: 30 }, (_, index) => `evidence_${index}`)],
+  contradictingEvidenceCodes: ["contradiction", ...Array.from({ length: 30 }, (_, index) => `contradiction_${index}`)],
+  evidenceArticleScoped: classification === "PAYWALL_BLOCKED",
+  usableBodyExtracted: classification === "ACCESSIBLE" || classification === "METERED_OR_DECLARED",
+  bodyTruncationDetected: classification === "PAYWALL_BLOCKED",
+  articleScopedGateOrOverlayDetected: classification === "PAYWALL_BLOCKED",
+  decisive: classification === "PAYWALL_BLOCKED" || classification === "ACCESSIBLE",
+  previousIsPaywall: false,
+  earlyStageClassification: null,
+  earlyStageSource: null,
+  earlyStageEvidenceCodes: [],
+  earlyStageContradictingEvidenceCodes: [],
+  finalIsPaywall: classification === "PAYWALL_BLOCKED" ? true : classification === "ACCESSIBLE" ? false : null,
+  overrideReason: null,
+  ...overrides,
+});
 
 const makeSuccess = (): ArticleEnrichmentOutcome =>
   buildSuccessOutcome({
@@ -198,6 +227,79 @@ describe("buildArticleEnrichmentUpdate", () => {
     }) as Record<string, unknown>;
     expect(noReplacementUpdate.publicationStatus).toBe("PROCESSING");
     expect(noReplacementUpdate.publicationReadyAt).toBeNull();
+  });
+
+  it("applies Agent 3 access authority to the legacy boolean compatibility field", async () => {
+    const { buildArticleEnrichmentUpdate } = await import("./enrichment-persist");
+    const successFields = {
+      bodyText: { raw: null, chosenValue: "A".repeat(1200), chosenFrom: "dom" as const, overrideReason: "full body" },
+    };
+
+    const earlyHintCleared = buildArticleEnrichmentUpdate(
+      buildSuccessOutcome({ articleId: 1, provenance: baseProvenance, fields: successFields, access: makeAccess("ACCESSIBLE", {
+        previousIsPaywall: true,
+        earlyStageClassification: "PAYWALL_BLOCKED",
+        overrideReason: "Cleared early paywall hint after successful substantial article-body extraction without paywall signals.",
+      }) }),
+      { existingBodyText: null, existingTitle: "Story", existingCanonicalUrl: "https://example.com/story" },
+    ) as Record<string, unknown>;
+    expect(earlyHintCleared.isPaywall).toBe(false);    expect(asObj(earlyHintCleared.enrichmentOutcome).access).toMatchObject({
+      sourceStage: "agent3",
+      previousIsPaywall: true,
+      finalIsPaywall: false,
+    });
+
+    const genuineBlock = buildArticleEnrichmentUpdate(
+      buildFailureOutcome({ articleId: 2, provenance: baseProvenance, reason: { code: "PAYWALL_BLOCKED" }, retryable: false }),
+    ) as Record<string, unknown>;
+    // A failure builder without the extractor result has no access summary, so
+    // persistence must not invent a paywall boolean from a generic rejection.
+    expect(genuineBlock.isPaywall).toBeUndefined();
+
+    const blockedWithEvidence = buildArticleEnrichmentUpdate(
+      buildSuccessOutcome({ articleId: 3, provenance: baseProvenance, fields: successFields, access: makeAccess("PAYWALL_BLOCKED") }),
+      { existingBodyText: null, existingTitle: "Story", existingCanonicalUrl: "https://example.com/story" },
+    ) as Record<string, unknown>;
+    expect(blockedWithEvidence.isPaywall).toBe(true);
+
+    const unknownPreservesExisting = buildArticleEnrichmentUpdate(
+      buildSuccessOutcome({ articleId: 4, provenance: baseProvenance, fields: successFields, access: makeAccess("UNKNOWN", {
+        previousIsPaywall: true,
+        finalIsPaywall: null,
+      }) }),
+      { existingBodyText: null, existingTitle: "Story", existingCanonicalUrl: "https://example.com/story" },
+    ) as Record<string, unknown>;
+    expect(unknownPreservesExisting.isPaywall).toBeUndefined();
+
+    const technicalBlockDoesNotInferPaywall = buildArticleEnrichmentUpdate(
+      buildSuccessOutcome({ articleId: 5, provenance: baseProvenance, fields: {}, access: makeAccess("HTTP_ACCESS_BLOCKED") }),
+    ) as Record<string, unknown>;
+    expect(technicalBlockDoesNotInferPaywall.isPaywall).toBeUndefined();
+  });
+
+  it("keeps bounded access evidence and does not expose full body through the row summary", async () => {
+    const { buildEnrichmentArtifactCreate, buildArticleEnrichmentUpdate } = await import("./enrichment-persist");
+    const outcome = buildSuccessOutcome({
+      articleId: 6,
+      articleUrl: "https://example.com/story?token=secret",
+      provenance: { ...baseProvenance, feedUrl: "https://example.com/rss?api_key=secret" },
+      method: { method: "http-dom", detail: "<div>SECRET HTML</div> token=secret" },
+      fields: { bodyText: { raw: null, chosenValue: "SECRET BODY".repeat(300), chosenFrom: "dom", overrideReason: "test" } },
+      access: makeAccess("ACCESSIBLE"),
+    });
+    const summary = asObj(buildArticleEnrichmentUpdate(outcome).enrichmentOutcome);
+    const artifact = asObj(buildEnrichmentArtifactCreate(outcome, "run-1").payload);
+    const access = asObj(summary.access);
+    expect((access.evidenceCodes as string[]).length).toBeLessThanOrEqual(12);
+    expect((access.contradictingEvidenceCodes as string[]).length).toBeLessThanOrEqual(12);
+    expect(JSON.stringify(summary)).not.toContain("SECRET BODY");
+    // Raw body/text, markup, credentials, and query secrets are never stored
+    // in evidence artifacts.
+    const artifactJson = JSON.stringify(artifact);
+    expect(artifactJson).not.toContain("SECRET BODY");
+    expect(artifactJson).not.toContain("SECRET HTML");
+    expect(artifactJson).not.toContain("token=secret");
+    expect(artifactJson).not.toContain("api_key=secret");
   });
 
   it("derives status from outcomeKindToStatus for each kind", async () => {

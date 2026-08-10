@@ -390,6 +390,365 @@ describe("recoverUpstreamProvenanceBatch", () => {
     expect(provenance.feedOrigin).toBe("atom");
   });
 
+  it("recovers Agent 2-only access evidence from article_discovery_candidates without rss_candidates", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockResolvedValue([
+      {
+        id: "a2-artifact-1",
+        pipelineRunId: "a2-run-1",
+        sourceId: "src-1",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-16T10:00:00.000Z"),
+        payload: {
+          candidates: [{
+            sourceId: "src-1",
+            categoryId: "cat-1",
+            sourceUrl: "https://example.com/category?utm_source=feed",
+            canonicalUrl: "https://example.com/a?utm_medium=social#fragment",
+            provenance: { origin: "web_discovery", feedUrl: null, discoveredFromCategoryFeed: true },
+            accessEvidence: {
+              classification: "METERED_OR_DECLARED",
+              sourceStage: "agent2",
+              evidenceCodes: ["jsonld_declared_paywall", ...Array.from({ length: 30 }, (_, i) => `code-${i}`)],
+              contradictingEvidenceCodes: ["full_body_visible"],
+            },
+          }],
+        },
+      },
+    ]);
+
+    const provenance = (await recoverUpstreamProvenanceBatch([makeArticle()])).get(42)!;
+    expect(provenance.feedOrigin).toBe("web_discovery");
+    expect(provenance.ingestArtifactId).toBe("a2-artifact-1");
+    expect(provenance.earlyAccessEvidence).toMatchObject({
+      classification: "METERED_OR_DECLARED",
+      sourceStage: "agent2",
+      contradictingEvidenceCodes: ["full_body_visible"],
+    });
+    expect(provenance.earlyAccessEvidence!.evidenceCodes).toHaveLength(12);
+    expect(provenance.earlyAccessRecovery).toMatchObject({
+      status: "MATCHED",
+      matchingArtifactType: "article_discovery_candidates",
+      candidateMatchType: "canonical",
+      matchingArtifactId: "a2-artifact-1",
+    });
+    expect(artifactFindManyMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ artifactType: { in: ["rss_candidates", "article_discovery_candidates"] } }),
+      take: 201,
+    }));
+  });
+
+  it("ignores unrelated candidates and malformed/unknown access evidence conservatively", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockResolvedValue([
+      {
+        id: "a2-artifact-malformed",
+        pipelineRunId: "a2-run-malformed",
+        sourceId: "src-1",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-16T10:00:00.000Z"),
+        payload: {
+          candidates: [
+            { sourceId: "src-1", canonicalUrl: "https://example.com/other", accessEvidence: { classification: "PAYWALL_BLOCKED", sourceStage: "agent2" } },
+            { sourceId: "src-1", canonicalUrl: "https://example.com/a", accessEvidence: { classification: "PAYWALL_BLOCKED", sourceStage: "crawler" } },
+          ],
+        },
+      },
+    ]);
+
+    const provenance = (await recoverUpstreamProvenanceBatch([makeArticle()])).get(42)!;
+    expect(provenance.earlyAccessEvidence).toBeNull();
+    expect(provenance.earlyAccessRecovery?.status).toBe("MATCHED");
+  });
+
+  it("prefers the newest exact match, while an unrelated newer artifact cannot hide an older exact match", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockResolvedValue([
+      {
+        id: "new-unrelated",
+        pipelineRunId: "a2-run-new",
+        sourceId: "src-1",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-18T10:00:00.000Z"),
+        payload: { candidates: [{ canonicalUrl: "https://example.com/other", accessEvidence: { classification: "PAYWALL_BLOCKED", sourceStage: "agent2" } }] },
+      },
+      {
+        id: "old-exact",
+        pipelineRunId: "a2-run-old",
+        sourceId: "src-1",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-17T10:00:00.000Z"),
+        payload: { candidates: [{ canonicalUrl: "https://example.com/a", accessEvidence: { classification: "METERED_OR_DECLARED", sourceStage: "agent2" } }] },
+      },
+    ]);
+    const provenance = (await recoverUpstreamProvenanceBatch([makeArticle()])).get(42)!;
+    expect(provenance.ingestArtifactId).toBe("old-exact");
+    expect(provenance.earlyAccessEvidence?.classification).toBe("METERED_OR_DECLARED");
+  });
+
+  it("uses a stable artifact id tie-breaker for equal timestamps", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockResolvedValue([
+      {
+        id: "artifact-a",
+        sourceId: "src-1",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-18T10:00:00.000Z"),
+        payload: { candidates: [{ canonicalUrl: "https://example.com/a", accessEvidence: { classification: "ACCESSIBLE", sourceStage: "agent2" } }] },
+      },
+      {
+        id: "artifact-z",
+        sourceId: "src-1",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-18T10:00:00.000Z"),
+        payload: { candidates: [{ canonicalUrl: "https://example.com/a", accessEvidence: { classification: "PAYWALL_BLOCKED", sourceStage: "agent2" } }] },
+      },
+    ]);
+    const provenance = (await recoverUpstreamProvenanceBatch([makeArticle()])).get(42)!;
+    expect(provenance.ingestArtifactId).toBe("artifact-z");
+    expect(provenance.earlyAccessEvidence?.classification).toBe("PAYWALL_BLOCKED");
+  });
+
+  it("does not let a newer exact candidate with malformed access evidence hide an older valid exact match", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockResolvedValue([
+      {
+        id: "new-malformed",
+        sourceId: "src-1",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-19T10:00:00.000Z"),
+        payload: {
+          candidates: [{
+            canonicalUrl: "https://example.com/a?utm_source=newer#fragment",
+            accessEvidence: { classification: "PAYWALL_BLOCKED", sourceStage: "unknown-stage", evidenceCodes: ["raw <html>"] },
+          }],
+        },
+      },
+      {
+        id: "old-valid",
+        sourceId: "src-1",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-18T10:00:00.000Z"),
+        payload: {
+          candidates: [{
+            canonicalUrl: "https://example.com/a",
+            accessEvidence: { classification: "METERED_OR_DECLARED", sourceStage: "agent2", evidenceCodes: ["declared_access"] },
+          }],
+        },
+      },
+    ]);
+
+    const provenance = (await recoverUpstreamProvenanceBatch([makeArticle()])).get(42)!;
+    expect(provenance.ingestArtifactId).toBe("old-valid");
+    expect(provenance.earlyAccessEvidence).toMatchObject({
+      classification: "METERED_OR_DECLARED",
+      sourceStage: "agent2",
+      evidenceCodes: ["declared_access"],
+    });
+  });
+
+  it("uses a matching candidate sourceUrl when canonical identity is absent", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockResolvedValue([{
+      id: "source-url-legacy",
+      sourceId: "src-1",
+      artifactType: "rss_candidates",
+      createdAt: new Date("2026-07-18T10:00:00.000Z"),
+      payload: {
+        candidates: [{
+          sourceUrl: "https://example.com/a?utm_medium=feed#top",
+          accessEvidence: { classification: "ACCESSIBLE", sourceStage: "agent1", evidenceCodes: ["feed_hint"] },
+        }],
+      },
+    }]);
+
+    const provenance = (await recoverUpstreamProvenanceBatch([makeArticle({ canonicalUrl: null, sourceUrl: "https://example.com/a" })])).get(42)!;
+    expect(provenance.earlyAccessRecovery?.candidateMatchType).toBe("source");
+    expect(provenance.earlyAccessEvidence?.sourceStage).toBe("agent1");
+  });
+
+  it("marks a bounded candidate window as truncated instead of loading unbounded history", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockResolvedValue([{
+      id: "large-artifact",
+      sourceId: "src-1",
+      artifactType: "article_discovery_candidates",
+      createdAt: new Date("2026-07-18T10:00:00.000Z"),
+      payload: { candidates: Array.from({ length: 101 }, (_, i) => ({ canonicalUrl: `https://example.com/unrelated-${i}` })) },
+    }]);
+    const provenance = (await recoverUpstreamProvenanceBatch([makeArticle()])).get(42)!;
+    expect(provenance.earlyAccessRecovery?.status).toBe("WINDOW_TRUNCATED");
+    expect(provenance.earlyAccessRecoveryWindowTruncated).toBe(true);
+  });
+
+  it("uses independent per-source windows so a noisy source cannot starve another source", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    const noisyArtifacts = Array.from({ length: 201 }, (_, index) => ({
+      id: `source-a-${String(index).padStart(3, "0")}`,
+      sourceId: "src-a",
+      artifactType: "article_discovery_candidates",
+      createdAt: new Date(2026, 6, 20, 12, 0, index),
+      payload: { candidates: [{ canonicalUrl: `https://a.example.com/unrelated-${index}` }] },
+    }));
+    const sourceBArtifact = {
+      id: "source-b-match",
+      sourceId: "src-b",
+      artifactType: "article_discovery_candidates",
+      createdAt: new Date("2026-07-01T10:00:00.000Z"),
+      payload: {
+        candidates: [{
+          sourceId: "src-b",
+          canonicalUrl: "https://b.example.com/story",
+          accessEvidence: {
+            classification: "METERED_OR_DECLARED",
+            sourceStage: "agent2",
+            evidenceCodes: ["source_b_evidence"],
+            contradictingEvidenceCodes: [],
+          },
+        }],
+      },
+    };
+    artifactFindManyMock.mockImplementation(async (args: any) =>
+      args?.where?.sourceId === "src-a" ? noisyArtifacts : [sourceBArtifact],
+    );
+
+    const result = await recoverUpstreamProvenanceBatch([
+      makeArticle({ id: 101, sourceId: "src-a", canonicalUrl: "https://a.example.com/story" }),
+      makeArticle({ id: 102, sourceId: "src-b", canonicalUrl: "https://b.example.com/story" }),
+    ]);
+    const sourceA = result.get(101)!;
+    const sourceB = result.get(102)!;
+
+    expect(sourceA.earlyAccessRecovery).toMatchObject({
+      status: "WINDOW_TRUNCATED",
+      artifactsScanned: 200,
+      windowTruncated: true,
+    });
+    expect(sourceB.earlyAccessRecovery).toMatchObject({
+      status: "MATCHED",
+      artifactsScanned: 1,
+      windowTruncated: false,
+      matchingArtifactId: "source-b-match",
+    });
+    expect(sourceB.earlyAccessEvidence?.sourceStage).toBe("agent2");
+    expect(artifactFindManyMock).toHaveBeenCalledTimes(2);
+    for (const call of artifactFindManyMock.mock.calls) {
+      expect(call[0].take).toBe(201);
+      expect(typeof call[0].where.sourceId).toBe("string");
+    }
+  });
+
+  it("isolates source-local QUERY_FAILED diagnostics while preserving successful sources", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockImplementation(async (args: any) => {
+      if (args?.where?.sourceId === "src-a") throw new Error("source-a query failed");
+      return [{
+        id: "source-b-success",
+        sourceId: "src-b",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-20T10:00:00.000Z"),
+        payload: {
+          candidates: [{
+            sourceId: "src-b",
+            canonicalUrl: "https://b.example.com/story",
+            accessEvidence: { classification: "ACCESSIBLE", sourceStage: "agent2", evidenceCodes: ["b_success"], contradictingEvidenceCodes: [] },
+          }],
+        },
+      }];
+    });
+
+    const result = await recoverUpstreamProvenanceBatch([
+      makeArticle({ id: 201, sourceId: "src-a" }),
+      makeArticle({ id: 202, sourceId: "src-b", canonicalUrl: "https://b.example.com/story" }),
+    ]);
+
+    expect(result.get(201)!.earlyAccessRecovery?.status).toBe("QUERY_FAILED");
+    expect(result.get(201)!.earlyAccessEvidence).toBeUndefined();
+    expect(result.get(202)!.earlyAccessRecovery?.status).toBe("MATCHED");
+    expect(result.get(202)!.earlyAccessEvidence).toMatchObject({ sourceStage: "agent2", evidenceCodes: ["b_success"] });
+  });
+
+  it("returns QUERY_FAILED for every article when every source query fails", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockRejectedValue(new Error("all source queries failed"));
+
+    const result = await recoverUpstreamProvenanceBatch([
+      makeArticle({ id: 211, sourceId: "src-a" }),
+      makeArticle({ id: 212, sourceId: "src-b", canonicalUrl: "https://b.example.com/story" }),
+    ]);
+
+    expect(result.get(211)!.earlyAccessRecovery?.status).toBe("QUERY_FAILED");
+    expect(result.get(212)!.earlyAccessRecovery?.status).toBe("QUERY_FAILED");
+  });
+
+  it("lets newer valid sourceUrl evidence beat older valid canonical evidence", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockResolvedValue([
+      {
+        id: "new-source-url",
+        sourceId: "src-1",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-20T10:00:00.000Z"),
+        payload: {
+          candidates: [{
+            sourceUrl: "https://example.com/a?utm_source=newer",
+            accessEvidence: { classification: "ACCESSIBLE", sourceStage: "agent2", evidenceCodes: ["new_source"], contradictingEvidenceCodes: [] },
+          }],
+        },
+      },
+      {
+        id: "old-canonical",
+        sourceId: "src-1",
+        artifactType: "rss_candidates",
+        createdAt: new Date("2026-07-19T10:00:00.000Z"),
+        payload: {
+          candidates: [{
+            canonicalUrl: "https://example.com/a",
+            accessEvidence: { classification: "PAYWALL_BLOCKED", sourceStage: "agent1", evidenceCodes: ["old_canonical"], contradictingEvidenceCodes: [] },
+          }],
+        },
+      },
+    ]);
+
+    const provenance = (await recoverUpstreamProvenanceBatch([makeArticle()])).get(42)!;
+    expect(provenance.ingestArtifactId).toBe("new-source-url");
+    expect(provenance.earlyAccessEvidence).toMatchObject({
+      classification: "ACCESSIBLE",
+      sourceStage: "agent2",
+      evidenceCodes: ["new_source"],
+    });
+    expect(provenance.earlyAccessRecovery?.candidateMatchType).toBe("source");
+  });
+
+  it("uses canonical identity only as the equal-timestamp tie-break, regardless of DB return order", async () => {
+    const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
+    const canonical = {
+      id: "canonical-id",
+      sourceId: "src-1",
+      artifactType: "rss_candidates",
+      createdAt: new Date("2026-07-20T10:00:00.000Z"),
+      payload: { candidates: [{ canonicalUrl: "https://example.com/a", accessEvidence: { classification: "PAYWALL_BLOCKED", sourceStage: "agent1", evidenceCodes: ["canonical"], contradictingEvidenceCodes: [] } }] },
+    };
+    const source = {
+      id: "source-id",
+      sourceId: "src-1",
+      artifactType: "article_discovery_candidates",
+      createdAt: new Date("2026-07-20T10:00:00.000Z"),
+      payload: { candidates: [{ sourceUrl: "https://example.com/a", accessEvidence: { classification: "ACCESSIBLE", sourceStage: "agent2", evidenceCodes: ["source"], contradictingEvidenceCodes: [] } }] },
+    };
+
+    artifactFindManyMock.mockResolvedValue([source, canonical]);
+    const first = (await recoverUpstreamProvenanceBatch([makeArticle()])).get(42)!;
+    artifactFindManyMock.mockReset();
+    artifactFindManyMock.mockResolvedValue([canonical, source]);
+    const second = (await recoverUpstreamProvenanceBatch([makeArticle()])).get(42)!;
+
+    expect(first.ingestArtifactId).toBe("canonical-id");
+    expect(second.ingestArtifactId).toBe("canonical-id");
+    expect(first.earlyAccessEvidence?.evidenceCodes).toEqual(["canonical"]);
+    expect(second.earlyAccessEvidence?.evidenceCodes).toEqual(["canonical"]);
+  });
+
   it("falls back to conservative defaults when no ingest artifacts exist", async () => {
     const { recoverUpstreamProvenanceBatch } = await import("./enrichment-runtime");
     artifactFindManyMock.mockResolvedValue([]);
@@ -611,6 +970,19 @@ describe("runEnrichmentBatch", () => {
         author: null,
         publishedAt: null,
         isPaywall: null,
+        access: {
+          classification: "UNKNOWN" as const,
+          confidence: "LOW" as const,
+          detectorVersion: "article-access-v1.0.0",
+          evidence: [],
+          contradictingEvidence: [],
+          evidenceArticleScoped: false,
+          usableBodyExtracted: true,
+          bodyTruncationDetected: false,
+          articleScopedGateOrOverlayDetected: false,
+          isPaywall: null,
+          decisive: false,
+        },
         confidence: 0.7,
         qualitySignals: ["selector:article", "method:http-dom", "bodyLength:700"],
         diagnostics: {
@@ -708,6 +1080,166 @@ describe("runEnrichmentBatch", () => {
     const data = asObj(runUpdate![0].data);
     // 2 attempt markers + 2 result artifacts = 4
     expect(data.artifactCount).toBe(4);
+  });
+
+  it("persists the recovered Agent 2 transition through the real runtime outcome and Agent 3 artifact payload", async () => {
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockResolvedValue([{
+      id: "a2-artifact-runtime",
+      pipelineRunId: "a2-run-runtime",
+      sourceId: "src-1",
+      artifactType: "article_discovery_candidates",
+      createdAt: new Date("2026-07-16T10:00:00.000Z"),
+      payload: {
+        candidates: [{
+          sourceId: "src-1",
+          categoryId: "cat-1",
+          sourceUrl: "https://example.com/category",
+          canonicalUrl: "https://example.com/a",
+          provenance: { origin: "web_discovery", feedUrl: null, discoveredFromCategoryFeed: true },
+          accessEvidence: {
+            classification: "PAYWALL_BLOCKED",
+            sourceStage: "agent2",
+            evidenceCodes: ["agent2_paywall_hint"],
+            contradictingEvidenceCodes: ["agent2_contradiction"],
+          },
+        }],
+      },
+    }]);
+    await runEnrichmentBatch();
+
+    const firstUpdate = articleUpdateMock.mock.calls.find((call) => call[0]?.where?.id === 1);
+    expect(firstUpdate).toBeDefined();
+    const summary = asObj(firstUpdate![0].data.enrichmentOutcome);
+    expect(asObj(summary.provenance).earlyAccessEvidence).toMatchObject({
+      classification: "PAYWALL_BLOCKED",
+      sourceStage: "agent2",
+    });
+    expect(asObj(summary.access)).toMatchObject({
+      sourceStage: "agent3",
+      earlyStageClassification: "PAYWALL_BLOCKED",
+      earlyStageSource: "agent2",
+      earlyStageEvidenceCodes: ["agent2_paywall_hint"],
+      earlyStageContradictingEvidenceCodes: ["agent2_contradiction"],
+      classification: "UNKNOWN",
+      finalIsPaywall: false,
+      previousIsPaywall: false,
+    });
+
+    const resultArtifact = artifactCreateMock.mock.calls
+      .map((call) => call[0]?.data)
+      .find((data) => data?.artifactType === "article_enrichment_result");
+    expect(resultArtifact).toBeDefined();
+    const resultPayload = asObj(resultArtifact.payload);
+    expect(asObj(resultPayload.provenance).earlyAccessEvidence).toMatchObject({ sourceStage: "agent2" });
+    expect(asObj(resultPayload.access)).toMatchObject({ earlyStageSource: "agent2", finalIsPaywall: false });
+  });
+
+  it("persists the newer sourceUrl-selected Agent 2 evidence through Article summary and detailed artifact", async () => {
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockResolvedValue([
+      {
+        id: "new-source-runtime",
+        pipelineRunId: "new-source-run",
+        sourceId: "src-1",
+        artifactType: "article_discovery_candidates",
+        createdAt: new Date("2026-07-20T10:00:00.000Z"),
+        payload: {
+          candidates: [{
+            sourceId: "src-1",
+            categoryId: "cat-1",
+            sourceUrl: "https://example.com/a?utm_source=newer",
+            accessEvidence: {
+              classification: "ACCESSIBLE",
+              sourceStage: "agent2",
+              evidenceCodes: ["new_source_runtime"],
+              contradictingEvidenceCodes: [],
+            },
+          }],
+        },
+      },
+      {
+        id: "old-canonical-runtime",
+        pipelineRunId: "old-canonical-run",
+        sourceId: "src-1",
+        artifactType: "rss_candidates",
+        createdAt: new Date("2026-07-19T10:00:00.000Z"),
+        payload: {
+          candidates: [{
+            sourceId: "src-1",
+            categoryId: "cat-1",
+            canonicalUrl: "https://example.com/a",
+            accessEvidence: {
+              classification: "PAYWALL_BLOCKED",
+              sourceStage: "agent1",
+              evidenceCodes: ["old_canonical_runtime"],
+              contradictingEvidenceCodes: [],
+            },
+          }],
+        },
+      },
+    ]);
+
+    await runEnrichmentBatch();
+
+    const firstUpdate = articleUpdateMock.mock.calls.find((call) => call[0]?.where?.id === 1);
+    expect(firstUpdate).toBeDefined();
+    const summary = asObj(firstUpdate![0].data.enrichmentOutcome);
+    expect(asObj(summary.provenance).earlyAccessEvidence).toMatchObject({
+      classification: "ACCESSIBLE",
+      sourceStage: "agent2",
+      evidenceCodes: ["new_source_runtime"],
+    });
+    expect(asObj(summary.provenance).ingestArtifactId).toBe("new-source-runtime");
+    expect(asObj(summary.access)).toMatchObject({
+      earlyStageSource: "agent2",
+      earlyStageClassification: "ACCESSIBLE",
+      finalIsPaywall: false,
+    });
+
+    const resultArtifact = artifactCreateMock.mock.calls
+      .map((call) => call[0]?.data)
+      .find((data) => data?.artifactType === "article_enrichment_result");
+    expect(resultArtifact).toBeDefined();
+    const payload = asObj(resultArtifact.payload);
+    expect(asObj(payload.provenance).ingestArtifactId).toBe("new-source-runtime");
+    expect(asObj(payload.provenance).earlyAccessEvidence).toMatchObject({ sourceStage: "agent2" });
+    expect(asObj(payload.access)).toMatchObject({ earlyStageSource: "agent2", finalIsPaywall: false });
+  });
+
+  it("persists conservative QUERY_FAILED recovery diagnostics without an Agent 2 transition or paywall mutation", async () => {
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    artifactFindManyMock.mockImplementation(async (args: any) => {
+      if (args?.where?.artifactType?.in?.includes("rss_candidates")) {
+        throw new Error("recovery unavailable");
+      }
+      return [];
+    });
+
+    await runEnrichmentBatch();
+
+    const firstUpdate = articleUpdateMock.mock.calls.find((call) => call[0]?.where?.id === 1);
+    expect(firstUpdate).toBeDefined();
+    expect(firstUpdate![0].data.isPaywall).toBeUndefined();
+    const summary = asObj(firstUpdate![0].data.enrichmentOutcome);
+    const summaryProvenance = asObj(summary.provenance);
+    expect(asObj(summaryProvenance.earlyAccessRecovery).status).toBe("QUERY_FAILED");
+    expect(summaryProvenance.earlyAccessEvidence).toBeUndefined();
+    expect(asObj(summary.access)).toMatchObject({
+      sourceStage: "agent3",
+      earlyStageClassification: null,
+      earlyStageSource: null,
+      finalIsPaywall: false,
+    });
+
+    const resultArtifact = artifactCreateMock.mock.calls
+      .map((call) => call[0]?.data)
+      .find((data) => data?.artifactType === "article_enrichment_result");
+    expect(resultArtifact).toBeDefined();
+    const payload = asObj(resultArtifact.payload);
+    expect(asObj(payload.provenance).earlyAccessRecovery).toMatchObject({ status: "QUERY_FAILED" });
+    expect(asObj(payload.provenance).earlyAccessEvidence).toBeUndefined();
+    expect(asObj(payload.access)).toMatchObject({ earlyStageSource: null, finalIsPaywall: false });
   });
 
   it("uses recovered provenance from Agent 1 artifacts when available", async () => {
@@ -813,6 +1345,14 @@ describe("runEnrichmentBatch", () => {
     expect(result.persist.byKind.SKIPPED).toBe(0);
     expect(articleUpdateMock).not.toHaveBeenCalled();
     expect(artifactCreateMock).toHaveBeenCalledTimes(2); // attempt markers only
+    expect(artifactCreateMock.mock.calls.every((call) => {
+      const data = call[0]?.data as Record<string, unknown> | undefined;
+      return data?.artifactType === "article_enrichment_attempt";
+    })).toBe(true);
+    expect(artifactCreateMock.mock.calls.some((call) => {
+      const data = call[0]?.data as Record<string, unknown> | undefined;
+      return data?.artifactType === "article_enrichment_result" || data?.artifactType === "article_enrichment_rejection";
+    })).toBe(false);
   });
 
   it("uses the current wall clock for recovery and each claim, not options.now", async () => {
