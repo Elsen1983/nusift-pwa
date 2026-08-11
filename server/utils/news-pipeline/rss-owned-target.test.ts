@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   RSS_OWNED_NON_PRODUCTIVE_ESCALATION_THRESHOLD,
   RSS_OWNED_TRUSTED_PROVENANCES,
@@ -32,15 +32,21 @@ describe("isRssOwnedTarget", () => {
 
 describe("evaluateRssOwnedTargetForAgent2", () => {
   it("valid user-submitted category RSS skips Agent 2 while productive", () => {
-    const result = evaluateRssOwnedTargetForAgent2({
-      ...trustedFeed,
-      currentFeedProductive: true,
-      lastProductiveAt: new Date("2026-08-10T11:00:00.000Z"),
-      consecutiveNonProductiveRuns: 0,
-    });
-    expect(result.rssOwned).toBe(true);
-    expect(result.eligibleForAgent2).toBe(false);
-    expect(result.reason).toBe("rss_owned_productive");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-10T12:00:00.000Z"));
+    try {
+      const result = evaluateRssOwnedTargetForAgent2({
+        ...trustedFeed,
+        currentFeedProductive: true,
+        lastProductiveAt: new Date("2026-08-10T11:00:00.000Z"),
+        consecutiveNonProductiveRuns: 0,
+      });
+      expect(result.rssOwned).toBe(true);
+      expect(result.eligibleForAgent2).toBe(false);
+      expect(result.reason).toBe("rss_owned_productive");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a single temporary feed failure preserves RSS ownership (no immediate escalation)", () => {

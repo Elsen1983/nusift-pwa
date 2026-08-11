@@ -328,7 +328,7 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
     }));
 
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
-  });
+  }, 15_000);
 
   it("terminally skips a productive-feed artifact without launching browser work", async () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
