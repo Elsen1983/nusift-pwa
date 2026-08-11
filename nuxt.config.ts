@@ -4,6 +4,7 @@
  * PWA configuration, and the Sovereign-Grade design system tokens.
  */
 import { resolve } from "node:path"
+import { CUSTOM_PAGE_ROUTES } from "./app/utils/custom-page-routes"
 
 export default defineNuxtConfig({
   // ANCHOR VERSION-COMPATIBILITY
@@ -171,68 +172,10 @@ export default defineNuxtConfig({
   // Uses Nuxt 3/4 hooks to extend the file-based router
   hooks: {
     "pages:extend"(pages) {
-      pages.push(
-        {
-          name: "verify-email-custom",
-          path: "/verify-email",
-          file: resolve("app/pages/verifyEmail/verify-email.vue"),
-        },
-        {
-          name: "verify-custom",
-          path: "/verify",
-          file: resolve("app/pages/verifyEmail/verify.vue"),
-        },
-        {
-          name: "preloader-custom",
-          path: "/preloader-page",
-          file: resolve("app/pages/preloader/preloader-first.vue"),
-        },
-        {
-          name: "region-calibration-custom",
-          path: "/region-calibration",
-          file: resolve("app/pages/calibration/region-calibration.vue"),
-        },
-        {
-          name: "source-calibration-custom",
-          path: "/source-calibration",
-          file: resolve("app/pages/calibration/source-calibration.vue"),
-        },
-        {
-          name: "interest-calibration-custom",
-          path: "/interest-calibration",
-          file: resolve("app/pages/calibration/interest-calibration.vue"),
-        },
-        {
-          name: "preloader-custom-two",
-          path: "/initialization-preloader-page",
-          file: resolve("app/pages/preloader/preloader-second.vue"),
-        },
-        {
-          name: "dashboard-initiate-custom",
-          path: "/dashboard-initiate",
-          file: resolve("app/pages/dashboard/initiate-dashboard.vue"),
-        },
-        {
-          name: "dashboard-custom",
-          path: "/dashboard",
-          file: resolve("app/pages/dashboard/dashboard-main.vue"),
-        },
-        {
-          name: "reset-password",
-          path: "/reset-password",
-          file: resolve("app/pages/reset-password.vue"),
-        },
-        {
-          name: "source-manager-custom",
-          path: "/audit/source-manager",
-          file: resolve("app/pages/audit/source-manager.vue"),
-        },
-        {
-          name: "admin-custom",
-          path: "/audit/admin",
-          file: resolve("app/pages/audit/admin.vue"),
-        }
-      );
+      pages.push(...CUSTOM_PAGE_ROUTES.map((route) => ({
+        ...route,
+        file: resolve(route.file),
+      })));
     },
   },
 

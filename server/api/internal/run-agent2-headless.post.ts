@@ -1,4 +1,5 @@
 import { createError, getHeader } from "h3";
+import { secretsMatch } from "../../utils/secure-secret";
 import { processArticleDiscoveryHeadlessQueue } from "../../utils/news-pipeline/article-discovery-headless-queue";
 import { isBrowserFallbackEnabled } from "../../utils/news-pipeline/article-discovery-browser";
 import { persistStageBatchTelemetry } from "../../utils/news-pipeline/stage-telemetry-server";
@@ -19,7 +20,7 @@ export default defineEventHandler(async (event) => {
     ? authorization.slice("Bearer ".length).trim()
     : "";
   const providedSecret = secretHeader || bearerToken;
-  if (!expectedSecret || providedSecret !== expectedSecret) {
+  if (!secretsMatch(providedSecret, expectedSecret)) {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized." });
   }
   if (!isBrowserFallbackEnabled()) {

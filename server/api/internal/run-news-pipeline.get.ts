@@ -1,4 +1,5 @@
 import { createError, getHeader } from "h3";
+import { secretsMatch } from "../../utils/secure-secret";
 import { runNewsPipeline } from "../../utils/news-pipeline/orchestrator";
 
 export default defineEventHandler(async (event) => {
@@ -14,7 +15,7 @@ export default defineEventHandler(async (event) => {
     : "";
   const providedSecret = secretHeader || bearerToken;
 
-  if (!providedSecret || providedSecret !== expectedSecret) {
+  if (!secretsMatch(providedSecret, expectedSecret)) {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized." });
   }
 

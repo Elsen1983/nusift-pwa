@@ -508,21 +508,61 @@ export async function processArticleDiscoveryHeadlessQueue(
     const sourceId = (item.payload.sourceId as string) || item.sourceId;
 
     if (runBrowser && browserEnabled && sourceId) {
+      const feedFirstEvaluatedAt = now();
       const feedFirstDecision = await loadHeadlessFeedFirstDecision(
         sourceId,
         item.categoryId,
-        now(),
+        feedFirstEvaluatedAt,
       );
       if (feedFirstDecision && !feedFirstDecision.runAgent2) {
-        feedFirstSkipped += 1;
-        dispositionSkipped += 1;
-        await logAgentScan({
-          sourceId: item.sourceId,
-          categoryId: item.categoryId || undefined,
-          status: "ARTICLE_DISCOVERY_HEADLESS_FEED_FIRST_SKIPPED",
-          executionTimeMs: 0,
-          errorLog: `Agent 2 skipped by feed-first policy for ${item.categoryId ? "category" : "source"} target. ${feedFirstDecision.boundedDiagnostic}`,
-        }).catch(() => undefined);
+        try {
+          const transition = await prisma.pipelineArtifact.updateMany({
+            where: {
+              id: item.id,
+              artifactType: "article_discovery_headless_required",
+              status: "PENDING_HEADLESS",
+            },
+            data: {
+              // A feed-first denial is neutral and terminal for this marker.
+              // If feed evidence later degrades, static Agent 2 may create a
+              // fresh marker after the centralized policy allows fallback.
+              status: "SKIPPED_BY_FEED_FIRST_POLICY",
+              errorLog: `Agent 2 headless work skipped by feed-first policy. ${feedFirstDecision.boundedDiagnostic}`,
+              payload: {
+                ...item.payload,
+                feedFirstPolicySkip: {
+                  reason: feedFirstDecision.reason,
+                  targetType: feedFirstDecision.targetType,
+                  freshness: feedFirstDecision.freshness,
+                  nonProductiveRuns: feedFirstDecision.nonProductiveRuns,
+                  evaluatedAt: new Date(feedFirstEvaluatedAt).toISOString(),
+                },
+                previousStatus: "PENDING_HEADLESS",
+              },
+            },
+          });
+          probe.recordDbOperation();
+
+          if (transition.count !== 1) {
+            skippedAlreadyClaimed += 1;
+            dispositionClaimLost += 1;
+            continue;
+          }
+
+          processed += 1;
+          feedFirstSkipped += 1;
+          dispositionSkipped += 1;
+          updatedArtifactIds.push(item.id);
+          await logAgentScan({
+            sourceId: item.sourceId,
+            categoryId: item.categoryId || undefined,
+            status: "ARTICLE_DISCOVERY_HEADLESS_FEED_FIRST_SKIPPED",
+            executionTimeMs: 0,
+            errorLog: `Agent 2 skipped by feed-first policy for ${item.categoryId ? "category" : "source"} target. ${feedFirstDecision.boundedDiagnostic}`,
+          }).catch(() => undefined);
+        } catch {
+          dispositionPersistenceFailed += 1;
+        }
         continue;
       }
     }

@@ -1,4 +1,5 @@
 import { createError, getHeader } from "h3";
+import { secretsMatch } from "../../utils/secure-secret";
 import { runEnrichmentBatch, getAgent3Progress } from "../../utils/news-pipeline/enrichment-runtime";
 import { computeAgent3CompletionSummaryForRun } from "../../utils/news-pipeline/agent3-completion";
 import { persistStageBatchTelemetry } from "../../utils/news-pipeline/stage-telemetry-server";
@@ -11,7 +12,7 @@ const authenticate = (event: Parameters<typeof getHeader>[0]) => {
     ? authorization.slice("Bearer ".length).trim()
     : "";
   const provided = getHeader(event, "x-cron-secret") || bearer;
-  if (!expected || provided !== expected) {
+  if (!secretsMatch(provided, expected)) {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized." });
   }
 };

@@ -1,4 +1,5 @@
 import { createError, getHeader } from "h3";
+import { secretsMatch } from "../../utils/secure-secret";
 import { randomUUID } from "node:crypto";
 import { start } from "workflow/api";
 import {
@@ -25,7 +26,7 @@ export default defineEventHandler(async (event) => {
     ? authorization.slice("Bearer ".length).trim()
     : "";
   const providedSecret = secretHeader || bearerToken;
-  if (!providedSecret || providedSecret !== expectedSecret) {
+  if (!secretsMatch(providedSecret, expectedSecret)) {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized." });
   }
 

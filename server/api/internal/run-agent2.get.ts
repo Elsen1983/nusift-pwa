@@ -1,4 +1,5 @@
 import { createError, getHeader, getQuery } from "h3";
+import { secretsMatch } from "../../utils/secure-secret";
 import { runArticleDiscoveryBatch } from "../../utils/news-pipeline/article-discovery";
 import { readBoundedNumber } from "../../utils/news-pipeline/parse-bounded-number";
 
@@ -15,7 +16,7 @@ export default defineEventHandler(async (event) => {
     : "";
   const providedSecret = secretHeader || bearerToken;
 
-  if (!providedSecret || providedSecret !== expectedSecret) {
+  if (!secretsMatch(providedSecret, expectedSecret)) {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized." });
   }
 

@@ -2,6 +2,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { assertRateLimit } from '../../utils/rate-limit';
+import { secretsMatch } from '../../utils/secure-secret';
 
 /**
  * ADMIN-ONLY maintenance endpoint. Not for public clients.
@@ -20,7 +21,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const providedSecret = getRequestHeader(event, 'x-seed-secret');
-  if (!providedSecret || providedSecret !== expectedSecret) {
+  if (!secretsMatch(providedSecret, expectedSecret)) {
     throw createError({ statusCode: 403, message: 'Forbidden.' });
   }
 

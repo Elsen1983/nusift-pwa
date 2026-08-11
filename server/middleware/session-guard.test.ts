@@ -22,10 +22,11 @@ type TestEvent = {
 };
 
 let handler: (event: TestEvent) => Promise<unknown>;
+let requestUrl = "https://www.nusift.com/api/dev/agent-source-count";
 
 beforeAll(async () => {
   vi.stubGlobal("defineEventHandler", (fn: typeof handler) => fn);
-  vi.stubGlobal("getRequestURL", () => new URL("https://www.nusift.com/api/dev/agent-source-count"));
+  vi.stubGlobal("getRequestURL", () => new URL(requestUrl));
   vi.stubGlobal("getCookie", () => "session-token");
   vi.stubGlobal("deleteCookie", (...args: unknown[]) => deleteCookieMock(...args));
   vi.stubGlobal("sendRedirect", (...args: unknown[]) => sendRedirectMock(...args));
@@ -39,6 +40,7 @@ beforeEach(() => {
   verifySessionTokenMock.mockReset();
   deleteCookieMock.mockReset();
   sendRedirectMock.mockReset();
+  requestUrl = "https://www.nusift.com/api/dev/agent-source-count";
   verifySessionTokenMock.mockReturnValue({
     userId: "user-1",
     email: "admin@example.com",
@@ -86,5 +88,23 @@ describe("session guard failure classification", () => {
       statusMessage: "Session authority temporarily unavailable.",
     });
     expect(deleteCookieMock).not.toHaveBeenCalled();
+  });
+
+  it("does not bypass session validation for a dotted application route", async () => {
+    requestUrl = "https://www.nusift.com/api/report.v2";
+    findUniqueMock.mockResolvedValue({ id: "user-1", tokenVersion: 2 });
+
+    await handler({ context: {} });
+
+    expect(findUniqueMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips known framework static assets", async () => {
+    requestUrl = "https://www.nusift.com/_nuxt/app.js";
+
+    await handler({ context: {} });
+
+    expect(verifySessionTokenMock).not.toHaveBeenCalled();
+    expect(findUniqueMock).not.toHaveBeenCalled();
   });
 });

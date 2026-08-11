@@ -113,4 +113,36 @@ describe("POST /api/internal/run-agent2-headless", () => {
     });
     expect(mocks.processQueue).toHaveBeenCalledTimes(1);
   });
+
+  it("completes the stage after feed-first policy skips are durably removed from the active queue", async () => {
+    mocks.processQueue.mockResolvedValue({
+      dryRun: false,
+      processed: 3,
+      selectedQueueItems: 3,
+      remainingEligible: 0,
+      targetDispositions: {
+        succeeded: 0,
+        failedRetryable: 0,
+        failedPermanent: 0,
+        skipped: 3,
+        deferred: 0,
+        quarantined: 0,
+        claimLost: 0,
+        persistenceFailed: 0,
+      },
+      productivity: {},
+    });
+
+    await expect((await loadHandler())({} as any)).resolves.toMatchObject({
+      stage: "agent2-headless",
+      processed: 3,
+      remaining: 0,
+      complete: true,
+      telemetry: {
+        processed: 3,
+        skipped: 3,
+        complete: true,
+      },
+    });
+  });
 });

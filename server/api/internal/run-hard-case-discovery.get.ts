@@ -1,4 +1,5 @@
 import { createError, getHeader, getQuery } from "h3";
+import { secretsMatch } from "../../utils/secure-secret";
 import { processHardCaseDiscoveryQueue } from "../../utils/news-pipeline/hard-case-consumer";
 
 export default defineEventHandler(async (event) => {
@@ -14,7 +15,7 @@ export default defineEventHandler(async (event) => {
     : "";
   const providedSecret = secretHeader || bearerToken;
 
-  if (!providedSecret || providedSecret !== expectedSecret) {
+  if (!secretsMatch(providedSecret, expectedSecret)) {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized." });
   }
 

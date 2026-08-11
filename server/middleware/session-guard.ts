@@ -1,6 +1,7 @@
 import { createError } from "h3";
 import { prisma } from "../utils/prisma";
 import { verifySessionToken } from "../utils/auth";
+import { isStaticRequestPath } from "../utils/static-request-path";
 
 function clearSessionCookies(event: Parameters<typeof deleteCookie>[0]) {
   deleteCookie(event, "auth_token");
@@ -9,8 +10,7 @@ function clearSessionCookies(event: Parameters<typeof deleteCookie>[0]) {
 
 export default defineEventHandler(async (event) => {
   const url = getRequestURL(event);
-  const isStaticAsset = url.pathname.startsWith("/_nuxt/") || url.pathname.includes(".");
-  if (isStaticAsset) return;
+  if (isStaticRequestPath(url.pathname)) return;
 
   const token = getCookie(event, "auth_token");
   if (!token) return;

@@ -9,10 +9,6 @@
 import { setResponseHeader } from "h3";
 
 export default defineEventHandler((event) => {
-  // Skip for static assets — they don't need these headers and it reduces overhead
-  const path = event.path || "";
-  if (path.startsWith("/_nuxt/") || path.includes(".")) return;
-
   // X-Content-Type-Options — prevents MIME-type sniffing
   setResponseHeader(event, "X-Content-Type-Options", "nosniff");
 
@@ -47,6 +43,7 @@ export default defineEventHandler((event) => {
     "connect-src 'self' https://www.googleapis.com https://accounts.google.com",
     "frame-src https://accounts.google.com https://appleid.cdn-apple.com",
     "object-src 'none'",
+    "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
   ];

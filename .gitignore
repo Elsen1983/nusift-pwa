@@ -19,14 +19,10 @@ logs
 .idea
 
 # Local env files
-.env
-.env.*
+.env*
 !.env.example
-.env.development.local
 
 .vercel
-.env*.local
-
 /app/generated/prisma
 
 .npm-cache/

@@ -1417,6 +1417,10 @@ describe("classifyHeadlessQueueItem", () => {
     expect(classifyHeadlessQueueItem(makeClassifiable("RESOLVED_BY_STATIC_DISCOVERY"))).toBe("history");
   });
 
+  it("classifies feed-first policy skips as history", () => {
+    expect(classifyHeadlessQueueItem(makeClassifiable("SKIPPED_BY_FEED_FIRST_POLICY"))).toBe("history");
+  });
+
   it("classifies old BROWSER_FALLBACK_DISABLED as history", () => {
     const oldDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     expect(classifyHeadlessQueueItem(makeClassifiable("BROWSER_FALLBACK_DISABLED", oldDate))).toBe("history");

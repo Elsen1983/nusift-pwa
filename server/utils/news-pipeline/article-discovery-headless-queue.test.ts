@@ -330,9 +330,10 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
 
-  it("keeps a productive-feed artifact pending without launching browser work", async () => {
+  it("terminally skips a productive-feed artifact without launching browser work", async () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    updateMock.mockResolvedValue({ count: 1 });
     findManyMock.mockResolvedValue([
       makeArtifact({ id: "art-feed-first", payload: { targetUrl: "https://example.com/a", sourceId: "src-1", quality: "blocked" } }),
     ]);
@@ -353,13 +354,106 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
 
     expect(result.dryRun).toBe(false);
     if (!result.dryRun) {
+      expect(result.processed).toBe(1);
+      expect(result.remainingEligible).toBe(0);
       expect(result.targetDispositions.skipped).toBe(1);
       expect(result.browserAttemptedTargets).toBe(0);
+      expect(result.updatedArtifactIds).toEqual(["art-feed-first"]);
     }
-    expect(updateMock).not.toHaveBeenCalled();
+    expect(updateMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: "art-feed-first",
+        status: "PENDING_HEADLESS",
+      }),
+      data: expect.objectContaining({
+        status: "SKIPPED_BY_FEED_FIRST_POLICY",
+        payload: expect.objectContaining({
+          previousStatus: "PENDING_HEADLESS",
+          feedFirstPolicySkip: expect.objectContaining({
+            reason: "productive_fresh_feed",
+            targetType: "source",
+          }),
+        }),
+      }),
+    }));
     expect(logAgentScanMock).toHaveBeenCalledWith(expect.objectContaining({
       status: "ARTICLE_DISCOVERY_HEADLESS_FEED_FIRST_SKIPPED",
       errorLog: expect.stringContaining("productive_fresh_feed"),
+    }));
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("does not claim a feed-first skip when the status CAS is lost", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    updateMock.mockResolvedValue({ count: 0 });
+    countMock.mockResolvedValue(0);
+    findManyMock.mockResolvedValue([
+      makeArtifact({ id: "art-feed-first-raced", payload: { targetUrl: "https://example.com/a", sourceId: "src-1", quality: "blocked" } }),
+    ]);
+    sourceFindUniqueMock.mockResolvedValue({
+      rssStatus: "ACTIVE",
+      rssFeedUrl: "https://example.com/feed.xml",
+      currentFeedProductive: true,
+      lastProductiveAt: new Date("2026-08-10T19:00:00Z"),
+      consecutiveNonProductiveRuns: 0,
+      nextRetryAt: null,
+    });
+
+    const fn = await loadFn();
+    const result = await fn({
+      dryRun: false,
+      runBrowser: true,
+      now: () => new Date("2026-08-10T20:00:00Z").getTime(),
+    });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.processed).toBe(0);
+      expect(result.targetDispositions.skipped).toBe(0);
+      expect(result.targetDispositions.claimLost).toBe(1);
+      expect(result.updatedArtifactIds).toEqual([]);
+    }
+    expect(logAgentScanMock).not.toHaveBeenCalledWith(expect.objectContaining({
+      status: "ARTICLE_DISCOVERY_HEADLESS_FEED_FIRST_SKIPPED",
+    }));
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("reports a persistence failure instead of a feed-first skip when the transition throws", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    updateMock.mockRejectedValue(new Error("database unavailable"));
+    countMock.mockResolvedValue(1);
+    findManyMock.mockResolvedValue([
+      makeArtifact({ id: "art-feed-first-failed", payload: { targetUrl: "https://example.com/a", sourceId: "src-1", quality: "blocked" } }),
+    ]);
+    sourceFindUniqueMock.mockResolvedValue({
+      rssStatus: "ACTIVE",
+      rssFeedUrl: "https://example.com/feed.xml",
+      currentFeedProductive: true,
+      lastProductiveAt: new Date("2026-08-10T19:00:00Z"),
+      consecutiveNonProductiveRuns: 0,
+      nextRetryAt: null,
+    });
+
+    const fn = await loadFn();
+    const result = await fn({
+      dryRun: false,
+      runBrowser: true,
+      now: () => new Date("2026-08-10T20:00:00Z").getTime(),
+    });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.processed).toBe(0);
+      expect(result.remainingEligible).toBe(1);
+      expect(result.targetDispositions.skipped).toBe(0);
+      expect(result.targetDispositions.persistenceFailed).toBe(1);
+      expect(result.updatedArtifactIds).toEqual([]);
+    }
+    expect(logAgentScanMock).not.toHaveBeenCalledWith(expect.objectContaining({
+      status: "ARTICLE_DISCOVERY_HEADLESS_FEED_FIRST_SKIPPED",
     }));
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
