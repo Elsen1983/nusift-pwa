@@ -16,6 +16,7 @@
     "normalize-avatars": "node ./scripts/normalize-avatars.js",
     "test": "npm run test:unit",
     "test:unit": "vitest run",
+    "pretest:integration": "nuxt prepare",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "nuxt typecheck",
     "verify:workflow-bundle": "node ./scripts/verify-workflow-bundle.mjs",

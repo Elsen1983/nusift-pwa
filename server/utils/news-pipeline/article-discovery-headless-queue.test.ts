@@ -6,6 +6,16 @@ const countMock = vi.fn();
 const logAgentScanMock = vi.fn();
 const sourceFindUniqueMock = vi.fn();
 const categoryFindUniqueMock = vi.fn();
+const discoverArticleLinksWithBrowserMock = vi.hoisted(() => vi.fn());
+
+vi.mock("./article-discovery-browser", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./article-discovery-browser")>();
+  return {
+    ...actual,
+    discoverArticleLinksWithBrowser: (...args: unknown[]) =>
+      discoverArticleLinksWithBrowserMock(...args),
+  };
+});
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -56,6 +66,21 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
       countMock.mockResolvedValue(0);
       logAgentScanMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
+    discoverArticleLinksWithBrowserMock.mockReset();
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: false,
+      reason: "browser_runtime_unavailable",
+      links: [],
+      diagnostics: {
+        pageTitle: null,
+        linkCount: 0,
+        articleLikeLinkCount: 0,
+        blockedReason: "Browser runtime unavailable in unit test.",
+        browserRuntimeAvailable: false,
+        browserAttempted: false,
+        elapsedMs: 0,
+      },
+    });
   });
 
   async function loadFn() {
@@ -302,8 +327,8 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
 
-    // Mock the browser resolver to return runtime unavailable
-    // so we can verify the claim happened before browser launch
+    // The module-level browser mock returns runtime unavailable so this test
+    // verifies queue lifecycle only and never launches Chromium.
     findManyMock.mockResolvedValue([
       makeArtifact({ id: "art-1", payload: { targetUrl: "https://example.com/a", sourceId: "src-1", quality: "blocked" } }),
     ]);

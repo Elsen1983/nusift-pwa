@@ -130,7 +130,12 @@ describeIntegration("admin inspection application-level isolation (real PostgreS
         expect(tables, `missing ${required} in migrated schema`).toContain(required);
       }
 
-      clientPool = new Pool({ connectionString: databaseUrl, max: 1, connectionTimeoutMillis: 10_000 });
+      clientPool = new Pool({
+        connectionString: databaseUrl,
+        max: 1,
+        connectionTimeoutMillis: 10_000,
+        options: `-c search_path=${quoteIdentifier(schema)}`,
+      });
       client = new PrismaClient({ adapter: new PrismaPg(clientPool, { schema }) });
 
       // --- Production-shaped fixtures through the REAL Prisma client -------
