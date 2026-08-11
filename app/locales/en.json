@@ -346,6 +346,8 @@
     "newsCard": {
         "key_signals": "Summary Content",
         "paywall": "Paywall",
+        "external_domain": "External link: {domain}",
+        "external_domain_hint": "Collected from this source, but the article link points to {domain}.",
         "read_now": "Read Now",
         "ai_reasoning": "AI Reasoning",
         "menu": {

@@ -1,5 +1,7 @@
 import { prisma } from "../prisma";
-import { safeFetch } from "../ssrf-guard";
+import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
+import { governedSafeFetchAndParse, GovernedFetchDeferredError } from "./governed-fetch";
+import type { GovernedFetchContext } from "./governed-fetch";
 import { SSRFError } from "../ssrf-guard";
 import { isLikelyRedirectorUrl, resolveSafeRedirectChain } from "../safe-redirect-resolver";
 import { logAgentScan } from "./log";
@@ -30,6 +32,7 @@ import {
 } from "./redirect-retry-state";
 import type { StageBatchProbe } from "./stage-telemetry";
 import { classifyEarlyAccessHint } from "./paywall-detection";
+import { getArticleTransportIdentity } from "./article-transport-policy";
 
 type ParsedFeedItem = {
   title: string;
@@ -501,6 +504,7 @@ const resolvePublishedAtForFeedItem = async (
   rawPubDate: string,
   canonicalUrl: string,
   telemetry?: StageBatchProbe,
+  governedFetchContext?: GovernedFetchContext,
 ) => {
   const directDate = toDate(rawPubDate);
   if (directDate) {
@@ -508,23 +512,32 @@ const resolvePublishedAtForFeedItem = async (
   }
 
   try {
-    const response = await safeFetch(canonicalUrl, {
+    const fetched = await governedSafeFetchAndParse(canonicalUrl, {
       signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
       headers: {
-        "User-Agent": "NuSift/1.0 Ingest-Agent",
+        "User-Agent": NUSIFT_CRAWLER_USER_AGENT,
         Accept: "text/html,application/xhtml+xml",
       },
       telemetry,
-    });
+    }, {
+      ...(governedFetchContext ?? {}),
+      agent: "agent1",
+      stage: "ingest",
+      purpose: "article_detail",
+    }, async (response) => ({
+      response,
+      html: response.ok ? await response.text() : "",
+    }));
 
-    if (!response.ok) {
+    if (!fetched.response.ok) {
       return null;
     }
 
-    const html = await response.text();
+    const html = fetched.html;
     const meta = extractPageMetadata(html);
     return meta.publishedAt;
-  } catch {
+  } catch (error) {
+    if (error instanceof GovernedFetchDeferredError) throw error;
     return null;
   }
 };
@@ -574,6 +587,7 @@ const extractHtmlCandidates = async (
   sourceId: string,
   categoryPathUrl?: string | null,
   telemetry?: StageBatchProbe,
+  governedFetchContext?: GovernedFetchContext,
 ) => {
   const candidates: IngestCandidate[] = [];
   const seen = new Set<string>();
@@ -612,18 +626,29 @@ const extractHtmlCandidates = async (
     .slice(0, 8);
 
   for (const link of links) {
-    const detailResponse = await safeFetch(link, {
+    const detailFetched = await governedSafeFetchAndParse(link, {
       signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
       headers: {
-        "User-Agent": "NuSift/1.0 Ingest-Agent",
+        "User-Agent": NUSIFT_CRAWLER_USER_AGENT,
         Accept: "text/html,application/xhtml+xml",
       },
       telemetry,
-    }).catch(() => null);
+    }, {
+      ...(governedFetchContext ?? {}),
+      agent: "agent1",
+      stage: "ingest",
+      purpose: "article_detail",
+    }, async (response) => ({
+      response,
+      html: response.ok ? await response.text() : "",
+    })).catch((error) => {
+      if (error instanceof GovernedFetchDeferredError) throw error;
+      return null;
+    });
 
-    if (!detailResponse || !detailResponse.ok) continue;
+    if (!detailFetched || !detailFetched.response.ok) continue;
 
-    const detailHtml = await detailResponse.text();
+    const detailHtml = detailFetched.html;
     const meta = extractPageMetadata(detailHtml);
     const canonicalUrl = normalizeUrl(link);
     if (!canonicalUrl || isBlockedFallbackPath(canonicalUrl)) {
@@ -1045,6 +1070,7 @@ const resolveCategoryFeedUrl = async (
   // level, not passed into ingestSource). Left as undefined for forward-compatibility.
   pipelineRunId?: string | null,
   telemetry?: StageBatchProbe,
+  governedFetchContext?: GovernedFetchContext,
 ) => {
   // When the category already has a feed URL, check if it's genuinely scoped.
   // If evidence says "generic", re-run discovery to allow re-evaluation (self-healing
@@ -1080,9 +1106,10 @@ const resolveCategoryFeedUrl = async (
     const discovery = await discoverFeedForUrl({
       pageUrl: category.pathUrl,
       existingFeedUrl: category.rssFeedUrl,
-      userAgent: "NuSift/1.0 Ingest-Agent",
+      userAgent: NUSIFT_CRAWLER_USER_AGENT,
       preferScopedDirectFeed: true,
       telemetry,
+      governedFetchContext,
     });
     const discoveredFeedUrl = discovery.feedUrl;
     const isScoped = discoveredFeedUrl
@@ -1149,6 +1176,7 @@ const resolveCategoryFeedUrl = async (
       }),
     };
   } catch (error: any) {
+    if (error instanceof GovernedFetchDeferredError) throw error;
     const errorMessage = error?.message || String(error);
     await logAgentScan({
       sourceId,
@@ -1216,6 +1244,7 @@ const resolveSourceFeedUrl = async (
     rssStatus?: string | null;
   },
   telemetry?: StageBatchProbe,
+  governedFetchContext?: GovernedFetchContext,
 ) => {
   if (source.rssFeedUrl && source.rssStatus !== "NO_RSS_FOUND") {
     return {
@@ -1228,8 +1257,9 @@ const resolveSourceFeedUrl = async (
     const discovery = await discoverFeedForUrl({
       pageUrl: source.frontPageUrl,
       existingFeedUrl: source.rssFeedUrl,
-      userAgent: "NuSift/1.0 Ingest-Agent",
+      userAgent: NUSIFT_CRAWLER_USER_AGENT,
       telemetry,
+      governedFetchContext,
     });
     const discoveredFeedUrl = discovery.feedUrl;
 
@@ -1269,6 +1299,7 @@ const resolveSourceFeedUrl = async (
       }),
     };
   } catch (error: any) {
+    if (error instanceof GovernedFetchDeferredError) throw error;
     const errorMessage = error?.message || String(error);
     await logAgentScan({
       sourceId: source.id,
@@ -1434,9 +1465,23 @@ export async function ingestSource(
   categoryId?: string,
   telemetry?: StageBatchProbe,
   pipelineRunId?: string,
-  options?: { bypassRedirectTerminal?: boolean },
+  options?: {
+    bypassRedirectTerminal?: boolean;
+    /** Shared by all Agent 1 targets in one orchestrator invocation. */
+    static429Hostnames?: Set<string>;
+  },
 ): Promise<IngestResult> {
   const startedAt = Date.now();
+  const sameInvocationStatic429Hostnames = options?.static429Hostnames ?? new Set<string>();
+  const governedFetchContext: GovernedFetchContext = {
+    agent: "agent1",
+    stage: "ingest",
+    purpose: "feed",
+    pipelineRunId: pipelineRunId ?? null,
+    sourceId,
+    categoryId: categoryId ?? null,
+    static429Hostnames: sameInvocationStatic429Hostnames,
+  };
   const [source, category] = await Promise.all([
     prisma.newsSource.findUnique({
       where: { id: sourceId },
@@ -1508,7 +1553,55 @@ export async function ingestSource(
     };
   }
 
-  const categoryFeedResolution = await resolveCategoryFeedUrl(sourceId, category, undefined, telemetry);
+  if (!category?.rssFeedUrl && source.nextRetryAt && source.nextRetryAt.getTime() > Date.now()) {
+    await logAgentScan({
+      sourceId,
+      categoryId,
+      status: "A1_TARGET_DEFERRED_RATE_LIMIT",
+      executionTimeMs: Date.now() - startedAt,
+      errorLog: `RSS retry deferred until ${source.nextRetryAt.toISOString()}.`,
+    });
+    return {
+      sourceId,
+      categoryId: categoryId || null,
+      candidates: [],
+      failed: 0,
+      feedUrl: source.rssFeedUrl,
+      feedFormat: null,
+      deferredReason: "rate_limited",
+      retryAt: source.nextRetryAt.toISOString(),
+      skipSummary: emptySkipSummary(),
+      rejectedItems: [],
+    };
+  }
+
+  let categoryFeedResolution: Awaited<ReturnType<typeof resolveCategoryFeedUrl>>;
+  try {
+    categoryFeedResolution = await resolveCategoryFeedUrl(
+      sourceId,
+      category,
+      pipelineRunId,
+      telemetry,
+      governedFetchContext,
+    );
+  } catch (error) {
+    if (error instanceof GovernedFetchDeferredError) {
+      return {
+        sourceId,
+        categoryId: categoryId || null,
+        candidates: [],
+        failed: 0,
+        feedUrl: category?.rssFeedUrl || null,
+        feedFormat: null,
+        deferredReason: "governor_deferred",
+        retryAt: null,
+        skipSummary: emptySkipSummary(),
+        rejectedItems: [],
+        hardCaseQueueCandidates: [],
+      };
+    }
+    throw error;
+  }
   const categoryFeedUrl = categoryFeedResolution.feedUrl;
   const isUsingDedicatedCategoryFeed = Boolean(
     categoryId && categoryFeedUrl && categoryFeedResolution.isScopedFeed,
@@ -1516,12 +1609,34 @@ export async function ingestSource(
   // A scoped category feed fully owns this target. Resolving the root source
   // as well creates unrelated publisher requests immediately before the real
   // feed fetch and can trigger host-level throttling.
-  const sourceFeedResolution = isUsingDedicatedCategoryFeed
-    ? {
-        feedUrl: null,
-        hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
-      }
-    : await resolveSourceFeedUrl(source, telemetry);
+  let sourceFeedResolution: Awaited<ReturnType<typeof resolveSourceFeedUrl>>;
+  try {
+    sourceFeedResolution = isUsingDedicatedCategoryFeed
+      ? {
+          feedUrl: null,
+          hardCaseQueueCandidate: null as HardCaseDiscoveryCandidate | null,
+        }
+      : await resolveSourceFeedUrl(source, telemetry, governedFetchContext);
+  } catch (error) {
+    if (error instanceof GovernedFetchDeferredError) {
+      return {
+        sourceId,
+        categoryId: categoryId || null,
+        candidates: [],
+        failed: 0,
+        feedUrl: categoryFeedUrl || null,
+        feedFormat: null,
+        deferredReason: "governor_deferred",
+        retryAt: null,
+        skipSummary: emptySkipSummary(),
+        rejectedItems: [],
+        hardCaseQueueCandidates: categoryFeedResolution.hardCaseQueueCandidate
+          ? [categoryFeedResolution.hardCaseQueueCandidate]
+          : [],
+      };
+    }
+    throw error;
+  }
   const sourceFeedUrl = sourceFeedResolution.feedUrl;
   const genericFeedDiscovered = Boolean(
     categoryId && categoryFeedResolution.genericFeedDiscovered,
@@ -1599,23 +1714,35 @@ export async function ingestSource(
           allowCrossDomainRedirects: true,
           signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
           headers: {
-            "User-Agent": "NuSift/1.0 Ingest-Agent",
+            "User-Agent": NUSIFT_CRAWLER_USER_AGENT,
             Accept: "application/rss+xml, application/xml, text/xml, text/html",
           },
           telemetry,
         };
-        let candidateResponse = await safeFetch(candidateFeedUrl, fetchOptions);
+        const fetchWithBody = (options: typeof fetchOptions) => governedSafeFetchAndParse(
+          candidateFeedUrl,
+          options,
+          {
+            ...governedFetchContext,
+            purpose: "feed",
+          },
+          async (candidateResponse) => ({
+            response: candidateResponse,
+            body: candidateResponse.ok ? await candidateResponse.text() : "",
+          }),
+        );
+        let fetchedCandidate = await fetchWithBody(fetchOptions);
+        let candidateResponse = fetchedCandidate.response;
+        let candidateXml = fetchedCandidate.body;
 
         if (candidateResponse.status === 429) {
-          const retryDelayMs = getInlineRssRateLimitRetryDelayMs(candidateResponse);
-          if (retryDelayMs !== null) {
-            await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-            candidateResponse = await safeFetch(candidateFeedUrl, {
-              ...fetchOptions,
-              signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
-              telemetry,
-            });
+          rateLimitedRetryAt = getRssRateLimitRetryAt(candidateResponse);
+          if (categoryId && isUsingDedicatedCategoryFeed) {
+            await prisma.sourceCategory.update({ where: { id: categoryId }, data: { nextRetryAt: rateLimitedRetryAt } });
+          } else {
+            await prisma.newsSource.update({ where: { id: sourceId }, data: { nextRetryAt: rateLimitedRetryAt } });
           }
+          break;
         }
 
         if (!candidateResponse.ok) {
@@ -1626,6 +1753,9 @@ export async function ingestSource(
               where: { id: categoryId },
               data: { nextRetryAt: rateLimitedRetryAt },
             });
+          } else if (candidateResponse.status === 429) {
+            rateLimitedRetryAt = getRssRateLimitRetryAt(candidateResponse);
+            await prisma.newsSource.update({ where: { id: sourceId }, data: { nextRetryAt: rateLimitedRetryAt } });
           }
           await logAgentScan({
             sourceId,
@@ -1642,9 +1772,13 @@ export async function ingestSource(
             where: { id: categoryId },
             data: { nextRetryAt: null },
           });
+        } else if (source.nextRetryAt) {
+          await prisma.newsSource.update({
+            where: { id: sourceId },
+            data: { nextRetryAt: null },
+          });
         }
 
-        const candidateXml = await candidateResponse.text();
         const parsedCandidateFeed = parseFeedItems(candidateXml);
         await logAgentScan({
           sourceId,
@@ -1669,7 +1803,8 @@ export async function ingestSource(
         }
 
         lastFeedFetchError = `No RSS/Atom items found for ${candidateFeedUrl}.`;
-      } catch (error: any) {
+          } catch (error: any) {
+        if (error instanceof GovernedFetchDeferredError) throw error;
         lastFeedFetchError = `${error?.message || String(error)} for ${candidateFeedUrl}`;
         await logAgentScan({
           sourceId,
@@ -1994,7 +2129,12 @@ export async function ingestSource(
         continue;
       }
 
-      const publishedAt = await resolvePublishedAtForFeedItem(item.pubDate, canonicalUrl, telemetry);
+      const publishedAt = await resolvePublishedAtForFeedItem(
+        item.pubDate,
+        canonicalUrl,
+        telemetry,
+        governedFetchContext,
+      );
       if (!publishedAt) {
         // Missing or invalid date — preserve existing behavior: skip.
         skipSummary.staleOrMissingPublishedAt += 1;
@@ -2074,6 +2214,9 @@ export async function ingestSource(
           discoveredFromCategoryFeed: isUsingDedicatedCategoryFeed,
           sourcePageUrl: preferredFrontPageUrl,
           fetchedAt: new Date().toISOString(),
+          ...(originalCanonicalUrl.toLowerCase().startsWith("http://")
+            ? { originalArticleUrl: originalCanonicalUrl }
+            : {}),
           ...(redirectedFromUrl ? { redirectedFromUrl } : {}),
         },
       });
@@ -2089,7 +2232,7 @@ export async function ingestSource(
       });
     }
 
-    if (candidates.length === 0) {
+    if (candidates.length === 0 && !rateLimitedRetryAt) {
       await logAgentScan({
         sourceId,
         categoryId,
@@ -2099,24 +2242,31 @@ export async function ingestSource(
       });
 
       try {
-        const htmlResponse = feedUrl === preferredFrontPageUrl
-          ? response
-          : await safeFetch(preferredFrontPageUrl, {
+        const htmlFetched = feedUrl === preferredFrontPageUrl
+          ? (response ? { response, body: "" } : null)
+          : await governedSafeFetchAndParse(preferredFrontPageUrl, {
               signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
               headers: {
-                "User-Agent": "NuSift/1.0 Ingest-Agent",
+                "User-Agent": NUSIFT_CRAWLER_USER_AGENT,
                 Accept: "text/html,application/xhtml+xml",
               },
               telemetry,
-            });
+            }, {
+              ...governedFetchContext,
+              purpose: "article_detail",
+            }, async (fallbackResponse) => ({
+              response: fallbackResponse,
+              body: fallbackResponse.ok ? await fallbackResponse.text() : "",
+            }));
+        const htmlResponse = htmlFetched?.response ?? null;
 
-        if (!htmlResponse.ok) {
+        if (!htmlResponse || !htmlResponse.ok) {
           await logAgentScan({
             sourceId,
             categoryId,
-            status: `HTML_FALLBACK_FAILED_${htmlResponse.status}`,
+            status: `HTML_FALLBACK_FAILED_${htmlResponse?.status ?? "UNKNOWN"}`,
             executionTimeMs: Date.now() - startedAt,
-            errorLog: `HTML fallback failed for ${preferredFrontPageUrl} with HTTP ${htmlResponse.status}.`,
+            errorLog: `HTML fallback failed for ${preferredFrontPageUrl} with HTTP ${htmlResponse?.status ?? "UNKNOWN"}.`,
           });
           if (isUnscopedCategoryTarget && !categoryFeedDiscoveryFailed) {
             await markCategoryAsNoRssFound(categoryId!, sourceId, {
@@ -2138,13 +2288,14 @@ export async function ingestSource(
           };
         }
 
-        const html = await htmlResponse.text();
+        const html = htmlFetched?.body || "";
         const htmlFallback = await extractHtmlCandidates(
           html,
           preferredFrontPageUrl,
           source.id,
           category?.pathUrl && !isUsingDedicatedCategoryFeed ? category.pathUrl : null,
           telemetry,
+          governedFetchContext,
         );
         skipSummary.outOfScope += htmlFallback.skipSummary.outOfScope;
         skipSummary.htmlFallbackNonArticle += htmlFallback.skipSummary.htmlFallbackNonArticle;
@@ -2221,6 +2372,15 @@ export async function ingestSource(
         targetUrl: category.pathUrl,
         rssFeedUrl: feedUrl,
       }).catch(() => {});
+    } else if (!categoryId && sourceFeedUrl) {
+      // A productive source-level feed owns only source-level discovery
+      // markers. It must not silently resolve category-scoped work.
+      await resolveHeadlessMarkersByAgent1Rss({
+        sourceId,
+        categoryId: null,
+        targetUrl: source.frontPageUrl,
+        rssFeedUrl: feedUrl,
+      }).catch(() => {});
     }
 
     return {
@@ -2235,6 +2395,21 @@ export async function ingestSource(
       hardCaseQueueCandidates,
     };
   } catch (error: any) {
+    if (error instanceof GovernedFetchDeferredError) {
+      return {
+        sourceId,
+        categoryId: categoryId || null,
+        candidates: [],
+        failed: 0,
+        feedUrl: preferredFeedUrl || preferredFrontPageUrl,
+        feedFormat: null,
+        deferredReason: "governor_deferred",
+        retryAt: null,
+        skipSummary: emptySkipSummary(),
+        rejectedItems: [],
+        hardCaseQueueCandidates,
+      };
+    }
     const isSecurityError = error instanceof SSRFError;
     await logAgentScan({
       sourceId,
@@ -2250,23 +2425,30 @@ export async function ingestSource(
 
     if (!isUsingDedicatedCategoryFeed && sourceFeedUrl && source.frontPageUrl) {
       try {
-        const htmlResponse = await safeFetch(source.frontPageUrl, {
+        const htmlFetched = await governedSafeFetchAndParse(source.frontPageUrl, {
           signal: AbortSignal.timeout(INGEST_HTTP_TIMEOUT_MS),
           headers: {
-            "User-Agent": "NuSift/1.0 Ingest-Agent",
+            "User-Agent": NUSIFT_CRAWLER_USER_AGENT,
             Accept: "text/html,application/xhtml+xml",
           },
           telemetry,
-        });
+        }, {
+          ...governedFetchContext,
+          purpose: "article_detail",
+        }, async (htmlResponse) => ({
+          response: htmlResponse,
+          body: htmlResponse.ok ? await htmlResponse.text() : "",
+        }));
 
-        if (htmlResponse.ok) {
-          const html = await htmlResponse.text();
+        if (htmlFetched.response.ok) {
+          const html = htmlFetched.body;
           const htmlFallback = await extractHtmlCandidates(
             html,
             source.frontPageUrl,
             source.id,
             undefined,
             telemetry,
+            governedFetchContext,
           );
           if (htmlFallback.candidates.length > 0) {
             await logAgentScan({
@@ -2342,9 +2524,13 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
   const seenKeys = new Set<string>();
 
   for (const candidate of candidates) {
+    const canonicalIdentity = getArticleTransportIdentity(candidate.canonicalUrl) || candidate.canonicalUrl || "";
+    const rssGuidIdentity = candidate.rssGuid
+      ? getArticleTransportIdentity(candidate.rssGuid) || candidate.rssGuid
+      : "";
     const dedupeKey = [
-      candidate.rssGuid || "",
-      candidate.canonicalUrl || "",
+      rssGuidIdentity,
+      canonicalIdentity,
       candidate.contentHash || "",
     ].join("|");
 
@@ -2359,6 +2545,13 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
 
   const rssGuids = [...new Set(dedupedCandidates.map((candidate) => candidate.rssGuid).filter(Boolean))] as string[];
   const canonicalUrls = [...new Set(dedupedCandidates.map((candidate) => candidate.canonicalUrl).filter(Boolean))] as string[];
+  const expandTransportVariants = (urls: string[]) => [...new Set(urls.flatMap((url) => {
+    const identity = getArticleTransportIdentity(url);
+    if (!identity) return [url];
+    return [url, identity, identity.replace(/^https:/i, "http:")];
+  }))];
+  const rssGuidLookupUrls = expandTransportVariants(rssGuids);
+  const canonicalLookupUrls = expandTransportVariants(canonicalUrls);
   const contentHashes = [...new Set(dedupedCandidates.map((candidate) => candidate.contentHash).filter(Boolean))] as string[];
 
   const existingArticles =
@@ -2366,8 +2559,8 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
       ? await prisma.article.findMany({
           where: {
             OR: [
-              rssGuids.length ? { rssGuid: { in: rssGuids } } : undefined,
-              canonicalUrls.length ? { canonicalUrl: { in: canonicalUrls } } : undefined,
+              rssGuidLookupUrls.length ? { rssGuid: { in: rssGuidLookupUrls } } : undefined,
+              canonicalLookupUrls.length ? { canonicalUrl: { in: canonicalLookupUrls } } : undefined,
               contentHashes.length ? { contentHash: { in: contentHashes } } : undefined,
             ].filter(nonNullish),
           },
@@ -2382,19 +2575,39 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
         })
       : [];
 
-  const existingRssGuids = new Set(existingArticles.map((article) => article.rssGuid).filter(Boolean));
-  const existingCanonicalUrls = new Set(existingArticles.map((article) => article.canonicalUrl).filter(Boolean));
+  const existingRssGuidIdentities = new Set(
+    existingArticles
+      .map((article) => article.rssGuid)
+      .filter(Boolean)
+      .map((guid) => getArticleTransportIdentity(guid!) || guid!),
+  );
+  const existingCanonicalIdentities = new Set(
+    existingArticles
+      .map((article) => article.canonicalUrl)
+      .filter(Boolean)
+      .map((url) => getArticleTransportIdentity(url!) || url!),
+  );
   const existingContentHashes = new Set(existingArticles.map((article) => article.contentHash).filter(Boolean));
-  const existingByRssGuid = new Map(existingArticles.filter((article) => article.rssGuid).map((article) => [article.rssGuid!, article]));
-  const existingByCanonicalUrl = new Map(existingArticles.filter((article) => article.canonicalUrl).map((article) => [article.canonicalUrl!, article]));
+  const existingByRssGuidIdentity = new Map(
+    existingArticles
+      .filter((article) => article.rssGuid)
+      .map((article) => [getArticleTransportIdentity(article.rssGuid!) || article.rssGuid!, article]),
+  );
+  const existingByCanonicalIdentity = new Map(
+    existingArticles
+      .filter((article) => article.canonicalUrl)
+      .map((article) => [getArticleTransportIdentity(article.canonicalUrl!) || article.canonicalUrl!, article]),
+  );
   const existingByContentHash = new Map(existingArticles.filter((article) => article.contentHash).map((article) => [article.contentHash!, article]));
 
   const enrichmentUpdates = new Map<number, { categoryId?: string | null; tags?: string[] }>();
 
   for (const candidate of dedupedCandidates) {
     const existingArticle =
-      (candidate.rssGuid ? existingByRssGuid.get(candidate.rssGuid) : null) ||
-      existingByCanonicalUrl.get(candidate.canonicalUrl) ||
+      (candidate.rssGuid
+        ? existingByRssGuidIdentity.get(getArticleTransportIdentity(candidate.rssGuid) || candidate.rssGuid)
+        : null) ||
+      existingByCanonicalIdentity.get(getArticleTransportIdentity(candidate.canonicalUrl) || candidate.canonicalUrl) ||
       existingByContentHash.get(candidate.contentHash);
 
     if (!existingArticle) continue;
@@ -2428,8 +2641,8 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
 
   const newCandidates = dedupedCandidates.filter((candidate) => {
     const isDuplicate =
-      (candidate.rssGuid && existingRssGuids.has(candidate.rssGuid)) ||
-      (candidate.canonicalUrl && existingCanonicalUrls.has(candidate.canonicalUrl)) ||
+      (candidate.rssGuid && existingRssGuidIdentities.has(getArticleTransportIdentity(candidate.rssGuid) || candidate.rssGuid)) ||
+      (candidate.canonicalUrl && existingCanonicalIdentities.has(getArticleTransportIdentity(candidate.canonicalUrl) || candidate.canonicalUrl)) ||
       (candidate.contentHash && existingContentHashes.has(candidate.contentHash));
 
     if (isDuplicate) {

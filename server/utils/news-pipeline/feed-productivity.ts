@@ -66,6 +66,7 @@ export async function markFeedRunOutcome(input: {
           consecutiveNonProductiveRuns: 0,
           lastProductiveFeedUrl: input.feedUrl || null,
           lastProductiveAt: new Date(),
+          nextRetryAt: null,
         },
       });
       await autoResolveOpenReviewRequests({ sourceId: input.sourceId, categoryId: input.categoryId });
@@ -95,6 +96,7 @@ export async function markFeedRunOutcome(input: {
         consecutiveNonProductiveRuns: 0,
         lastProductiveFeedUrl: input.feedUrl || null,
         lastProductiveAt: new Date(),
+        nextRetryAt: null,
       },
     });
     await autoResolveOpenReviewRequests({ sourceId: input.sourceId });

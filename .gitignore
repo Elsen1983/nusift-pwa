@@ -35,3 +35,8 @@ data/
 *.dump
 tmp-*
 /.swc
+
+# Local architecture tooling (never deployed)
+/graphify-out/
+/docs/Graphify/
+/docs/.obsidian/

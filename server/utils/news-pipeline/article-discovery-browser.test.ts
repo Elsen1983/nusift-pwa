@@ -164,7 +164,60 @@ describe("discoverArticleLinksWithBrowser", () => {
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
 
+  it("does not launch Chromium when the durable circuit is open", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    const { createInitialDomainGovernorState } = await import("./domain-request-governor");
+    const now = new Date();
+    const state = {
+      ...createInitialDomainGovernorState("example.com", now),
+      circuitState: "OPEN" as const,
+      cooldownUntil: new Date(now.getTime() + 60_000),
+      nextRequestAt: new Date(now.getTime() + 60_000),
+    };
+    const db = {
+      domainRequestGovernor: {
+        findUnique: vi.fn().mockResolvedValue(state),
+        findMany: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        updateMany: vi.fn(),
+      },
+    };
+
+    try {
+      const fn = await loadFn();
+      const result = await fn({
+        targetUrl: "https://example.com/news",
+        sourceId: "src-1",
+        targetType: "source",
+        governorContext: {
+          agent: "agent2",
+          stage: "article-discovery-browser-listing",
+          mode: "enforce",
+          db: db as any,
+        },
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        reason: "governor_deferred",
+        diagnostics: {
+          browserAttempted: false,
+          governorDeferred: true,
+          blockedReason: "circuit-open",
+        },
+      });
+      expect(mockChromiumLaunch).not.toHaveBeenCalled();
+      expect(mockBrowserNewContext).not.toHaveBeenCalled();
+    } finally {
+      if (original === undefined) delete process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+      else process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original;
+    }
+  });
+
   it("returns navigation_failed when page.goto fails", async () => {
+    // Open-circuit behavior is covered immediately before ordinary navigation
+    // failures so the two control paths remain visibly distinct.
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
 

@@ -118,6 +118,12 @@ export default defineEventHandler(async (event) => {
     .filter(([kind]) => !["SUCCESS", "SKIPPED", "RETRYABLE_FAILURE", "HEADLESS_REQUIRED", "INTERSTITIAL_OR_CHALLENGE"].includes(kind))
     .reduce((sum, [, count]) => sum + (typeof count === "number" ? count : 0), 0)
     + interstitialCounts.nonRetryable;
+  // StageBatchTelemetry intentionally combines two authority domains:
+  // operation counters are actual-work observations from the tracker, while
+  // disposition buckets below come only from runEnrichmentBatch's persisted
+  // outcome result. Claim loss and persistence failure therefore remain visible
+  // as durable disposition buckets without becoming successes/failures in
+  // browserFallbackStats or HTTP evidence.
   const telemetry = tracker.finalize({
     processed: result.articleCount,
     succeeded: byKind.SUCCESS ?? 0,

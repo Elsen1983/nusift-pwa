@@ -1,6 +1,6 @@
 import { prisma } from "../prisma";
 import { createHeadlessQueueArtifactIfAbsent } from "./headless-queue-artifact";
-import { safeFetch } from "../ssrf-guard";
+import { governedSafeFetch, governedSafeFetchAndParse, GovernedFetchDeferredError, GovernedFetchRequestBudgetError } from "./governed-fetch";
 import { logAgentScan } from "./log";
 import { createPipelineRun, finalizePipelineRun } from "./artifacts";
 import { normalizeUrl } from "./text";
@@ -33,6 +33,7 @@ import {
   type StaticDiscoveryRateLimitEvidence,
   type StaticDiscoveryRequestBudgetSnapshot,
   readStaticResponseHeader,
+  type StaticDiscoveryGovernedFetchContext,
 } from "./article-discovery-helpers";
 import { Prisma } from "@prisma/client";
 import { isLikelyArticleUrl } from "./article-url-policy";
@@ -43,6 +44,8 @@ import {
   type StageBatchProbe,
 } from "./stage-telemetry";
 import { evaluateRssOwnedTargetForAgent2 } from "./rss-owned-target";
+import { shouldRunAgent2Discovery } from "./feed-first-policy";
+import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
 
 // DISCOVERY_FRESHNESS_MS re-exported from article-discovery-helpers for backward compat
 const MAX_LISTING_PAGES = 3;
@@ -50,7 +53,7 @@ const MAX_LINKS_PER_PAGE = 20;
 export const MAX_ACCEPTED_CANDIDATES = 60;
 export const MAX_EVALUATED_CANDIDATES = 30;
 export const MAX_STATIC_REQUESTS = 40;
-const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
+const USER_AGENT = NUSIFT_CRAWLER_USER_AGENT;
 
 /**
  * Build compact verified host-transition evidence for a discovery run.
@@ -77,6 +80,8 @@ export type ArticleDiscoveryTarget = {
   rssStatus: string;
   currentFeedProductive: boolean;
   consecutiveNonProductiveRuns: number;
+  lastProductiveAt?: Date | null;
+  nextRetryAt?: Date | null;
   /** Persisted category/source discovery evidence, when available. */
   scopeMatches?: boolean;
   mediaName: string;
@@ -143,9 +148,9 @@ export type ArticleDiscoveryResult = {
   }>;
   /** Static discovery was interrupted by a bounded retryable condition. */
   retryable: boolean;
-  /** False when HTTP 429 or request-budget exhaustion stopped the shortlist early. */
+  /** False when HTTP 429, governor deferral, or request-budget exhaustion stopped the shortlist early. */
   discoveryComplete: boolean;
-  detailEvaluationStoppedReason: "rate_limited" | "request_budget_exhausted" | "evaluation_cap" | "accepted_cap" | null;
+  detailEvaluationStoppedReason: "rate_limited" | "request_budget_exhausted" | "governor_deferred" | "evaluation_cap" | "accepted_cap" | null;
   rateLimitEvidence: StaticDiscoveryRateLimitEvidence[];
   requestBudget: StaticDiscoveryRequestBudgetSnapshot;
 };
@@ -167,6 +172,7 @@ export type ListingFetchDiagnostic = {
   paginationLinkCount: number;
   reason:
     | "fetch_failed"
+    | "governor_deferred"
     | "non_html_content"
     | "empty_html"
     | "blocked_or_challenge_like_html"
@@ -436,6 +442,7 @@ const crawlListingPages = async (
   deniedPathPrefixes?: string[] | null,
   telemetry?: DiscoveryNetworkTelemetry,
   requestBudget?: StaticDiscoveryRequestBudget,
+  governedFetchContext?: StaticDiscoveryGovernedFetchContext,
 ) => {
   const visitedPages: string[] = [];
   const diagnostics: ListingFetchDiagnostic[] = [];
@@ -443,6 +450,7 @@ const crawlListingPages = async (
   const seenPages = new Set<string>();
   const queue = [targetUrl];
   let firstPageHtml: string | null = null;
+  let governorDeferred = false;
 
   while (queue.length > 0 && visitedPages.length < MAX_LISTING_PAGES) {
     const pageUrl = queue.shift()!;
@@ -450,33 +458,64 @@ const crawlListingPages = async (
     if (seenPages.has(normalizedPageUrl)) continue;
     seenPages.add(normalizedPageUrl);
 
-    let response: Response | null = null;
-    if (requestBudget && !requestBudget.consume("listing", pageUrl)) {
-      diagnostics.push({
-        url: pageUrl,
-        finalUrl: null,
-        status: null,
-        contentType: null,
-        htmlLength: null,
-        title: null,
-        rawLinkCount: 0,
-        articleLikeLinkCount: 0,
-        paginationLinkCount: 0,
-        reason: "request_budget_exhausted",
-        hints: ["static request budget exhausted"],
-        requestBudgetExhausted: true,
-      });
-      break;
-    }
+    let fetchedPage: { response: Response; html: string } | null = null;
     try {
-      response = await safeFetch(pageUrl, {
+      fetchedPage = await governedSafeFetchAndParse(pageUrl, {
         headers: {
           "User-Agent": USER_AGENT,
           Accept: "text/html,application/xhtml+xml",
         },
         telemetry,
-      });
+      }, {
+        ...(governedFetchContext ?? {}),
+        agent: "agent2",
+        stage: "article-discovery",
+        purpose: "listing",
+        requestBudget: requestBudget ? {
+          snapshot: requestBudget.snapshot,
+          consume: requestBudget.consume,
+          phase: "listing",
+        } : undefined,
+      }, async (response) => ({
+        response,
+        html: response.ok ? await response.text() : "",
+      }));
     } catch (error: any) {
+      if (error instanceof GovernedFetchRequestBudgetError) {
+        requestBudget?.recordWorkSkipped("listing", pageUrl, "request budget exhausted");
+        diagnostics.push({
+          url: pageUrl,
+          finalUrl: null,
+          status: null,
+          contentType: null,
+          htmlLength: null,
+          title: null,
+          rawLinkCount: 0,
+          articleLikeLinkCount: 0,
+          paginationLinkCount: 0,
+          reason: "request_budget_exhausted",
+          hints: ["static request budget exhausted"],
+          requestBudgetExhausted: true,
+        });
+        break;
+      }
+      if (error instanceof GovernedFetchDeferredError) {
+        governorDeferred = true;
+        diagnostics.push({
+          url: pageUrl,
+          finalUrl: null,
+          status: null,
+          contentType: null,
+          htmlLength: null,
+          title: null,
+          rawLinkCount: 0,
+          articleLikeLinkCount: 0,
+          paginationLinkCount: 0,
+          reason: "governor_deferred",
+          hints: [`governor_deferred=${error.reason}`],
+        });
+        break;
+      }
       diagnostics.push({
         url: pageUrl,
         finalUrl: null,
@@ -493,6 +532,8 @@ const crawlListingPages = async (
       continue;
     }
 
+    if (!fetchedPage) continue;
+    const { response, html } = fetchedPage;
     const contentType = typeof response.headers?.get === "function"
       ? response.headers.get("content-type")
       : null;
@@ -527,7 +568,6 @@ const crawlListingPages = async (
       continue;
     }
 
-    const html = await response.text();
     // The effective page URL is the final URL after redirects. A configured
     // root host may redirect to a publisher-controlled subdomain that renders
     // the actual content; candidate links must be evaluated against this
@@ -606,7 +646,7 @@ const crawlListingPages = async (
     }
   }
 
-  return { visitedPages, articleLinks: [...articleLinks.values()], firstPageHtml, diagnostics };
+  return { visitedPages, articleLinks: [...articleLinks.values()], firstPageHtml, diagnostics, governorDeferred };
 };
 
 type CandidateEvaluationResult = {
@@ -646,6 +686,7 @@ const discoverArticleCandidatesForPage = async (
     deniedPathPrefixes?: string[] | null;
     telemetry?: DiscoveryNetworkTelemetry;
     requestBudget?: StaticDiscoveryRequestBudget;
+    governedFetchContext?: StaticDiscoveryGovernedFetchContext;
     /** Authoritative verified host scope established by discovery evidence. */
     verifiedHostScope?: VerifiedHostScope | null;
     /** @deprecated compatibility-only input for isolated callers. */
@@ -684,6 +725,7 @@ const discoverArticleCandidatesForPage = async (
     freshnessMs: overrides?.freshnessMs,
     telemetry: overrides?.telemetry,
     requestBudget: overrides?.requestBudget,
+    governedFetchContext: overrides?.governedFetchContext,
     // The one authoritative scope is carried into metadata evaluation and URL
     // scoring; raw host arrays are not used by the production path.
     verifiedHostScope: overrides?.verifiedHostScope ?? null,
@@ -738,10 +780,26 @@ export const isAgent2EligibleTarget = (input: {
   consecutiveNonProductiveRuns: number;
   rssFeedUrl?: string | null;
   feedProvenance?: string | null;
+  lastProductiveAt?: Date | string | null;
+  nextRetryAt?: Date | string | null;
   scopeMatches?: boolean;
   /** Explicit admin request: bypass the RSS-owned skip for these targets. */
   bypassRssOwned?: boolean;
 }): boolean => {
+  const feedFirstDecision = shouldRunAgent2Discovery({
+    targetType: input.scopeMatches === undefined ? "source" : "category",
+    rssStatus: input.rssStatus,
+    rssFeedUrl: input.rssFeedUrl,
+    currentFeedProductive: input.currentFeedProductive,
+    lastProductiveAt: input.lastProductiveAt,
+    consecutiveNonProductiveRuns: input.consecutiveNonProductiveRuns,
+    nextRetryAt: input.nextRetryAt,
+    scopeMatches: input.scopeMatches,
+    manualOverride: input.bypassRssOwned,
+  });
+  if (input.lastProductiveAt !== undefined || input.nextRetryAt !== undefined) {
+    return feedFirstDecision.runAgent2;
+  }
   // An explicit admin request escalates the target directly, bypassing the
   // RSS-owned skip and the normal cooldown rules for that target.
   if (input.bypassRssOwned) return true;
@@ -782,6 +840,7 @@ export type TargetSkipReason =
   | "rss_active_productive"
   | "rss_owned_productive"
   | "rss_owned_waiting_evidence"
+  | "rss_rate_limited_cooldown"
   | "rss_active_waiting_for_second_nonproductive_run"
   | "rss_pending_discovery"
   | "unsupported_status"
@@ -800,6 +859,7 @@ const EMPTY_SKIP_REASONS = (): Record<TargetSkipReason, number> => ({
   rss_active_productive: 0,
   rss_owned_productive: 0,
   rss_owned_waiting_evidence: 0,
+  rss_rate_limited_cooldown: 0,
   rss_active_waiting_for_second_nonproductive_run: 0,
   rss_pending_discovery: 0,
   unsupported_status: 0,
@@ -810,11 +870,35 @@ const classifySkipReason = (input: {
   rssStatus: string;
   currentFeedProductive: boolean;
   consecutiveNonProductiveRuns: number;
+  lastProductiveAt?: Date | string | null;
+  nextRetryAt?: Date | string | null;
   rssFeedUrl?: string | null;
   feedProvenance?: string | null;
   scopeMatches?: boolean;
   bypassRssOwned?: boolean;
 }): TargetSkipReason => {
+  const hasDurableFeedState = input.lastProductiveAt !== undefined || input.nextRetryAt !== undefined;
+  const feedFirstDecision = hasDurableFeedState
+    ? shouldRunAgent2Discovery({
+        targetType: input.scopeMatches === undefined ? "source" : "category",
+        rssStatus: input.rssStatus,
+        rssFeedUrl: input.rssFeedUrl,
+        currentFeedProductive: input.currentFeedProductive,
+        lastProductiveAt: input.lastProductiveAt,
+        consecutiveNonProductiveRuns: input.consecutiveNonProductiveRuns,
+        nextRetryAt: input.nextRetryAt,
+        scopeMatches: input.scopeMatches,
+        manualOverride: input.bypassRssOwned,
+      })
+    : null;
+  if (feedFirstDecision && !feedFirstDecision.runAgent2) {
+    if (feedFirstDecision.reason === "active_feed_rate_limited") return "rss_rate_limited_cooldown";
+    if (feedFirstDecision.reason === "productive_fresh_feed") {
+      const trustedFeed = Boolean(input.rssFeedUrl) &&
+        (input.feedProvenance === "USER_SUBMITTED" || input.feedProvenance === "ADMIN_CONFIRMED");
+      return trustedFeed ? "rss_owned_productive" : "rss_active_productive";
+    }
+  }
   const rssOwned = input.bypassRssOwned
     ? { rssOwned: false as const, eligibleForAgent2: true as const, reason: "not_rss_owned" as const }
     : evaluateRssOwnedTargetForAgent2({
@@ -870,6 +954,8 @@ export async function resolveAgent2Targets(input?: {
             feedProvenance: true,
             currentFeedProductive: true,
             consecutiveNonProductiveRuns: true,
+            lastProductiveAt: true,
+            nextRetryAt: true,
             discoveryEvidence: true,
           },
         })
@@ -886,6 +972,8 @@ export async function resolveAgent2Targets(input?: {
             feedProvenance: true,
             currentFeedProductive: true,
             consecutiveNonProductiveRuns: true,
+            lastProductiveAt: true,
+            nextRetryAt: true,
             discoveryEvidence: true,
           },
         })
@@ -906,6 +994,8 @@ export async function resolveAgent2Targets(input?: {
     rssStatus: string;
     currentFeedProductive: boolean;
     consecutiveNonProductiveRuns: number;
+    lastProductiveAt?: Date | null;
+    nextRetryAt?: Date | null;
     skipReason: TargetSkipReason;
   }> = [];
   const MAX_SKIP_SAMPLES = 5;
@@ -964,15 +1054,25 @@ export async function resolveAgent2Targets(input?: {
         rssFeedUrl: category.rssFeedUrl,
         feedProvenance: category.feedProvenance,
         currentFeedProductive: category.currentFeedProductive,
+        lastProductiveAt: category.lastProductiveAt,
         consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
+        nextRetryAt: category.nextRetryAt,
         scopeMatches: readScopeMatch(category.discoveryEvidence),
       });
       if (categoryEvaluation.rssOwned && categoryEvaluation.eligibleForAgent2) {
         escalationReasons[categoryEvaluation.reason] = (escalationReasons[categoryEvaluation.reason] || 0) + 1;
       }
-      const categorySkipReason = isAgent2EligibleTarget({ ...category, bypassRssOwned: input?.bypassRssOwned })
+      const categorySkipReason = isAgent2EligibleTarget({
+        ...category,
+        scopeMatches: readScopeMatch(category.discoveryEvidence),
+        bypassRssOwned: input?.bypassRssOwned,
+      })
         ? null /* eligible */
-        : classifySkipReason({ ...category, bypassRssOwned: input?.bypassRssOwned });
+        : classifySkipReason({
+            ...category,
+            scopeMatches: readScopeMatch(category.discoveryEvidence),
+            bypassRssOwned: input?.bypassRssOwned,
+          });
       if (categoryAuditEntries.length < MAX_CATEGORY_AUDIT) {
         categoryAuditEntries.push({
           sourceId: target.sourceId,
@@ -995,8 +1095,10 @@ export async function resolveAgent2Targets(input?: {
             targetUrl: category.pathUrl,
             rssStatus: category.rssStatus,
             currentFeedProductive: category.currentFeedProductive,
-        consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
-        skipReason: categorySkipReason,
+            lastProductiveAt: category.lastProductiveAt,
+            consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
+            nextRetryAt: category.nextRetryAt,
+            skipReason: categorySkipReason,
           });
         }
         continue;
@@ -1009,6 +1111,8 @@ export async function resolveAgent2Targets(input?: {
         rssStatus: category.rssStatus,
         currentFeedProductive: category.currentFeedProductive,
         consecutiveNonProductiveRuns: category.consecutiveNonProductiveRuns,
+        lastProductiveAt: category.lastProductiveAt,
+        nextRetryAt: category.nextRetryAt,
         scopeMatches: readScopeMatch(category.discoveryEvidence),
         mediaName: source.mediaName,
       });
@@ -1023,14 +1127,25 @@ export async function resolveAgent2Targets(input?: {
         rssFeedUrl: source.rssFeedUrl,
         feedProvenance: source.feedProvenance,
         currentFeedProductive: source.currentFeedProductive,
+        lastProductiveAt: source.lastProductiveAt,
         consecutiveNonProductiveRuns: source.consecutiveNonProductiveRuns,
+        nextRetryAt: source.nextRetryAt,
         scopeMatches: readScopeMatch(source.discoveryEvidence),
       });
       if (sourceEvaluation.rssOwned && sourceEvaluation.eligibleForAgent2) {
         escalationReasons[sourceEvaluation.reason] = (escalationReasons[sourceEvaluation.reason] || 0) + 1;
       }
-      if (!isAgent2EligibleTarget({ ...source, bypassRssOwned: input?.bypassRssOwned })) {
-        const reason = classifySkipReason({ ...source, bypassRssOwned: input?.bypassRssOwned });
+      const sourceScopeMatches = readScopeMatch(source.discoveryEvidence);
+      if (!isAgent2EligibleTarget({
+        ...source,
+        scopeMatches: sourceScopeMatches,
+        bypassRssOwned: input?.bypassRssOwned,
+      })) {
+        const reason = classifySkipReason({
+          ...source,
+          scopeMatches: sourceScopeMatches,
+          bypassRssOwned: input?.bypassRssOwned,
+        });
         skippedReasons[reason] += 1;
         if (skippedSamples.length < MAX_SKIP_SAMPLES) {
           skippedSamples.push({
@@ -1040,7 +1155,9 @@ export async function resolveAgent2Targets(input?: {
             targetUrl: source.frontPageUrl,
             rssStatus: source.rssStatus,
             currentFeedProductive: source.currentFeedProductive,
+            lastProductiveAt: source.lastProductiveAt,
             consecutiveNonProductiveRuns: source.consecutiveNonProductiveRuns,
+            nextRetryAt: source.nextRetryAt,
             skipReason: reason,
           });
         }
@@ -1053,6 +1170,8 @@ export async function resolveAgent2Targets(input?: {
         rssStatus: source.rssStatus,
         currentFeedProductive: source.currentFeedProductive,
         consecutiveNonProductiveRuns: source.consecutiveNonProductiveRuns,
+        lastProductiveAt: source.lastProductiveAt,
+        nextRetryAt: source.nextRetryAt,
         scopeMatches: readScopeMatch(source.discoveryEvidence),
         mediaName: source.mediaName,
       });
@@ -1288,13 +1407,21 @@ export async function discoverArticlesFromTarget(
   // A listing is sufficient when it exposes enough viable links to fill the
   // detail evaluation cap. This is deliberately based on pre-evaluation link
   // evidence, never on accepted candidates that have not been evaluated yet.
+  let listingGovernorDeferred = false;
   const listing = await crawlListingPages(
     target.targetUrl,
     effectiveCategoryPathUrl,
     deniedPathPrefixes,
     telemetry,
     requestBudget,
+    {
+      sourceId: target.sourceId,
+      categoryId: target.categoryId ?? null,
+    },
   ).catch((error: any) => {
+    if (error instanceof GovernedFetchDeferredError) {
+      listingGovernorDeferred = true;        return { visitedPages: [], articleLinks: [], firstPageHtml: null, diagnostics: [], governorDeferred: true };
+    }
     throw new Error(`Article discovery fetch failed: ${error?.message || String(error)}`);
   });
   // A page is sufficient when it exposes the largest viable static batch the
@@ -1302,6 +1429,7 @@ export async function discoverArticlesFromTarget(
   // evaluation cap. This avoids sitemap traffic merely because the default
   // evaluation cap (30) exceeds the per-page listing-link cap (20).
   const listingSufficiencyThreshold = Math.min(maxEvaluatedCandidates, MAX_LINKS_PER_PAGE);
+  listingGovernorDeferred ||= listing.governorDeferred === true;
   const listingIsSufficient = listing.articleLinks.length >= listingSufficiencyThreshold;
   const listingRateLimited = requestBudget.rateLimitEvidence.some((e) => e.phase === "listing");
   const listingBudgetSnapshot = requestBudget.snapshot();
@@ -1310,12 +1438,26 @@ export async function discoverArticlesFromTarget(
   // slot remains, record the known skipped fallback explicitly rather than
   // pretending the target completed normally.
   const listingBudgetAvailable = listingBudgetSnapshot.remaining > 0;
-  const shouldProbeSitemap = !listingIsSufficient && !listingRateLimited && listingBudgetAvailable;
+  const shouldProbeSitemap = !listingGovernorDeferred && !listingIsSufficient && !listingRateLimited && listingBudgetAvailable;
   if (!listingIsSufficient && !listingRateLimited && !listingBudgetAvailable) {
     requestBudget.recordWorkSkipped("sitemap", `${new URL(target.targetUrl).origin}/sitemap.xml`, "sparse listing requires sitemap fallback");
   }
   const sitemapEntries = shouldProbeSitemap
-    ? await discoverSitemapUrls(target.targetUrl, telemetry, requestBudget).catch(() => [])
+    ? await discoverSitemapUrls(
+        target.targetUrl,
+        telemetry,
+        requestBudget,
+        {
+          sourceId: target.sourceId,
+          categoryId: target.categoryId ?? null,
+          mode: undefined,
+        },
+      ).catch((error) => {
+        if (error instanceof GovernedFetchDeferredError) {
+          listingGovernorDeferred = true;
+        }
+        return [];
+      })
     : [];
   const initialBudgetSnapshot = requestBudget.snapshot();
   // Final-slot consumption is an exact boundary, not exhaustion evidence. A
@@ -1383,11 +1525,13 @@ export async function discoverArticlesFromTarget(
   }
 
   // ── Phase 3: Extract candidates from merged links with outcome tracking ─
-  let detailEvaluationStoppedReason: ArticleDiscoveryResult["detailEvaluationStoppedReason"] = initialRateLimitEvidence
-    ? "rate_limited"
-    : initialBudgetExhausted
-      ? "request_budget_exhausted"
-      : null;
+  let detailEvaluationStoppedReason: ArticleDiscoveryResult["detailEvaluationStoppedReason"] = listingGovernorDeferred
+    ? "governor_deferred"
+    : initialRateLimitEvidence
+      ? "rate_limited"
+      : initialBudgetExhausted
+        ? "request_budget_exhausted"
+        : null;
   let evaluatedCandidateCount = 0;
   let discoveryComplete = detailEvaluationStoppedReason === null;
   for (const articleLink of allArticleLinks.values()) {
@@ -1398,7 +1542,7 @@ export async function discoverArticlesFromTarget(
       discoveryComplete = false;
       break;
     }
-    if (requestBudget.snapshot().exhausted) {
+    if (requestBudget.snapshot().exhausted || requestBudget.snapshot().remaining <= 0) {
       requestBudget.recordWorkSkipped("article_detail", articleLink.url, "article detail remained after request budget was exhausted");
       detailEvaluationStoppedReason = "request_budget_exhausted";
       discoveryComplete = false;
@@ -1429,6 +1573,10 @@ export async function discoverArticlesFromTarget(
           ...(deniedPathPrefixes && deniedPathPrefixes.length > 0 ? { deniedPathPrefixes } : {}),
           telemetry,
           requestBudget,
+          governedFetchContext: {
+            sourceId: target.sourceId,
+            categoryId: target.categoryId ?? null,
+          },
           verifiedHostScope,
         },
       );
@@ -1441,6 +1589,11 @@ export async function discoverArticlesFromTarget(
           detailEvaluationStoppedReason = "rate_limited";
           discoveryComplete = false;
           telemetry?.recordRateLimited?.(429);
+          break;
+        }
+        if (result.outcome.governorDeferred) {
+          detailEvaluationStoppedReason = "governor_deferred";
+          discoveryComplete = false;
           break;
         }
         if (result.outcome.requestBudgetExhausted) {
@@ -1473,6 +1626,11 @@ export async function discoverArticlesFromTarget(
         break;
       }
     } catch (error: any) {
+      if (error instanceof GovernedFetchDeferredError) {
+        detailEvaluationStoppedReason = "governor_deferred";
+        discoveryComplete = false;
+        break;
+      }
       skipSummary.htmlFallbackNonArticle += 1;
       pushRejectedItem(rejectedItems, {
         reason: "html_fallback_non_article",
@@ -1499,7 +1657,7 @@ export async function discoverArticlesFromTarget(
     discoveryComplete = false;
   }
   const rateLimitEvidence = [...requestBudget.rateLimitEvidence];
-  const retryable = rateLimitEvidence.length > 0 || detailEvaluationStoppedReason === "request_budget_exhausted" || !discoveryComplete;
+  const retryable = rateLimitEvidence.length > 0 || detailEvaluationStoppedReason === "request_budget_exhausted" || detailEvaluationStoppedReason === "governor_deferred" || !discoveryComplete;
   const qualityAssessment = assessArticleDiscoveryQuality({
     acceptedCount: candidates.length,
     totalEvaluated: summary.totalEvaluated,

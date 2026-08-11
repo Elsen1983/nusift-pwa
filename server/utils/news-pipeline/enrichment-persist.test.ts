@@ -167,6 +167,23 @@ describe("buildArticleEnrichmentUpdate", () => {
     expect(summary.fields).toBeUndefined();
   });
 
+  it("promotes an HTTP Article canonical URL after successful HTTPS transport", async () => {
+    const { buildArticleEnrichmentUpdate } = await import("./enrichment-persist");
+    const outcome = makeSuccess();
+    outcome.articleUrl = "https://example.com/a";
+    outcome.provenance.originalArticleUrl = "http://example.com/a";
+    outcome.method.transportUrl = "https://example.com/a";
+    outcome.method.originalArticleUrl = "http://example.com/a";
+
+    const update = buildArticleEnrichmentUpdate(outcome, {
+      existingTitle: "Published title",
+      existingCanonicalUrl: "http://example.com/a",
+    }) as Record<string, unknown>;
+
+    expect(update.canonicalUrl).toBe("https://example.com/a");
+    expect(update.publicationStatus).toBe("PUBLISHED");
+  });
+
   it("derives publication from the body that will actually be durable", async () => {
     const { buildArticleEnrichmentUpdate } = await import("./enrichment-persist");
 

@@ -224,7 +224,7 @@ export function normalizeRejectionDiagnostic(
     const validSkippedReasons: ReadonlySet<string> = new Set([
       "not_eligible", "browser_disabled", "max_attempts_exhausted",
       "source_cooldown", "runtime_unavailable_global_stop",
-      "rate_limited_source", "recently_blocked",
+      "rate_limited_source", "recently_blocked", "static_429_host",
     ]);
     const browserFallback = bf
       ? {

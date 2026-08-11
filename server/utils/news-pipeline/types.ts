@@ -303,6 +303,8 @@ export interface IngestCandidateProvenance {
   discoveredFromCategoryFeed?: boolean;
   sourcePageUrl?: string | null;
   fetchedAt: string;
+  /** Original RSS/Atom item URL before HTTPS transport promotion or redirect resolution. */
+  originalArticleUrl?: string | null;
   /** Original discovered URL when the canonical URL was resolved through a redirector. */
   redirectedFromUrl?: string | null;
 }
@@ -486,6 +488,8 @@ export type FeedDiscoveryResult = {
   topCandidates: DiscoverySummaryCandidate[];
   rejectedCandidates: RejectedDiscoveryCandidate[];
   lastError?: string;
+  /** Neutral static transport defer; never implies publisher failure or browser eligibility. */
+  deferredReason?: "governor_deferred" | null;
   /** Canonical feed identity for the resolved feedUrl, derived from canonicalFeedKey(). Present when a feed was discovered. */
   canonicalIdentity?: string | null;
 };
@@ -741,6 +745,8 @@ export interface IngestCandidate {
   normalizationFlags?: string[];
 }
 
+export type IngestDeferredReason = "rate_limited" | "redirect_retry" | "governor_deferred";
+
 export interface IngestResult {
   sourceId: string;
   categoryId?: string | null;
@@ -751,7 +757,8 @@ export interface IngestResult {
   skipSummary: IngestSkipSummary;
   rejectedItems: IngestRejectedItem[];
   hardCaseQueueCandidates?: HardCaseDiscoveryCandidate[];
-  deferredReason?: "rate_limited" | "redirect_retry" | null;
+  /** Neutral governor defer; never represents a publisher/network failure. */
+  deferredReason?: IngestDeferredReason | null;
   retryAt?: string | null;
 }
 
@@ -766,5 +773,7 @@ export interface PipelineResult {
   inserted: number;
   skipped: number;
   failed: number;
+  /** Neutral targets deferred for a later attempt; excluded from failed. */
+  deferred?: number;
   artifactCount?: number;
 }

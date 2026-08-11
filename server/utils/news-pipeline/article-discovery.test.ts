@@ -1,6 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const safeFetchMock = vi.hoisted(() => vi.fn());
+const safeFetchWithParserMock = vi.hoisted(() => vi.fn(async (url: string, options: any, parse: (response: Response) => Promise<unknown>) => {
+  const lease = await options.transportHooks?.beforeTransport?.(url, true);
+  let response: any;
+  let parseError: unknown | null = null;
+  try {
+    response = await safeFetchMock(url, options);
+    return await parse(response);
+  } catch (error) {
+    parseError = error;
+    throw error;
+  } finally {
+    if (lease && response) await options.transportHooks?.onFinalResponse?.(url, response, lease, parseError);
+  }
+}));
 const prismaArtifactCreateMock = vi.hoisted(() => vi.fn());
 const prismaArtifactCreateManyMock = vi.hoisted(() => vi.fn());
 const prismaArtifactFindManyMock = vi.hoisted(() => vi.fn());
@@ -13,6 +27,18 @@ const createHeadlessQueueArtifactIfAbsentMock = vi.hoisted(() => vi.fn().mockRes
 
 vi.mock("../ssrf-guard", () => ({
   safeFetch: safeFetchMock,
+  safeFetchWithParser: safeFetchWithParserMock,
+}));
+vi.mock("./robots-policy", () => ({
+  checkPublisherRobotsAccess: vi.fn(async () => ({
+    allowed: true,
+    decision: "allowed",
+    status: "no_policy",
+    reason: "test-robots-satisfied",
+    domainKey: "example.com",
+    cacheHit: true,
+    sitemapUrls: [],
+  })),
 }));
 
 const logAgentScanMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -231,6 +257,7 @@ describe("article-discovery", () => {
         rssFeedUrl: "https://feeds.example.com/rss",
         feedProvenance: "USER_SUBMITTED",
         currentFeedProductive: true,
+        lastProductiveAt: new Date("2026-07-30T11:00:00.000Z"),
         consecutiveNonProductiveRuns: 0,
       },
     ]);
@@ -303,6 +330,7 @@ describe("article-discovery", () => {
         rssFeedUrl: "https://feeds.example.com/category/news",
         feedProvenance: "USER_SUBMITTED",
         currentFeedProductive: true,
+        lastProductiveAt: new Date("2026-07-30T11:00:00.000Z"),
         consecutiveNonProductiveRuns: 10,
       }),
     ).toBe(false);
@@ -332,11 +360,12 @@ describe("article-discovery", () => {
         rssFeedUrl: "https://feeds.example.com/rss",
         feedProvenance: "ADMIN_CONFIRMED",
         currentFeedProductive: true,
+        lastProductiveAt: new Date("2026-07-30T11:00:00.000Z"),
         consecutiveNonProductiveRuns: 0,
       }),
     ).toBe(false);
-    // Invalid (FAILED) trusted feed escalates only after a confirmed
-    // non-productive run; a single transient failure keeps ownership.
+    // Invalid (FAILED) trusted feed remains deferred until the repeated
+    // non-productive threshold is reached.
     expect(
       isAgent2EligibleTarget({
         rssStatus: "FAILED",
@@ -354,7 +383,7 @@ describe("article-discovery", () => {
         currentFeedProductive: false,
         consecutiveNonProductiveRuns: 1,
       }),
-    ).toBe(true);
+    ).toBe(false);
     // Permanently unreachable (DOMAIN_DEAD) trusted feed escalates.
     expect(
       isAgent2EligibleTarget({

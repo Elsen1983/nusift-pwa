@@ -1,9 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const safeFetchMock = vi.fn();
+const safeFetchWithParserMock = vi.fn(async (
+  url: string,
+  options: any,
+  parse: (response: Response) => Promise<unknown>,
+) => {
+  const lease = await options.transportHooks?.beforeTransport?.(url, true);
+  let response: Response;
+  try {
+    response = await safeFetchMock(url, options);
+  } catch (error) {
+    await options.transportHooks?.onTransportError?.(url, error, lease);
+    throw error;
+  }
+  let parseError: unknown | null = null;
+  try {
+    return await parse(response);
+  } catch (error) {
+    parseError = error;
+    throw error;
+  } finally {
+    await options.transportHooks?.onFinalResponse?.(url, response, lease, parseError);
+  }
+});
 
 vi.mock("../ssrf-guard", () => ({
   safeFetch: safeFetchMock,
+  safeFetchWithParser: safeFetchWithParserMock,
 }));
 
 const makeResponse = (

@@ -162,6 +162,8 @@ export interface ArticleUpstreamProvenance {
   feedOrigin: FeedOrigin | null;
   /** Feed URL the article was ingested from, if known. */
   feedUrl?: string | null;
+  /** Original Article URL before a transport-only HTTPS upgrade. */
+  originalArticleUrl?: string | null;
   /** Whether the article arrived via a scoped category feed; null means unknown. */
   discoveredFromCategoryFeed?: boolean | null;
   /**
@@ -214,6 +216,10 @@ export interface ExtractionMethod {
   detail?: string | null;
   /** Final canonical URL resolved for the article, if any. */
   resolvedCanonicalUrl?: string | null;
+  /** URL used for the successful transport attempt, when it differs from the Article URL. */
+  transportUrl?: string | null;
+  /** Original Article URL before HTTPS-first transport normalization. */
+  originalArticleUrl?: string | null;
   /** Whether the page followed redirects and the final URL differed. */
   redirected?: boolean;
 }
@@ -360,6 +366,7 @@ export interface BrowserDiagnostics {
     paragraphCount: number | null;
     textLength: number | null;
   }>;
+  navigation?: import("./browser-navigation-governor").BrowserNavigationEvidence | null;
 }
 
 /** Reasons why browser fallback was skipped for an article. */
@@ -370,7 +377,8 @@ export type BrowserFallbackSkippedReason =
   | "source_cooldown"
   | "runtime_unavailable_global_stop"
   | "rate_limited_source"
-  | "recently_blocked";
+  | "recently_blocked"
+  | "static_429_host";
 
 export interface BrowserFallbackMetadata {
   /** Static HTTP status retained even when browser fallback runs or succeeds. */
@@ -624,6 +632,9 @@ export const createEnrichmentOutcome = (
     categoryId: input.provenance.categoryId ?? null,
     feedOrigin: input.provenance.feedOrigin ?? null,
     feedUrl: input.provenance.feedUrl ?? null,
+    ...(input.provenance.originalArticleUrl !== undefined
+      ? { originalArticleUrl: input.provenance.originalArticleUrl }
+      : {}),
     discoveredFromCategoryFeed: input.provenance.discoveredFromCategoryFeed ?? null,
     arrivedViaHardCaseRerun: input.provenance.arrivedViaHardCaseRerun ?? null,
     ...(input.provenance.ingestArtifactId !== undefined
@@ -654,6 +665,12 @@ export const createEnrichmentOutcome = (
     method: input.method?.method ?? "none",
     detail: input.method?.detail ?? null,
     resolvedCanonicalUrl: input.method?.resolvedCanonicalUrl ?? null,
+    ...(input.method?.transportUrl !== undefined
+      ? { transportUrl: input.method.transportUrl }
+      : {}),
+    ...(input.method?.originalArticleUrl !== undefined
+      ? { originalArticleUrl: input.method.originalArticleUrl }
+      : {}),
     redirected: input.method?.redirected ?? false,
   },
   timing: {
@@ -739,6 +756,9 @@ export const serializeEnrichmentPayload = (
       categoryId: sanitizeEnrichmentEvidenceText(outcome.provenance.categoryId, 120),
       feedOrigin: outcome.provenance.feedOrigin ?? null,
       feedUrl: sanitizeEnrichmentEvidenceUrl(outcome.provenance.feedUrl),
+      ...(outcome.provenance.originalArticleUrl !== undefined
+        ? { originalArticleUrl: sanitizeEnrichmentEvidenceUrl(outcome.provenance.originalArticleUrl) }
+        : {}),
       discoveredFromCategoryFeed: outcome.provenance.discoveredFromCategoryFeed ?? null,
       arrivedViaHardCaseRerun: outcome.provenance.arrivedViaHardCaseRerun ?? null,
       ingestArtifactId: sanitizeEnrichmentEvidenceText(outcome.provenance.ingestArtifactId, 120),
@@ -765,6 +785,12 @@ export const serializeEnrichmentPayload = (
       ...outcome.method,
       detail: sanitizeEnrichmentEvidenceText(outcome.method.detail),
       resolvedCanonicalUrl: sanitizeEnrichmentEvidenceUrl(outcome.method.resolvedCanonicalUrl),
+      ...(outcome.method.transportUrl !== undefined
+        ? { transportUrl: sanitizeEnrichmentEvidenceUrl(outcome.method.transportUrl) }
+        : {}),
+      ...(outcome.method.originalArticleUrl !== undefined
+        ? { originalArticleUrl: sanitizeEnrichmentEvidenceUrl(outcome.method.originalArticleUrl) }
+        : {}),
     },
     timing: outcome.timing,
     quality: {
@@ -829,6 +855,9 @@ export const serializeOutcomeSummary = (
       categoryId: sanitizeEnrichmentEvidenceText(outcome.provenance.categoryId, 120),
       feedOrigin: outcome.provenance.feedOrigin ?? null,
       feedUrl: sanitizeEnrichmentEvidenceUrl(outcome.provenance.feedUrl),
+      ...(outcome.provenance.originalArticleUrl !== undefined
+        ? { originalArticleUrl: sanitizeEnrichmentEvidenceUrl(outcome.provenance.originalArticleUrl) }
+        : {}),
       ingestArtifactId: sanitizeEnrichmentEvidenceText(outcome.provenance.ingestArtifactId, 120),
       ingestPipelineRunId: sanitizeEnrichmentEvidenceText(outcome.provenance.ingestPipelineRunId, 120),
       ...(outcome.provenance.earlyAccessEvidence
@@ -1005,6 +1034,7 @@ const normalizeProvenance = (
       ? (feedOrigin as ArticleUpstreamProvenance["feedOrigin"])
       : null,
     feedUrl: isStringOrNull(value.feedUrl) ? value.feedUrl : null,
+    originalArticleUrl: isStringOrNull(value.originalArticleUrl) ? value.originalArticleUrl : undefined,
     discoveredFromCategoryFeed:
       typeof value.discoveredFromCategoryFeed === "boolean"
         ? value.discoveredFromCategoryFeed
@@ -1116,6 +1146,8 @@ export const validateEnrichmentOutcome = (
       resolvedCanonicalUrl: isStringOrNull(methodRaw.resolvedCanonicalUrl)
         ? methodRaw.resolvedCanonicalUrl
         : null,
+      transportUrl: isStringOrNull(methodRaw.transportUrl) ? methodRaw.transportUrl : undefined,
+      originalArticleUrl: isStringOrNull(methodRaw.originalArticleUrl) ? methodRaw.originalArticleUrl : undefined,
       redirected: typeof methodRaw.redirected === "boolean" ? methodRaw.redirected : false,
     },
     timing: {

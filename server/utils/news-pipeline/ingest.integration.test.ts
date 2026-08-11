@@ -47,13 +47,30 @@ vi.mock("../prisma", () => ({
 
 // ── Safe fetch mock ───────────────────────────────────────────────────
 const safeFetchMock = vi.hoisted(() => vi.fn());
+const safeFetchWithParserMock = vi.hoisted(() => vi.fn(async (url: string, options: any, parse: (response: Response) => Promise<unknown>) => {
+  const response = await safeFetchMock(url, options);
+  return parse(response);
+}));
+const checkPublisherRobotsAccessMock = vi.hoisted(() => vi.fn().mockResolvedValue({
+  allowed: true,
+  decision: "allowed",
+  reason: "test_robots_allowed",
+  domainKey: "example.com",
+  status: "no_policy",
+  cacheHit: false,
+  sitemapUrls: [],
+}));
 // resolveAndValidate / isBlockedIp are re-exported for the safe redirect
 // resolver; keep them hermetic so tests never touch the real DNS resolver.
 vi.mock("../ssrf-guard", () => ({
   safeFetch: safeFetchMock,
+  safeFetchWithParser: safeFetchWithParserMock,
   SSRFError: class SSRFError extends Error {},
   resolveAndValidate: async () => [{ address: "93.184.216.34", family: 4 }],
   isBlockedIp: () => false,
+}));
+vi.mock("./robots-policy", () => ({
+  checkPublisherRobotsAccess: (...args: any[]) => checkPublisherRobotsAccessMock(...args),
 }));
 
 // ── Log mock ──────────────────────────────────────────────────────────
@@ -203,6 +220,26 @@ describe("generic RSS fallback integration", () => {
   });
 
   // ── 2. Generic fallback used without saving rssFeedUrl ──────────────
+  it("resolves exact source-level headless markers after a productive source RSS run", async () => {
+    const { ingestSource } = await import("./ingest");
+    safeFetchMock.mockResolvedValue(makeResponse(rssXml([
+      {
+        title: "Source-level article with a sufficiently descriptive title",
+        link: "https://example.com/news/source-article",
+        pubDate: freshDate().toISOString(),
+      },
+    ])));
+
+    await ingestSource("src-1");
+
+    expect(resolveHeadlessMarkersByAgent1RssMock).toHaveBeenCalledWith({
+      sourceId: "src-1",
+      categoryId: null,
+      targetUrl: "https://example.com",
+      rssFeedUrl: "https://example.com/rss",
+    });
+  });
+
   it("generic fallback is used without saving rssFeedUrl to SourceCategory", async () => {
     const { ingestSource } = await import("./ingest");
 
@@ -793,7 +830,7 @@ describe("generic RSS fallback integration", () => {
     expect(retryAt.getTime()).toBeLessThanOrEqual(Date.now() + 120_000);
   });
 
-  it("recovers from a transient 429 before persisting a category cooldown", async () => {
+  it("defers on the first confirmed 429 instead of retrying inline", async () => {
     const { ingestSource } = await import("./ingest");
     prismaSourceCategoryFindUniqueMock.mockResolvedValue({
       ...CATEGORY_BASE,
@@ -802,20 +839,16 @@ describe("generic RSS fallback integration", () => {
       discoveryEvidence: SCOPED_EVIDENCE,
       nextRetryAt: null,
     });
-    safeFetchMock
-      .mockResolvedValueOnce(makeResponse("", false, 429, { "retry-after": "0" }))
-      .mockResolvedValueOnce(makeResponse(rssXml([{
-        title: "Valid article title",
-        link: "https://example.com/politics/valid-article-title",
-        pubDate: freshDate().toUTCString(),
-      }])));
+    safeFetchMock.mockResolvedValueOnce(makeResponse("", false, 429, { "retry-after": "0" }));
 
     const result = await ingestSource("src-1", "cat-politics");
 
-    expect(safeFetchMock).toHaveBeenCalledTimes(2);
-    expect(result.deferredReason).toBeUndefined();
-    expect(result.feedFormat).toBe("rss");
-    expect(prismaSourceCategoryUpdateMock).not.toHaveBeenCalledWith({
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    expect(result.deferredReason).toBe("rate_limited");
+    expect(result.retryAt).toBeTruthy();
+    // A publisher HTTP 429 is distinct from a governor defer: preserve the
+    // bounded retry evidence, while still stopping all later same-host work.
+    expect(prismaSourceCategoryUpdateMock).toHaveBeenCalledWith({
       where: { id: "cat-politics" },
       data: { nextRetryAt: expect.any(Date) },
     });

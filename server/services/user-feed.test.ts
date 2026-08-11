@@ -62,6 +62,8 @@ describe("shared user-feed service", () => {
       sourceUrl: "https://example.com",
       sourceTargetUrl: "https://example.com",
       canonicalUrl: "https://example.com/1",
+      articleDomain: "example.com",
+      isExternalPublisher: false,
       categoryPathUrl: null,
       date: "2026-08-01T00:00:00.000Z",
       score: 5,
@@ -72,6 +74,25 @@ describe("shared user-feed service", () => {
       reasoning: "",
       bodyText: "A".repeat(600),
     }]);
+  });
+
+  it("marks a canonical article URL on another domain without changing source attribution", async () => {
+    const db = makeDb();
+    db.user.findUnique.mockResolvedValue({ sourceSubscriptions: [{ sourceId: "source-a" }], categorySubscriptions: [] });
+    db.article.findMany.mockResolvedValue([
+      publishableArticle({
+        canonicalUrl: "https://publisher.example/story/1",
+        source: { frontPageUrl: "https://aggregator.example", mediaName: "Aggregator" },
+      }),
+    ]);
+
+    const [article] = await loadUserFeed(db, "user-1");
+
+    expect(article).toMatchObject({
+      source: "Aggregator",
+      articleDomain: "publisher.example",
+      isExternalPublisher: true,
+    });
   });
 
   it("maps only validated structured access classifications and never exposes raw evidence", async () => {

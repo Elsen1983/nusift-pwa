@@ -4,13 +4,21 @@ const findManyMock = vi.fn();
 const updateMock = vi.fn();
 const countMock = vi.fn();
 const logAgentScanMock = vi.fn();
+const sourceFindUniqueMock = vi.fn();
+const categoryFindUniqueMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
     pipelineArtifact: {
       findMany: (...args: any[]) => findManyMock(...args),
       update: (...args: any[]) => updateMock(...args),        updateMany: (...args: any[]) => updateMock(...args),
-        count: (...args: any[]) => countMock(...args),
+      count: (...args: any[]) => countMock(...args),
+    },
+    newsSource: {
+      findUnique: (...args: any[]) => sourceFindUniqueMock(...args),
+    },
+    sourceCategory: {
+      findUnique: (...args: any[]) => categoryFindUniqueMock(...args),
     },
   },
 }));
@@ -43,6 +51,8 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
   beforeEach(() => {
     findManyMock.mockReset();      updateMock.mockReset();
       countMock.mockReset();
+      sourceFindUniqueMock.mockReset();
+      categoryFindUniqueMock.mockReset();
       countMock.mockResolvedValue(0);
       logAgentScanMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
@@ -317,6 +327,40 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
       where: expect.objectContaining({ id: "art-1", status: "HEADLESS_PROCESSING" }),
     }));
 
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
+
+  it("keeps a productive-feed artifact pending without launching browser work", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    findManyMock.mockResolvedValue([
+      makeArtifact({ id: "art-feed-first", payload: { targetUrl: "https://example.com/a", sourceId: "src-1", quality: "blocked" } }),
+    ]);
+    sourceFindUniqueMock.mockResolvedValue({
+      rssStatus: "ACTIVE",
+      rssFeedUrl: "https://example.com/feed.xml",
+      currentFeedProductive: true,
+      lastProductiveAt: new Date("2026-08-10T19:00:00Z"),
+      consecutiveNonProductiveRuns: 0,
+      nextRetryAt: null,
+    });
+    const fn = await loadFn();
+    const result = await fn({
+      dryRun: false,
+      runBrowser: true,
+      now: () => new Date("2026-08-10T20:00:00Z").getTime(),
+    });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.targetDispositions.skipped).toBe(1);
+      expect(result.browserAttemptedTargets).toBe(0);
+    }
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(logAgentScanMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: "ARTICLE_DISCOVERY_HEADLESS_FEED_FIRST_SKIPPED",
+      errorLog: expect.stringContaining("productive_fresh_feed"),
+    }));
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
 

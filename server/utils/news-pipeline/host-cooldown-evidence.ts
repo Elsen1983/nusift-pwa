@@ -3,9 +3,9 @@ import { stableTargetKey } from "./text";
 import {
   boundStaticRetryAfterTimestamp,
   STATIC_RETRY_AFTER_MAX_MS,
-  type StaticDiscoveryRateLimitEvidence,
   type StaticDiscoveryRetryAfterSource,
-} from "./article-discovery-helpers";
+} from "./retry-after-policy";
+import type { StaticDiscoveryRateLimitEvidence } from "./article-discovery-helpers";
 
 export type HostCooldownEvidence = {
   retryAfterAt: string;

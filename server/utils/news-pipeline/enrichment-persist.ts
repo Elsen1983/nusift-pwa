@@ -12,6 +12,7 @@ import {
   buildPublicationGateUpdate,
   hasUsableAgent3BodyText,
 } from "./publication-gate";
+import { getArticleTransportIdentity } from "./article-transport-policy";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent 3 — Article enrichment persistence wiring (Phase 1)
@@ -128,6 +129,16 @@ export const buildArticleEnrichmentUpdate = (
   // publication. An arbitrary outcome value marked "unchanged" is evidence,
   // not a write, and must not be treated as the persisted body.
   const finalBodyText = bodyTextUpdate ?? options?.existingBodyText ?? null;
+  const transportCanonicalUrl = outcome.method.transportUrl ?? outcome.articleUrl;
+  const canonicalUrlUpdate =
+    outcome.kind === "SUCCESS" &&
+    options?.existingCanonicalUrl?.toLowerCase().startsWith("http://") &&
+    transportCanonicalUrl?.toLowerCase().startsWith("https://") &&
+    getArticleTransportIdentity(options.existingCanonicalUrl) ===
+      getArticleTransportIdentity(transportCanonicalUrl)
+      ? transportCanonicalUrl
+      : undefined;
+  const finalCanonicalUrl = canonicalUrlUpdate ?? options?.existingCanonicalUrl ?? null;
   const update: Prisma.ArticleUpdateInput = {
     enrichmentStatus: status,
     enrichmentStartedAt: new Date(outcome.timing.startedAt),
@@ -146,7 +157,7 @@ export const buildArticleEnrichmentUpdate = (
       publishable:
         outcome.kind === "SUCCESS" &&
         Boolean(options?.existingTitle?.trim()) &&
-        Boolean(options?.existingCanonicalUrl?.trim()) &&
+        Boolean(finalCanonicalUrl?.trim()) &&
         hasUsableAgent3BodyText(finalBodyText),
       nonPublishableStatus:
         interstitialTerminal ||
@@ -160,6 +171,8 @@ export const buildArticleEnrichmentUpdate = (
       completedAt: new Date(outcome.timing.finishedAt),
     }),
   };
+
+  if (canonicalUrlUpdate) update.canonicalUrl = canonicalUrlUpdate;
 
   // Phase 2: persist extracted bodyText on SUCCESS when the extractor
   // produced a better value than the existing one.
@@ -375,6 +388,30 @@ export const claimEnrichmentArticle = async (
     if (error?.code === "P2002") return null;
     throw error;
   }
+};
+
+/**
+ * Release an invocation's claim without producing a final outcome.
+ *
+ * This is used only for neutral governor deferrals. The predicate is
+ * token-, article-, pipeline-, and expiry-validated so a stale worker cannot
+ * release a newer claim. No Article fields or final artifact are written.
+ */
+export const releaseEnrichmentClaim = async (
+  articleId: number,
+  pipelineRunId: string,
+  claimToken: string,
+  now: Date = new Date(),
+): Promise<boolean> => {
+  const released = await prisma.articleEnrichmentClaim.deleteMany({
+    where: {
+      articleId,
+      pipelineRunId,
+      token: claimToken,
+      expiresAt: { gt: now },
+    },
+  });
+  return released.count === 1;
 };
 
 /**
@@ -610,6 +647,8 @@ export const buildEnrichmentRunSummary = (
     expiredClaimsRecovered?: number;
     /** Per-outcome HTTP evidence from the enrichment runtime. */
     httpEvidence?: Record<string, number>;
+    /** Neutral governor deferrals; not publisher/network failures. */
+    governorDeferred?: number;
   },
 ): Prisma.InputJsonValue =>
   ({
@@ -627,6 +666,7 @@ export const buildEnrichmentRunSummary = (
     ...(options?.claimSkipped !== undefined ? { claimSkipped: options.claimSkipped } : {}),
     ...(options?.expiredClaimsRecovered !== undefined ? { expiredClaimsRecovered: options.expiredClaimsRecovered } : {}),
     ...(options?.httpEvidence ? { httpEvidence: { ...options.httpEvidence } } : {}),
+    ...(options?.governorDeferred !== undefined ? { governorDeferred: options.governorDeferred } : {}),
   }) as Prisma.InputJsonValue;
 
 /**

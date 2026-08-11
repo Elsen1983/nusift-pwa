@@ -49,6 +49,15 @@ const toSourceLabel = (frontPageUrl: string) => {
   }
 };
 
+const toDomainLabel = (value: string | null | undefined): string | null => {
+  if (!value) return null;
+  try {
+    return new URL(value).hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
+  } catch {
+    return null;
+  }
+};
+
 export async function loadUserFeed(db: FeedDb, userId: string): Promise<any[]> {
   const user = await db.user.findUnique({
     where: { id: userId },
@@ -122,6 +131,14 @@ export async function loadUserFeed(db: FeedDb, userId: string): Promise<any[]> {
     // publication gate; this protects the API if old data is malformed.
     .filter(isEffectivelyPublishableArticle)
     .map((article) => ({
+    ...(() => {
+      const sourceDomain = toDomainLabel(article.source.frontPageUrl);
+      const articleDomain = toDomainLabel(article.canonicalUrl);
+      return {
+        articleDomain,
+        isExternalPublisher: Boolean(sourceDomain && articleDomain && sourceDomain !== articleDomain),
+      };
+    })(),
     id: article.id,
     title: article.title,
     source: article.source.mediaName || toSourceLabel(article.source.frontPageUrl),

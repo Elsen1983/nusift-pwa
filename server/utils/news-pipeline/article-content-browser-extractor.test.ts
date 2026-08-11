@@ -19,10 +19,16 @@ describe("isBrowserFallbackEligibleForFailure — real implementation", () => {
     expect(isBrowserFallbackEligible("interstitial_or_challenge", 202)).toBe(true);
   });
 
-  it("preserves existing eligibility semantics (403/429/no_article_text/empty_html/too_short)", () => {
+  it("preserves bounded eligibility semantics (403/429/no_article_text/empty_html/too_short)", () => {
     expect(isBrowserFallbackEligibleForFailure({ rejectedReason: "http_error", statusCode: 403 })).toBe(true);
-    expect(isBrowserFallbackEligibleForFailure({ rejectedReason: "http_error", statusCode: 429 })).toBe(true);
+    // HTTP 429 is a hard no-browser boundary; retry/cooldown handles it.
+    expect(isBrowserFallbackEligibleForFailure({ rejectedReason: "http_error", statusCode: 429 })).toBe(false);
     expect(isBrowserFallbackEligibleForFailure({ rejectedReason: "http_error", statusCode: 500 })).toBe(false);
+    expect(isBrowserFallbackEligibleForFailure({
+      rejectedReason: "interstitial_or_challenge",
+      statusCode: 200,
+      detail: "Cookie challenge rendered with HTTP 200",
+    })).toBe(true);
     expect(isBrowserFallbackEligibleForFailure({ rejectedReason: "no_article_text", statusCode: 200 })).toBe(true);
     expect(isBrowserFallbackEligibleForFailure({ rejectedReason: "empty_html", statusCode: 200 })).toBe(true);
     expect(isBrowserFallbackEligibleForFailure({ rejectedReason: "too_short", statusCode: 200 })).toBe(true);

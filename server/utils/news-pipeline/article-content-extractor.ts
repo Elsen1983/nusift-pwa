@@ -22,7 +22,8 @@
 //  - Local and production code paths identical
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { safeFetch } from "../ssrf-guard";
+import { governedSafeFetchAndParse, GovernedFetchDeferredError } from "./governed-fetch";
+import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
 import {
   classifyArticleAccess,
   extractJsonLdPaywallSignalsFromValue,
@@ -39,6 +40,10 @@ import {
 } from "./article-body-policy";
 import type { StageBatchProbe } from "./stage-telemetry";
 import { loadJsdom } from "./jsdom-runtime";
+import {
+  getHttpsArticleUrl,
+  isExplicitHttpFallbackAllowed,
+} from "./article-transport-policy";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -46,8 +51,7 @@ const FETCH_TIMEOUT_MS = 15_000;
 const MAX_HTML_BYTES = 2_000_000; // 2 MB cap on downloaded HTML
 const MAX_BODY_TEXT_CHARS = 50_000; // cap stored body text
 
-const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const USER_AGENT = NUSIFT_CRAWLER_USER_AGENT;
 
 const HTML_CONTENT_TYPE_HINTS = ["text/html", "application/xhtml", "application/xml"];
 
@@ -240,6 +244,10 @@ export interface ArticleContentExtractionOk {
   confidence: number;
   qualitySignals: string[];
   diagnostics: ExtractionDiagnostics;
+  /** URL actually used for the successful transport attempt. */
+  transportUrl?: string;
+  /** Original article URL before HTTPS-first transport normalization. */
+  originalArticleUrl?: string;
   /** Structured Agent 3 access classification; bounded and non-sensitive. */
   access?: ArticleAccessClassificationResult;
   rejectedReason?: never;
@@ -266,6 +274,10 @@ export interface ArticleContentExtractionFail {
   confidence: number;
   qualitySignals: string[];
   diagnostics: ExtractionDiagnostics;
+  /** URL actually used for the transport attempt, when known. */
+  transportUrl?: string;
+  /** Original article URL before HTTPS-first transport normalization. */
+  originalArticleUrl?: string;
   /** Structured Agent 3 access classification when page analysis reached it. */
   access?: ArticleAccessClassificationResult;
   retryAfterAt?: string | null;
@@ -279,6 +291,8 @@ export interface ExtractArticleContentInput {
   now?: Date;
   /** Observation-only operation probe; redirects count as one logical attempt. */
   telemetry?: StageBatchProbe;
+  /** Optional Prompt 17C context; omitted legacy callers remain ungoverned. */
+  governedFetchContext?: import("./governed-fetch").GovernedFetchContext;
 }
 
 /** Compact summary of a candidate container for diagnostics. */
@@ -326,6 +340,8 @@ export interface ExtractionDiagnostics {
   skippedCandidateReasons: string[];
   /** Bounded trimmed HTML length (chars). Only set on failure diagnostics; never raw HTML. */
   htmlLength?: number | null;
+  /** Bounded, URL-free browser navigation governance/accounting evidence. */
+  browserNavigation?: import("./browser-navigation-governor").BrowserNavigationEvidence;
 }
 
 /** Score for a single body candidate container. */
@@ -361,35 +377,60 @@ interface FetchResult {
   error?: string;
   retryAfterAt?: string | null;
   qualitySignals?: string[];
+  transportUrl?: string;
+  originalArticleUrl?: string;
 }
 
-function buildHttpsUpgradeUrl(rawUrl: string): string | null {
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol !== "http:" || parsed.username || parsed.password) return null;
-    // Do not reinterpret an explicitly configured non-standard service port.
-    if (parsed.port && parsed.port !== "80") return null;
-    parsed.protocol = "https:";
-    if (parsed.port === "80") parsed.port = "";
-    return parsed.toString();
-  } catch {
-    return null;
-  }
-}
-
-async function fetchArticleHtml(url: string, telemetry?: StageBatchProbe): Promise<FetchResult> {
-  let response: Response;
+async function fetchArticleHtmlOnce(
+  url: string,
+  telemetry?: StageBatchProbe,
+  governedFetchContext?: import("./governed-fetch").GovernedFetchContext,
+): Promise<FetchResult> {
+  let fetched: {
+    response: Response;
+    rawHtml: string | null;
+    bodyReadError: string | null;
+  };
 
   try {
-    response = await safeFetch(url, {
+    fetched = await governedSafeFetchAndParse(url, {
       headers: {
         "User-Agent": USER_AGENT,
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       telemetry,
+    }, governedFetchContext ?? {
+      agent: "agent3",
+      stage: "article-extraction",
+      purpose: "article_extraction",
+    }, async (response) => {
+      if (response.status < 200 || response.status >= 300) {
+        return { response, rawHtml: null, bodyReadError: null };
+      }
+      try {
+        const buffer = await response.arrayBuffer();
+        const truncated = buffer.byteLength > MAX_HTML_BYTES
+          ? buffer.slice(0, MAX_HTML_BYTES)
+          : buffer;
+        return {
+          response,
+          rawHtml: new TextDecoder("utf-8", { fatal: false }).decode(truncated),
+          bodyReadError: null,
+        };
+      } catch (error: unknown) {
+        return {
+          response,
+          rawHtml: null,
+          bodyReadError: `Body read failed: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
     });
   } catch (err: unknown) {
+    // Governance deferral is a neutral retry boundary. Do not convert it into
+    // fetch_failed: Agent 3 must not persist a publisher/network failure or
+    // become eligible for browser fallback because the governor deferred work.
+    if (err instanceof GovernedFetchDeferredError) throw err;
     const message = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
@@ -402,27 +443,12 @@ async function fetchArticleHtml(url: string, telemetry?: StageBatchProbe): Promi
     };
   }
 
+  const { response, rawHtml, bodyReadError } = fetched;
   const contentType = response.headers.get("content-type");
   const resolvedUrl = response.url || url;
   const statusCode = response.status;
 
   if (statusCode < 200 || statusCode >= 300) {
-    const httpsUpgradeUrl = (statusCode === 401 || statusCode === 403)
-      ? buildHttpsUpgradeUrl(url)
-      : null;
-    if (httpsUpgradeUrl) {
-      const upgraded = await fetchArticleHtml(httpsUpgradeUrl, telemetry);
-      const upgradeSignal = upgraded.ok
-        ? "http_to_https_upgrade_succeeded"
-        : "http_to_https_upgrade_failed";
-      return {
-        ...upgraded,
-        error: upgraded.ok
-          ? upgraded.error
-          : `HTTP ${statusCode}; HTTPS upgrade failed: ${upgraded.error || `HTTP ${upgraded.statusCode}`}`,
-        qualitySignals: [...(upgraded.qualitySignals || []), upgradeSignal],
-      };
-    }
     return {
       ok: false,
       html: null,
@@ -439,15 +465,7 @@ async function fetchArticleHtml(url: string, telemetry?: StageBatchProbe): Promi
     (contentType && HTML_CONTENT_TYPE_HINTS.some((hint) => contentType.toLowerCase().includes(hint))) ||
     false;
 
-  let rawHtml: string;
-  try {
-    const buffer = await response.arrayBuffer();
-    const truncated = buffer.byteLength > MAX_HTML_BYTES
-      ? buffer.slice(0, MAX_HTML_BYTES)
-      : buffer;
-    rawHtml = new TextDecoder("utf-8", { fatal: false }).decode(truncated);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+  if (bodyReadError) {
     return {
       ok: false,
       html: null,
@@ -455,12 +473,12 @@ async function fetchArticleHtml(url: string, telemetry?: StageBatchProbe): Promi
       contentType,
       resolvedUrl,
 
-      error: `Body read failed: ${message}`,
+      error: bodyReadError,
     };
   }
 
   // Accept HTML even if content-type is missing/wrong, as long as it looks like HTML
-  if (!isHtmlLike && !looksLikeHtml(rawHtml)) {
+  if (rawHtml === null || (!isHtmlLike && !looksLikeHtml(rawHtml))) {
     return {
       ok: false,
       html: null,
@@ -479,6 +497,64 @@ async function fetchArticleHtml(url: string, telemetry?: StageBatchProbe): Promi
     contentType,
     resolvedUrl,
 
+  };
+}
+
+/**
+ * Use HTTPS first for an HTTP article URL. Each attempt calls the governed
+ * transport independently; the optional HTTP retry is host-allowlisted and
+ * never carries credentials or cookies.
+ */
+async function fetchArticleHtml(
+  url: string,
+  telemetry?: StageBatchProbe,
+  governedFetchContext?: import("./governed-fetch").GovernedFetchContext,
+): Promise<FetchResult & { transportUrl?: string; originalArticleUrl?: string }> {
+  const httpsUrl = getHttpsArticleUrl(url);
+  if (!httpsUrl) {
+    // An HTTP URL that cannot be safely promoted must not silently become a
+    // direct HTTP request, even when a hostname allowlist is configured.
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === "http:") {
+        return {
+          ok: false,
+          html: null,
+          statusCode: 0,
+          contentType: null,
+          resolvedUrl: url,
+          transportUrl: url,
+          originalArticleUrl: url,
+          error: "HTTP URL is not eligible for HTTPS-first transport",
+        };
+      }
+    } catch {
+      // Preserve the normal governed failure path for malformed URLs.
+    }
+    const result = await fetchArticleHtmlOnce(url, telemetry, governedFetchContext);
+    return { ...result, transportUrl: url, originalArticleUrl: url };
+  }
+
+  const httpsResult = await fetchArticleHtmlOnce(httpsUrl, telemetry, governedFetchContext);
+  if (httpsResult.ok || !isExplicitHttpFallbackAllowed(url)) {
+    return {
+      ...httpsResult,
+      transportUrl: httpsUrl,
+      originalArticleUrl: url,
+      qualitySignals: [...(httpsResult.qualitySignals || []), "https_first"],
+    };
+  }
+
+  const httpResult = await fetchArticleHtmlOnce(url, telemetry, governedFetchContext);
+  return {
+    ...httpResult,
+    transportUrl: url,
+    originalArticleUrl: url,
+    qualitySignals: [
+      ...(httpResult.qualitySignals || []),
+      "https_first_failed",
+      "http_fallback_used",
+    ],
   };
 }
 
@@ -3377,14 +3453,15 @@ export async function extractArticleContentFromUrl(
   }
 
   // Step 1: Fetch HTML
-  const fetchResult = await fetchArticleHtml(articleUrl, input.telemetry);
+  const fetchResult = await fetchArticleHtml(articleUrl, input.telemetry, input.governedFetchContext);
 
   if (!fetchResult.ok || !fetchResult.html) {
     // HTTP 202 with an empty body is an interstitial/challenge shell (bounded
     // evidence, browser-recoverable) — not a plain fetch/empty failure. HTTP
     // 204/other empty responses keep their existing classification below.
     if (fetchResult.statusCode === 202 && !fetchResult.html) {
-      return fail(
+      return {
+        ...fail(
         "none",
         fetchResult.resolvedUrl,
         202,
@@ -3392,10 +3469,14 @@ export async function extractArticleContentFromUrl(
         "HTTP 202 response returned an empty body — interstitial/challenge shell.",
         ["http_202_interstitial", "empty_or_short_interstitial_html", "htmlLength:0"],
         { htmlLength: 0, bodyRejectedReason: "empty_or_short_interstitial_html", bodySource: "none" },
-      );
+        ),
+        transportUrl: fetchResult.transportUrl,
+        originalArticleUrl: fetchResult.originalArticleUrl,
+      };
     }
     const reason = categorizeFetchError(fetchResult);
-    return fail(
+    return {
+      ...fail(
       "none",
       fetchResult.resolvedUrl,
       fetchResult.statusCode || null,
@@ -3404,14 +3485,21 @@ export async function extractArticleContentFromUrl(
       [],
       undefined,
       fetchResult.retryAfterAt,
-    );
+      ),
+      transportUrl: fetchResult.transportUrl,
+      originalArticleUrl: fetchResult.originalArticleUrl,
+    };
   }
 
   // DOM parsing, Readability, candidate scoring, and quality evaluation are
   // processing/extraction time, separate from the HTTP request above.
   const html = fetchResult.html;
   if (!html) {
-    return fail("none", fetchResult.resolvedUrl, fetchResult.statusCode || null, "empty_html", "Fetched HTML was empty.");
+    return {
+      ...fail("none", fetchResult.resolvedUrl, fetchResult.statusCode || null, "empty_html", "Fetched HTML was empty."),
+      transportUrl: fetchResult.transportUrl,
+      originalArticleUrl: fetchResult.originalArticleUrl,
+    };
   }
   const extract = () => extractArticleContentFromHtml({
     html,
@@ -3422,11 +3510,13 @@ export async function extractArticleContentFromUrl(
     method: "http-dom",
   });
   const result = input.telemetry ? await input.telemetry.timed("extraction", extract) : await extract();
-  if (!fetchResult.qualitySignals?.length) return result;
-  return {
+  const resultWithTransport = {
     ...result,
-    qualitySignals: [...result.qualitySignals, ...fetchResult.qualitySignals],
+    qualitySignals: [...result.qualitySignals, ...(fetchResult.qualitySignals || [])],
+    transportUrl: fetchResult.transportUrl,
+    originalArticleUrl: fetchResult.originalArticleUrl,
   };
+  return resultWithTransport;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

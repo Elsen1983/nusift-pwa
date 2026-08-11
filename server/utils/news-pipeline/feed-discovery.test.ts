@@ -1,9 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const safeFetchMock = vi.fn();
+const safeFetchWithParserMock = vi.fn(async (
+  url: string,
+  options: any,
+  parse: (response: Response) => Promise<unknown>,
+) => {
+  const lease = await options.transportHooks?.beforeTransport?.(url, true);
+  let response: Response;
+  try {
+    response = await safeFetchMock(url, options);
+  } catch (error) {
+    await options.transportHooks?.onTransportError?.(url, error, lease);
+    throw error;
+  }
+  let parseError: unknown | null = null;
+  try {
+    return await parse(response);
+  } catch (error) {
+    parseError = error;
+    throw error;
+  } finally {
+    await options.transportHooks?.onFinalResponse?.(url, response, lease, parseError);
+  }
+});
 
 vi.mock("../ssrf-guard", () => ({
   safeFetch: safeFetchMock,
+  safeFetchWithParser: safeFetchWithParserMock,
 }));
 
 const makeResponse = (
@@ -1641,6 +1665,7 @@ describe("feed directory traversal helpers", () => {
 
     safeFetchMock.mockImplementation(async (url: string, options?: { method?: string }) => {
       if (options?.method === "HEAD") return headResponse;
+      if (url === "https://example.com/robots.txt") return makeResponse("");
       if (url === "https://example.com/test") return targetResponse;
       // Return non-directory page to test classification
       return makeResponse("<html><body><p>Not a directory</p></body></html>", { headers: { "content-type": "text/html" } });

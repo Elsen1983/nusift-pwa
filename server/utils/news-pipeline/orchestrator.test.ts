@@ -135,7 +135,7 @@ describe("orchestrator – Agent 1 / Agent 2 split", () => {
     expect(isOperationalFeedResult({ failed: 1, feedUrl: "https://example.com/rss", feedFormat: "rss" })).toBe(false);
   });
 
-  it("does not count a rate-limited deferral as a non-productive feed run", async () => {
+  it("does not count any deferred disposition as a non-productive feed run", async () => {
     const { shouldTrackFeedProductivity } = await import("./orchestrator");
 
     expect(shouldTrackFeedProductivity({
@@ -143,6 +143,13 @@ describe("orchestrator – Agent 1 / Agent 2 split", () => {
       feedFormat: null,
       deferredReason: "rate_limited",
     })).toBe(false);
+    for (const deferredReason of ["rate_limited", "governor_deferred", "redirect_retry"]) {
+      expect(shouldTrackFeedProductivity({
+        feedUrl: "https://example.com/rss",
+        feedFormat: "rss",
+        deferredReason,
+      })).toBe(false);
+    }
     expect(shouldTrackFeedProductivity({
       feedUrl: "https://example.com/rss",
       feedFormat: "rss",
@@ -255,6 +262,53 @@ describe("orchestrator – Agent 1 / Agent 2 split", () => {
 
     // Agent 2 NOT called (default)
     expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a legacy governor defer separately without marking failure", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([{ sourceId: "src-1" }]);
+    ingestSourceMock.mockResolvedValue({
+      sourceId: "src-1",
+      categoryId: null,
+      candidates: [],
+      failed: 0,
+      feedUrl: null,
+      feedFormat: null,
+      deferredReason: "governor_deferred",
+      skipSummary: { emptyLink: 0, outOfScope: 0, staleOrMissingPublishedAt: 0, alreadySeenFeedItem: 0, htmlFallbackNonArticle: 0, htmlFallbackStale: 0 },
+      rejectedItems: [],
+      hardCaseQueueCandidates: [],
+    });
+
+    const { runNewsPipeline } = await import("./orchestrator");
+    const result = await runNewsPipeline();
+
+    expect(result).toEqual(expect.objectContaining({ failed: 0, deferred: 1 }));
+    expect(finalizePipelineRunMock).toHaveBeenCalledWith(expect.objectContaining({
+      result: expect.objectContaining({ failed: 0, deferred: 1 }),
+    }));
+    expect(markFeedRunOutcomeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not count an unpersisted legacy governor defer as durable", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([{ sourceId: "src-1" }]);
+    ingestSourceMock.mockResolvedValue({
+      sourceId: "src-1",
+      categoryId: null,
+      candidates: [],
+      failed: 0,
+      feedUrl: null,
+      feedFormat: null,
+      deferredReason: "governor_deferred",
+      skipSummary: { emptyLink: 0, outOfScope: 0, staleOrMissingPublishedAt: 0, alreadySeenFeedItem: 0, htmlFallbackNonArticle: 0, htmlFallbackStale: 0 },
+      rejectedItems: [],
+      hardCaseQueueCandidates: [],
+    });
+    persistAgent1TargetOutcomeArtifactMock.mockRejectedValueOnce(new Error("artifact write failed"));
+
+    const { runNewsPipeline } = await import("./orchestrator");
+    const result = await runNewsPipeline();
+
+    expect(result).toEqual(expect.objectContaining({ failed: 1, deferred: 0 }));
   });
 });
 
@@ -400,8 +454,8 @@ describe("orchestrator – runAgent1Batch", () => {
     expect(result.deferred).toBe(0);
     expect(result.remainingEligible).toBe(0);
     expect(result.stoppedReason).toBe("completed");
-    expect(ingestSourceMock).toHaveBeenNthCalledWith(1, "src-3", undefined, undefined, expect.any(String));
-    expect(ingestSourceMock).toHaveBeenNthCalledWith(2, "src-4", undefined, undefined, expect.any(String));
+    expect(ingestSourceMock).toHaveBeenNthCalledWith(1, "src-3", undefined, undefined, expect.any(String), expect.objectContaining({ static429Hostnames: expect.any(Set) }));
+    expect(ingestSourceMock).toHaveBeenNthCalledWith(2, "src-4", undefined, undefined, expect.any(String), expect.objectContaining({ static429Hostnames: expect.any(Set) }));
   });
 
   it("failures count as processed and do not abort the batch", async () => {
@@ -436,6 +490,39 @@ describe("orchestrator – runAgent1Batch", () => {
     expect(result.stoppedReason).toBe("completed");
   });
 
+  it("classifies a processed governor defer separately from retryable failures", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([{ sourceId: "src-1" }]);
+    ingestSourceMock.mockResolvedValue({
+      sourceId: "src-1",
+      categoryId: null,
+      candidates: [],
+      failed: 0,
+      feedUrl: null,
+      feedFormat: null,
+      deferredReason: "governor_deferred",
+      skipSummary: { emptyLink: 0, outOfScope: 0, staleOrMissingPublishedAt: 0, alreadySeenFeedItem: 0, htmlFallbackNonArticle: 0, htmlFallbackStale: 0 },
+      rejectedItems: [],
+      hardCaseQueueCandidates: [],
+    });
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    const result = await runAgent1Batch();
+
+    expect(result.result).toEqual(expect.objectContaining({ failed: 0, deferred: 1 }));
+    expect(result.targetDispositions).toEqual(expect.objectContaining({
+      failedRetryable: 0,
+      deferred: 1,
+      persistenceFailed: 0,
+    }));
+    expect(result.deferredTargets).toEqual([{
+      sourceId: "src-1",
+      categoryId: null,
+      reason: "governor_deferred",
+    }]);
+    expect(result.remainingEligible).toBe(0);
+    expect(markFeedRunOutcomeMock).not.toHaveBeenCalled();
+  });
+
   it("does NOT call runArticleDiscoveryBatch", async () => {
     prismaMock.userSourceSubscription.findMany.mockResolvedValue([
       { sourceId: "src-1" },
@@ -458,7 +545,7 @@ describe("orchestrator – runAgent1Batch", () => {
 
     // Should use hydratePipelineTargets path (calls sourceCategory.findMany)
     expect(result.processed).toBeGreaterThanOrEqual(1);
-    expect(ingestSourceMock).toHaveBeenCalledWith("src-1", undefined, undefined, expect.any(String));
+    expect(ingestSourceMock).toHaveBeenCalledWith("src-1", undefined, undefined, expect.any(String), expect.objectContaining({ static429Hostnames: expect.any(Set) }));
   });
 
   it("clamps maxTargets to [1, 50] range", async () => {

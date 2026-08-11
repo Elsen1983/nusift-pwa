@@ -24,9 +24,10 @@ import {
   scoreCandidateUrl,
   isBlockedDiscoveryPath,
   evaluateArticleLinkCandidateFromExtractedMetadata,
-  parseBoundedStaticRetryAfter,
   readStaticResponseHeader,
 } from "./article-discovery-helpers";
+import { parseBoundedStaticRetryAfter } from "./retry-after-policy";
+import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
 import type {
   EvaluateArticleLinkResult,
   ArticleDiscoveryCandidateOutcome,
@@ -43,11 +44,18 @@ import {
   type BrowserRuntimeSelection,
   type ExecutableResolutionResult,
 } from "./browser-runtime";
+import {
+  acquireBrowserNavigationPermit,
+  releaseUnusedBrowserNavigationPermit,
+  startGovernedBrowserNavigation,
+  type BrowserNavigationEvidence,
+  type BrowserNavigationGovernorContext,
+  type BrowserNavigationLease,
+} from "./browser-navigation-governor";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-export const BROWSER_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+export const BROWSER_USER_AGENT = NUSIFT_CRAWLER_USER_AGENT;
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_BROWSER_SHORTLISTED_LINKS = 25;
@@ -100,6 +108,9 @@ export type BrowserArticleLinkResult = {
     rawExtractionError?: string;
     blockedReason?: string;
     browserRuntimeAvailable: boolean;
+    browserAttempted?: boolean;
+    governorDeferred?: boolean;
+    browserNavigation?: BrowserNavigationEvidence;
     elapsedMs: number;
   };
   /**
@@ -790,6 +801,7 @@ export async function discoverArticleLinksWithBrowser(input: {
   timeoutMs?: number;    categoryPathUrl?: string | null;
     /** Optional scope established by the caller; otherwise derived from render evidence. */
     verifiedHostScope?: VerifiedHostScope | null;
+    governorContext?: BrowserNavigationGovernorContext;
 }): Promise<BrowserArticleLinkResult> {
   const startedAt = Date.now();
   const timeoutMs = Math.min(input.timeoutMs || DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
@@ -817,10 +829,27 @@ export async function discoverArticleLinksWithBrowser(input: {
     };
   }
 
+  const governorContext: BrowserNavigationGovernorContext = input.governorContext ?? {
+    agent: "agent2",
+    stage: "article-discovery-browser-listing",
+  };
+  const preflight = await acquireBrowserNavigationPermit({ url: input.targetUrl, context: governorContext });
+  if (!preflight.allowed) {
+    return browserLinkGovernorDeferredResult(startedAt, preflight.reason, preflight.evidence);
+  }
+
   // Launch browser
-  const launchResult = await launchBrowser();  const browser = launchResult.browser;
+  let launchResult;
+  try {
+    launchResult = await launchBrowser();
+  } catch (error) {
+    await releaseUnusedBrowserNavigationPermit(preflight.lease);
+    throw error;
+  }
+  const browser = launchResult.browser;
 
   if (!browser) {
+    await releaseUnusedBrowserNavigationPermit(preflight.lease);
     return {
       ok: false,
       reason: "browser_runtime_unavailable",
@@ -841,6 +870,8 @@ export async function discoverArticleLinksWithBrowser(input: {
     };
   }
 
+  let navigation: Awaited<ReturnType<typeof startGovernedBrowserNavigation>> | null = null;
+  let blockedHeavyResources = 0;
   try {
     const context = await browser.newContext({
       userAgent: BROWSER_USER_AGENT,
@@ -853,21 +884,30 @@ export async function discoverArticleLinksWithBrowser(input: {
 
     // Block heavy resources to speed up rendering
     await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,mp4,mp3,woff,woff2,ttf}", (route: any) =>
-      route.abort(),
+      {
+        blockedHeavyResources += 1;
+        return route.abort();
+      },
     );
 
-    const response = await page
-      .goto(input.targetUrl, {
+    navigation = await startGovernedBrowserNavigation({
+      page,
+      url: input.targetUrl,
+      context: governorContext,
+      lease: preflight.lease,
+      getBlockedHeavyResources: () => blockedHeavyResources,
+      gotoOptions: {
         waitUntil: "domcontentloaded",
         timeout: timeoutMs,
-      })
-      .catch((err: any) => {
-        blockedReason = `Navigation failed: ${err?.message || String(err)}`;
-        return null;
+      },
     });
+    if (!navigation.allowed) {
+      return browserLinkGovernorDeferredResult(startedAt, navigation.reason, navigation.evidence);
+    }
+    const response = navigation.response;
+    if (navigation.error) blockedReason = `Navigation failed: ${navigation.error instanceof Error ? navigation.error.message : String(navigation.error)}`;
 
-    if (!response) {
-      await browser.close();
+    if (!response || navigation.error) {
       return {
         ok: false,
         reason: "navigation_failed",
@@ -883,6 +923,8 @@ export async function discoverArticleLinksWithBrowser(input: {
           articleLikeLinkCount: 0,
           blockedReason,
           browserRuntimeAvailable: true,
+          browserAttempted: true,
+          browserNavigation: navigation.evidence,
           elapsedMs: Date.now() - startedAt,
         },
       };
@@ -890,7 +932,6 @@ export async function discoverArticleLinksWithBrowser(input: {
 
     if (!response.ok()) {
       blockedReason = `HTTP ${response.status()}`;
-      await browser.close();
       return {
         ok: false,
         reason: "http_error",
@@ -906,6 +947,8 @@ export async function discoverArticleLinksWithBrowser(input: {
           articleLikeLinkCount: 0,
           blockedReason,
           browserRuntimeAvailable: true,
+          browserAttempted: true,
+          browserNavigation: navigation.evidence,
           elapsedMs: Date.now() - startedAt,
         },
       };
@@ -977,8 +1020,6 @@ export async function discoverArticleLinksWithBrowser(input: {
 
     const filterResult = scoreAndFilterBrowserLinks(rawLinks, renderedUrl || input.targetUrl, categoryPathUrl, verifiedHostScope);
 
-    await browser.close();
-
     return {
       ok: true,
       renderedUrl,
@@ -997,15 +1038,12 @@ export async function discoverArticleLinksWithBrowser(input: {
         rawExtractionFallbackUsed,
         rawExtractionError,
         browserRuntimeAvailable: true,
+        browserAttempted: true,
+        browserNavigation: navigation.evidence,
         elapsedMs: Date.now() - startedAt,
       },
     };
   } catch (error: any) {
-    try {
-      await browser.close();
-    } catch {
-      // ignore close errors
-    }
     return {
       ok: false,
       reason: "browser_error",
@@ -1021,10 +1059,52 @@ export async function discoverArticleLinksWithBrowser(input: {
         articleLikeLinkCount: 0,
         blockedReason: error?.message || String(error),
         browserRuntimeAvailable: true,
+        browserAttempted: Boolean(navigation?.allowed),
+        ...(navigation?.allowed ? { browserNavigation: navigation.evidence } : {}),
         elapsedMs: Date.now() - startedAt,
       },
     };
+  } finally {
+    let cleanupFailed = false;
+    try {
+      await browser.close();
+    } catch {
+      cleanupFailed = true;
+    }
+    if (navigation?.allowed) {
+      await navigation.complete(cleanupFailed ? { kind: "failure", status: null } : undefined);
+    } else {
+      await releaseUnusedBrowserNavigationPermit(preflight.lease);
+    }
   }
+}
+
+function browserLinkGovernorDeferredResult(
+  startedAt: number,
+  reason: string,
+  evidence: BrowserNavigationEvidence,
+): BrowserArticleLinkResult {
+  return {
+    ok: false,
+    reason: "governor_deferred",
+    links: [],
+    rawLinkCount: 0,
+    shortlistedLinkCount: 0,
+    topRejectedLinks: [],
+    shortlistedLinkSamples: [],
+    topRejectionReasons: [],
+    diagnostics: {
+      pageTitle: null,
+      linkCount: 0,
+      articleLikeLinkCount: 0,
+      blockedReason: reason.slice(0, 80),
+      browserRuntimeAvailable: true,
+      browserAttempted: false,
+      governorDeferred: true,
+      browserNavigation: evidence,
+      elapsedMs: Date.now() - startedAt,
+    },
+  };
 }
 
 // ─── Browser-based article detail recovery ────────────────────────────────
@@ -1059,6 +1139,8 @@ export type BrowserArticleDetailRuntime = {
   deadlineAt: number;
   /** Injectable clock keeps deadline behavior deterministic in tests. */
   now: () => number;
+  governorContext: BrowserNavigationGovernorContext;
+  pendingLease: BrowserNavigationLease | null;
 };
 
 /** Typed control-flow signal: the target browser budget, not the publisher, stopped evaluation. */
@@ -1093,6 +1175,7 @@ export type BrowserArticleDetailInput = {
   listingDateFallbackRaw?: string | null;
   verifiedHostScope?: VerifiedHostScope | null;
   runtime?: BrowserArticleDetailRuntime;
+  governorContext?: BrowserNavigationGovernorContext;
 };
 
 // ─── Raw DOM data extraction + Node-side normalization ─────────────────────
@@ -1326,6 +1409,8 @@ export async function createBrowserArticleDetailSession(input: {
   deadlineAt?: number;
   /** Injectable clock for deterministic budget tests. */
   now?: () => number;
+  initialUrl?: string;
+  governorContext?: BrowserNavigationGovernorContext;
 } = {}): Promise<{ session: BrowserArticleDetailSession | null; blockedReason?: string; timeBudgetExhausted?: boolean }> {
   const now = input.now ?? Date.now;
   const deadlineAt = input.deadlineAt ?? (now() + Math.max(1, input.timeBudgetMs ?? DEFAULT_BROWSER_DETAIL_TARGET_TIME_BUDGET_MS));
@@ -1344,8 +1429,27 @@ export async function createBrowserArticleDetailSession(input: {
     };
   }
 
-  const launchResult = await launchBrowser();
+  const governorContext: BrowserNavigationGovernorContext = input.governorContext ?? {
+    agent: "agent2",
+    stage: "article-discovery-browser-detail",
+  };
+  const preflight = await acquireBrowserNavigationPermit({
+    url: input.initialUrl ?? "https://browser-session.invalid/",
+    context: governorContext,
+  });
+  if (!preflight.allowed) {
+    return { session: null, blockedReason: `governor_deferred:${preflight.reason}` };
+  }
+
+  let launchResult;
+  try {
+    launchResult = await launchBrowser();
+  } catch (error) {
+    await releaseUnusedBrowserNavigationPermit(preflight.lease);
+    throw error;
+  }
   if (!launchResult.browser) {
+    await releaseUnusedBrowserNavigationPermit(preflight.lease);
     return {
       session: null,
       blockedReason: launchResult.blockedReason || "browser runtime unavailable",
@@ -1357,6 +1461,8 @@ export async function createBrowserArticleDetailSession(input: {
     launchResult: { viewport: launchResult.viewport },
     deadlineAt,
     now,
+    governorContext,
+    pendingLease: preflight.lease,
   };
   let closed = false;
 
@@ -1371,7 +1477,14 @@ export async function createBrowserArticleDetailSession(input: {
       close: async () => {
         if (closed) return;
         closed = true;
-        await runtime.browser.close();
+        try {
+          await runtime.browser.close();
+        } finally {
+          if (runtime.pendingLease) {
+            await releaseUnusedBrowserNavigationPermit(runtime.pendingLease);
+            runtime.pendingLease = null;
+          }
+        }
       },
     },
   };
@@ -1412,18 +1525,48 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: BrowserArti
     return reject("fetch_failed", "browser fallback disabled");
   }
 
+  const governorContext = input.governorContext ?? input.runtime?.governorContext ?? {
+    agent: "agent2" as const,
+    stage: "article-discovery-browser-detail",
+  };
+  let navigationLease = input.runtime?.pendingLease ?? null;
+  if (input.runtime?.pendingLease) input.runtime.pendingLease = null;
+  if (navigationLease && navigationLease.url !== articleUrl) {
+    await releaseUnusedBrowserNavigationPermit(navigationLease);
+    navigationLease = null;
+  }
+  if (!navigationLease) {
+    const preflight = await acquireBrowserNavigationPermit({ url: articleUrl, context: governorContext });
+    if (!preflight.allowed) {
+      return reject("fetch_failed", `governor_deferred:${preflight.reason}`, {
+        governorDeferred: true,
+        browserNavigation: preflight.evidence,
+      });
+    }
+    navigationLease = preflight.lease;
+  }
+
   const ownsBrowser = !input.runtime;
-  const launchResult = input.runtime
-    ? { browser: input.runtime.browser, viewport: input.runtime.launchResult.viewport, blockedReason: undefined }
-    : await launchBrowser();
+  let launchResult;
+  try {
+    launchResult = input.runtime
+      ? { browser: input.runtime.browser, viewport: input.runtime.launchResult.viewport, blockedReason: undefined }
+      : await launchBrowser();
+  } catch (error) {
+    await releaseUnusedBrowserNavigationPermit(navigationLease);
+    throw error;
+  }
   const browser = launchResult.browser;
 
   if (!browser) {
+    await releaseUnusedBrowserNavigationPermit(navigationLease);
     return reject("detail_validation_failed", launchResult.blockedReason || "browser runtime unavailable");
   }
 
   let context: any = null;
   let page: any = null;
+  let navigation: Awaited<ReturnType<typeof startGovernedBrowserNavigation>> | null = null;
+  let blockedHeavyResources = 0;
   try {
     context = await browser.newContext({
       userAgent: BROWSER_USER_AGENT,
@@ -1432,8 +1575,10 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: BrowserArti
     page = await context.newPage();
 
     // Block heavy resources just like the listing browser path.
-    await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,mp4,mp3,woff,woff2,ttf}", (route: any) =>
-      route.abort(),
+    await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,mp4,mp3,woff,woff2,ttf}", (route: any) => {
+      blockedHeavyResources += 1;
+      return route.abort();
+    },
     );
 
     // Context/page setup and route registration also consume the target budget.
@@ -1449,23 +1594,35 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: BrowserArti
       ? configuredTimeoutMs
       : Math.min(configuredTimeoutMs, navigationRemainingMs);
 
-    let response: any = null;
-    try {
-      response = await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
-    } catch (error) {
+    navigation = await startGovernedBrowserNavigation({
+      page,
+      url: articleUrl,
+      context: governorContext,
+      lease: navigationLease,
+      getBlockedHeavyResources: () => blockedHeavyResources,
+      gotoOptions: { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs },
+    });
+    if (!navigation.allowed) {
+      return reject("fetch_failed", `governor_deferred:${navigation.reason}`, {
+        governorDeferred: true,
+        browserNavigation: navigation.evidence,
+      });
+    }
+    const response = navigation.response;
+    if (navigation.error) {
       // A navigation timeout at the target deadline is control flow, not a
       // publisher/article failure. Preserve other navigation failures as-is.
       if (input.runtime && input.runtime.now() >= input.runtime.deadlineAt) {
         throw new BrowserDetailTimeBudgetExceeded();
       }
-      return reject("fetch_failed", "navigation failed");
+      return reject("fetch_failed", "navigation failed", { browserNavigation: navigation.evidence });
     }
 
     if (!response) {
       if (input.runtime && input.runtime.now() >= input.runtime.deadlineAt) {
         throw new BrowserDetailTimeBudgetExceeded();
       }
-      return reject("fetch_failed", "navigation failed");
+      return reject("fetch_failed", "navigation failed", { browserNavigation: navigation.evidence });
     }
 
     // Check HTTP status before the deadline so a confirmed 429 retains its
@@ -1484,9 +1641,10 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: BrowserArti
           rateLimited: true,
           retryAfterAt: parsed.retryAfterAt,
           retryAfterSource: parsed.source,
+          browserNavigation: navigation.evidence,
         });
       }
-      return reject("fetch_failed", `HTTP ${status}`, { httpStatus: status });
+      return reject("fetch_failed", `HTTP ${status}`, { httpStatus: status, browserNavigation: navigation.evidence });
     }
 
     if (input.runtime && input.runtime.now() >= input.runtime.deadlineAt) {
@@ -1603,27 +1761,34 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: BrowserArti
       throw new BrowserDetailTimeBudgetExceeded();
     }
 
+    evaluation.outcome.browserNavigation = navigation.evidence;
     return evaluation;
   } catch (error: any) {
     if (isBrowserDetailTimeBudgetExceeded(error)) throw error;
     return reject("detail_validation_failed", error?.message || String(error));
   } finally {
+    let cleanupFailed = false;
     try {
       await page?.close?.();
     } catch {
-      // Ignore per-article page close errors.
+      cleanupFailed = true;
     }
     try {
       await context?.close?.();
     } catch {
-      // Ignore per-article context close errors.
+      cleanupFailed = true;
     }
     if (ownsBrowser) {
       try {
         await browser.close();
       } catch {
-        // ignore close errors
+        cleanupFailed = true;
       }
+    }
+    if (navigation?.allowed) {
+      await navigation.complete(cleanupFailed ? { kind: "failure", status: null } : undefined);
+    } else {
+      await releaseUnusedBrowserNavigationPermit(navigationLease);
     }
   }
 }

@@ -9,6 +9,7 @@ import type {
   PipelineResult,
   ScopeMatch,
 } from "./types";
+import { isIngestResultDeferred } from "./ingest-defer";
 
 const serializeCandidateProvenance = (
   provenance: IngestCandidate["provenance"],
@@ -19,6 +20,7 @@ const serializeCandidateProvenance = (
   discoveredFromCategoryFeed: provenance.discoveredFromCategoryFeed || false,
   sourcePageUrl: provenance.sourcePageUrl || null,
   fetchedAt: provenance.fetchedAt,
+  ...(provenance.originalArticleUrl ? { originalArticleUrl: provenance.originalArticleUrl } : {}),
   ...(provenance.redirectedFromUrl ? { redirectedFromUrl: provenance.redirectedFromUrl } : {}),
 });
 
@@ -137,21 +139,29 @@ export async function persistPipelineArtifact(input: {
     candidates: input.result.candidates.map(serializeCandidate) as Prisma.InputJsonArray,
   };
 
+  const deferred = isIngestResultDeferred(input.result);
+  const governorDeferred = input.result.deferredReason === "governor_deferred";
+
   return prisma.pipelineArtifact.create({
     data: {
       pipelineRunId: input.pipelineRunId,
       sourceId: input.result.sourceId,
       categoryId: input.result.categoryId || null,
       artifactType: "rss_candidates",
-      status: input.result.deferredReason === "rate_limited" || input.result.deferredReason === "redirect_retry"
-        ? "DEFERRED_RATE_LIMIT"
+      status: governorDeferred
+        ? "DEFERRED_GOVERNOR"
+        : deferred
+          ? "DEFERRED_RATE_LIMIT"
         : input.result.failed > 0 && input.result.candidates.length === 0
           ? "FAILED"
           : "CAPTURED",
       candidateCount: input.result.candidates.length,
       payload,
-      errorLog:
-        input.result.failed > 0 && input.result.candidates.length === 0
+      errorLog: governorDeferred
+        ? "Pipeline request deferred by domain governance."
+        : deferred
+          ? "Pipeline request deferred for a later retry."
+          : input.result.failed > 0 && input.result.candidates.length === 0
           ? "No candidates captured for target."
           : null,
     },
@@ -177,17 +187,22 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
       });
   const sourceUrl = categoryTarget?.pathUrl || sourceTarget?.frontPageUrl || null;
   const enriched = input.persisted.enriched || 0;
+  const deferred = isIngestResultDeferred(input.result);
   const rateLimited = input.result.deferredReason === "rate_limited";
   const redirectDeferred = input.result.deferredReason === "redirect_retry";
-  const passed = input.result.failed === 0 && (input.persisted.inserted > 0 || enriched > 0);
-  const handedToAgent2 = !rateLimited && input.result.feedUrl == null && input.result.candidates.length === 0;
+  const governorDeferred = input.result.deferredReason === "governor_deferred";
+  const passed = !deferred && input.result.failed === 0 && (input.persisted.inserted > 0 || enriched > 0);
+  const handedToAgent2 = !deferred && input.result.feedUrl == null && input.result.candidates.length === 0;
   const failureReason = passed
     ? null
-    : handedToAgent2
-      ? "No usable RSS/feed candidates were produced; target is eligible for Agent 2."        : rateLimited
+    : governorDeferred
+      ? "Agent 1 request deferred by domain governance."
+      : rateLimited
         ? `RSS host rate limited Agent 1; retry deferred until ${input.result.retryAt || "the cooldown expires"}.`
         : redirectDeferred
           ? `Redirect resolution deferred until ${input.result.skipSummary.redirectRetryAt || "the cooldown expires"}.`
+          : handedToAgent2
+            ? "No usable RSS/feed candidates were produced; target is eligible for Agent 2."
           : input.result.failed > 0
         ? "Agent 1 failed while fetching or parsing this target."
         : "Agent 1 produced no newly inserted articles for this target.";
@@ -195,7 +210,7 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
   // Determine RSS-active state: a category target with a scoped RSS feed that
   // parsed successfully but produced zero new inserts is RSS-active, not failed.
   // Must also check failed === 0 so real fetch/parse failures aren't masked as RSS-active.
-  const rssActive = !rateLimited && !passed && !handedToAgent2 && input.result.failed === 0 && input.result.feedUrl != null && input.persisted.inserted === 0;
+  const rssActive = !deferred && !passed && !handedToAgent2 && input.result.failed === 0 && input.result.feedUrl != null && input.persisted.inserted === 0;
   const rssUrl = input.result.feedUrl || null;
 
   const payload: Prisma.InputJsonObject = {
@@ -207,8 +222,11 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
     passed,
     handedToAgent2,
     rssActive,
+    deferred,
+    deferredReason: input.result.deferredReason || null,
     rateLimited,
     redirectDeferred,
+    governorDeferred,
     retryAt: input.result.retryAt || null,
     redirectRetryAt: input.result.skipSummary.redirectRetryAt || null,
     candidates: input.result.candidates.length,
@@ -232,7 +250,9 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
       artifactType: "agent1_target_outcome",
       status: passed
         ? "PASS"
-        : rateLimited || redirectDeferred
+        : governorDeferred
+          ? "DEFERRED_GOVERNOR"
+          : rateLimited || redirectDeferred
           ? "DEFERRED_RATE_LIMIT"
           : handedToAgent2
             ? "HANDOFF_TO_AGENT2"
@@ -295,6 +315,7 @@ export async function finalizePipelineRun(input: {
         inserted: input.result.inserted,
         skipped: input.result.skipped,
         failed: input.result.failed,
+        deferred: input.result.deferred || 0,
         artifactCount: input.result.artifactCount || 0,
       } satisfies Prisma.InputJsonValue,
     },

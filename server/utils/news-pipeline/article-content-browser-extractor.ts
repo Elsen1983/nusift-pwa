@@ -17,8 +17,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
-  launchBrowser,
-  BROWSER_USER_AGENT,
   isBrowserFallbackEnabled,
   setArticleDiscoveryBrowserImporterForTest,
 } from "./article-discovery-browser";
@@ -26,6 +24,20 @@ import {
   extractArticleContentFromHtml,
   type ArticleContentExtractionResult,
 } from "./article-content-extractor";
+import {
+  acquireBrowserNavigationPermit,
+  releaseUnusedBrowserNavigationPermit,
+  startGovernedBrowserNavigation,
+  type BrowserNavigationAcquireResult,
+  type BrowserNavigationEvidence,
+  type BrowserNavigationGovernorContext,
+} from "./browser-navigation-governor";
+import {
+  Agent3BrowserSessionError,
+  createAgent3BrowserSession,
+  type Agent3BrowserSession,
+} from "./agent3-browser-session";
+import { GovernedFetchDeferredError } from "./governed-fetch";
 
 /**
  * Re-export for test injection. Allows tests to mock the browser launch
@@ -47,6 +59,10 @@ export interface BrowserExtractionInput {
   existingTitle: string;
   existingBodyText?: string | null;
   timeoutMs?: number;
+  governorContext?: BrowserNavigationGovernorContext;
+  governorPermit?: Extract<BrowserNavigationAcquireResult, { allowed: true }>;
+  /** Invocation-scoped session supplied by Agent 3; omitted for standalone use. */
+  browserSession?: Agent3BrowserSession;
 }
 
 // ─── Browser Extraction ─────────────────────────────────────────────────────
@@ -121,41 +137,67 @@ export async function extractArticleContentWithBrowser(
     MAX_BROWSER_TIMEOUT_MS,
   );
 
-  // Launch browser
-  const launchResult = await launchBrowser();
-  const browser = launchResult.browser;
-
-  if (!browser) {
-    return browserUnavailableResult(
-      articleUrl,
-      launchResult.blockedReason || "Browser runtime unavailable",
-    );
+  const governorContext: BrowserNavigationGovernorContext = input.governorContext ?? {
+    agent: "agent3",
+    stage: "article-content-browser-extraction",
+  };
+  const preflight = input.governorPermit
+    ?? await acquireBrowserNavigationPermit({ url: articleUrl, context: governorContext });
+  if (!preflight.allowed) {
+    return browserGovernorDeferredResult(articleUrl, preflight.reason, preflight.evidence);
+  }
+  try {
+    input.browserSession?.assertCanStart(articleUrl);
+  } catch (error) {
+    await releaseUnusedBrowserNavigationPermit(preflight.lease);
+    if (error instanceof Agent3BrowserSessionError && error.reason === "time_budget_exhausted") {
+      throw new GovernedFetchDeferredError("browser_time_budget_exhausted", error.domainKey);
+    }
+    throw error;
   }
 
+  const browserSession = input.browserSession ?? createAgent3BrowserSession();
+  const ownsBrowserSession = !input.browserSession;
+
+  let navigation: Awaited<ReturnType<typeof startGovernedBrowserNavigation>> | null = null;
+  let pageLease: Awaited<ReturnType<Agent3BrowserSession["openPage"]>> | null = null;
+  let blockedHeavyResources = 0;
+  let retireContext = false;
   try {
-    const context = await browser.newContext({
-      userAgent: BROWSER_USER_AGENT,
-      ...(launchResult.viewport ? { viewport: launchResult.viewport } : {}),
-    });
-    const page = await context.newPage();
+    pageLease = await browserSession.openPage(articleUrl);
+    const page = pageLease.page;
 
     // Block heavy resources to speed up rendering
     await page.route(
       "**/*.{png,jpg,jpeg,gif,svg,webp,mp4,mp3,woff,woff2,ttf,eot}",
-      (route: any) => route.abort(),
+      (route: any) => {
+        blockedHeavyResources += 1;
+        return route.abort();
+      },
     );
 
-    // Navigate to the article URL
-    const response = await page
-      .goto(articleUrl, {
+    const remainingBudgetMs = browserSession.remainingMs;
+    const navigationTimeoutMs = remainingBudgetMs == null
+      ? timeoutMs
+      : Math.min(timeoutMs, Math.max(1_000, remainingBudgetMs));
+    navigation = await startGovernedBrowserNavigation({
+      page,
+      url: articleUrl,
+      context: governorContext,
+      lease: preflight.lease,
+      getBlockedHeavyResources: () => blockedHeavyResources,
+      gotoOptions: {
         waitUntil: "domcontentloaded",
-        timeout: timeoutMs,
-      })
-      .catch((err: any) => {
-        return null;
-      });
+        timeout: navigationTimeoutMs,
+      },
+    });
+    if (!navigation.allowed) {
+      return browserGovernorDeferredResult(articleUrl, navigation.reason, navigation.evidence);
+    }
+    const response = navigation.response;
 
-    if (!response) {
+    if (!response || navigation.error) {
+      retireContext = true;
       return {
         ok: false,
         method: "browser-dom",
@@ -165,7 +207,7 @@ export async function extractArticleContentWithBrowser(
         detail: "Browser navigation failed (timeout or network error).",
         confidence: 0,
         qualitySignals: ["browser_navigation_failed"],
-        diagnostics: emptyDiagnostics("none"),
+        diagnostics: emptyDiagnostics("none", navigation.evidence),
       };
     }
 
@@ -174,6 +216,7 @@ export async function extractArticleContentWithBrowser(
 
     // Handle HTTP errors
     if (statusCode >= 400) {
+      retireContext = statusCode === 429;
       const rejectedReason =
         statusCode === 403 || statusCode === 429 ? "http_error" : "fetch_failed";
       return {
@@ -185,7 +228,8 @@ export async function extractArticleContentWithBrowser(
         detail: `Browser received HTTP ${statusCode}`,
         confidence: 0,
         qualitySignals: [`browser_http_${statusCode}`],
-        diagnostics: emptyDiagnostics("none"),
+        diagnostics: emptyDiagnostics("none", navigation.evidence),
+        ...(statusCode === 429 ? { retryAfterAt: navigation.evidence.retryAfterAt } : {}),
       };
     }
 
@@ -198,7 +242,7 @@ export async function extractArticleContentWithBrowser(
     const html = await page.content();
 
     // Pass through shared extraction pipeline (browser closed in finally)
-    return extractArticleContentFromHtml({
+    const extracted = await extractArticleContentFromHtml({
       html,
       resolvedUrl,
       statusCode,
@@ -206,24 +250,20 @@ export async function extractArticleContentWithBrowser(
       existingBodyText,
       method: "browser-dom",
     });
+    extracted.diagnostics.browserNavigation = navigation.evidence;
+    return extracted;
   } catch (error: any) {
+    if (error instanceof Agent3BrowserSessionError) {
+      if (error.reason === "time_budget_exhausted") {
+        throw new GovernedFetchDeferredError("browser_time_budget_exhausted", error.domainKey);
+      }
+      if (error.reason === "browser_runtime_unavailable") {
+        return browserUnavailableResult(articleUrl, error.message);
+      }
+    }
+    retireContext = true;
     // Handle browser errors gracefully
     const message = error?.message || String(error);
-
-    // Check for rate limiting signals
-    if (message.includes("429") || message.includes("rate limit")) {
-      return {
-        ok: false,
-        method: "browser-dom",
-        resolvedUrl: articleUrl,
-        statusCode: 429,
-        rejectedReason: "http_error",
-        detail: `Browser rate limited: ${message}`,
-        confidence: 0,
-        qualitySignals: ["browser_rate_limited"],
-        diagnostics: emptyDiagnostics("none"),
-      };
-    }
 
     return {
       ok: false,
@@ -234,14 +274,23 @@ export async function extractArticleContentWithBrowser(
       detail: `Browser extraction error: ${message}`,
       confidence: 0,
       qualitySignals: ["browser_error"],
-      diagnostics: emptyDiagnostics("none"),
+      diagnostics: emptyDiagnostics("none", navigation?.allowed ? navigation.evidence : undefined),
     };
   } finally {
-    // Always close browser, even on error
+    let cleanupFailed = false;
     try {
-      await browser.close();
+      await pageLease?.close({ retireContext });
     } catch {
-      // Ignore close errors (already closed or never opened)
+      cleanupFailed = true;
+    }
+    try {
+      if (navigation?.allowed) {
+        await navigation.complete(cleanupFailed ? { kind: "failure", status: null } : undefined);
+      } else {
+        await releaseUnusedBrowserNavigationPermit(preflight.lease);
+      }
+    } finally {
+      if (ownsBrowserSession) await browserSession.close();
     }
   }
 }
@@ -265,8 +314,27 @@ function browserUnavailableResult(
   };
 }
 
+function browserGovernorDeferredResult(
+  articleUrl: string,
+  reason: string,
+  evidence: BrowserNavigationEvidence,
+): ArticleContentExtractionResult {
+  return {
+    ok: false,
+    method: "none",
+    resolvedUrl: articleUrl,
+    statusCode: null,
+    rejectedReason: "fetch_failed",
+    detail: `[browser_governor_deferred] ${reason}`,
+    confidence: 0,
+    qualitySignals: ["browser_governor_deferred"],
+    diagnostics: emptyDiagnostics("none", evidence),
+  };
+}
+
 function emptyDiagnostics(
   bodySource: "dom" | "expanded-dom" | "existing-fallback" | "none",
+  browserNavigation?: BrowserNavigationEvidence,
 ) {
   return {
     selectedContainerSelector: null,
@@ -291,6 +359,7 @@ function emptyDiagnostics(
     stoppedAtClassOrId: null,
     excludedBlockCount: 0,
     skippedCandidateReasons: [],
+    ...(browserNavigation ? { browserNavigation } : {}),
   };
 }
 
@@ -322,7 +391,7 @@ const BROWSER_USEFUL_FETCH_SIGNALS: ReadonlySet<string> = new Set([
  * Browser fallback is expensive (launches a full browser), so only retry for
  * failures that indicate the content might be recoverable with JS rendering:
  *  - HTTP 403 (anti-bot blocking)
- *  - HTTP 429 (rate limiting)
+ *  - HTTP 429 is never browser-recoverable: it is a hard no-browser boundary
  *  - no_article_text (JS-rendered content not visible in static HTML)
  *  - empty_html (server returned empty/minimal HTML)
  *  - too_short (partial extraction, might get more with JS rendering)
@@ -339,6 +408,7 @@ const BROWSER_USEFUL_FETCH_SIGNALS: ReadonlySet<string> = new Set([
  *  - non_html_response (server issue, not rendering)
  *  - canonical_mismatch (content mismatch, not rendering)
  *  - parse_error (HTML structure issue — browser renders same HTML)
+ *  - HTTP 429 (rate limiting must not be amplified by browser fallback)
  */
 export function isBrowserFallbackEligibleForFailure(result: {
   rejectedReason: string;
@@ -349,10 +419,17 @@ export function isBrowserFallbackEligibleForFailure(result: {
   const { rejectedReason, statusCode, detail, qualitySignals } = result;
   const signals = qualitySignals ?? [];
 
+  // A 429 status is always a static rate-limit boundary, regardless of the
+  // extractor's textual failure reason. Never amplify it with browser work.
+  if (statusCode === 429) return false;
+
   switch (rejectedReason) {
     case "http_error":
-      // Only retry 403 (forbidden/anti-bot) and 429 (rate limited)
-      return statusCode === 403 || statusCode === 429;
+      // HTTP 429 is an unconditional no-browser boundary. Rate limiting is
+      // handled by the retry/cooldown policy, never by browser escalation.
+      if (statusCode === 429) return false;
+      // HTTP 403 remains eligible under the existing bounded policy.
+      return statusCode === 403;
     case "no_article_text":
     case "empty_html":
     case "too_short":

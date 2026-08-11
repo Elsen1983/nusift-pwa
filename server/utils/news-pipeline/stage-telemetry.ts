@@ -85,13 +85,19 @@ export type StageBatchTelemetry = {
   persistenceFailed?: number;
   remainingBefore: number | null;
   remainingAfter: number | null;
+  /** Actual safeFetch/network work observed, independent of final outcome persistence. */
   networkRequests: number;
+  /** Actual browser fallback launches observed, independent of final outcome persistence. */
   browserAttempts: number;
+  /** Actual persistence operations attempted/observed, not durable outcome count. */
   dbPersistenceOps: number;
   /** Legacy input field only; new telemetry artifacts use logicalRequestDurationMs. */
   fetchMs?: number;
+  /** Actual extraction operation duration, including work later losing its claim. */
   extractionMs: number;
+  /** Actual browser operation duration, including work later losing its claim. */
   browserMs: number;
+  /** Actual persistence operation duration, including failed transactions. */
   persistenceMs: number;
   sleepMs: number;
   batchSizeLimit: number;
@@ -154,6 +160,11 @@ export type PipelineStageTimingSummary = {
 
 export type StageBatchProbeKind = "fetch" | "logicalRequest" | "extraction" | "browser" | "persistence";
 
+/**
+ * Probe counters and durations describe physical work observed in this stage
+ * invocation. They are intentionally distinct from persisted outcome counters
+ * supplied to `finalize()` by the orchestration boundary.
+ */
 export interface StageBatchProbe {
   recordFetch(ms: number): void;
   recordLogicalRequestDuration(ms: number): void;
@@ -225,6 +236,11 @@ export type StageBatchTelemetryTrackerOptions = {
   now?: () => number;
 };
 
+/**
+ * Tracks actual stage work plus an explicit durable disposition snapshot.
+ * `finalize()` receives persisted-outcome buckets from the caller; it must not
+ * infer those buckets from operation counters.
+ */
 export class StageBatchTelemetryTracker implements StageBatchProbe {
   private readonly orchestrationRunId: string;
   private readonly stage: TelemetryStage;

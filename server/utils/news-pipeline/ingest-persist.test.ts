@@ -106,6 +106,31 @@ describe("persistCandidates", () => {
     expect(prismaCreateManyMock).toHaveBeenCalledTimes(1);
   });
 
+  it("deduplicates HTTP and HTTPS transport variants of the same article", async () => {
+    prismaFindManyMock.mockResolvedValue([
+      {
+        id: 404,
+        rssGuid: "http://example.com/articles/1",
+        canonicalUrl: "http://example.com/articles/1",
+        contentHash: "old-hash",
+        categoryId: null,
+        tags: [],
+      },
+    ]);
+
+    const { persistCandidates } = await import("./ingest");
+    const result = await persistCandidates([
+      makeCandidate({
+        rssGuid: "https://example.com/articles/1",
+        canonicalUrl: "https://example.com/articles/1",
+        contentHash: "new-hash",
+      }),
+    ]);
+
+    expect(result).toEqual({ inserted: 0, skipped: 1, failed: 0, enriched: 0 });
+    expect(prismaCreateManyMock).not.toHaveBeenCalled();
+  });
+
   it("does not overwrite an existing category assignment on duplicate articles", async () => {
     prismaFindManyMock.mockResolvedValue([
       {

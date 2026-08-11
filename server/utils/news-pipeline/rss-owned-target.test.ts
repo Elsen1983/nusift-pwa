@@ -35,6 +35,7 @@ describe("evaluateRssOwnedTargetForAgent2", () => {
     const result = evaluateRssOwnedTargetForAgent2({
       ...trustedFeed,
       currentFeedProductive: true,
+      lastProductiveAt: new Date("2026-08-10T11:00:00.000Z"),
       consecutiveNonProductiveRuns: 0,
     });
     expect(result.rssOwned).toBe(true);
@@ -75,7 +76,7 @@ describe("evaluateRssOwnedTargetForAgent2", () => {
     expect(result.reason).toBe("rss_owned_repeatedly_non_productive");
   });
 
-  it("repeatedly confirmed invalid feed allows Agent 2 escalation", () => {
+  it("a single invalid-feed run remains below the Agent 2 fallback threshold", () => {
     const result = evaluateRssOwnedTargetForAgent2({
       rssStatus: "FAILED",
       rssFeedUrl: trustedFeed.rssFeedUrl,
@@ -83,8 +84,8 @@ describe("evaluateRssOwnedTargetForAgent2", () => {
       currentFeedProductive: false,
       consecutiveNonProductiveRuns: 1,
     });
-    expect(result.eligibleForAgent2).toBe(true);
-    expect(result.reason).toBe("rss_owned_invalid_feed");
+    expect(result.eligibleForAgent2).toBe(false);
+    expect(result.reason).toBe("rss_owned_waiting_evidence");
   });
 
   it("permanently unreachable feed escalates", () => {
@@ -123,7 +124,7 @@ describe("evaluateRssOwnedTargetForAgent2", () => {
     expect(result.reason).toBe("not_rss_owned");
   });
 
-  it("system-discovered feeds are not RSS-owned but valid productive ACTIVE feeds still skip via normal rules", () => {
+  it("system-discovered feeds without a productivity timestamp remain eligible", () => {
     // SYSTEM_DISCOVERED provenance is not trusted RSS ownership — the normal
     // ACTIVE rules apply (productive → skip, non-productive ≥ 2 → eligible).
     const result = evaluateRssOwnedTargetForAgent2({

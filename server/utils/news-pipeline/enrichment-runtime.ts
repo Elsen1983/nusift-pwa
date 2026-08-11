@@ -26,6 +26,7 @@ import {
   mergeEnrichmentBatchPersistResult,
   persistAttemptMarker,
   persistEnrichmentBatch,
+  releaseEnrichmentClaim,
   recoverExpiredEnrichmentClaims,
   type EnrichmentBatchPersistResult,
 } from "./enrichment-persist";
@@ -42,6 +43,7 @@ import {
   extractArticleContentWithBrowser,
   isBrowserFallbackEligibleForFailure,
 } from "./article-content-browser-extractor";
+import { getHttpsArticleUrl } from "./article-transport-policy";
 import type { Agent3RetryDiagnostics, BrowserFallbackMetadata, BrowserFallbackRunStats, BrowserDiagnostics, BrowserFallbackSkippedReason } from "./enrichment";
 import { hasUsableAgent3BodyText } from "./publication-gate";
 import {
@@ -58,6 +60,18 @@ import {
   createNoopStageBatchProbe,
   type StageBatchProbe,
 } from "./stage-telemetry";
+import { GovernedFetchDeferredError } from "./governed-fetch";
+import type { GovernedFetchContext } from "./governed-fetch";
+import {
+  acquireBrowserNavigationPermit,
+  type BrowserNavigationAcquireResult,
+  type BrowserNavigationGovernorContext,
+} from "./browser-navigation-governor";
+import {
+  Agent3BrowserSessionError,
+  createAgent3BrowserSession,
+  type Agent3BrowserSession,
+} from "./agent3-browser-session";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent 3 — Article enrichment runtime batch path (Phase 2)
@@ -694,16 +708,36 @@ export const selectEnrichmentEligibleArticles = async (
  */
 export const buildArticleProvenance = (
   article: EnrichmentEligibleArticle,
-): ArticleUpstreamProvenance => ({
-  sourceId: article.sourceId,
-  categoryId: article.categoryId,
-  // Article row does not prove the feed origin or discovery route.
-  feedOrigin: null,
-  feedUrl: null,
-  discoveredFromCategoryFeed: null,
-  arrivedViaHardCaseRerun: null,
-  ingestedAt: article.createdAt.toISOString(),
-});
+): ArticleUpstreamProvenance => {
+  const articleUrl = article.canonicalUrl || article.sourceUrl;
+  return {
+    sourceId: article.sourceId,
+    categoryId: article.categoryId,
+    // Article row does not prove the feed origin or discovery route.
+    feedOrigin: null,
+    feedUrl: null,
+    ...(articleUrl?.toLowerCase().startsWith("http://")
+      ? { originalArticleUrl: articleUrl }
+      : {}),
+    discoveredFromCategoryFeed: null,
+    arrivedViaHardCaseRerun: null,
+    ingestedAt: article.createdAt.toISOString(),
+  };
+};
+
+const preserveOriginalArticleUrl = (
+  article: EnrichmentEligibleArticle,
+  provenance: ArticleUpstreamProvenance,
+): ArticleUpstreamProvenance => {
+  const articleUrl = article.canonicalUrl || article.sourceUrl;
+  if (
+    provenance.originalArticleUrl === undefined &&
+    articleUrl?.toLowerCase().startsWith("http://")
+  ) {
+    return { ...provenance, originalArticleUrl: articleUrl };
+  }
+  return provenance;
+};
 
 const MAX_UPSTREAM_RECOVERY_ARTIFACTS = 200;
 const MAX_UPSTREAM_RECOVERY_CANDIDATES_PER_ARTIFACT = 100;
@@ -953,6 +987,7 @@ export const recoverUpstreamProvenanceBatch = async (
       categoryId: article.categoryId,
       feedOrigin: origin,
       feedUrl: sanitizeEnrichmentEvidenceUrl(provenance.feedUrl),
+      originalArticleUrl: sanitizeEnrichmentEvidenceUrl(provenance.originalArticleUrl),
       discoveredFromCategoryFeed: typeof provenance.discoveredFromCategoryFeed === "boolean" ? provenance.discoveredFromCategoryFeed : null,
       ingestArtifactId: match.artifact.id ?? null,
       ingestPipelineRunId: match.artifact.pipelineRunId ?? null,
@@ -1034,7 +1069,8 @@ const buildOutcomeFromSuccess = (
   timing: EnrichmentTiming,
   forceReprocess: boolean = false,
 ): ArticleEnrichmentOutcome => {
-  const articleUrl = article.canonicalUrl || article.sourceUrl || null;
+  const originalArticleUrl = article.canonicalUrl || article.sourceUrl || null;
+  const articleUrl = result.transportUrl || originalArticleUrl;
 
   // Build field provenance for each extracted field
   const titleProvenance = buildTitleProvenance(article.title, result.title);
@@ -1113,7 +1149,9 @@ const buildOutcomeFromSuccess = (
       method: result.method,
       detail: `Real HTTP extractor: ${result.qualitySignals.join(", ")}`,
       resolvedCanonicalUrl: result.resolvedUrl,
-      redirected: result.resolvedUrl !== articleUrl,
+      transportUrl: result.transportUrl ?? null,
+      originalArticleUrl: result.originalArticleUrl ?? originalArticleUrl,
+      redirected: result.resolvedUrl !== articleUrl || articleUrl !== originalArticleUrl,
     },
     timing,
     quality: {
@@ -1328,8 +1366,13 @@ export const extractAndBuildArticleOutcome = async (
   forceReprocess: boolean = false,
   browserFallback?: BrowserFallbackConfig,
   telemetry?: StageBatchProbe,
+  governedFetchContextOverride?: Partial<GovernedFetchContext>,
+  browserSession?: Agent3BrowserSession,
 ): Promise<ArticleEnrichmentOutcome> => {
-  const provenance = provenanceOverride ?? buildArticleProvenance(article);
+  const provenance = preserveOriginalArticleUrl(
+    article,
+    provenanceOverride ?? buildArticleProvenance(article),
+  );
   const articleUrl = article.canonicalUrl || article.sourceUrl || null;
   const startedAt = now.getTime();
 
@@ -1352,6 +1395,14 @@ export const extractAndBuildArticleOutcome = async (
   // Run the real HTTP extractor
   let result: ArticleContentExtractionResult;
   try {
+    const governedFetchContext: GovernedFetchContext = {
+      ...(governedFetchContextOverride ?? {}),
+      agent: "agent3",
+      stage: "article-enrichment",
+      purpose: "article_extraction",
+      sourceId: article.sourceId,
+      articleId: article.id,
+    };
     result = await extractArticleContentFromUrl({
       articleId: article.id,
       articleUrl,
@@ -1359,8 +1410,12 @@ export const extractAndBuildArticleOutcome = async (
       existingBodyText: article.bodyText,
       now,
       telemetry,
+      governedFetchContext,
     });
   } catch (err: unknown) {
+    // A governor defer is a neutral retry boundary. It must not become an
+    // UNKNOWN/failure outcome or enter browser fallback eligibility.
+    if (err instanceof GovernedFetchDeferredError) throw err;
     const message = err instanceof Error ? err.message : String(err);
     const finishedAt = new Date();
     const timing: EnrichmentTiming = {
@@ -1409,7 +1464,11 @@ export const extractAndBuildArticleOutcome = async (
       retryAfterAt: result.retryAfterAt,
     },
     retryable,
-    method: { method: result.method !== "none" ? result.method : "http-dom" },
+      method: {
+        method: result.method !== "none" ? result.method : "http-dom",
+        transportUrl: result.transportUrl ?? null,
+        originalArticleUrl: result.originalArticleUrl ?? articleUrl,
+      },
     timing,
     httpStatus: result.statusCode,
   });
@@ -1437,22 +1496,60 @@ export const extractAndBuildArticleOutcome = async (
 
   // Determine browser fallback skipped reason and attempt if eligible
   if (browserFallback?.skippedReason) {
-    // Runtime decided to skip browser for this article (budget exhausted, etc.)
+    // Runtime may suppress browser work because of a prior host observation or
+    // an invocation budget. The current static result still owns eligibility:
+    // an inherently ineligible failure must be reported as not_eligible rather
+    // than attributing the skip to an earlier host 429.
+    const eligible = isBrowserFallbackEligibleForFailure(result);
+    const skippedReason = eligible ? browserFallback.skippedReason : "not_eligible";
     failureOutcome.browserFallback = buildBrowserFallbackSkippedMetadata(
-      browserFallback.skippedReason, result,
+      skippedReason,
+      result,
     );
   } else if (browserFallback && isBrowserFallbackEligibleForFailure(result)) {
     // Browser fallback is available and the failure is eligible — attempt it
+    const browserArticleUrl = getHttpsArticleUrl(articleUrl) ?? articleUrl;
+    const browserArticle = browserArticleUrl === articleUrl
+      ? article
+      : { ...article, canonicalUrl: browserArticleUrl };
+    const browserGovernorContext: BrowserNavigationGovernorContext = {
+      agent: "agent3",
+      stage: "article-content-browser-extraction",
+      mode: governedFetchContextOverride?.mode,
+      db: governedFetchContextOverride?.db,
+    };
+    try {
+      browserSession?.assertCanStart(browserArticleUrl);
+    } catch (error) {
+      if (error instanceof GovernedFetchDeferredError) throw error;
+      if (error instanceof Agent3BrowserSessionError && error.reason === "time_budget_exhausted") {
+        throw new GovernedFetchDeferredError("browser_time_budget_exhausted", error.domainKey);
+      }
+      throw error;
+    }
+    const browserPermit = await acquireBrowserNavigationPermit({
+      url: browserArticleUrl,
+      context: browserGovernorContext,
+    });
+    if (!browserPermit.allowed) {
+      throw new GovernedFetchDeferredError(browserPermit.reason, browserPermit.evidence.domainKey);
+    }
     telemetry?.recordBrowserAttempt();
     telemetry?.recordNetworkRequest();
-    const browserTask = () => attemptBrowserFallback(article, browserFallback.timeoutMs);
+    const browserTask = () => attemptBrowserFallback(
+      browserArticle,
+      browserFallback.timeoutMs,
+      browserGovernorContext,
+      browserPermit,
+      browserSession,
+    );
     const browserResult = telemetry
       ? await telemetry.timed("browser", browserTask)
       : await browserTask();
 
     if (browserResult.ok) {
       // Browser fallback succeeded — build success outcome using shared helper
-      const outcome = buildOutcomeFromSuccess(article, browserResult, provenance, timing, forceReprocess);
+      const outcome = buildOutcomeFromSuccess(browserArticle, browserResult, provenance, timing, forceReprocess);
       outcome.method.detail = `Browser fallback extractor: ${browserResult.qualitySignals.join(", ")}`;
       outcome.browserFallback = {
         attempted: true,
@@ -1467,7 +1564,18 @@ export const extractAndBuildArticleOutcome = async (
         runtimeUnavailable: false,
         rateLimited: false,
         confidence: browserResult.confidence,
-        browserDiagnostics: null,
+        browserDiagnostics: browserResult.diagnostics.browserNavigation
+          ? {
+              selectedContainerSelector: null,
+              paragraphCount: null,
+              totalTextLength: null,
+              candidateContainerCount: null,
+              stoppedAtText: null,
+              stoppedAtClassOrId: null,
+              topCandidates: [],
+              navigation: browserResult.diagnostics.browserNavigation,
+            }
+          : null,
       };
       return outcome;
     }
@@ -1605,6 +1713,9 @@ function classifyHttpAccessBlocked(outcome: ArticleEnrichmentOutcome): void {
 async function attemptBrowserFallback(
   article: EnrichmentEligibleArticle,
   timeoutMs: number,
+  governorContext: BrowserNavigationGovernorContext,
+  governorPermit: Extract<BrowserNavigationAcquireResult, { allowed: true }>,
+  browserSession?: Agent3BrowserSession,
 ): Promise<ArticleContentExtractionResult> {
   const articleUrl = article.canonicalUrl || article.sourceUrl || "";
   try {
@@ -1613,8 +1724,12 @@ async function attemptBrowserFallback(
       existingTitle: article.title,
       existingBodyText: article.bodyText,
       timeoutMs,
+      governorContext,
+      governorPermit,
+      browserSession,
     });
   } catch (err: unknown) {
+    if (err instanceof GovernedFetchDeferredError) throw err;
     const message = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
@@ -1676,9 +1791,10 @@ function buildBrowserFallbackMetadata(
       ? null
       : (browserResult.rejectedReason || null);
 
-  // Build compact browser diagnostics from extraction diagnostics on failure
+  // Build compact browser diagnostics without retaining URLs, headers, bodies,
+  // cookies, storage, or provider tokens.
   let browserDiagnostics: BrowserDiagnostics | null = null;
-  if (!browserResult.ok) {
+  if (!browserResult.ok || browserResult.diagnostics.browserNavigation) {
     const diag = browserResult.diagnostics;
     browserDiagnostics = {
       selectedContainerSelector: diag.selectedContainerSelector ?? null,
@@ -1693,6 +1809,7 @@ function buildBrowserFallbackMetadata(
         paragraphCount: typeof c.paragraphCount === "number" ? c.paragraphCount : null,
         textLength: typeof c.textLength === "number" ? c.textLength : null,
       })),
+      navigation: diag.browserNavigation ?? null,
     };
   }
 
@@ -2632,6 +2749,8 @@ export interface EnrichmentBatchOptions {
   browserFallbackMaxAttempts?: number;
   /** Timeout per browser fallback attempt in ms (default 25000, clamp 5000..45000). */
   browserTimeoutMs?: number;
+  /** Invocation-local browser session deadline (default is derived from attempts). */
+  browserBatchTimeoutMs?: number;
   /** Bypass only an article's own HTTP 403 cooldown for a bounded browser recovery batch. */
   allowBrowserRecoveryDuringHttp403Cooldown?: boolean;
   /** Maximum articles from a single source per batch (default 5, clamp 1..25). */
@@ -2640,6 +2759,8 @@ export interface EnrichmentBatchOptions {
   pipelineRunId?: string;
   /** Operation-level stage telemetry probe (optional, no-op by default). */
   telemetry?: StageBatchProbe;
+  /** Invocation-scoped static-429 safety state shared by Agent 3 articles. */
+  static429Hostnames?: Set<string>;
 }
 
 /**
@@ -2686,6 +2807,8 @@ export interface EnrichmentRunResult {
   claimSkipped: number;
   /** Number of expired leases released before selection. */
   expiredClaimsRecovered: number;
+  /** Neutral governor deferrals; not publisher/network failures. */
+  governorDeferred: number;
   persist: EnrichmentBatchPersistResult;
   /** Authoritative retry-policy queue counts for interstitial outcomes. */
   interstitialDispositionCounts: Agent3InterstitialDispositionCounts;
@@ -2735,7 +2858,22 @@ export const runEnrichmentBatch = async (
   const browserTimeoutMs = clamp(
     options?.browserTimeoutMs ?? 25_000, 5_000, 45_000,
   );
+  const browserBatchTimeoutMs = clamp(
+    options?.browserBatchTimeoutMs ?? (browserTimeoutMs * Math.max(browserFallbackMaxAttempts, 1) + 5_000),
+    10_000,
+    120_000,
+  );
   let browserAttemptsRemaining = browserFallbackEnabled ? browserFallbackMaxAttempts : 0;
+  const browserSession = browserFallbackEnabled
+    ? createAgent3BrowserSession({
+        deadlineAt: startedAt + browserBatchTimeoutMs,
+        maxNavigationsPerContext: Math.max(browserFallbackMaxAttempts, 1),
+      })
+    : null;
+  // A static HTTP 429 is a hard no-browser boundary for this invocation.
+  // Keep this host-local and invocation-scoped: it prevents amplification for
+  // later same-host articles without introducing durable governor state here.
+  const sameBatchStatic429Hostnames = new Set<string>();
   const browserStats: BrowserFallbackRunStats = {
     attempted: 0, succeeded: 0, failed: 0, runtimeUnavailable: 0, rateLimited: 0,
   };
@@ -2814,6 +2952,7 @@ export const runEnrichmentBatch = async (
     const attemptMarkerIds: string[] = [];
     const sourceCooldown = new SourceCooldownTracker();
     let claimSkipped = 0;
+    let governorDeferred = 0;
 
     for (const article of diversified) {
       // Skip articles from sources in cooldown
@@ -2876,6 +3015,8 @@ export const runEnrichmentBatch = async (
         browserConfig = undefined;
       } else if (sourceCooldown.isCoolingDown(article.sourceId)) {
         browserConfig = { timeoutMs: browserTimeoutMs, skippedReason: "source_cooldown" };
+      } else if (sameBatchStatic429Hostnames.has(articleHostname(article))) {
+        browserConfig = { timeoutMs: browserTimeoutMs, skippedReason: "static_429_host" };
       } else if (browserAttemptsRemaining <= 0) {
         const reason: BrowserFallbackSkippedReason = browserStats.runtimeUnavailable > 0
           ? "runtime_unavailable_global_stop"
@@ -2888,22 +3029,81 @@ export const runEnrichmentBatch = async (
       // records both phases in finally-safe probe.timed() boundaries. Do not
       // wrap the whole extractor here as fetch; it also parses/scorers content
       // and may run browser fallback.
-      const outcome = await extractAndBuildArticleOutcome(
-        article,
-        now,
-        provenance,
-        forceReprocess,
-        browserConfig,
-        probe,
-      );
+      let outcome: ArticleEnrichmentOutcome;
+      try {
+        outcome = await extractAndBuildArticleOutcome(
+          article,
+          now,
+          provenance,
+          forceReprocess,
+          browserConfig,
+          probe,
+          { static429Hostnames: sameBatchStatic429Hostnames },
+          browserSession ?? undefined,
+        );
+      } catch (error) {
+        if (!(error instanceof GovernedFetchDeferredError)) throw error;
+        governorDeferred += 1;
+        // Release only this worker's live claim. No Article update, final
+        // artifact, cooldown failure, or persisted outcome counter is created.
+        await releaseEnrichmentClaim(article.id, pipelineRun.id, claim.token).catch(() => {});
+        probe.recordDbOperation();
+        await logAgentScan({
+          sourceId: article.sourceId,
+          categoryId: article.categoryId || undefined,
+          status: "ARTICLE_CONTENT_ENRICHMENT_DEFERRED",
+          executionTimeMs: 0,
+          errorLog: `Agent 3 request deferred by domain governance: ${error.reason}`,
+        }).catch(() => {});
+        continue;
+      }
+      // Observe the static 429 immediately after extraction. This is an
+      // invocation-local network safety control, not persistence telemetry:
+      // claim loss/CAS failure must not reopen same-host browser work later in
+      // this batch, including for a different sourceId.
+      if (
+        outcome.browserFallback?.staticStatusCode === 429 ||
+        outcome.browserFallback?.statusCode === 429
+      ) {
+        const hostname = articleHostname(article);
+        if (hostname !== "unknown") sameBatchStatic429Hostnames.add(hostname);
+      }
+      if (outcome.browserFallback?.statusCode === 429) {
+        // Browser 429 is a neutral retry boundary. The governor already owns
+        // the durable circuit transition; Agent 3 must not create a final
+        // Article outcome, persistence counter, or hard-source side effect.
+        browserAttemptsRemaining--;
+        governorDeferred += 1;
+        await releaseEnrichmentClaim(article.id, pipelineRun.id, claim.token).catch(() => {});
+        probe.recordDbOperation();
+        const navigation = outcome.browserFallback.browserDiagnostics?.navigation ?? null;
+        await logAgentScan({
+          sourceId: article.sourceId,
+          categoryId: article.categoryId || undefined,
+          status: "ARTICLE_CONTENT_ENRICHMENT_DEFERRED",
+          executionTimeMs: 0,
+          errorLog: `Agent 3 browser navigation received authoritative HTTP 429. ${JSON.stringify({
+            domainKey: navigation?.domainKey ?? articleHostname(article),
+            mainDocumentStatus: 429,
+            retryAfterAt: navigation?.retryAfterAt ?? null,
+            retryAfterSource: navigation?.retryAfterSource ?? null,
+            mainDocumentRequests: navigation?.mainDocumentRequests ?? 1,
+            firstPartySubrequests: navigation?.firstPartySubrequests ?? 0,
+            thirdPartySubrequests: navigation?.thirdPartySubrequests ?? 0,
+            blockedHeavyResources: navigation?.blockedHeavyResources ?? 0,
+          }).slice(0, 700)}`,
+        }).catch(() => {});
+        continue;
+      }
       if (outcome.browserFallback?.attempted && !browserConfig) probe.recordBrowserAttempt();
       // Derive and record evidence from this individual outcome before
       // classifyHttpAccessBlocked() can replace the effective rejection status.
       // The aggregate is a sum of these per-outcome events, never an input to
       // article classification. Static 403 + browser 429 records both once.
+      // Keep the per-outcome observation local until persistence succeeds.
+      // The final HTTP evidence summary and telemetry counters must not include
+      // claim-lost or failed-persistence outcomes.
       const outcomeHttpEvidence = collectAgent3HttpEvidence(outcome);
-      mergeAgent3HttpEvidence(httpEvidence, outcomeHttpEvidence);
-      recordAgent3HttpEvidence(probe, outcomeHttpEvidence);
       // Classify HTTP access blocked BEFORE source cooldown tracking so the
       // cooldown tracker uses the final effective status code. For example,
       // if static extraction got 403 but browser fallback got 429, the
@@ -2922,16 +3122,20 @@ export const runEnrichmentBatch = async (
         forceReprocess,
         explicitlyTargeted: Boolean(options?.articleIds?.length),
       });
-      // Persist the computed bounded retry time on the rejection summary for
-      // interstitial outcomes so the row-level outcome carries the same
-      // deferral evidence as the artifact (browser-disabled / browser-failed
-      // interstitial articles stay recoverable by a future browser-capable run).
+      // Persist the computed bounded retry time on the rejection summary when
+      // the retry policy supplies fallback evidence. This keeps static 429
+      // cooldown evidence on the durable row as well as the artifact, while
+      // preserving explicit Retry-After values from the extractor.
+      const isRateLimitedOutcome =
+        outcome.rejection?.httpStatus === 429 ||
+        outcome.browserFallback?.staticStatusCode === 429 ||
+        outcome.browserFallback?.statusCode === 429;
       if (
-        outcome.kind === "INTERSTITIAL_OR_CHALLENGE" &&
         outcome.rejection &&
         !outcome.rejection.retryAfterAt &&
         retryDisposition.state === "DEFERRED" &&
-        retryDisposition.retryAfter
+        retryDisposition.retryAfter &&
+        (outcome.kind === "INTERSTITIAL_OR_CHALLENGE" || isRateLimitedOutcome)
       ) {
         outcome.rejection.retryAfterAt = retryDisposition.retryAfter;
       }
@@ -2950,10 +3154,12 @@ export const runEnrichmentBatch = async (
       ) {
         const detail = outcome.rejection?.detail ?? outcome.error ?? "";
         const browserFallbackCouldHelp =
-          outcome.browserFallback?.runtimeUnavailable === true ||
-          outcome.browserFallback?.browserFallbackSkippedReason === "browser_disabled" ||
-          outcome.kind === "HEADLESS_REQUIRED" ||
-          outcome.kind === "INTERSTITIAL_OR_CHALLENGE";
+          outcome.browserFallback?.browserFallbackSkippedReason !== "not_eligible" &&
+          (outcome.browserFallback?.runtimeUnavailable === true ||
+            outcome.browserFallback?.browserFallbackSkippedReason === "browser_disabled" ||
+            outcome.browserFallback?.browserFallbackSkippedReason === "static_429_host" ||
+            outcome.kind === "HEADLESS_REQUIRED" ||
+            outcome.kind === "INTERSTITIAL_OR_CHALLENGE");
         // READY_RETRY (interstitial out of cooldown) carries no reasonCode on
         // the disposition variant — fall back to the state label.
         const retryReasonCode = "reasonCode" in retryDisposition
@@ -3004,20 +3210,16 @@ export const runEnrichmentBatch = async (
         sourceCooldown.recordSuccess(article.sourceId);
       }
 
-      // Track browser fallback stats
+      // Consume the in-process browser work budget when browser work actually
+      // ran. Durable browser counters are updated only after the outcome is
+      // successfully persisted below, so claim loss cannot look like a
+      // successful/failed persisted browser result.
       if (outcome.browserFallback?.attempted) {
         browserAttemptsRemaining--;
-        browserStats.attempted++;
-        if (outcome.browserFallback.succeeded) browserStats.succeeded++;
-        else browserStats.failed++;
-        if (outcome.browserFallback.runtimeUnavailable) browserStats.runtimeUnavailable++;
-        if (outcome.browserFallback.rateLimited) browserStats.rateLimited++;
-
-        // Stop browser fallback if runtime is unavailable or repeated 429s
+        // Runtime unavailability is an invocation-level safety stop, not a
+        // durable counter. Preserve the existing no-more-browser behavior even
+        // if the final Article persistence later loses its claim.
         if (outcome.browserFallback.runtimeUnavailable) {
-          browserAttemptsRemaining = 0;
-        }
-        if (browserStats.rateLimited >= 3) {
           browserAttemptsRemaining = 0;
         }
       }
@@ -3037,6 +3239,31 @@ export const runEnrichmentBatch = async (
       ));
       probe.recordDbOperation();
       mergeEnrichmentBatchPersistResult(persistResult, articlePersistResult);
+
+      const outcomeWasPersisted =
+        articlePersistResult.persisted === 1 &&
+        articlePersistResult.claimLost === 0 &&
+        articlePersistResult.failed === 0;
+      if (outcomeWasPersisted) {
+        mergeAgent3HttpEvidence(httpEvidence, outcomeHttpEvidence);
+        recordAgent3HttpEvidence(probe, outcomeHttpEvidence);
+      }
+      if (outcomeWasPersisted && outcome.browserFallback?.attempted) {
+        browserStats.attempted++;
+        if (outcome.browserFallback.succeeded) browserStats.succeeded++;
+        else browserStats.failed++;
+        if (outcome.browserFallback.runtimeUnavailable) browserStats.runtimeUnavailable++;
+        if (outcome.browserFallback.rateLimited) browserStats.rateLimited++;
+
+        // Stop browser fallback if a persisted outcome proves the runtime is
+        // unavailable or repeated browser rate limits were persisted.
+        if (outcome.browserFallback.runtimeUnavailable) {
+          browserAttemptsRemaining = 0;
+        }
+        if (browserStats.rateLimited >= 3) {
+          browserAttemptsRemaining = 0;
+        }
+      }
 
       // Interstitial disposition telemetry is persisted-only. Because this
       // runtime persists one article at a time, these aggregate fields prove
@@ -3089,6 +3316,7 @@ export const runEnrichmentBatch = async (
       durationMs: Date.now() - startedAt,
       claimSkipped,
       expiredClaimsRecovered,
+      governorDeferred,
       agent3SourceCooldowns: sourceCooldown.getEntries().length > 0 ? sourceCooldown.getEntries() : undefined,
       browserFallbackStats: browserFallbackEnabled
         ? {
@@ -3189,6 +3417,7 @@ export const runEnrichmentBatch = async (
       articleCount: outcomes.length,
       claimSkipped,
       expiredClaimsRecovered,
+      governorDeferred,
       persist: persistResult,
       interstitialDispositionCounts,
       httpEvidence,
@@ -3234,5 +3463,7 @@ export const runEnrichmentBatch = async (
     }
 
     throw err;
+  } finally {
+    await browserSession?.close();
   }
 };

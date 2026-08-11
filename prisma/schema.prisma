@@ -335,6 +335,7 @@ model UserSourceSubscription {
 
   @@unique([userId, sourceId]) // Garantálja, hogy egy user ne iratkozhasson fel kétszer ugyanarra
   @@index([userId, isActive]) // Gyorsítja a kvóta-számláló API lekérdezéseket
+  @@index([sourceId])
 }
 
 // ANCHOR USER CATEGORY SUBSCRIPTIONS
@@ -354,6 +355,7 @@ model UserCategorySubscription {
 
   @@unique([userId, categoryId])
   @@index([userId, isActive])
+  @@index([categoryId])
 }
 
 // ========================================================
@@ -424,6 +426,8 @@ model Article {
   userReadActivities UserReadActivity[]
 
   @@index([date])
+  @@index([sourceId, date])
+  @@index([categoryId, date])
   // Supports Agent 2 batch selection: fresh + not-yet-enriched / retryable
   @@index([enrichmentStatus, date])
   @@index([publicationStatus, publicationReadyAt])
@@ -459,6 +463,7 @@ model ArticleRating {
 
   @@unique([userId, articleId]) // Egy felhasználó csak egyszer értékelhet egy adott cikket
   @@index([userId])
+  @@index([articleId])
 }
 
 // ANCHOR BOOKMARKS
@@ -476,6 +481,7 @@ model Bookmark {
   folder String?
 
   @@unique([userId, articleId])
+  @@index([articleId])
 }
 
 // ANCHOR AGENT SCAN LOGS
@@ -557,6 +563,9 @@ model UserReadActivity {
   // Track how they interacted to calculate the "Fatigue" or "Interest" metrics
   actionType  String // "IMPRESSION", "CLICKED", "READ_FULL"
   readTimeSec Int? // How long they spent looking at it
+
+  @@index([userId])
+  @@index([articleId])
 }
 
 model PushSubscription {
@@ -606,6 +615,49 @@ model Notification {
 }
 
 // ANCHOR FEED REVIEW REQUESTS
+model DomainRequestGovernor {
+  domainKey             String   @id
+  circuitState          String   @default("CLOSED")
+  cooldownUntil         DateTime?
+  nextRequestAt         DateTime?
+  activeLeaseToken      String?
+  activeLeaseExpiresAt  DateTime?
+  version               Int      @default(0)
+  consecutive429Count   Int      @default(0)
+  consecutive403Count   Int      @default(0)
+  lastHttpStatus        Int?
+  lastSuccessAt         DateTime?
+  lastBlockedAt         DateTime?
+  lastDecision          String?
+  lastDecisionAt        DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([activeLeaseExpiresAt])
+  @@index([circuitState, cooldownUntil])
+  @@index([nextRequestAt])
+}
+
+model PublisherRobotsPolicy {
+  domainKey             String   @id
+  policyStatus          String
+  rules                 Json
+  fetchedAt             DateTime
+  expiresAt             DateTime
+  httpStatus            Int?
+  lastDecision          String?
+  lastDecisionAt        DateTime?
+  activeLeaseToken      String?
+  activeLeaseExpiresAt  DateTime?
+  version               Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([expiresAt])
+  @@index([activeLeaseExpiresAt])
+}
+
+// ANCHOR FEED REVIEW REQUESTS
 model FeedReviewRequest {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
@@ -629,4 +681,5 @@ model FeedReviewRequest {
   @@index([sourceId, status])
   @@index([categoryId, status])
   @@index([requestedByUserId, status])
+  @@index([resolvedByUserId])
 }

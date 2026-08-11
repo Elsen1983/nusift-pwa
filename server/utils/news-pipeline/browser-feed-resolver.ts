@@ -29,8 +29,16 @@
  * Production-safe: jsdom requires no native binaries and runs on Vercel.
  * Playwright is opt-in and only attempted when PLAYWRIGHT_ENABLED=true.
  */
-import { safeFetch } from "../ssrf-guard";
+import { governedSafeFetch, governedSafeFetchAndParse, type GovernedFetchContext } from "./governed-fetch";
+import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
 import { loadJsdom } from "./jsdom-runtime";
+import {
+  acquireBrowserNavigationPermit,
+  releaseUnusedBrowserNavigationPermit,
+  startGovernedBrowserNavigation,
+  type BrowserNavigationEvidence,
+} from "./browser-navigation-governor";
+import { GovernedFetchDeferredError } from "./governed-fetch";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -41,8 +49,7 @@ const FEED_CONTENT_TYPES = [
   "application/json",
 ] as const;
 
-const BROWSER_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const BROWSER_USER_AGENT = NUSIFT_CRAWLER_USER_AGENT;
 
 const COMMON_FEED_PATHS = [
   "/rss/",
@@ -77,7 +84,15 @@ export type BrowserResolveResult = {
   method: "jsdom" | "playwright" | "none";
   renderedDomAvailable: boolean;
   error?: string;
+  governorDeferred?: boolean;
+  browserNavigation?: BrowserNavigationEvidence;
 };
+
+class BrowserFeedGovernorDeferred extends Error {
+  constructor(readonly reason: string, readonly evidence: BrowserNavigationEvidence) {
+    super(`browser_governor_deferred:${reason}`);
+  }
+}
 
 // ─── URL Helpers ────────────────────────────────────────────────────────────
 
@@ -347,21 +362,30 @@ function extractFeedUrlsFromRawMarkup(
 export async function resolveWithJsdom(input: {
   pageUrl: string;
   userAgent?: string;
+  governedFetchContext?: GovernedFetchContext;
 }): Promise<BrowserFeedCandidate[]> {
   const userAgent = input.userAgent || BROWSER_USER_AGENT;
 
   let html: string;
   try {
-    const response = await safeFetch(input.pageUrl, {
+    const fetched = await governedSafeFetchAndParse(input.pageUrl, {
       headers: {
         "User-Agent": userAgent,
         Accept:
           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
-    });
+    }, {
+      ...(input.governedFetchContext ?? {}),
+      agent: input.governedFetchContext?.agent ?? "agent2",
+      stage: "hard-case-feed-discovery",
+      purpose: "article_detail",
+    }, async (response) => ({
+      response,
+      html: response.ok ? await response.text() : "",
+    }));
 
-    if (!response.ok) return [];
-    html = await response.text();
+    if (!fetched.response.ok) return [];
+    html = fetched.html;
   } catch {
     return [];
   }
@@ -377,7 +401,7 @@ export async function resolveWithJsdom(input: {
     const candidates = extractFeedCandidatesFromDom(dom.window, input.pageUrl);
 
     // Add candidates from common feed path probing
-    const pathCandidates = await probeCommonFeedPaths(input.pageUrl, userAgent);
+    const pathCandidates = await probeCommonFeedPaths(input.pageUrl, userAgent, input.governedFetchContext);
 
     dom.window.close();
 
@@ -390,6 +414,7 @@ export async function resolveWithJsdom(input: {
 async function probeCommonFeedPaths(
   pageUrl: string,
   userAgent: string,
+  governedFetchContext?: GovernedFetchContext,
 ): Promise<BrowserFeedCandidate[]> {
   const candidates: BrowserFeedCandidate[] = [];
 
@@ -414,12 +439,17 @@ async function probeCommonFeedPaths(
   const probePromises = pathsToProbe.map(async (feedPath) => {
     const probeUrl = basePath ? `${origin}${basePath}${feedPath}` : `${origin}${feedPath}`;
     try {
-      const response = await safeFetch(probeUrl, {
+      const response = await governedSafeFetch(probeUrl, {
         method: "HEAD",
         headers: {
           "User-Agent": userAgent,
           Accept: "application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml",
         },
+      }, {
+        ...(governedFetchContext ?? {}),
+        agent: "agent2",
+        stage: "hard-case-feed-discovery",
+        purpose: "feed",
       });
 
       if (!response.ok) return null;
@@ -458,18 +488,30 @@ async function probeCommonFeedPaths(
 export async function resolveWithPlaywright(input: {
   pageUrl: string;
   timeoutMs?: number;
+  governedFetchContext?: GovernedFetchContext;
 }): Promise<BrowserFeedCandidate[] | null> {
   if (process.env.PLAYWRIGHT_ENABLED !== "true") {
     return null;
   }
+
+  const governorContext = {
+    agent: "agent2" as const,
+    stage: "browser-feed-resolution",
+    mode: input.governedFetchContext?.mode,
+    db: input.governedFetchContext?.db,
+  };
+  const preflight = await acquireBrowserNavigationPermit({ url: input.pageUrl, context: governorContext });
+  if (!preflight.allowed) throw new BrowserFeedGovernorDeferred(preflight.reason, preflight.evidence);
 
   try {
     const { launchHeadlessBrowser } = await import("./browser-runtime");
     const launchResult = await launchHeadlessBrowser();
     const browser = launchResult.browser;
     if (!browser) {
+      await releaseUnusedBrowserNavigationPermit(preflight.lease);
       return null;
     }
+    let navigation: Awaited<ReturnType<typeof startGovernedBrowserNavigation>> | null = null;
     try {
       const context = await browser.newContext({
         userAgent: BROWSER_USER_AGENT,
@@ -489,10 +531,24 @@ export async function resolveWithPlaywright(input: {
         }
       });
 
-      await page.goto(input.pageUrl, {
-        waitUntil: "networkidle",
-        timeout: input.timeoutMs || 30000,
+      navigation = await startGovernedBrowserNavigation({
+        page,
+        url: input.pageUrl,
+        context: governorContext,
+        lease: preflight.lease,
+        gotoOptions: {
+          waitUntil: "networkidle",
+          timeout: input.timeoutMs || 30000,
+        },
       });
+      if (!navigation.allowed) throw new BrowserFeedGovernorDeferred(navigation.reason, navigation.evidence);
+      if (navigation.error || !navigation.response) throw navigation.error ?? new Error("browser navigation failed");
+      if (navigation.evidence.mainDocumentStatus === 429) {
+        throw new BrowserFeedGovernorDeferred("http_429", navigation.evidence);
+      }
+      if ((navigation.evidence.mainDocumentStatus ?? 0) >= 400) {
+        throw new Error(`browser main document HTTP ${navigation.evidence.mainDocumentStatus}`);
+      }
 
       // Extract from rendered DOM
       const domCandidates = await page.evaluate((pageUrl: string) => {
@@ -554,9 +610,20 @@ export async function resolveWithPlaywright(input: {
         source,
       }));
     } finally {
-      await browser.close();
+      let cleanupFailed = false;
+      try { await browser.close(); } catch { cleanupFailed = true; }
+      if (navigation?.allowed) {
+        await navigation.complete(cleanupFailed ? { kind: "failure", status: null } : undefined);
+      } else {
+        await releaseUnusedBrowserNavigationPermit(preflight.lease);
+      }
     }
-  } catch {
+  } catch (error) {
+    await releaseUnusedBrowserNavigationPermit(preflight.lease);
+    if (error instanceof GovernedFetchDeferredError) {
+      throw new BrowserFeedGovernorDeferred(error.reason, preflight.evidence);
+    }
+    if (error instanceof BrowserFeedGovernorDeferred) throw error;
     // Playwright not available or execution failed
     return null;
   }
@@ -576,17 +643,21 @@ export async function resolveFeedsWithBrowser(input: {
   pageUrl: string;
   userAgent?: string;
   enablePlaywright?: boolean;
+  governedFetchContext?: GovernedFetchContext;
 }): Promise<BrowserResolveResult> {
   const allCandidates = new Map<string, BrowserFeedCandidate["source"]>();
   let method: BrowserResolveResult["method"] = "none";
   let renderedDomAvailable = false;
   let lastError: string | undefined;
+  let governorDeferred = false;
+  let browserNavigation: BrowserNavigationEvidence | undefined;
 
   // Step 1: jsdom-based resolution (always attempted)
   try {
     const jsdomCandidates = await resolveWithJsdom({
       pageUrl: input.pageUrl,
       userAgent: input.userAgent,
+      governedFetchContext: input.governedFetchContext,
     });
 
     if (jsdomCandidates.length > 0) {
@@ -610,6 +681,7 @@ export async function resolveFeedsWithBrowser(input: {
     try {
       const playwrightCandidates = await resolveWithPlaywright({
         pageUrl: input.pageUrl,
+        governedFetchContext: input.governedFetchContext,
       });
 
       if (playwrightCandidates && playwrightCandidates.length > 0) {
@@ -622,6 +694,10 @@ export async function resolveFeedsWithBrowser(input: {
         }
       }
     } catch (error: any) {
+      if (error instanceof BrowserFeedGovernorDeferred) {
+        governorDeferred = true;
+        browserNavigation = error.evidence;
+      }
       lastError = `Playwright resolver failed: ${error?.message || String(error)}`;
     }
   }
@@ -635,6 +711,7 @@ export async function resolveFeedsWithBrowser(input: {
     method,
     renderedDomAvailable,
     error: candidates.length === 0 ? lastError : undefined,
+    ...(governorDeferred ? { governorDeferred: true, browserNavigation } : {}),
   };
 }
 

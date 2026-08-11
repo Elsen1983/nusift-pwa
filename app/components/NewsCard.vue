@@ -107,6 +107,14 @@
           >{{ article.source }}</span
         >
         <div
+          v-if="article.isExternalPublisher && article.articleDomain"
+          class="mb-1 flex w-fit items-center gap-1 rounded-md border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-label uppercase tracking-wider text-amber-200"
+          :title="$t('newsCard.external_domain_hint', { domain: article.articleDomain })"
+        >
+          <span class="material-symbols-outlined text-[12px]">open_in_new</span>
+          <span>{{ $t("newsCard.external_domain", { domain: article.articleDomain }) }}</span>
+        </div>
+        <div
           v-if="visibleTags.length > 0"
           class="flex flex-wrap justify-start sm:justify-end gap-1.5 mb-1"
         >

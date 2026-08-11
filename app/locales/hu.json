@@ -346,6 +346,8 @@
     "newsCard": {
         "key_signals": "Összefoglalt Tartalom",
         "paywall": "Fizetős",
+        "external_domain": "K\u00fcls\u0151 hivatkoz\u00e1s: {domain}",
+        "external_domain_hint": "A cikket err\u0151l a forr\u00e1sr\u00f3l gy\u0171jt\u00f6tt\u00fck, de a hivatkoz\u00e1s ide mutat: {domain}.",
         "read_now": "Olvasás",
         "ai_reasoning": "AI Érvelés",
         "menu": {

@@ -6,9 +6,10 @@ const logAgentScanMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
-    pipelineArtifact: {
-      findMany: (...args: any[]) => findManyMock(...args),
-      update: (...args: any[]) => updateMock(...args),
+      pipelineArtifact: {
+        findMany: (...args: any[]) => findManyMock(...args),
+        update: (...args: any[]) => updateMock(...args),
+        updateMany: (...args: any[]) => updateMock(...args),
     },
   },
 }));
@@ -48,7 +49,7 @@ describe("resolveHeadlessMarkersByAgent1Rss", () => {
     updateMock.mockReset();
     logAgentScanMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
-    updateMock.mockResolvedValue({ id: "updated" });
+    updateMock.mockResolvedValue({ id: "updated", count: 1 });
   });
 
   async function loadFn() {
@@ -76,7 +77,7 @@ describe("resolveHeadlessMarkersByAgent1Rss", () => {
     expect(updateMock).toHaveBeenCalledTimes(1);
     expect(updateMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "art-1" },
+        where: { id: "art-1", status: "PENDING_HEADLESS" },
         data: expect.objectContaining({
           status: "RESOLVED_BY_AGENT1_RSS",
         }),
@@ -122,9 +123,29 @@ describe("resolveHeadlessMarkersByAgent1Rss", () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it("does not resolve source-level artifacts (categoryId is part of DB query filter)", async () => {
-    // Source-level artifacts would have categoryId=null. Our query filters by categoryId,
-    // so they won't be returned.
+  it("resolves source-level markers only for an exact source target", async () => {
+    findManyMock.mockResolvedValue([
+      makeHeadlessMarker({
+        id: "art-source",
+        payload: { targetUrl: "https://telex.hu" },
+      }),
+    ]);
+
+    const fn = await loadFn();
+    const result = await fn({
+      sourceId: "src-1",
+      categoryId: null,
+      targetUrl: "https://telex.hu",
+      rssFeedUrl: "https://telex.hu/feed",
+    });
+
+    expect(result.resolvedMarkerCount).toBe(1);
+    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ categoryId: null }),
+    }));
+  });
+
+  it("does not resolve source-level markers for a category target", async () => {
     findManyMock.mockResolvedValue([]);
 
     const fn = await loadFn();
@@ -369,7 +390,7 @@ describe("resolveHeadlessMarkersByAgent1Rss", () => {
     });
     updateMock.mockImplementation(async (args: any) => {
       if (args.where.id === "art-1") throw new Error("update failed");
-      return { id: args.where.id };
+      return { id: args.where.id, count: 1 };
     });
 
     const fn = await loadFn();

@@ -24,8 +24,8 @@ import {
   assessArticleDiscoveryQuality,
   type ArticleDiscoveryCandidateOutcome,
   type StaticDiscoveryRateLimitEvidence,
-  boundStaticRetryAfterTimestamp,
 } from "./article-discovery-helpers";
+import { boundStaticRetryAfterTimestamp } from "./retry-after-policy";
 import { persistCandidates } from "./ingest";
 import type { IngestCandidate } from "./types";
 import { stableTargetKey, normalizeTargetUrl } from "./text";
@@ -40,6 +40,8 @@ import {
   type StageBatchProbe,
 } from "./stage-telemetry";
 import type { BrowserArticleDetailSession } from "./article-discovery-browser";
+import { GovernedFetchDeferredError } from "./governed-fetch";
+import { shouldRunAgent2Discovery, type FeedFirstDecision } from "./feed-first-policy";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 25;
@@ -66,6 +68,40 @@ type HeadlessQueueArtifact = {
   createdAt: Date;
   payload: Record<string, unknown>;
 };
+
+async function loadHeadlessFeedFirstDecision(
+  sourceId: string,
+  categoryId: string | null,
+  nowMs: number,
+): Promise<FeedFirstDecision | null> {
+  const model = categoryId ? (prisma as any).sourceCategory : (prisma as any).newsSource;
+  if (!model?.findUnique) return null;
+  try {
+    const row = await model.findUnique({
+      where: { id: categoryId || sourceId },
+      select: {
+        rssStatus: true,
+        rssFeedUrl: true,
+        currentFeedProductive: true,
+        lastProductiveAt: true,
+        consecutiveNonProductiveRuns: true,
+        nextRetryAt: true,
+      },
+    });
+    if (!row) return null;
+    return shouldRunAgent2Discovery({
+      targetType: categoryId ? "category" : "source",
+      rssStatus: row.rssStatus,
+      rssFeedUrl: row.rssFeedUrl,
+      currentFeedProductive: row.currentFeedProductive,
+      lastProductiveAt: row.lastProductiveAt,
+      consecutiveNonProductiveRuns: row.consecutiveNonProductiveRuns,
+      nextRetryAt: row.nextRetryAt,
+    }, new Date(nowMs));
+  } catch {
+    return null;
+  }
+}
 
 type HeadlessQueueDryRunResult = {
   dryRun: true;
@@ -434,6 +470,7 @@ export async function processArticleDiscoveryHeadlessQueue(
   let dispositionDeferred = 0;
   let dispositionClaimLost = 0;
   let dispositionPersistenceFailed = 0;
+  let feedFirstSkipped = 0;
   let rawLinks = 0;
   let evaluatedCandidates = 0;
   let acceptedCandidates = 0;
@@ -469,6 +506,26 @@ export async function processArticleDiscoveryHeadlessQueue(
     const fields = extractPayloadFields(item.payload);
     const targetUrl = fields.targetUrl!;
     const sourceId = (item.payload.sourceId as string) || item.sourceId;
+
+    if (runBrowser && browserEnabled && sourceId) {
+      const feedFirstDecision = await loadHeadlessFeedFirstDecision(
+        sourceId,
+        item.categoryId,
+        now(),
+      );
+      if (feedFirstDecision && !feedFirstDecision.runAgent2) {
+        feedFirstSkipped += 1;
+        dispositionSkipped += 1;
+        await logAgentScan({
+          sourceId: item.sourceId,
+          categoryId: item.categoryId || undefined,
+          status: "ARTICLE_DISCOVERY_HEADLESS_FEED_FIRST_SKIPPED",
+          executionTimeMs: 0,
+          errorLog: `Agent 2 skipped by feed-first policy for ${item.categoryId ? "category" : "source"} target. ${feedFirstDecision.boundedDiagnostic}`,
+        }).catch(() => undefined);
+        continue;
+      }
+    }
 
     // ── Same-run target deduplication ──────────────────────────────────
     // Skip if we already processed (or claimed) this stable target key
@@ -665,7 +722,6 @@ export async function processArticleDiscoveryHeadlessQueue(
       }
 
       updatedArtifactIds.push(item.id);
-      browserAttemptedTargets += 1;
 
       // ── Run browser work on claimed artifact ──────────────────────
       await logAgentScan({
@@ -684,8 +740,6 @@ export async function processArticleDiscoveryHeadlessQueue(
       };
 
       let browserResult;
-      probe.recordBrowserAttempt();
-      probe.recordNetworkRequest();
       const browserStartedAt = now();
       // The target deadline starts before listing discovery so time spent on
       // browser setup/listing cannot silently consume the entire detail budget.
@@ -697,8 +751,29 @@ export async function processArticleDiscoveryHeadlessQueue(
           categoryId: item.categoryId,
           targetType: item.categoryId ? "category" : "source",
           categoryPathUrl: item.categoryId ? targetUrl : null,
+          governorContext: {
+            agent: "agent2",
+            stage: "article-discovery-browser-listing",
+          },
         });
       } catch (error: any) {
+        if (error instanceof GovernedFetchDeferredError) {
+          browserResult = {
+            ok: false,
+            reason: "governor_deferred",
+            links: [],
+            diagnostics: {
+              pageTitle: null,
+              linkCount: 0,
+              articleLikeLinkCount: 0,
+              blockedReason: error.reason,
+              browserRuntimeAvailable: true,
+              browserAttempted: true,
+              governorDeferred: true,
+              elapsedMs: 0,
+            },
+          };
+        } else {
         browserResult = {
           ok: false,
           reason: "browser_error",
@@ -712,9 +787,40 @@ export async function processArticleDiscoveryHeadlessQueue(
             elapsedMs: 0,
           },
         };
+        }
       }
 
-      probe.recordBrowser(now() - browserStartedAt);
+      const listingBrowserAttempted = browserResult.diagnostics.browserAttempted !== false
+        && browserResult.reason !== "governor_deferred";
+      if (listingBrowserAttempted) {
+        browserAttemptedTargets += 1;
+        probe.recordBrowserAttempt();
+        probe.recordNetworkRequest();
+        probe.recordBrowser(now() - browserStartedAt);
+      }
+
+      if (browserResult.reason === "governor_deferred") {
+        const deferredTransition = await prisma.pipelineArtifact.updateMany({
+          where: {
+            id: item.id,
+            artifactType: "article_discovery_headless_required",
+            status: "HEADLESS_PROCESSING",
+          },
+          data: {
+            status: "PENDING_HEADLESS",
+            errorLog: `Browser navigation deferred by domain governance: ${browserResult.diagnostics.blockedReason || "unknown"}`,
+            payload: {
+              ...claimedPayload,
+              browserGovernorDeferred: true,
+              browserGovernorEvidence: browserResult.diagnostics.browserNavigation ?? null,
+              browserFallbackRan: false,
+              resolvedAt: null,
+            },
+          },
+        });
+        if (deferredTransition.count === 1) dispositionDeferred += 1;
+        continue;
+      }
 
       // ── Detect listing-page 429 early (used in both failure and success paths) ──
       const isListingPage429 =
@@ -735,9 +841,11 @@ export async function processArticleDiscoveryHeadlessQueue(
         // article links". Only runtime-unavailable gets its own status
         // (BROWSER_RUNTIME_UNAVAILABLE) because it implies a setup gap,
         // not a per-target failure.
-        const status = browserResult.reason === "browser_runtime_unavailable"
-          ? "BROWSER_RUNTIME_UNAVAILABLE"
-          : "BROWSER_NO_CANDIDATES";
+        const status = isListingPage429
+          ? "PENDING_HEADLESS"
+          : browserResult.reason === "browser_runtime_unavailable"
+            ? "BROWSER_RUNTIME_UNAVAILABLE"
+            : "BROWSER_NO_CANDIDATES";
 
         // Transition from HEADLESS_PROCESSING → final failure status.
         // Execution-failure counters are updated only after this CAS succeeds;
@@ -747,7 +855,8 @@ export async function processArticleDiscoveryHeadlessQueue(
         const failedFinishedAt = new Date().toISOString();
         const listingRateLimitedAt = isListingPage429 ? new Date().toISOString() : null;
         const listingRetryAfterAt = isListingPage429
-          ? new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString()
+          ? browserResult.diagnostics.browserNavigation?.retryAfterAt
+            ?? new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString()
           : null;
         let failedTransition: { count: number };
         try {
@@ -814,6 +923,7 @@ export async function processArticleDiscoveryHeadlessQueue(
                 articleLikeLinkCount: browserResult.diagnostics.articleLikeLinkCount,
                 blockedReason: browserResult.diagnostics.blockedReason ?? null,
                 browserRuntimeAvailable: browserResult.diagnostics.browserRuntimeAvailable,
+                browserNavigation: browserResult.diagnostics.browserNavigation ?? null,
                 elapsedMs: browserResult.diagnostics.elapsedMs,
               },
               renderedUrl: null,
@@ -853,7 +963,9 @@ export async function processArticleDiscoveryHeadlessQueue(
           continue;
         }
 
-        if (browserResult.reason === "browser_runtime_unavailable") {
+        if (isListingPage429) {
+          dispositionDeferred += 1;
+        } else if (browserResult.reason === "browser_runtime_unavailable") {
           browserSkippedUnavailable += 1;
           dispositionFailedPermanent += 1;
         } else {
@@ -881,7 +993,7 @@ export async function processArticleDiscoveryHeadlessQueue(
             categoryId: item.categoryId || undefined,
             status: "ARTICLE_DISCOVERY_BROWSER_RATE_LIMITED",
             executionTimeMs: browserResult.diagnostics.elapsedMs,
-            errorLog: `Listing-page 429 for ${targetUrl}. Host added to cooldown. Artifact stays BROWSER_NO_CANDIDATES with rate-limit metadata.`,
+            errorLog: `Listing-page 429 for ${targetUrl}. Host added to cooldown and artifact returned to PENDING_HEADLESS.`,
           }).catch(() => {});
           continue;
         }
@@ -977,6 +1089,7 @@ export async function processArticleDiscoveryHeadlessQueue(
       let consecutiveBrowserRateLimitCount = 0;
       let browserBlockedReason: string | null = null;
       let browserRuntimeUnavailable = false;
+      let browserGovernorDeferred = false;
       let detailTimeBudgetExhausted = false;
       let browserRateLimitedAt: string | null = null;
       let browserRetryAfterAt: string | null = null;
@@ -1029,7 +1142,7 @@ export async function processArticleDiscoveryHeadlessQueue(
       let detailSession: BrowserArticleDetailSession | null = null;
       let detailSessionStarted = false;
       let detailSessionBlockedReason: string | null = null;
-      const ensureDetailSession = async (): Promise<BrowserArticleDetailSession | null> => {
+      const ensureDetailSession = async (initialUrl: string): Promise<BrowserArticleDetailSession | null> => {
         if (detailSession || detailSessionStarted) return detailSession;
         detailSessionStarted = true;
         const remainingBudgetMs = browserTargetDeadline - now();
@@ -1042,6 +1155,11 @@ export async function processArticleDiscoveryHeadlessQueue(
           timeBudgetMs: remainingBudgetMs,
           deadlineAt: browserTargetDeadline,
           now,
+          initialUrl,
+          governorContext: {
+            agent: "agent2",
+            stage: "article-discovery-browser-detail",
+          },
         });
         detailSession = result.session;
         detailSessionBlockedReason = result.blockedReason ?? null;
@@ -1162,11 +1280,14 @@ export async function processArticleDiscoveryHeadlessQueue(
             if (shouldRecover) {
               let session: BrowserArticleDetailSession | null = null;
               try {
-                session = await ensureDetailSession();
+                session = await ensureDetailSession(link.url);
               } catch (error) {
                 if (isBrowserDetailTimeBudgetExceeded(error) || now() >= browserTargetDeadline) {
                   detailTimeBudgetExhausted = true;
                   browserError = "Browser detail target time budget exhausted.";
+                } else if (error instanceof GovernedFetchDeferredError) {
+                  browserGovernorDeferred = true;
+                  browserError = `Browser detail navigation deferred by domain governance: ${error.reason}`;
                 } else {
                   browserRuntimeUnavailable = true;
                   browserError = `Browser detail runtime unavailable: ${error instanceof Error ? error.message : String(error)}`;
@@ -1174,11 +1295,15 @@ export async function processArticleDiscoveryHeadlessQueue(
                 break;
               }
               if (!session) {
+                const blockedReason = String(detailSessionBlockedReason ?? "");
                 if (detailTimeBudgetExhausted) {
                   browserError = "Browser detail target time budget exhausted.";
+                } else if (blockedReason.startsWith("governor_deferred:")) {
+                  browserGovernorDeferred = true;
+                  browserError = `Browser detail navigation deferred by domain governance: ${blockedReason.slice("governor_deferred:".length)}`;
                 } else {
                   browserRuntimeUnavailable = true;
-                  browserError = `Browser detail runtime unavailable: ${detailSessionBlockedReason || "unknown runtime error"}`;
+                  browserError = `Browser detail runtime unavailable: ${blockedReason || "unknown runtime error"}`;
                 }
                 break;
               }
@@ -1193,12 +1318,6 @@ export async function processArticleDiscoveryHeadlessQueue(
                 break;
               }
 
-              detailRecoveryAttempts += 1;
-              totalDetailEvaluations += 1;
-              browserDetailRecoveryReasons.push(evaluation.outcome.status);
-
-              probe.recordBrowserAttempt();
-              probe.recordNetworkRequest();
               const detailBrowserStartedAt = Date.now();
               let detailEval;
               try {
@@ -1220,6 +1339,16 @@ export async function processArticleDiscoveryHeadlessQueue(
                 throw error;
               }
 
+              if (detailEval.outcome.governorDeferred) {
+                browserGovernorDeferred = true;
+                browserError = `Browser detail navigation deferred by domain governance: ${detailEval.outcome.reason || "unknown"}`;
+                break;
+              }
+              detailRecoveryAttempts += 1;
+              totalDetailEvaluations += 1;
+              browserDetailRecoveryReasons.push(evaluation.outcome.status);
+              probe.recordBrowserAttempt();
+              probe.recordNetworkRequest();
               probe.recordBrowser(Date.now() - detailBrowserStartedAt);
               browserDetailEvaluated += 1;
 
@@ -1376,7 +1505,7 @@ export async function processArticleDiscoveryHeadlessQueue(
       const persistenceSucceeded = persisted.failed === 0;
       const detailEvaluationRateLimited = browserBlockedReason === "http_429";
       if (persisted.failed > 0) dispositionPersistenceFailed += 1;
-      const finalStatus = detailEvaluationRateLimited || detailTimeBudgetExhausted || browserRuntimeUnavailable
+      const finalStatus = detailEvaluationRateLimited || detailTimeBudgetExhausted || browserRuntimeUnavailable || browserGovernorDeferred
         ? "PENDING_HEADLESS"
         : candidates.length === 0
         ? "BROWSER_NO_CANDIDATES"
@@ -1435,6 +1564,7 @@ export async function processArticleDiscoveryHeadlessQueue(
             browserError,
             browserBlockedReason,
             browserDetailRuntimeUnavailable: browserRuntimeUnavailable,
+            browserGovernorDeferred,
             browserDetailTimeBudgetExhausted: detailTimeBudgetExhausted,
             browserRateLimited: browserBlockedReason === "http_429",
             browserRateLimitReason: browserBlockedReason === "http_429" ? "http_429" : null,
@@ -1643,7 +1773,7 @@ export async function processArticleDiscoveryHeadlessQueue(
     status: "ARTICLE_DISCOVERY_HEADLESS_QUEUE_FINISHED",
     executionTimeMs: Date.now() - startedAt,
     errorLog: `Headless queue processing complete. processed=${processed}, skippedInvalid=${skippedInvalid}, skippedAlreadyClaimed=${skippedAlreadyClaimed}, total=${items.length}.` +
-      (runBrowser ? ` browser: attempted=${browserAttemptedTargets}, processed=${browserProcessed}, disabled=${browserSkippedDisabled}, unavailable=${browserSkippedUnavailable}, failed=${browserFailed}, candidates=${browserCandidatesFound}, cooldownSkipped=${browserCooldownSkipped}, inserted=${totalInserted}.` : ""),
+      (runBrowser ? ` browser: attempted=${browserAttemptedTargets}, processed=${browserProcessed}, disabled=${browserSkippedDisabled}, unavailable=${browserSkippedUnavailable}, failed=${browserFailed}, candidates=${browserCandidatesFound}, cooldownSkipped=${browserCooldownSkipped}, feedFirstSkipped=${feedFirstSkipped}, inserted=${totalInserted}.` : ""),
   });
 
   // Read the durable queue state after all compare-and-set transitions. This

@@ -7,7 +7,7 @@
     leave-from-class="opacity-100 translate-y-0" 
     leave-to-class="opacity-0 translate-y-4"
   >
-    <div v-if="modelValue && article" class="fixed inset-0 z-[130] bg-background overflow-y-auto">
+    <div v-if="modelValue && article" class="fixed inset-0 z-[200] bg-background overflow-y-auto">
       <div class="min-h-screen flex flex-col max-w-3xl mx-auto relative bg-background">
         <div class="sticky top-0 z-20 flex justify-end p-4 bg-gradient-to-b from-background via-background/90 to-transparent">
           <button @click="$emit('update:modelValue', false)" class="w-10 h-10 bg-surface-container-highest rounded-full flex items-center justify-center text-on-surface-variant hover:text-on-surface border border-outline-variant/30 shadow-lg">

@@ -1,4 +1,5 @@
-import { safeFetch } from "../ssrf-guard";
+import { governedSafeFetch, governedSafeFetchAndParse, GovernedFetchDeferredError } from "./governed-fetch";
+import type { GovernedFetchContext } from "./governed-fetch";
 import type { StageBatchProbe } from "./stage-telemetry";
 import { buildFeedUrlCandidates } from "./import-rss";
 import type { FeedDiscoveryResult, ScopeMatch, TaxonomyEvidence } from "./types";
@@ -568,22 +569,6 @@ const buildCmsFingerprintCandidates = (
   return [...candidates].filter(Boolean);
 };
 
-const parseRobotsSitemaps = (body: string, pageUrl: string) => {
-  const results: string[] = [];
-  const seen = new Set<string>();
-
-  for (const line of body.split(/\r?\n/)) {
-    const match = line.match(/^\s*sitemap:\s*(.+)\s*$/i);
-    if (!match?.[1]) continue;
-    const resolved = resolveRelativeUrl(match[1].trim(), pageUrl);
-    if (!resolved || seen.has(resolved)) continue;
-    seen.add(resolved);
-    results.push(resolved);
-  }
-
-  return results;
-};
-
 const toDate = (value: string | null | undefined) => {
   if (!value) return null;
   const parsed = new Date(value);
@@ -751,15 +736,15 @@ export const buildCandidatesFromSitemapUrl = (sitemapUrl: string) => {
 };
 
 const collectSitemapFeedCandidates = async (
-  input: { pageUrl: string; userAgent: string; acceptLanguage?: string; preferScopedDirectFeed?: boolean; telemetry?: StageBatchProbe },
+  input: { pageUrl: string; userAgent: string; acceptLanguage?: string; preferScopedDirectFeed?: boolean; telemetry?: StageBatchProbe; governedFetchContext?: GovernedFetchContext },
   seenAcceptedCanonicalKeys: Set<string>,
 ) => {
   const acceptedCandidates: FeedCandidate[] = [];
   const sitemapTargets = new Set<string>();
+  let page: URL;
 
   try {
-    const page = new URL(input.pageUrl);
-    sitemapTargets.add(`${page.origin}/robots.txt`);
+    page = new URL(input.pageUrl);
     sitemapTargets.add(`${page.origin}/sitemap.xml`);
     sitemapTargets.add(`${page.origin}/sitemap_index.xml`);
     sitemapTargets.add(`${page.origin}/news-sitemap.xml`);
@@ -769,9 +754,26 @@ const collectSitemapFeedCandidates = async (
 
   const discoveredSitemapUrls = new Set<string>();
 
+  const robotsPolicy = await import("./robots-policy");
+  const robots = await robotsPolicy.checkPublisherRobotsAccess(input.pageUrl, {
+    context: {
+      ...(input.governedFetchContext ?? {}),
+      agent: input.governedFetchContext?.agent ?? "agent1",
+      stage: "feed-discovery",
+      purpose: "robots",
+    },
+  });
+  if (robots.decision === "deferred") return acceptedCandidates;
+  for (const sitemapUrl of robots.sitemapUrls) {
+    try {
+      const parsed = new URL(sitemapUrl, page.origin);
+      if (parsed.origin === page.origin) discoveredSitemapUrls.add(parsed.toString());
+    } catch { /* malformed directive is ignored without transport */ }
+  }
+
   for (const target of sitemapTargets) {
     try {
-      const response = await safeFetch(target, {
+      const fetched = await governedSafeFetchAndParse(target, {
         signal: AbortSignal.timeout(FEED_DISCOVERY_HTTP_TIMEOUT_MS),
         headers: {
           "User-Agent": input.userAgent,
@@ -779,25 +781,30 @@ const collectSitemapFeedCandidates = async (
           ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
         },
         telemetry: input.telemetry,
-      });
+      }, {
+        ...(input.governedFetchContext ?? {}),
+        agent: input.governedFetchContext?.agent ?? "agent1",
+        stage: "feed-discovery",
+        purpose: "robots",
+      }, async (response) => ({
+        response,
+        body: response.ok ? await response.text() : "",
+      }));
+      const { response } = fetched;
       if (!response.ok) continue;
-      const body = await response.text();
 
-      if (target.endsWith("/robots.txt")) {
-        for (const sitemapUrl of parseRobotsSitemaps(body, target)) {
-          discoveredSitemapUrls.add(sitemapUrl);
-        }
-      } else {
-        discoveredSitemapUrls.add(response.url);
-      }
-    } catch {}
+      const resolvedSitemapUrl = response.url || target;
+      try { discoveredSitemapUrls.add(new URL(resolvedSitemapUrl, page.origin).toString()); } catch { /* invalid mock/redirect URL */ }
+    } catch (error) {
+      if (error instanceof GovernedFetchDeferredError) throw error;
+    }
   }
 
   const scopedPath = normalizePath(input.pageUrl);
 
   for (const sitemapUrl of discoveredSitemapUrls) {
     try {
-      const response = await safeFetch(sitemapUrl, {
+      const fetched = await governedSafeFetchAndParse(sitemapUrl, {
         signal: AbortSignal.timeout(FEED_DISCOVERY_HTTP_TIMEOUT_MS),
         headers: {
           "User-Agent": input.userAgent,
@@ -805,9 +812,17 @@ const collectSitemapFeedCandidates = async (
           ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
         },
         telemetry: input.telemetry,
-      });
+      }, {
+        ...(input.governedFetchContext ?? {}),
+        agent: input.governedFetchContext?.agent ?? "agent1",
+        stage: "feed-discovery",
+        purpose: "sitemap",
+      }, async (response) => ({
+        response,
+        body: response.ok ? await response.text() : "",
+      }));
+      const { response, body } = fetched;
       if (!response.ok) continue;
-      const body = await response.text();
       const entries = parseSitemapEntries(body, response.url);
       const relevanceBonus = computeSitemapRelevanceBonus(
         sitemapUrl,
@@ -846,7 +861,9 @@ const collectSitemapFeedCandidates = async (
         });
         seenAcceptedCanonicalKeys.add(canonicalKey);
       }
-    } catch {}
+    } catch (error) {
+      if (error instanceof GovernedFetchDeferredError) throw error;
+    }
   }
 
   return acceptedCandidates;
@@ -2361,9 +2378,10 @@ export const verifyFeedCandidate = async (
     userAgent: string;
     acceptLanguage?: string;
     telemetry?: StageBatchProbe;
+    governedFetchContext?: GovernedFetchContext;
   },
 ) => {
-  const response = await safeFetch(candidateUrl, {
+  const fetched = await governedSafeFetchAndParse(candidateUrl, {
     signal: AbortSignal.timeout(FEED_DISCOVERY_HTTP_TIMEOUT_MS),
     allowCrossDomainRedirects: true,
     headers: {
@@ -2372,13 +2390,20 @@ export const verifyFeedCandidate = async (
       ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
     },
     telemetry: input.telemetry,
-  });
+  }, {
+    ...(input.governedFetchContext ?? {}),
+    agent: input.governedFetchContext?.agent ?? "agent1",
+    stage: "feed-discovery",
+    purpose: "feed",
+  }, async (response) => ({
+    response,
+    body: response.ok ? await response.text() : "",
+  }));
+  const { response, body } = fetched;
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} from ${candidateUrl}`);
   }
-
-  const body = await response.text();
   const contentType = normalizeSupportedContentType(response.headers.get("content-type"));
   const valid =
     looksLikeFeed(body) ||
@@ -2402,6 +2427,7 @@ export async function discoverFeedForUrl(input: {
   acceptLanguage?: string;
   preferScopedDirectFeed?: boolean;
   telemetry?: StageBatchProbe;
+  governedFetchContext?: GovernedFetchContext;
 }): Promise<FeedDiscoveryResult> {
   let lastError = "No feed candidates succeeded.";
   const candidateUrls = buildScopedFeedCandidates(input.pageUrl, input.existingFeedUrl || null);
@@ -2437,6 +2463,7 @@ export async function discoverFeedForUrl(input: {
           canonicalIdentity: canonicalFeedKey(verified.feedUrl),
         };
       } catch (error: any) {
+        if (error instanceof GovernedFetchDeferredError) throw error;
         const reason = error?.message || String(error);
         lastError = reason;
         rejectedCandidates.push(summarizeRejectedCandidate(candidate, reason));
@@ -2452,7 +2479,7 @@ export async function discoverFeedForUrl(input: {
 
   // ── Step 1: Probe page header and extract initial metadata ─────────────
   try {
-    const headResponse = await safeFetch(input.pageUrl, {
+    const headResponse = await governedSafeFetch(input.pageUrl, {
       method: "HEAD",
       signal: AbortSignal.timeout(FEED_DISCOVERY_HTTP_TIMEOUT_MS),
       headers: {
@@ -2461,6 +2488,11 @@ export async function discoverFeedForUrl(input: {
         ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
       },
       telemetry: input.telemetry,
+    }, {
+      ...(input.governedFetchContext ?? {}),
+      agent: input.governedFetchContext?.agent ?? "agent1",
+      stage: "feed-discovery",
+      purpose: "feed",
     });
 
     if (headResponse.ok) {
@@ -2493,6 +2525,7 @@ export async function discoverFeedForUrl(input: {
       }
     }
   } catch (error: any) {
+    if (error instanceof GovernedFetchDeferredError) throw error;
     lastError = `${error?.message || String(error)} via HEAD ${input.pageUrl}`;
   }
 
@@ -2506,7 +2539,7 @@ export async function discoverFeedForUrl(input: {
   // ── Step 2: Probe candidate URLs, extract taxonomy evidence, apply heuristics
   for (const candidateUrl of candidateUrls) {
     try {
-      const response = await safeFetch(candidateUrl, {
+      const fetched = await governedSafeFetchAndParse(candidateUrl, {
         signal: AbortSignal.timeout(FEED_DISCOVERY_HTTP_TIMEOUT_MS),
         allowCrossDomainRedirects: true,
         headers: {
@@ -2515,14 +2548,21 @@ export async function discoverFeedForUrl(input: {
           ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
         },
         telemetry: input.telemetry,
-      });
+      }, {
+        ...(input.governedFetchContext ?? {}),
+        agent: input.governedFetchContext?.agent ?? "agent1",
+        stage: "feed-discovery",
+        purpose: "feed",
+      }, async (response) => ({
+        response,
+        body: response.ok ? await response.text() : "",
+      }));
+      const { response, body } = fetched;
 
       if (!response.ok) {
         lastError = `HTTP ${response.status} from ${candidateUrl}`;
         continue;
       }
-
-      const body = await response.text();
       const resolvedUrl = response.url || input.pageUrl;
       const detectedContentType = normalizeSupportedContentType(response.headers.get("content-type"));
 
@@ -2685,9 +2725,10 @@ export async function discoverFeedForUrl(input: {
       }
 
       lastError = `No feed markers in ${candidateUrl}`;
-    } catch (error: any) {
-      lastError = `${error?.message || String(error)} via ${candidateUrl}`;
-    }
+  } catch (error: any) {
+    if (error instanceof GovernedFetchDeferredError) throw error;
+    lastError = `${error?.message || String(error)} via ${candidateUrl}`;
+  }
   }
 
   if (acceptedCandidates.length > 0) {
@@ -2764,17 +2805,25 @@ export async function discoverFeedForUrl(input: {
     const directoryUrl = findDirectoryUrl(mainPageHtml, input.pageUrl);
     if (directoryUrl && !seenAcceptedCanonicalKeys.has(canonicalFeedKey(directoryUrl))) {
       try {
-        const dirResponse = await safeFetch(directoryUrl, {
+        const dirFetched = await governedSafeFetchAndParse(directoryUrl, {
           headers: {
             "User-Agent": input.userAgent,
             Accept: "text/html, application/xml, text/xml, */*",
             ...(input.acceptLanguage ? { "Accept-Language": input.acceptLanguage } : {}),
           },
           telemetry: input.telemetry,
-        });
+        }, {
+          ...(input.governedFetchContext ?? {}),
+          agent: input.governedFetchContext?.agent ?? "agent1",
+          stage: "feed-discovery",
+          purpose: "listing",
+        }, async (response) => ({
+          response,
+          body: response.ok ? await response.text() : "",
+        }));
+        const { response: dirResponse, body: dirHtml } = dirFetched;
 
         if (dirResponse.ok) {
-          const dirHtml = await dirResponse.text();
 
           if (isFeedDirectoryPage(dirHtml, directoryUrl)) {
             const entries = parseDirectoryEntries(dirHtml, directoryUrl);
@@ -2806,6 +2855,7 @@ export async function discoverFeedForUrl(input: {
           }
         }
       } catch (error: any) {
+        if (error instanceof GovernedFetchDeferredError) throw error;
         lastError = `Directory traversal failed: ${error?.message || String(error)} via ${directoryUrl}`;
       }
     }
@@ -2815,6 +2865,7 @@ export async function discoverFeedForUrl(input: {
     feedUrl: null,
     discoveredVia: null,
     detection: "none" as const,
+    deferredReason: null,
     score: 0,
     scopeConfidence: "low" as const,
     scopeMatch: "unrelated" as const,

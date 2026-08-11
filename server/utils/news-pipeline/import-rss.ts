@@ -296,6 +296,16 @@ export const classifyFeedForSource = (
   return "UNRELATED" as const;
 };
 
+/**
+ * Legacy scoped-feed audit utility used by the development/admin audit route.
+ *
+ * This is intentionally outside Prompt 17C's scheduled Agent 1/2/3 pipeline
+ * request boundary: it performs an operator-triggered maintenance audit and is
+ * not called by ingestSource, static Agent 2 discovery, or Agent 3 extraction.
+ * The maintained pipeline paths use governedSafeFetch through feed-discovery
+ * and ingest instead. Keep this utility SSRF-safe, but do not count its audit
+ * requests as scheduled pipeline governance traffic.
+ */
 export async function discoverScopedFeedForSource(
   frontPageUrl: string,
   currentRssFeedUrl?: string | null,
@@ -470,6 +480,16 @@ const looksLikeFeed = (body: string) => {
   );
 };
 
+/**
+ * Legacy import/manual-feed verification utility.
+ *
+ * These requests belong to import/admin/user feed-management flows rather than
+ * the scheduled Agent 1/2/3 pipeline worker. The user feed-management route is
+ * an interactive compatibility flow, not a pipeline stage; its requests remain
+ * outside Prompt 17C's scheduled pipeline telemetry. Scheduled pipeline
+ * requests are governed at their maintained call sites, while this helper
+ * remains protected by safeFetch for its existing callers.
+ */
 export async function verifyImportedRssFeed(rssFeedUrl: string | null) {
   if (!rssFeedUrl) {
     return { verified: false, status: RssStatus.NO_RSS_FOUND, reason: "No rss_feed_url in import data." };

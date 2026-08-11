@@ -10,8 +10,10 @@ const runNewsPipelineMock = vi.fn();
 // Prisma mock with findMany/update/create for queue processing
 const prismaFindManyMock = vi.fn();
 const prismaUpdateMock = vi.fn();
+const prismaUpdateManyMock = vi.fn();
 const prismaSourceCategoryUpdateMock = vi.fn();
 const prismaNewsSourceUpdateMock = vi.fn();
+const prismaTransactionMock = vi.fn();
 
 vi.mock("./feed-discovery", () => ({
   discoverFeedForUrl: discoverFeedForUrlMock,
@@ -47,6 +49,10 @@ vi.mock("../prisma", () => ({
     pipelineArtifact: {
       findMany: (...args: any[]) => prismaFindManyMock(...args),
       update: (...args: any[]) => prismaUpdateMock(...args),
+      updateMany: (...args: any[]) => {
+        prismaUpdateMock(...args);
+        return prismaUpdateManyMock(...args);
+      },
     },
     sourceCategory: {
       update: (...args: any[]) => prismaSourceCategoryUpdateMock(...args),
@@ -54,6 +60,7 @@ vi.mock("../prisma", () => ({
     newsSource: {
       update: (...args: any[]) => prismaNewsSourceUpdateMock(...args),
     },
+    $transaction: (...args: any[]) => prismaTransactionMock(...args),
   },
 }));
 
@@ -301,8 +308,23 @@ describe("processHardCaseDiscoveryQueue chain behavior", () => {
     // Default: prisma mocks return empty
     prismaFindManyMock.mockResolvedValue([]);
     prismaUpdateMock.mockResolvedValue({});
+    prismaUpdateManyMock.mockResolvedValue({ count: 1 });
     prismaSourceCategoryUpdateMock.mockResolvedValue({});
     prismaNewsSourceUpdateMock.mockResolvedValue({});
+    prismaTransactionMock.mockImplementation(async (callback: (tx: any) => Promise<unknown>) => callback({
+      pipelineArtifact: {
+        updateMany: (...args: any[]) => {
+          prismaUpdateMock(...args);
+          return prismaUpdateManyMock(...args);
+        },
+      },
+      sourceCategory: {
+        update: (...args: any[]) => prismaSourceCategoryUpdateMock(...args),
+      },
+      newsSource: {
+        update: (...args: any[]) => prismaNewsSourceUpdateMock(...args),
+      },
+    }));
   });
 
   it("returns zeroed counts and no rerun for empty queue", async () => {
@@ -629,6 +651,93 @@ describe("processHardCaseDiscoveryQueue chain behavior", () => {
     expect(evidence.taxonomyEvidence.feedParams).toEqual(["99"]);
     // scopeMatch must be preserved
     expect(evidence.scopeMatch).toBe("probable");
+  });
+
+  it("does not process a queue item when another worker wins the claim", async () => {
+    prismaFindManyMock.mockResolvedValue([makeQueueItem()]);
+    prismaUpdateManyMock.mockResolvedValueOnce({ count: 0 });
+
+    const { processHardCaseDiscoveryQueue } = await import("./hard-case-consumer");
+    const result = await processHardCaseDiscoveryQueue(10);
+
+    expect(result.resolved).toBe(0);
+    expect(result.failedFinal).toBe(0);
+    expect(discoverFeedForUrlMock).not.toHaveBeenCalled();
+    expect(prismaUpdateManyMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "artifact-1", status: "PENDING_HEADLESS" },
+    }));
+  });
+
+  it("does not requeue or emit a result when a stale worker loses defer CAS", async () => {
+    prismaFindManyMock.mockResolvedValue([makeQueueItem()]);
+    prismaUpdateManyMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    discoverFeedForUrlMock.mockResolvedValue({
+      ...makeFetchResult(),
+      deferredReason: "governor_deferred",
+    });
+
+    const { processHardCaseDiscoveryQueue } = await import("./hard-case-consumer");
+    const result = await processHardCaseDiscoveryQueue(10);
+
+    expect(result.resolved).toBe(0);
+    expect(result.failedFinal).toBe(0);
+    expect(runNewsPipelineMock).not.toHaveBeenCalled();
+    expect(prismaSourceCategoryUpdateMock).not.toHaveBeenCalled();
+    expect(prismaNewsSourceUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it("does not mutate publisher state or counters when terminal CAS loses ownership", async () => {
+    prismaFindManyMock.mockResolvedValue([makeQueueItem()]);
+    prismaUpdateManyMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    discoverFeedForUrlMock.mockResolvedValue(makeFetchResult({
+      feedUrl: "https://example.com/rss.xml",
+      detection: "html-link",
+      score: 65,
+    }));
+
+    const { processHardCaseDiscoveryQueue } = await import("./hard-case-consumer");
+    const result = await processHardCaseDiscoveryQueue(10);
+
+    expect(result.resolved).toBe(0);
+    expect(result.failedFinal).toBe(0);
+    expect(runNewsPipelineMock).not.toHaveBeenCalled();
+    expect(prismaSourceCategoryUpdateMock).not.toHaveBeenCalled();
+    expect(prismaNewsSourceUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it("requeues without terminal counters or rerun when publisher persistence fails", async () => {
+    prismaFindManyMock.mockResolvedValue([makeQueueItem()]);
+    discoverFeedForUrlMock.mockResolvedValue(makeFetchResult({
+      feedUrl: "https://example.com/rss.xml",
+      detection: "html-link",
+      score: 65,
+    }));
+    prismaNewsSourceUpdateMock.mockRejectedValueOnce(new Error("publisher write failed"));
+
+    const { processHardCaseDiscoveryQueue } = await import("./hard-case-consumer");
+    const result = await processHardCaseDiscoveryQueue(10);
+
+    expect(result.resolved).toBe(0);
+    expect(result.failedFinal).toBe(0);
+    expect(result.rerunTriggered).toBe(false);
+    expect(runNewsPipelineMock).not.toHaveBeenCalled();
+    expect(prismaUpdateManyMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "artifact-1", status: "PROCESSING_HEADLESS" },
+      data: expect.objectContaining({
+        status: "PENDING_HEADLESS",
+        errorLog: expect.stringContaining("publisher write failed"),
+      }),
+    }));
+    expect(logAgentScanMock).not.toHaveBeenCalledWith(expect.objectContaining({
+      status: "HARD_CASE_HEADLESS_RESOLVED",
+    }));
+    expect(logAgentScanMock).not.toHaveBeenCalledWith(expect.objectContaining({
+      status: "HARD_CASE_HEADLESS_FAILED_FINAL",
+    }));
   });
 
   it("captures rerunError when pipeline rerun fails", async () => {

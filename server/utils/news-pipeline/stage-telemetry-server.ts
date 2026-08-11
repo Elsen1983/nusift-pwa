@@ -55,7 +55,12 @@ const serializeTelemetry = (
   complete: telemetry.complete,
 });
 
-/** Persist one telemetry artifact. The workflow boundary owns best-effort handling. */
+/**
+ * Persist one telemetry artifact. Operation counters (network/browser/timing)
+ * are observation-driven; disposition fields are durable outcome counts supplied
+ * by the orchestration boundary and must already exclude claim-lost and failed
+ * persistence outcomes. The workflow boundary owns best-effort handling.
+ */
 export async function persistStageBatchTelemetry(input: {
   pipelineRunId: string;
   telemetry: StageBatchTelemetry;

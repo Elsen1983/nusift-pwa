@@ -15,7 +15,8 @@ import {
   resolveActivePipelineTargets,
   hydratePipelineTargets,
 } from "./targets";
-import type { PipelineResult, PipelineTarget } from "./types";
+import type { IngestDeferredReason, PipelineResult, PipelineTarget } from "./types";
+import { isIngestResultDeferred } from "./ingest-defer";
 import { readBoundedNumber } from "./parse-bounded-number";
 import {
   createNoopStageBatchProbe,
@@ -46,7 +47,7 @@ export const shouldTrackFeedProductivity = (result: {
   feedFormat?: string | null;
   deferredReason?: string | null;
 }) =>
-  result.deferredReason !== "rate_limited" &&
+  !result.deferredReason &&
   Boolean(result.feedUrl) &&
   result.feedFormat !== "html_fallback";
 
@@ -78,7 +79,9 @@ export async function runNewsPipeline(
   let inserted = 0;
   let skipped = 0;
   let failed = 0;
+  let deferred = 0;
   let artifactCount = 0;
+  const sameInvocationStatic429Hostnames = new Set<string>();
   const pipelineRun = await createPipelineRun(resolvedTargets.length);
 
   await logAgentScan({
@@ -89,7 +92,13 @@ export async function runNewsPipeline(
 
   for (const target of resolvedTargets) {
     try {
-      const result = await ingestSource(target.sourceId, target.categoryId || undefined, undefined, pipelineRun.id);
+      const result = await ingestSource(
+        target.sourceId,
+        target.categoryId || undefined,
+        undefined,
+        pipelineRun.id,
+        { static429Hostnames: sameInvocationStatic429Hostnames },
+      );
       candidatesFound += result.candidates.length;
       await persistPipelineArtifact({
         pipelineRunId: pipelineRun.id,
@@ -120,13 +129,18 @@ export async function runNewsPipeline(
         persisted,
       });
       artifactCount += 1;
-      await markFeedRunOutcome({
-        sourceId: target.sourceId,
-        categoryId: target.categoryId || undefined,
-        feedUrl: result.feedUrl || null,
-        productive: isOperationalFeedResult(result),
-        shouldTrackFeedProductivity: shouldTrackFeedProductivity(result),
-      });
+      if (isIngestResultDeferred(result) && persisted.failed === 0) deferred += 1;
+      // Deferred outcomes are neutral retry boundaries. They must not mutate
+      // publisher productivity state or be recorded as unproductive results.
+      if (!result.deferredReason) {
+        await markFeedRunOutcome({
+          sourceId: target.sourceId,
+          categoryId: target.categoryId || undefined,
+          feedUrl: result.feedUrl || null,
+          productive: isOperationalFeedResult(result),
+          shouldTrackFeedProductivity: shouldTrackFeedProductivity(result),
+        });
+      }
     } catch {
       failed += 1;
     }
@@ -138,6 +152,7 @@ export async function runNewsPipeline(
     inserted,
     skipped,
     failed,
+    deferred,
     artifactCount,
   };
 
@@ -149,7 +164,7 @@ export async function runNewsPipeline(
   await logAgentScan({
     status: "PIPELINE_FINISHED",
     executionTimeMs: Date.now() - startedAt,
-    errorLog: `Pipeline finished. runId=${pipelineRun.id}, targets=${resolvedTargets.length}, candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}, artifacts=${artifactCount}.`,
+    errorLog: `Pipeline finished. runId=${pipelineRun.id}, targets=${resolvedTargets.length}, candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}, deferred=${deferred}, artifacts=${artifactCount}.`,
   });
 
   // ── Agent 2: web discovery for eligible no-RSS / not-productive targets ──
@@ -194,6 +209,7 @@ export type Agent1BatchResult = {
     inserted: number;
     skipped: number;
     failed: number;
+    deferred: number;
     artifactCount: number;
   };
   /** Selected target disposition counts; these are the Agent 1 telemetry source of truth. */
@@ -217,7 +233,7 @@ export type Agent1BatchResult = {
   deferredTargets: Array<{
     sourceId: string;
     categoryId: string | null;
-    reason: "max_targets" | "time_budget";
+    reason: "max_targets" | "time_budget" | IngestDeferredReason;
   }>;
 };
 
@@ -380,7 +396,7 @@ export async function runAgent1Batch(input?: {
       remainingEligible: 0,
       stoppedReason: "no_targets",
       durationMs: Date.now() - startedAt,
-      result: { candidates: 0, inserted: 0, skipped: 0, failed: 0, artifactCount: 0 },
+      result: { candidates: 0, inserted: 0, skipped: 0, failed: 0, deferred: 0, artifactCount: 0 },
       targetDispositions: {
         succeeded: 0, failedRetryable: 0, failedPermanent: 0, skipped: 0,
         deferred: 0, quarantined: 0, persistenceFailed: 0,
@@ -394,6 +410,7 @@ export async function runAgent1Batch(input?: {
     };
   }
 
+  const sameInvocationStatic429Hostnames = new Set<string>();
   const pipelineRun = await createPipelineRun(Math.min(resolvedTargets.length, maxTargets));
 
   await logAgentScan({
@@ -410,7 +427,9 @@ export async function runAgent1Batch(input?: {
   let processed = 0;
   let targetSucceeded = 0;
   let targetFailedRetryable = 0;
+  let targetDeferred = 0;
   let targetPersistenceFailed = 0;
+  const processedDeferredTargets: Agent1BatchResult["deferredTargets"] = [];
   let stoppedReason: Agent1BatchStoppedReason = "completed";
 
   for (let i = 0; i < resolvedTargets.length; i++) {
@@ -430,7 +449,8 @@ export async function runAgent1Batch(input?: {
     }
     const targetStartedAt = Date.now();
     let ingestCompleted = false;
-    let targetDisposition: "succeeded" | "failedRetryable" | "persistenceFailed" = "failedRetryable";
+    let targetDisposition: "succeeded" | "failedRetryable" | "deferred" | "persistenceFailed" = "failedRetryable";
+    let targetDeferredReason: IngestDeferredReason | null = null;
     try {
       await logAgentScan({
         sourceId: target.sourceId,
@@ -444,16 +464,28 @@ export async function runAgent1Batch(input?: {
       // was supplied. Production workflow runs pass the probe explicitly; old
       // callers and mocks remain behaviorally/API compatible.
       const result = input?.bypassRedirectTerminal
-        ? await ingestSource(target.sourceId, target.categoryId || undefined, input?.telemetry ? probe : undefined, pipelineRun.id, { bypassRedirectTerminal: true })
+        ? await ingestSource(target.sourceId, target.categoryId || undefined, input?.telemetry ? probe : undefined, pipelineRun.id, {
+            bypassRedirectTerminal: true,
+            static429Hostnames: sameInvocationStatic429Hostnames,
+          })
         : input?.telemetry
-          ? await ingestSource(target.sourceId, target.categoryId || undefined, probe, pipelineRun.id)
-          : await ingestSource(target.sourceId, target.categoryId || undefined, undefined, pipelineRun.id);
+          ? await ingestSource(target.sourceId, target.categoryId || undefined, probe, pipelineRun.id, {
+              static429Hostnames: sameInvocationStatic429Hostnames,
+            })
+          : await ingestSource(target.sourceId, target.categoryId || undefined, undefined, pipelineRun.id, {
+              static429Hostnames: sameInvocationStatic429Hostnames,
+            });
       ingestCompleted = true;
-      targetDisposition = result.deferredReason === "rate_limited" || result.failed > 0
-        ? "failedRetryable"
-        : "succeeded";
+      targetDeferredReason = isIngestResultDeferred(result)
+        ? result.deferredReason!
+        : null;
+      targetDisposition = targetDeferredReason
+        ? "deferred"
+        : result.failed > 0
+          ? "failedRetryable"
+          : "succeeded";
       if (result.deferredReason === "rate_limited") {
-        // RSS host rate limited this target (Retry-After style deferral).
+        // Only confirmed publisher HTTP 429 outcomes enter rate-limit telemetry.
         probe.recordRateLimited(429);
       }
       candidatesFound += result.candidates.length;
@@ -483,7 +515,10 @@ export async function runAgent1Batch(input?: {
       inserted += persisted.inserted;
       skipped += persisted.skipped;
       failed += persisted.failed + result.failed;
-      if (persisted.failed > 0) targetDisposition = "persistenceFailed";
+      if (persisted.failed > 0) {
+        targetDisposition = "persistenceFailed";
+        targetDeferredReason = null;
+      }
       await probe.timed("persistence", () => persistAgent1TargetOutcomeArtifact({
         pipelineRunId: pipelineRun.id,
         result,
@@ -491,24 +526,34 @@ export async function runAgent1Batch(input?: {
       }));
       probe.recordDbOperation();
       artifactCount += 1;
-      await probe.timed("persistence", () => markFeedRunOutcome({
-        sourceId: target.sourceId,
-        categoryId: target.categoryId || undefined,
-        feedUrl: result.feedUrl || null,
-        productive: isOperationalFeedResult(result),
-        shouldTrackFeedProductivity: shouldTrackFeedProductivity(result),
-      }));
-      probe.recordDbOperation();
+      if (!result.deferredReason) {
+        await probe.timed("persistence", () => markFeedRunOutcome({
+          sourceId: target.sourceId,
+          categoryId: target.categoryId || undefined,
+          feedUrl: result.feedUrl || null,
+          productive: isOperationalFeedResult(result),
+          shouldTrackFeedProductivity: shouldTrackFeedProductivity(result),
+        }));
+        probe.recordDbOperation();
+      }
       processed += 1;
       if (targetDisposition === "succeeded") targetSucceeded += 1;
       else if (targetDisposition === "persistenceFailed") targetPersistenceFailed += 1;
+      else if (targetDisposition === "deferred" && targetDeferredReason) {
+        targetDeferred += 1;
+        processedDeferredTargets.push({
+          sourceId: target.sourceId,
+          categoryId: target.categoryId ?? null,
+          reason: targetDeferredReason,
+        });
+      }
       else targetFailedRetryable += 1;
       await logAgentScan({
         sourceId: target.sourceId,
         categoryId: target.categoryId || undefined,
         status: "A1_TARGET_FINISHED",
         executionTimeMs: Date.now() - targetStartedAt,
-        errorLog: `Agent 1 target finished. runId=${pipelineRun.id}, position=${i + 1}/${resolvedTargets.length}, candidates=${result.candidates.length}, inserted=${persisted.inserted}, skipped=${persisted.skipped}, failed=${persisted.failed + result.failed}.`,
+        errorLog: `Agent 1 target finished. runId=${pipelineRun.id}, position=${i + 1}/${resolvedTargets.length}, candidates=${result.candidates.length}, inserted=${persisted.inserted}, skipped=${persisted.skipped}, failed=${persisted.failed + result.failed}, deferredReason=${result.deferredReason || "none"}.`,
       });
     } catch (error: any) {
       failed += 1;
@@ -526,17 +571,18 @@ export async function runAgent1Batch(input?: {
   }
 
   // ── Deferred targets: persist audit artifacts ─────────────────────────
-  const deferredTargets = resolvedTargets.slice(processed);
-  const deferredCount = deferredTargets.length;
+  const budgetDeferredTargets = resolvedTargets.slice(processed);
+  const budgetDeferredCount = budgetDeferredTargets.length;
+  const totalDeferred = targetDeferred + budgetDeferredCount;
   const elapsedMs = Date.now() - startedAt;
 
-  if (deferredCount > 0) {
+  if (budgetDeferredCount > 0) {
     const deferredStatus = stoppedReason === "max_targets"
       ? "DEFERRED_MAX_TARGETS"
       : "DEFERRED_TIME_BUDGET";
 
     await prisma.pipelineArtifact.createMany({
-      data: deferredTargets.map((target, position) => ({
+      data: budgetDeferredTargets.map((target, position) => ({
         pipelineRunId: pipelineRun.id,
         sourceId: target.sourceId,
         categoryId: target.categoryId || null,
@@ -558,16 +604,16 @@ export async function runAgent1Batch(input?: {
           position,
           totalTargetsResolved: resolvedTargets.length,
         } satisfies Prisma.InputJsonValue,
-        errorLog: `Deferred target ${target.sourceId}${target.categoryId ? `/${target.categoryId}` : ""}. reason=${stoppedReason}, position=${position + 1}/${deferredCount}.`,
+        errorLog: `Deferred target ${target.sourceId}${target.categoryId ? `/${target.categoryId}` : ""}. reason=${stoppedReason}, position=${position + 1}/${budgetDeferredCount}.`,
       })),
     });
     probe.recordDbOperation();
-    artifactCount += deferredCount;
+    artifactCount += budgetDeferredCount;
 
     await logAgentScan({
       status: "A1_TARGETS_DEFERRED",
       executionTimeMs: elapsedMs,
-      errorLog: `deferred=${deferredCount}, reason=${stoppedReason}, processed=${processed}, total=${resolvedTargets.length}, elapsed=${elapsedMs}ms.`,
+      errorLog: `deferred=${budgetDeferredCount}, reason=${stoppedReason}, processed=${processed}, total=${resolvedTargets.length}, elapsed=${elapsedMs}ms.`,
     });
   }
 
@@ -577,6 +623,7 @@ export async function runAgent1Batch(input?: {
     inserted,
     skipped,
     failed,
+    deferred: totalDeferred,
     artifactCount,
   };
 
@@ -585,13 +632,13 @@ export async function runAgent1Batch(input?: {
     result,
   });
 
-  const remainingEligible = deferredCount;
+  const remainingEligible = budgetDeferredCount;
 
   await logAgentScan({
     status: stoppedReason === "completed" ? "A1_BATCH_FINISHED" : "A1_BATCH_STOPPED",
     executionTimeMs: elapsedMs,
     errorLog: `Agent 1 batch ${stoppedReason === "completed" ? "finished" : "stopped"}. runId=${pipelineRun.id}, ` +
-      `targets=${resolvedTargets.length}, processed=${processed}, deferred=${deferredCount}, ` +
+      `targets=${resolvedTargets.length}, processed=${processed}, deferred=${totalDeferred}, ` +
       `candidates=${candidatesFound}, inserted=${inserted}, skipped=${skipped}, failed=${failed}, ` +
       `stoppedReason=${stoppedReason}, remainingEligible=${remainingEligible}, elapsed=${elapsedMs}ms.`,
   });
@@ -600,7 +647,7 @@ export async function runAgent1Batch(input?: {
     pipelineRunId: pipelineRun.id,
     targetsResolved: resolvedTargets.length,
     processed,
-    deferred: deferredCount,
+    deferred: totalDeferred,
     remainingEligible,
     stoppedReason,
     durationMs: elapsedMs,
@@ -609,6 +656,7 @@ export async function runAgent1Batch(input?: {
       inserted,
       skipped,
       failed,
+      deferred: totalDeferred,
       artifactCount,
     },
     targetDispositions: {
@@ -616,7 +664,7 @@ export async function runAgent1Batch(input?: {
       failedRetryable: targetFailedRetryable,
       failedPermanent: 0,
       skipped: 0,
-      deferred: deferredCount,
+      deferred: totalDeferred,
       quarantined: 0,
       persistenceFailed: targetPersistenceFailed,
     },
@@ -627,11 +675,14 @@ export async function runAgent1Batch(input?: {
       articlesSkipped: skipped,
       articlePersistenceFailures: targetPersistenceFailed,
     },
-    deferredTargets: deferredTargets.map((t) => ({
-      sourceId: t.sourceId,
-      categoryId: t.categoryId ?? null,
-      reason: stoppedReason as "max_targets" | "time_budget",
-    })),
+    deferredTargets: [
+      ...processedDeferredTargets,
+      ...budgetDeferredTargets.map((t) => ({
+        sourceId: t.sourceId,
+        categoryId: t.categoryId ?? null,
+        reason: stoppedReason as "max_targets" | "time_budget",
+      })),
+    ],
   };
 }
 

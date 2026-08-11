@@ -194,7 +194,7 @@
             <!-- REFACTORED: Removed hardcoded shadow and #00E5FF, injected CSS variables -->
             <button
               @click="applyFilters"
-              :disabled="!hasPendingFilters || isRefreshing"
+              :disabled="isRefreshing"
               :class="[
                 'flex w-full justify-center items-center gap-1.5 px-2 rounded-lg transition-all h-[36px] border min-w-0 sm:px-3',
                 hasPendingFilters
@@ -330,6 +330,10 @@ import { useAuthStore } from "~/stores/auth";
 import { useFeedStore } from "~/stores/feedStore";
 import { $api } from "~/utils/api";
 import { isConfirmedBlockingPaywall } from "~/utils/paywall";
+import {
+  matchesDashboardSourceFilter,
+  type DashboardSourceFilterOption,
+} from "~/utils/dashboard-source-filter";
 
 const { t } = useI18n();
 const authStore = useAuthStore();
@@ -378,6 +382,8 @@ interface Article {
   sourceUrl?: string;
   sourceTargetUrl?: string;
   canonicalUrl?: string;
+  articleDomain?: string | null;
+  isExternalPublisher?: boolean;
   categoryPathUrl?: string | null;
   date: string;
   score: number;
@@ -388,10 +394,7 @@ interface Article {
   bodyText?: string | null;
 }
 
-interface SourceFilterOption {
-  id: string;
-  type: "ROOT" | "CATEGORY";
-  url: string;
+interface SourceFilterOption extends DashboardSourceFilterOption {
   name: string;
 }
 
@@ -559,18 +562,23 @@ const selectSource = (sourceId: string) => {
   }
 };
 
-const applyFilters = () => {
-  if (!hasPendingFilters.value || isRefreshing.value) return;
+const applyFilters = async () => {
+  if (isRefreshing.value) return;
 
   isRefreshing.value = true;
-  setTimeout(() => {
+  try {
     appliedSelectedDateKey.value = currentSelectedDateKey.value;
     appliedSelectedCategories.value = [...selectedCategories.value];
     appliedSelectedSources.value = [...selectedSources.value];
     currentPage.value = 1;
     closeArticleInteractions();
+    await Promise.all([
+      feedStore.fetchFeed({ force: true }),
+      loadAvailableSources(),
+    ]);
+  } finally {
     isRefreshing.value = false;
-  }, 600);
+  }
 };
 
 watch(
@@ -585,9 +593,6 @@ watch(
   },
   { immediate: true },
 );
-
-const normalizeFilterUrl = (value?: string | null) =>
-  (value || "").replace(/\/+$/, "").toLowerCase();
 
 const matchesAppliedDateFilter = (article: Article) => {
   const articleDate = new Date(article.date);
@@ -619,18 +624,10 @@ const matchesAppliedCategoryFilter = (article: Article) => {
 const matchesAppliedSourceFilter = (article: Article) => {
   if (appliedSelectedSources.value.length === 0) return true;
 
-  const articleSourceUrl = normalizeFilterUrl(article.sourceUrl);
-  const articleSourceTargetUrl = normalizeFilterUrl(article.sourceTargetUrl);
-  const articleCategoryPathUrl = normalizeFilterUrl(article.categoryPathUrl);
-
   return appliedSelectedSources.value.some((selectedSourceId) => {
     const selectedSource = availableSources.value.find((source) => source.id === selectedSourceId);
     if (!selectedSource) return false;
-
-    const selectedUrl = normalizeFilterUrl(selectedSource.url);
-    return selectedSource.type === "CATEGORY"
-      ? articleCategoryPathUrl === selectedUrl || articleSourceTargetUrl === selectedUrl
-      : articleSourceUrl === selectedUrl && articleSourceTargetUrl === articleSourceUrl;
+    return matchesDashboardSourceFilter(article, selectedSource);
   });
 };
 

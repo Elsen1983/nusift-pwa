@@ -1,5 +1,7 @@
 import { prisma } from "../prisma";
+import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
 import { canonicalFeedKey, discoverFeedForUrl, verifyFeedCandidate } from "./feed-discovery";
+import { GovernedFetchDeferredError } from "./governed-fetch";
 import { logAgentScan } from "./log";
 import {
   resolveFeedsWithBrowser,
@@ -23,6 +25,16 @@ type HardCaseArtifactPayload = {
   queueReason?: string;
   discovery?: Record<string, unknown> | null;
 };
+
+class HardCaseTerminalPersistenceError extends Error {
+  readonly originalError: unknown;
+
+  constructor(error: unknown) {
+    super("Hard-case terminal persistence failed.");
+    this.name = "HardCaseTerminalPersistenceError";
+    this.originalError = error;
+  }
+}
 
 // FeedDiscoveryResult is imported from ./types
 
@@ -76,9 +88,21 @@ export async function discoverFeedWithBrowserFallback(
     existingFeedUrl?: string | null;
     preferScopedDirectFeed?: boolean;
   },
-  targetIds?: { sourceId?: string; categoryId?: string },
+  targetIds?: {
+    sourceId?: string;
+    categoryId?: string;
+    governedFetchContext?: import("./governed-fetch").GovernedFetchContext;
+  },
 ): Promise<HardCaseResolution> {
-  const userAgent = "NuSift/1.0 HardCase-Agent";
+  const userAgent = NUSIFT_CRAWLER_USER_AGENT;
+  const governedFetchContext = {
+    ...(targetIds?.governedFetchContext ?? {}),
+    agent: targetIds?.governedFetchContext?.agent ?? "agent2",
+    stage: "hard-case-feed-discovery",
+    purpose: "feed" as const,
+    sourceId: targetIds?.sourceId ?? targetIds?.governedFetchContext?.sourceId ?? null,
+    categoryId: targetIds?.categoryId ?? targetIds?.governedFetchContext?.categoryId ?? null,
+  };
 
   // ── Step 1: Standard fetch-based discovery ──────────────────────────────
   const fetchResult = await discoverFeedForUrl({
@@ -86,7 +110,24 @@ export async function discoverFeedWithBrowserFallback(
     existingFeedUrl: input.existingFeedUrl || null,
     userAgent,
     preferScopedDirectFeed: input.preferScopedDirectFeed,
+    governedFetchContext,
   });
+
+  // Governor deferral is a neutral retry boundary. It must never enter
+  // browser eligibility or mutate the hard-case target to a terminal state.
+  if (fetchResult.deferredReason === "governor_deferred") {
+    return {
+      discovery: fetchResult,
+      meta: {
+        resolverPath: "none",
+        browserAttempted: false,
+        browserMethod: "none",
+        browserCandidateCount: 0,
+        browserCandidates: [],
+        browserError: null,
+      },
+    };
+  }
 
   // If fetch-based discovery succeeded, return immediately
   if (fetchResult.feedUrl) {
@@ -132,6 +173,7 @@ export async function discoverFeedWithBrowserFallback(
     browserResult = await resolveFeedsWithBrowser({
       pageUrl: input.pageUrl,
       userAgent,
+      governedFetchContext,
     });
   } catch (error: any) {
     const errorMsg = `Browser resolution failed: ${error?.message || String(error)}`;
@@ -151,6 +193,24 @@ export async function discoverFeedWithBrowserFallback(
         browserCandidateCount: 0,
         browserCandidates: [],
         browserError: errorMsg,
+      },
+    };
+  }
+
+  if (browserResult.governorDeferred) {
+    return {
+      discovery: {
+        ...fetchResult,
+        deferredReason: "governor_deferred",
+        lastError: "Browser navigation deferred by domain governance.",
+      },
+      meta: {
+        resolverPath: "none",
+        browserAttempted: false,
+        browserMethod: "none",
+        browserCandidateCount: 0,
+        browserCandidates: [],
+        browserError: browserResult.error || "Browser navigation deferred by domain governance.",
       },
     };
   }
@@ -238,7 +298,10 @@ export async function discoverFeedWithBrowserFallback(
     const detection = BROWSER_DETECTION_MAP[candidate.source] || "browser-dom-link";
 
     try {
-      const verified = await verifyFeedCandidate(candidate.feedUrl, { userAgent });
+      const verified = await verifyFeedCandidate(candidate.feedUrl, {
+        userAgent,
+        governedFetchContext,
+      });
       const score = baseScore;
 
       browserTopCandidates.push({
@@ -442,21 +505,24 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
 
     const payload = parseArtifactPayload(item.payload);
     if (!payload) {
-      invalid += 1;
-      await prisma.pipelineArtifact.update({
-        where: { id: item.id },
+      const invalidTransition = await prisma.pipelineArtifact.updateMany({
+        where: { id: item.id, status: "PENDING_HEADLESS" },
         data: {
           status: "FAILED_FINAL",
           errorLog: "Invalid hard-case artifact payload.",
         },
       });
+      if (invalidTransition.count !== 1) continue;
+      invalid += 1;
       continue;
     }
 
-    await prisma.pipelineArtifact.update({
-      where: { id: item.id },
+    const claim = await prisma.pipelineArtifact.updateMany({
+      where: { id: item.id, status: "PENDING_HEADLESS" },
       data: { status: "PROCESSING_HEADLESS" },
     });
+    // Another worker won the claim; never process or emit a terminal outcome.
+    if (claim.count !== 1) continue;
 
     await logAgentScan({
       sourceId: payload.sourceId,
@@ -473,7 +539,17 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
           existingFeedUrl: payload.existingFeedUrl || null,
           preferScopedDirectFeed: payload.targetType === "category",
         },
-        { sourceId: payload.sourceId, categoryId: payload.categoryId || undefined },
+        {
+          sourceId: payload.sourceId,
+          categoryId: payload.categoryId || undefined,
+          governedFetchContext: {
+            agent: "agent2",
+            stage: "hard-case-feed-discovery",
+            purpose: "feed",
+            sourceId: payload.sourceId,
+            categoryId: payload.categoryId || null,
+          },
+        },
       );
 
       const discoveryEvidence = buildDiscoveryEvidencePayload(
@@ -484,35 +560,78 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
 
       const outcome = createDiscoveryOutcome(payload.targetUrl, discovery, meta);
 
-      if (payload.targetType === "category" && payload.categoryId) {
-
-        await prisma.sourceCategory.update({
-          where: { id: payload.categoryId },
+      if (discovery.deferredReason === "governor_deferred") {
+        const deferred = await prisma.pipelineArtifact.updateMany({
+          where: { id: item.id, status: "PROCESSING_HEADLESS" },
           data: {
-            rssFeedUrl: discovery.feedUrl,
-            rssStatus: discovery.feedUrl ? "ACTIVE" : "NO_RSS_FOUND",
-            lastRssCheckAt: new Date(),
-            discoveryEvidence,
-            ...getFeedProductivityResetData(payload.existingFeedUrl || null, discovery.feedUrl),
+            status: "PENDING_HEADLESS",
+            payload: {
+              ...(payload as Record<string, unknown>),
+              headlessAttemptedAt: new Date().toISOString(),
+              headlessResult: serializeDiscoveryPayloadWithMeta(outcome, meta),
+            },
+            errorLog: "Discovery deferred by domain governance.",
           },
         });
-      } else {
-        await prisma.newsSource.update({
-          where: { id: payload.sourceId },
-          data: {
-            rssFeedUrl: discovery.feedUrl,
-            rssStatus: discovery.feedUrl ? "ACTIVE" : "NO_RSS_FOUND",
-            lastRssCheckAt: new Date(),
-            discoveryEvidence,
-            ...getFeedProductivityResetData(payload.existingFeedUrl || null, discovery.feedUrl),
-          },
-        });
+        if (deferred.count !== 1) continue;
+        continue;
       }
 
       const finalStatus = discovery.feedUrl ? "RESOLVED" : "FAILED_FINAL";
+      let terminalPersisted = false;
+      try {
+        terminalPersisted = await prisma.$transaction(async (tx) => {
+          const terminal = await tx.pipelineArtifact.updateMany({
+            where: { id: item.id, status: "PROCESSING_HEADLESS" },
+            data: {
+              status: finalStatus,
+              payload: {
+                ...(payload as Record<string, unknown>),
+                headlessAttemptedAt: new Date().toISOString(),
+                headlessResult: serializeDiscoveryPayloadWithMeta(outcome, meta),
+              },
+              errorLog: discovery.feedUrl
+                ? `Resolved ${payload.targetType} feed via ${meta.resolverPath}: ${discovery.feedUrl}`
+                : `Failed ${payload.targetUrl}. resolverPath=${meta.resolverPath}, browser=${meta.browserMethod}, candidates=${meta.browserCandidateCount}. ${discovery.lastError || "No feed found."}`,
+            },
+          });
+          if (terminal.count !== 1) return false;
+
+          if (payload.targetType === "category" && payload.categoryId) {
+            await tx.sourceCategory.update({
+              where: { id: payload.categoryId },
+              data: {
+                rssFeedUrl: discovery.feedUrl,
+                rssStatus: discovery.feedUrl ? "ACTIVE" : "NO_RSS_FOUND",
+                lastRssCheckAt: new Date(),
+                discoveryEvidence,
+                ...getFeedProductivityResetData(payload.existingFeedUrl || null, discovery.feedUrl),
+              },
+            });
+          } else {
+            await tx.newsSource.update({
+              where: { id: payload.sourceId },
+              data: {
+                rssFeedUrl: discovery.feedUrl,
+                rssStatus: discovery.feedUrl ? "ACTIVE" : "NO_RSS_FOUND",
+                lastRssCheckAt: new Date(),
+                discoveryEvidence,
+                ...getFeedProductivityResetData(payload.existingFeedUrl || null, discovery.feedUrl),
+              },
+            });
+          }
+
+          return true;
+        });
+      } catch (error) {
+        throw new HardCaseTerminalPersistenceError(error);
+      }
+      // The transaction is the ownership and durability boundary. Do not emit
+      // counters, reruns, or terminal logs unless both writes committed.
+      if (!terminalPersisted) continue;
+
       if (discovery.feedUrl) {
         resolved += 1;
-        // Collect resolved target for follow-up pipeline rerun
         const targetKey = `${payload.sourceId}|${payload.categoryId || ""}`;
         if (!resolvedTargetKeys.has(targetKey)) {
           resolvedTargetKeys.add(targetKey);
@@ -524,21 +643,6 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
       } else {
         failedFinal += 1;
       }
-
-      await prisma.pipelineArtifact.update({
-        where: { id: item.id },
-        data: {
-          status: finalStatus,
-          payload: {
-            ...(payload as Record<string, unknown>),
-            headlessAttemptedAt: new Date().toISOString(),
-            headlessResult: serializeDiscoveryPayloadWithMeta(outcome, meta),
-          },
-          errorLog: discovery.feedUrl
-            ? `Resolved ${payload.targetType} feed via ${meta.resolverPath}: ${discovery.feedUrl}`
-            : `Failed ${payload.targetUrl}. resolverPath=${meta.resolverPath}, browser=${meta.browserMethod}, candidates=${meta.browserCandidateCount}. ${discovery.lastError || "No feed found."}`,
-        },
-      });
 
       await logAgentScan({
         sourceId: payload.sourceId,
@@ -552,13 +656,37 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
           : `Failed for ${payload.targetUrl}. resolverPath=${meta.resolverPath}, browser=${meta.browserMethod}, candidates=${meta.browserCandidateCount}. ${discovery.lastError || ""}`,
       });
     } catch (error: any) {
-      failedFinal += 1;
+      if (error instanceof GovernedFetchDeferredError) {
+        const deferred = await prisma.pipelineArtifact.updateMany({
+          where: { id: item.id, status: "PROCESSING_HEADLESS" },
+          data: { status: "PENDING_HEADLESS", errorLog: `Discovery deferred by domain governance: ${error.reason}` },
+        });
+        if (deferred.count !== 1) continue;
+        continue;
+      }
+      if (error instanceof HardCaseTerminalPersistenceError) {
+        const originalMessage = error.originalError instanceof Error
+          ? error.originalError.message
+          : String(error.originalError);
+        try {
+          await prisma.pipelineArtifact.updateMany({
+            where: { id: item.id, status: "PROCESSING_HEADLESS" },
+            data: {
+              status: "PENDING_HEADLESS",
+              errorLog: `Terminal persistence deferred for retry: ${originalMessage.slice(0, 240)}`,
+            },
+          });
+        } catch {
+          // Unknown ownership/state is left for stale-claim recovery.
+        }
+        continue;
+      }
       const errorMessage = error?.message || String(error);
 
       const errorOutcome = buildErrorDiscoveryOutcome(payload.targetUrl, "none", errorMessage);
 
-      await prisma.pipelineArtifact.update({
-        where: { id: item.id },
+      const terminal = await prisma.pipelineArtifact.updateMany({
+        where: { id: item.id, status: "PROCESSING_HEADLESS" },
         data: {
           status: "FAILED_FINAL",
           payload: {
@@ -569,6 +697,8 @@ export async function processHardCaseDiscoveryQueue(limit = 10): Promise<HardCas
           errorLog: errorMessage,
         },
       });
+      if (terminal.count !== 1) continue;
+      failedFinal += 1;
 
       await logAgentScan({
         sourceId: payload.sourceId,

@@ -344,6 +344,47 @@ describe("persistAgent1TargetOutcomeArtifact – errorLog consistency", () => {
     expect(data.errorLog).toContain("retry deferred until");
   });
 
+  it("persists governor defers without pass, RSS-active, or Agent 2 handoff claims", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-governor-defer",
+      result: makeResult({
+        feedUrl: "https://example.com/rss",
+        candidates: [{ fake: true }] as unknown as IngestResult["candidates"],
+        deferredReason: "governor_deferred",
+      }),
+      persisted: makePersisted({ inserted: 1 }),
+    });
+
+    const data = prismaCreateMock.mock.calls[0]![0].data;
+    expect(data.status).toBe("DEFERRED_GOVERNOR");
+    expect(data.payload).toEqual(expect.objectContaining({
+      deferred: true,
+      deferredReason: "governor_deferred",
+      governorDeferred: true,
+      passed: false,
+      rssActive: false,
+      handedToAgent2: false,
+    }));
+    expect(data.errorLog).toBe("Agent 1 request deferred by domain governance.");
+  });
+
+  it("classifies the raw candidate artifact as governor-deferred", async () => {
+    const { persistPipelineArtifact } = await import("./artifacts");
+    await persistPipelineArtifact({
+      pipelineRunId: "run-governor-defer",
+      result: makeResult({
+        feedUrl: null,
+        feedFormat: null,
+        deferredReason: "governor_deferred",
+      }),
+    });
+
+    const data = prismaCreateMock.mock.calls[0]![0].data;
+    expect(data.status).toBe("DEFERRED_GOVERNOR");
+    expect(data.errorLog).toBe("Pipeline request deferred by domain governance.");
+  });
+
   it("sets errorLog to fetch/parse failure reason for FAILED status", async () => {
     const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
     await persistAgent1TargetOutcomeArtifact({
@@ -427,5 +468,33 @@ describe("persistAgent1TargetOutcomeArtifact – errorLog consistency", () => {
     expect(data.errorLog).toBe(
       "Agent 1 failed while fetching or parsing this target.",
     );
+  });
+});
+
+describe("finalizePipelineRun defer summary", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    prismaUpdateMock.mockResolvedValue({ id: "run-1" });
+  });
+
+  it("reports neutral defers separately from failures", async () => {
+    const { finalizePipelineRun } = await import("./artifacts");
+    await finalizePipelineRun({
+      pipelineRunId: "run-1",
+      result: {
+        sourcesScanned: 2,
+        candidatesFound: 0,
+        inserted: 0,
+        skipped: 0,
+        failed: 0,
+        deferred: 2,
+        artifactCount: 4,
+      },
+    });
+
+    const data = prismaUpdateMock.mock.calls[0]![0].data;
+    expect(data.status).toBe("COMPLETED");
+    expect(data.failed).toBe(0);
+    expect(data.summary.deferred).toBe(2);
   });
 });

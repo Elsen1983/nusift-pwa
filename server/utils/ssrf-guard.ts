@@ -205,6 +205,29 @@ export interface SafeFetchOptions extends RequestInit {
    */
   allowIp?: boolean
   allowCrossDomainRedirects?: boolean
+  /** Internal lifecycle hooks used by the pipeline domain-governance adapter. */
+  transportHooks?: SafeFetchTransportHooks
+}
+
+/**
+ * Per-transport lifecycle hooks. The safe-fetch core invokes `beforeTransport`
+ * only after the current URL has passed protocol, hostname, DNS, and IP checks.
+ * Redirect hops therefore receive a fresh permit without changing the one-slot
+ * logical request-budget rule.
+ */
+export interface SafeFetchTransportHooks {
+  beforeTransport(url: string, isFirstTransport: boolean): Promise<unknown> | unknown
+  onRedirectResponse?(url: string, response: Response, lease: unknown): Promise<void> | void
+  onFinalResponse?(url: string, response: Response, lease: unknown, parseError: unknown | null): Promise<void> | void
+  onTransportError?(url: string, error: unknown, lease: unknown): Promise<void> | void
+}
+
+const responseHeader = (response: Pick<Response, "headers">, name: string): string | null => {
+  const headers = response.headers as Headers & Record<string, unknown>
+  if (typeof headers.get === "function") return headers.get(name)
+  const key = Object.keys(headers).find(candidate => candidate.toLowerCase() === name.toLowerCase())
+  const value = key ? headers[key] : undefined
+  return typeof value === "string" ? value : null
 }
 
 /**
@@ -216,12 +239,13 @@ export interface SafeFetchOptions extends RequestInit {
  * Returns the Response object of the final destination.
  * Throws SSRFError on any security violation.
  */
-async function safeFetchCore(
+async function safeFetchCore<T>(
   url: string,
   fetchOptions: SafeFetchOptions = {},
   maxRedirects: number = MAX_REDIRECTS,
-): Promise<Response> {
-  const { allowIp, allowCrossDomainRedirects, telemetry, ...nativeOptions } = fetchOptions
+  parse: (response: Response) => Promise<T>,
+): Promise<T> {
+  const { allowIp, allowCrossDomainRedirects, telemetry, transportHooks, ...nativeOptions } = fetchOptions
   let logicalRequestRecorded = false
 
   // --- Initial URL validation ---
@@ -264,39 +288,63 @@ async function safeFetchCore(
       await resolveAndValidate(hostname)
     }
 
-    // --- Make the request with redirect: 'manual' ---
-    // Count only once, immediately before the first actual transport attempt.
-    // Internal redirect hops remain part of this one logical safeFetch call.
+    // SSRF/DNS validation above is the mandatory preflight boundary. Only
+    // after it succeeds may governance acquire a permit or consume budget.
+    const lease = transportHooks
+      ? await transportHooks.beforeTransport(currentUrl, !logicalRequestRecorded)
+      : null
+
     if (!logicalRequestRecorded) {
       telemetry?.recordNetworkRequest()
       logicalRequestRecorded = true
     }
-    const response = await fetch(currentUrl, {
-      ...nativeOptions,
-      redirect: 'manual',
-    })
 
-    // --- Handle 3xx redirects manually ---
+    let response: Response
+    try {
+      response = await fetch(currentUrl, {
+        ...nativeOptions,
+        redirect: 'manual',
+      })
+    } catch (error) {
+      await transportHooks?.onTransportError?.(currentUrl, error, lease)
+      throw error
+    }
+
+    // Every redirect response belongs to the domain that returned it. Release
+    // that hop before the next URL is preflighted and governed independently.
     if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      if (!location) return response // Malformed redirect, return as-is
+      const location = responseHeader(response, 'location')
+      if (!location) {
+        // A redirect without Location is the final response we can return.
+        // Keep the lease through parsing just like any other final response.
+        let parseError: unknown | null = null
+        try {
+          return await parse(response)
+        } catch (error) {
+          parseError = error
+          throw error
+        } finally {
+          await transportHooks?.onFinalResponse?.(currentUrl, response, lease, parseError)
+        }
+      }
 
-      // Resolve relative redirects against the current URL
-      const nextUrl = new URL(location, currentUrl)
+      await transportHooks?.onRedirectResponse?.(currentUrl, response, lease)
 
-      // Protocol gate on redirect target
+      let nextUrl: URL
+      try {
+        nextUrl = new URL(location, currentUrl)
+      } catch {
+        throw new SSRFError('Malformed redirect URL')
+      }
+
       if (!ALLOWED_PROTOCOLS.has(nextUrl.protocol)) {
         throw new SSRFError(`Redirect to blocked protocol: ${nextUrl.protocol}`)
       }
-
-      // Block protocol downgrade (https → http) — data exfiltration vector
       if (originalProtocol === 'https:' && nextUrl.protocol === 'http:') {
         throw new SSRFError('Protocol downgrade blocked (https → http)')
       }
 
       const nextCleanHost = nextUrl.hostname.replace(/^www\./, '').toLowerCase()
-
-      // Enforce same-domain / subdomain redirect policy
       const isSubdomainRedirect = nextCleanHost.endsWith(`.${originalCleanHost}`)
       if (!allowCrossDomainRedirects && originalCleanHost !== nextCleanHost && !isSubdomainRedirect) {
         throw new SSRFError(
@@ -309,10 +357,9 @@ async function safeFetchCore(
       continue
     }
 
-    // --- Post-fetch DNS rebind check ---
-    // Verify the final response URL still resolves to safe IPs
-    if (response.url) {
-      try {
+    // Final-response DNS rebind validation remains part of the SSRF boundary.
+    try {
+      if (response.url) {
         const finalHostname = new URL(response.url).hostname
         if (IPV4_RE.test(finalHostname) || finalHostname.startsWith('[')) {
           if (isBlockedIp(finalHostname.replace(/[[\]]/g, ''))) {
@@ -323,13 +370,21 @@ async function safeFetchCore(
         } else {
           await resolveAndValidate(finalHostname)
         }
-      } catch (err) {
-        // If SSRFError, propagate. If DNS failure on the final URL, it's suspicious but the request already completed.
-        if (err instanceof SSRFError) throw err
       }
+    } catch (error) {
+      await transportHooks?.onTransportError?.(currentUrl, error, lease)
+      throw error
     }
 
-    return response
+    let parseError: unknown | null = null
+    try {
+      return await parse(response)
+    } catch (error) {
+      parseError = error
+      throw error
+    } finally {
+      await transportHooks?.onFinalResponse?.(currentUrl, response, lease, parseError)
+    }
   }
 
   throw new SSRFError('Too many redirects')
@@ -341,30 +396,48 @@ async function safeFetchCore(
  * this rule is shared by Agent 1 telemetry and tests. Duration is retained
  * for successful, rejected, and thrown invocations.
  */
+async function runLogicalSafeFetch<T>(
+  url: string,
+  fetchOptions: SafeFetchOptions,
+  maxRedirects: number,
+  parse: (response: Response) => Promise<T>,
+): Promise<T> {
+  const telemetry = fetchOptions.telemetry
+  const endLogicalRequest = telemetry?.beginLogicalRequest?.()
+  const startedAt = Date.now()
+  try {
+    return await safeFetchCore(url, fetchOptions, maxRedirects, parse)
+  } catch (error) {
+    const name = error instanceof Error ? error.name : ''
+    const message = error instanceof Error ? error.message : String(error)
+    if (/timeout|timed out|abort/i.test(`${name} ${message}`)) telemetry?.recordTimeout?.()
+    throw error
+  } finally {
+    if (endLogicalRequest) endLogicalRequest()
+    else {
+      const elapsedMs = Date.now() - startedAt
+      if (telemetry?.recordLogicalRequestDuration) telemetry.recordLogicalRequestDuration(elapsedMs)
+      else telemetry?.recordFetch?.(elapsedMs)
+    }
+  }
+}
+
 export async function safeFetch(
   url: string,
   fetchOptions: SafeFetchOptions = {},
   maxRedirects: number = MAX_REDIRECTS,
 ): Promise<Response> {
-  const telemetry = fetchOptions.telemetry;
-  const endLogicalRequest = telemetry?.beginLogicalRequest?.();
-  const startedAt = Date.now();
-  try {
-    return await safeFetchCore(url, fetchOptions, maxRedirects);
-  } catch (error) {
-    const name = error instanceof Error ? error.name : "";
-    const message = error instanceof Error ? error.message : String(error);
-    if (/timeout|timed out|abort/i.test(`${name} ${message}`)) telemetry?.recordTimeout?.();
-    throw error;
-  } finally {
-    if (endLogicalRequest) {
-      endLogicalRequest();
-    } else {
-      const elapsedMs = Date.now() - startedAt;
-      if (telemetry?.recordLogicalRequestDuration) telemetry.recordLogicalRequestDuration(elapsedMs);
-      else telemetry?.recordFetch?.(elapsedMs);
-    }
-  }
+  return runLogicalSafeFetch(url, fetchOptions, maxRedirects, async response => response)
+}
+
+/** Run a parser while the final transport hook lease remains active. */
+export async function safeFetchWithParser<T>(
+  url: string,
+  fetchOptions: SafeFetchOptions = {},
+  parse: (response: Response) => Promise<T>,
+  maxRedirects: number = MAX_REDIRECTS,
+): Promise<T> {
+  return runLogicalSafeFetch(url, fetchOptions, maxRedirects, parse)
 }
 
 /* ------------------------------------------------------------------ */

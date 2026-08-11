@@ -246,6 +246,50 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     return mod.processArticleDiscoveryHeadlessQueue;
   }
 
+  it("requeues governor-denied listing work without consuming browser budget", async () => {
+    findManyMock
+      .mockResolvedValueOnce([makeArtifact()])
+      .mockResolvedValueOnce([]);
+    updateManyMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: false,
+      reason: "governor_deferred",
+      links: [],
+      rawLinkCount: 0,
+      shortlistedLinkCount: 0,
+      topRejectedLinks: [],
+      shortlistedLinkSamples: [],
+      topRejectionReasons: [],
+      diagnostics: {
+        pageTitle: null,
+        linkCount: 0,
+        articleLikeLinkCount: 0,
+        blockedReason: "circuit-open",
+        browserRuntimeAvailable: true,
+        browserAttempted: false,
+        governorDeferred: true,
+        elapsedMs: 0,
+      },
+    });
+    const telemetry = makeTelemetryProbe();
+
+    const fn = await loadFn();
+    const result = await fn({ dryRun: false, runBrowser: true, telemetry: telemetry as any });
+
+    expect(result.dryRun).toBe(false);
+    if (!result.dryRun) {
+      expect(result.browserAttemptedTargets).toBe(0);
+      expect(result.targetDispositions.deferred).toBe(1);
+    }
+    expect(telemetry.recordBrowserAttempt).not.toHaveBeenCalled();
+    expect(telemetry.recordNetworkRequest).not.toHaveBeenCalled();
+    const finalTransition = updateManyMock.mock.calls.at(-1)?.[0];
+    expect(finalTransition.data).toMatchObject({
+      status: "PENDING_HEADLESS",
+      payload: { browserGovernorDeferred: true, browserFallbackRan: false, resolvedAt: null },
+    });
+  });
+
   function expectUnconfirmedPersistenceFailureAudit() {
     const failedLogs = logAgentScanMock.mock.calls.filter(
       (call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_BROWSER_FAILED",

@@ -7,7 +7,8 @@
  * 3. Candidate URL scoring and filtering
  */
 
-import { safeFetch } from "../ssrf-guard";
+import { governedSafeFetchAndParse, GovernedFetchDeferredError, GovernedFetchRequestBudgetError, type GovernedFetchContext } from "./governed-fetch";
+import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
 import { normalizeFeedTextDetailed } from "./normalize-feed-text";
 import { hashText, normalizeUrl, stripHtml } from "./text";
 import {
@@ -28,6 +29,14 @@ import {
 } from "./canonical-host-scope";
 import type { StageBatchProbe } from "./stage-telemetry";
 import { classifyEarlyAccessHint } from "./paywall-detection";
+import {
+  boundStaticRetryAfterTimestamp,
+  parseBoundedStaticRetryAfter,
+  STATIC_RETRY_AFTER_FALLBACK_MS,
+  STATIC_RETRY_AFTER_MAX_MS,
+  STATIC_RETRY_AFTER_MIN_MS,
+  type StaticDiscoveryRetryAfterSource,
+} from "./retry-after-policy";
 
 /** Agent 2 counts one logical request per safeFetch call; redirects remain one logical request. */
 export type DiscoveryNetworkTelemetry = Pick<
@@ -35,9 +44,31 @@ export type DiscoveryNetworkTelemetry = Pick<
   "recordNetworkRequest" | "recordLogicalRequestDuration" | "recordTimeout" | "recordRateLimited"
 >;
 
-export type StaticDiscoveryRequestPhase = "listing" | "robots" | "sitemap" | "article_detail";
-export type StaticDiscoveryRetryAfterSource = "delta_seconds" | "http_date" | "fallback";
+export type StaticDiscoveryGovernedFetchContext = Omit<GovernedFetchContext, "agent" | "purpose" | "stage" | "requestBudget"> & {
+  mode?: GovernedFetchContext["mode"];
+  db?: GovernedFetchContext["db"];
+};
 
+const governedContextForDiscovery = (
+  context: StaticDiscoveryGovernedFetchContext | undefined,
+  purpose: "robots" | "sitemap" | "article_detail",
+  requestBudget?: StaticDiscoveryRequestBudget,
+): GovernedFetchContext => ({
+  ...context,
+  agent: "agent2",
+  stage: "article-discovery",
+  purpose,
+  requestBudget: requestBudget
+    ? {
+        snapshot: requestBudget.snapshot,
+      consume: requestBudget.consume,
+      phase: purpose,
+      recordRateLimit: requestBudget.recordRateLimit,
+    }
+    : undefined,
+});
+
+export type StaticDiscoveryRequestPhase = "listing" | "robots" | "sitemap" | "article_detail";
 export type StaticDiscoveryRateLimitEvidence = {
   phase: StaticDiscoveryRequestPhase;
   url: string;
@@ -69,64 +100,6 @@ export type StaticDiscoveryRequestBudget = {
   snapshot: () => StaticDiscoveryRequestBudgetSnapshot;
   rateLimitEvidence: StaticDiscoveryRateLimitEvidence[];
 };
-
-export const STATIC_RETRY_AFTER_FALLBACK_MS = 15 * 60 * 1000;
-export const STATIC_RETRY_AFTER_MIN_MS = 30 * 1000;
-export const STATIC_RETRY_AFTER_MAX_MS = 24 * 60 * 60 * 1000;
-
-/** Parse both Retry-After formats and clamp untrusted cooldowns to safe bounds. */
-export function parseBoundedStaticRetryAfter(
-  value: string | null | undefined,
-  nowMs = Date.now(),
-): { retryAfterAt: string; source: StaticDiscoveryRetryAfterSource } {
-  const raw = value?.trim() ?? "";
-  let delayMs: number | null = null;
-  let source: StaticDiscoveryRetryAfterSource = "fallback";
-  if (/^\d+$/.test(raw)) {
-    delayMs = Number(raw) * 1000;
-    source = "delta_seconds";
-  } else if (raw) {
-    const dateMs = Date.parse(raw);
-    if (Number.isFinite(dateMs)) {
-      delayMs = dateMs - nowMs;
-      source = "http_date";
-    }
-  }
-  const boundedDelay = Math.min(
-    STATIC_RETRY_AFTER_MAX_MS,
-    Math.max(STATIC_RETRY_AFTER_MIN_MS, Number.isFinite(delayMs ?? NaN) ? delayMs as number : STATIC_RETRY_AFTER_FALLBACK_MS),
-  );
-  return {
-    retryAfterAt: new Date(nowMs + boundedDelay).toISOString(),
-    source,
-  };
-}
-
-/**
- * Normalize a previously-produced Retry-After timestamp at a trust boundary.
- * Legacy/mock payloads may contain a valid but stale or multi-year timestamp;
- * clamp the delay to the same policy used for response headers.
- */
-export function boundStaticRetryAfterTimestamp(
-  value: string | null | undefined,
-  source: StaticDiscoveryRetryAfterSource | null | undefined,
-  nowMs = Date.now(),
-): { retryAfterAt: string; source: StaticDiscoveryRetryAfterSource } {
-  const parsedMs = typeof value === "string" ? Date.parse(value) : Number.NaN;
-  if (!Number.isFinite(parsedMs)) return parseBoundedStaticRetryAfter(null, nowMs);
-
-  const boundedDelay = Math.min(
-    STATIC_RETRY_AFTER_MAX_MS,
-    Math.max(STATIC_RETRY_AFTER_MIN_MS, parsedMs - nowMs),
-  );
-  const normalizedSource = source === "delta_seconds" || source === "http_date" || source === "fallback"
-    ? source
-    : "fallback";
-  return {
-    retryAfterAt: new Date(nowMs + boundedDelay).toISOString(),
-    source: normalizedSource,
-  };
-}
 
 export function createStaticDiscoveryRequestBudget(limit: number): StaticDiscoveryRequestBudget {
   const boundedLimit = Math.max(0, Math.floor(Number.isFinite(limit) ? limit : 0));
@@ -175,7 +148,7 @@ export function createStaticDiscoveryRequestBudget(limit: number): StaticDiscove
   };
 }
 
-const USER_AGENT = "NuSift/1.0 Agent2-Discovery";
+const USER_AGENT = NUSIFT_CRAWLER_USER_AGENT;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -280,6 +253,7 @@ const safeFetchText = async (
   telemetry?: DiscoveryNetworkTelemetry,
   requestBudget?: StaticDiscoveryRequestBudget,
   phase: "robots" | "sitemap" = "sitemap",
+  governedContext?: StaticDiscoveryGovernedFetchContext,
 ): Promise<string | null> => {
   let urlObj: URL;
   let targetObj: URL;
@@ -306,12 +280,11 @@ const safeFetchText = async (
     return null;
   }
 
-  if (requestBudget && !requestBudget.consume(phase, url)) return null;
   try {
-    return await safeFetch(url, {
+    return await governedSafeFetchAndParse(url, {
       headers: { "User-Agent": USER_AGENT, Accept: "application/xml, text/xml, text/plain" },
       telemetry,
-    }).then(async (response) => {
+    }, governedContextForDiscovery(governedContext, phase, requestBudget), async (response) => {
       if (response.status === 429) {
         requestBudget?.recordRateLimit(phase, url, readStaticResponseHeader(response, "retry-after"));
         telemetry?.recordRateLimited(429);
@@ -320,7 +293,11 @@ const safeFetchText = async (
       if (!response.ok) return null;
       return await response.text();
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof GovernedFetchDeferredError) throw error;
+    if (error instanceof GovernedFetchRequestBudgetError) {
+      requestBudget?.recordWorkSkipped(phase, url, "request budget exhausted");
+    }
     return null;
   }
 };
@@ -373,19 +350,6 @@ const extractSitemapEntries = (xml: string): SitemapEntry[] => {
 const isSitemapIndex = (xml: string): boolean => /<sitemapindex[\s>]/i.test(xml);
 
 /**
- * Parse robots.txt for Sitemap: directives.
- */
-const extractRobotsSitemaps = (robotsTxt: string): string[] => {
-  const sitemaps: string[] = [];
-  for (const line of robotsTxt.split("\n")) {
-    const trimmed = line.trim();
-    const match = trimmed.match(/^sitemap:\s*(\S+)/i);
-    if (match?.[1]) sitemaps.push(match[1]);
-  }
-  return sitemaps;
-};
-
-/**
  * Discover article-like URLs from sitemaps for a given target URL.
  *
  * Process:
@@ -399,6 +363,7 @@ export async function discoverSitemapUrls(
   targetUrl: string,
   telemetry?: DiscoveryNetworkTelemetry,
   requestBudget?: StaticDiscoveryRequestBudget,
+  governedContext?: StaticDiscoveryGovernedFetchContext,
 ): Promise<SitemapEntry[]> {
   const origin = new URL(targetUrl).origin;
   const allEntries: SitemapEntry[] = [];
@@ -411,15 +376,20 @@ export async function discoverSitemapUrls(
     sitemapCandidates.push(`${origin}${path}`);
   }
 
-  // Also try robots.txt for sitemap references
-  const robotsTxt = await safeFetchText(`${origin}/robots.txt`, origin, telemetry, requestBudget, "robots");
-  if (requestBudget?.rateLimitEvidence.some((e) => e.phase === "robots")) return [];
-  if (robotsTxt) {
-    for (const sitemapUrl of extractRobotsSitemaps(robotsTxt)) {
-      if (!sitemapCandidates.includes(sitemapUrl)) {
-        sitemapCandidates.push(sitemapUrl);
+  // Robots is fetched and cached by the shared publisher policy. This keeps
+  // Agent 2 from maintaining a second uncached robots implementation.
+  const robotsPolicy = await import("./robots-policy");
+  const robots = await robotsPolicy.checkPublisherRobotsAccess(origin, {
+    context: governedContextForDiscovery(governedContext, "robots", requestBudget),
+  });
+  if (robots.decision === "deferred") return [];
+  for (const sitemapUrl of robots.sitemapUrls) {
+    try {
+      const parsed = new URL(sitemapUrl, origin);
+      if (parsed.origin === origin && !sitemapCandidates.includes(parsed.toString())) {
+        sitemapCandidates.push(parsed.toString());
       }
-    }
+    } catch { /* malformed sitemap directive is ignored without transport */ }
   }
 
   // Process sitemaps with index expansion
@@ -433,7 +403,7 @@ export async function discoverSitemapUrls(
     visitedSitemaps.add(normalized);
     processedCount += 1;
 
-    const xml = await safeFetchText(sitemapUrl, origin, telemetry, requestBudget, "sitemap");
+    const xml = await safeFetchText(sitemapUrl, origin, telemetry, requestBudget, "sitemap", governedContext);
     if (!xml) {
       // The first confirmed sitemap 429 stops all later sitemap probes for
       // this target; continuing would amplify the publisher's rate limit.
@@ -642,6 +612,7 @@ export type ArticleDiscoveryOutcomeStatus =
   | "rejected_duplicate"
   | "rejected_out_of_scope"
   | "fetch_failed"
+  | "governor_deferred"
   | "detail_validation_failed";
 
 export type ArticleDiscoveryCandidateOutcome = {
@@ -667,6 +638,9 @@ export type ArticleDiscoveryCandidateOutcome = {
   retryAfterAt?: string | null;
   retryAfterSource?: StaticDiscoveryRetryAfterSource | null;
   requestBudgetExhausted?: boolean;
+  governorDeferred?: boolean;
+  /** Bounded, URL-free browser navigation governance/accounting evidence. */
+  browserNavigation?: import("./browser-navigation-governor").BrowserNavigationEvidence;
 };
 
 export type ArticleDiscoveryOutcomeSummary = {
@@ -1720,6 +1694,7 @@ export async function evaluateArticleLinkCandidate(input: {
   listingDateFallbackRaw?: string | null;
   telemetry?: DiscoveryNetworkTelemetry;
   requestBudget?: StaticDiscoveryRequestBudget;
+  governedFetchContext?: StaticDiscoveryGovernedFetchContext;
   /** The authoritative verified host scope (preferred). */
   verifiedHostScope?: VerifiedHostScope | null;
   /** @deprecated compatibility-only input for isolated legacy callers. */
@@ -1727,27 +1702,49 @@ export async function evaluateArticleLinkCandidate(input: {
 }): Promise<EvaluateArticleLinkResult> {
   const { articleUrl, sourcePageUrl, targetUrl, sourceId } = input;
 
-  if (input.requestBudget && !input.requestBudget.consume("article_detail", articleUrl)) {
-    return {
-      accepted: false,
-      candidate: null,
-      outcome: {
-        url: articleUrl,
-        sourceKind: resolveSourceKindFromSourcePageUrl(sourcePageUrl),
-        status: "fetch_failed",
-        reason: "request_budget_exhausted",
-        requestBudgetExhausted: true,
-      } as ArticleDiscoveryCandidateOutcome,
-    };
+  let response: Response | null = null;
+  let fetched: { response: Response; html: string } | null = null;
+  try {
+    fetched = await governedSafeFetchAndParse(articleUrl, {
+      headers: {
+        "User-Agent": NUSIFT_CRAWLER_USER_AGENT,
+        Accept: "text/html,application/xhtml+xml",
+      },
+      telemetry: input.telemetry,
+    }, governedContextForDiscovery(input.governedFetchContext, "article_detail", input.requestBudget), async (candidateResponse) => ({
+      response: candidateResponse,
+      html: candidateResponse.ok ? await candidateResponse.text() : "",
+    }));
+    response = fetched.response;
+  } catch (error) {
+    if (error instanceof GovernedFetchRequestBudgetError) {
+      return {
+        accepted: false,
+        candidate: null,
+        outcome: {
+          url: articleUrl,
+          sourceKind: resolveSourceKindFromSourcePageUrl(sourcePageUrl),
+          status: "fetch_failed",
+          reason: "request_budget_exhausted",
+          requestBudgetExhausted: true,
+        } as ArticleDiscoveryCandidateOutcome,
+      };
+    }
+    if (error instanceof GovernedFetchDeferredError) {
+      return {
+        accepted: false,
+        candidate: null,
+        outcome: {
+          url: articleUrl,
+          sourceKind: resolveSourceKindFromSourcePageUrl(sourcePageUrl),
+          status: "governor_deferred",
+          reason: `governor_deferred:${error.reason}`,
+          requestBudgetExhausted: false,
+          governorDeferred: true,
+        } as ArticleDiscoveryCandidateOutcome,
+      };
+    }
   }
-
-  const response = await safeFetch(articleUrl, {
-    headers: {
-      "User-Agent": "NuSift/1.0 Agent2-Discovery",
-      Accept: "text/html,application/xhtml+xml",
-    },
-    telemetry: input.telemetry,
-  }).catch(() => null);
 
   if (!response || !response.ok) {
     const rateLimited = response?.status === 429;
@@ -1784,7 +1781,7 @@ export async function evaluateArticleLinkCandidate(input: {
     };
   }
 
-  const html = await response.text();
+  const html = response.ok ? fetched?.html || "" : "";
   const meta = extractPageMetadata(html);
   let dateExtraction = extractDateFromHtml(html, articleUrl);
   if (

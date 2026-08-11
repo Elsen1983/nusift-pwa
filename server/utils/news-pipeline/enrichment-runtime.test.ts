@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArticleEnrichmentOutcome, ArticleUpstreamProvenance } from "./enrichment";
 import { AGENT3_EXTRACTOR_VERSION } from "./enrichment";
+import { StageBatchTelemetryTracker } from "./stage-telemetry";
 import { collectAgent3HttpEvidence } from "./enrichment-runtime";
 
 // ─── Mock prisma ────────────────────────────────────────────────────────────
@@ -80,6 +81,8 @@ vi.mock("./article-content-browser-extractor", () => ({
     // Inline eligibility logic matching the real implementation
     const [result] = args;
     const { rejectedReason, statusCode, qualitySignals } = result;
+    // Mirror the production hard boundary: any static HTTP 429 is no-browser.
+    if (statusCode === 429) return false;
     const signals: string[] = qualitySignals ?? [];
     const browserUsefulSignals = new Set([
       "browser_navigation_failed", "browser_http_403", "browser_http_429",
@@ -87,14 +90,14 @@ vi.mock("./article-content-browser-extractor", () => ({
       "connection_reset", "bot_blocked", "static_fetch_blocked",
     ]);
     switch (rejectedReason) {
-      case "http_error": return statusCode === 403 || statusCode === 429;
+      case "http_error": return statusCode === 403;
       case "no_article_text": case "empty_html": case "too_short":
       case "interstitial_or_challenge": return true;
       case "fetch_failed": {
         if (signals.some((s: string) => browserUsefulSignals.has(s))) return true;
         const detailLower = (result.detail ?? "").toLowerCase();
         if (detailLower.includes("timeout") || detailLower.includes("403") ||
-            detailLower.includes("429") || detailLower.includes("connection reset") ||
+            detailLower.includes("connection reset") ||
             detailLower.includes("econnreset") || detailLower.includes("navigation failed"))
           return true;
         return false;
@@ -104,7 +107,7 @@ vi.mock("./article-content-browser-extractor", () => ({
   },
   isBrowserFallbackEligible: (rejectedReason: string, statusCode: number | null) => {
     switch (rejectedReason) {
-      case "http_error": return statusCode === 403 || statusCode === 429;
+      case "http_error": return statusCode === 403;
       case "no_article_text": case "empty_html": case "too_short":
       case "interstitial_or_challenge": return true;
       case "fetch_failed": return false;
@@ -133,25 +136,38 @@ function configureAgent3PrismaMocks(): void {
   });
   articleUpdateManyMock.mockResolvedValue({ count: 1 });
   articleFindUniqueMock.mockResolvedValue({ enrichmentAttemptCount: 1 });
-  transactionMock.mockImplementation(async (callback: any) => callback({
-    article: {
-      findUnique: (...args: any[]) => articleFindUniqueMock(...args),
-      update: (...args: any[]) => articleUpdateMock(...args),
-      updateMany: (...args: any[]) => {
-        const result = articleUpdateManyMock(...args);
-        if (!args[0]?.data?.enrichmentAttemptCount) articleUpdateMock(...args);
-        return result;
-      },
-    },
-    articleEnrichmentClaim: {
-      findUnique: (...args: any[]) => claimFindUniqueMock(...args),
-      deleteMany: (...args: any[]) => claimDeleteManyMock(...args),
-      create: (...args: any[]) => claimCreateMock(...args),
-    },
-    pipelineArtifact: {
-      create: (...args: any[]) => artifactCreateMock(...args),
-    },
-  }));
+  transactionMock.mockImplementation(async (callback: any) => {
+    const articleUpdateCallsBefore = articleUpdateMock.mock.calls.length;
+    const artifactCreateCallsBefore = artifactCreateMock.mock.calls.length;
+    try {
+      return await callback({
+        article: {
+          findUnique: (...args: any[]) => articleFindUniqueMock(...args),
+          update: (...args: any[]) => articleUpdateMock(...args),
+          updateMany: (...args: any[]) => {
+            const result = articleUpdateManyMock(...args);
+            if (!args[0]?.data?.enrichmentAttemptCount) articleUpdateMock(...args);
+            return result;
+          },
+        },
+        articleEnrichmentClaim: {
+          findUnique: (...args: any[]) => claimFindUniqueMock(...args),
+          deleteMany: (...args: any[]) => claimDeleteManyMock(...args),
+          create: (...args: any[]) => claimCreateMock(...args),
+        },
+        pipelineArtifact: {
+          create: (...args: any[]) => artifactCreateMock(...args),
+        },
+      });
+    } catch (error) {
+      // Model the rollback boundary of the real Prisma transaction in the
+      // runtime mock: an artifact failure cannot leave the Article update as a
+      // durable write.
+      articleUpdateMock.mock.calls.splice(articleUpdateCallsBefore);
+      artifactCreateMock.mock.calls.splice(artifactCreateCallsBefore);
+      throw error;
+    }
+  });
 }
 
 const asObj = (v: unknown) => v as Record<string, unknown>;
@@ -2464,7 +2480,24 @@ describe("Agent 3 browser fallback integration", () => {
     extractArticleContentWithBrowserMock.mockResolvedValue(makeBrowserSuccess());
 
     const { runEnrichmentBatch } = await import("./enrichment-runtime");
-    const result = await runEnrichmentBatch({ browserFallback: true, browserFallbackMaxAttempts: 3 });
+    const tracker = new StageBatchTelemetryTracker({
+      orchestrationRunId: "run-test",
+      stage: "agent3",
+      batchSeq: 1,
+      batchSizeLimit: 10,
+      concurrencyLimit: 1,
+      now: () => 1_750_000_000_000,
+    });
+    const result = await runEnrichmentBatch({
+      browserFallback: true,
+      browserFallbackMaxAttempts: 3,
+      telemetry: tracker,
+    });
+    const actualWork = tracker.finalize({
+      processed: 1, succeeded: 1, failedRetryable: 0, failedPermanent: 0,
+      skipped: 0, deferred: 0, quarantined: 0,
+      remainingBefore: 1, remainingAfter: 0, complete: true,
+    });
 
     // Browser success → overall SUCCESS
     expect(result.persist.byKind.SUCCESS).toBe(1);
@@ -2477,6 +2510,19 @@ describe("Agent 3 browser fallback integration", () => {
 
     // Verify browser extractor was called
     expect(extractArticleContentWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(actualWork.networkRequests).toBe(1);
+    expect(actualWork.browserAttempts).toBe(1);
+    expect(result.httpEvidence).toEqual({
+      static403: 1, static429: 0, browser403: 0, browser429: 0,
+      accessDenied403: 1, rateLimited403: 0, rateLimited429: 0,
+    });
+    const summaryCall = pipelineRunUpdateMock.mock.calls.find(
+      (call: any[]) => (call[0]?.data as Record<string, unknown>)?.summary !== undefined,
+    );
+    expect(summaryCall).toBeDefined();
+    const summary = asObj(summaryCall![0].data.summary);
+    expect(asObj(summary.browserFallbackStats)).toMatchObject({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(asObj(summary.httpEvidence)).toEqual(result.httpEvidence);
 
     // Verify the outcome has browser fallback metadata
     const updateCalls = articleUpdateMock.mock.calls;
@@ -2486,7 +2532,80 @@ describe("Agent 3 browser fallback integration", () => {
     expect(articleUpdate![0].data.bodyText).toBeTruthy();
   });
 
-  it("static http_error 429 + browser 429 increments rateLimited stats", async () => {
+  it("treats a browser governor denial as a neutral claim release with no browser budget or final persistence", async () => {
+    const originalMode = process.env.NUXT_DOMAIN_REQUEST_GOVERNOR_MODE;
+    process.env.NUXT_DOMAIN_REQUEST_GOVERNOR_MODE = "enforce";
+    extractArticleContentFromUrlMock.mockResolvedValue({
+      ok: false,
+      method: "http-dom",
+      resolvedUrl: "https://example.com/a",
+      statusCode: 403,
+      rejectedReason: "http_error",
+      detail: "HTTP 403 Forbidden",
+      confidence: 0,
+      qualitySignals: ["http_403"],
+      diagnostics: {
+        selectedContainerSelector: null,
+        selectedContainerScore: null,
+        selectedContainerParagraphCount: null,
+        selectedContainerTextLength: null,
+        candidateContainerCount: 0,
+        bodyRejectedReason: null,
+        scoreReasons: [],
+        excerptLength: null,
+        bodyEqualsExcerpt: false,
+        bodySource: "none",
+        linkTextRatio: null,
+        boilerplatePenalty: null,
+      },
+    });
+    const tracker = new StageBatchTelemetryTracker({
+      orchestrationRunId: "run-governor-denied",
+      stage: "agent3",
+      batchSeq: 1,
+      batchSizeLimit: 10,
+      concurrencyLimit: 1,
+      now: () => 1_750_000_000_000,
+    });
+
+    try {
+      const { runEnrichmentBatch } = await import("./enrichment-runtime");
+      const result = await runEnrichmentBatch({
+        browserFallback: true,
+        browserFallbackMaxAttempts: 3,
+        telemetry: tracker,
+      });
+      const actualWork = tracker.finalize({
+        processed: 1,
+        succeeded: 0,
+        failedRetryable: 0,
+        failedPermanent: 0,
+        skipped: 0,
+        deferred: 1,
+        quarantined: 0,
+        remainingBefore: 1,
+        remainingAfter: 1,
+        complete: false,
+      });
+
+      expect(result.governorDeferred).toBe(1);
+      expect(result.persist.persisted).toBe(0);
+      expect(result.browserFallbackStats).toMatchObject({ attempted: 0, succeeded: 0, failed: 0 });
+      expect(extractArticleContentWithBrowserMock).not.toHaveBeenCalled();
+      expect(actualWork.browserAttempts).toBe(0);
+      expect(actualWork.networkRequests).toBe(0);
+      expect(claimDeleteManyDirectMock).toHaveBeenCalled();
+      const finalArtifacts = artifactCreateMock.mock.calls.filter(
+        (call: any[]) => call[0]?.data?.artifactType === "article_enrichment_result",
+      );
+      expect(finalArtifacts).toHaveLength(0);
+    } finally {
+      if (originalMode === undefined) delete process.env.NUXT_DOMAIN_REQUEST_GOVERNOR_MODE;
+      else process.env.NUXT_DOMAIN_REQUEST_GOVERNOR_MODE = originalMode;
+    }
+  });
+
+  it("static HTTP 429 is a no-browser boundary and preserves retry evidence", async () => {
     extractArticleContentFromUrlMock.mockResolvedValue({
       ok: false,
       method: "http-dom",
@@ -2494,6 +2613,7 @@ describe("Agent 3 browser fallback integration", () => {
       statusCode: 429,
       rejectedReason: "http_error",
       detail: "HTTP 429 Too Many Requests",
+      retryAfterAt: "2026-08-10T10:02:00.000Z",
       confidence: 0,
       qualitySignals: ["http_429"],
       diagnostics: {
@@ -2512,23 +2632,18 @@ describe("Agent 3 browser fallback integration", () => {
       },
     });
 
-    // Browser also gets 429
-    extractArticleContentWithBrowserMock.mockResolvedValue({
-      ...makeBrowserFailure(),
-      statusCode: 429,
-      rejectedReason: "http_error",
-      qualitySignals: ["browser_http_429"],
-    });
-
+    // A static 429 must not invoke browser fallback at all.
     const { runEnrichmentBatch } = await import("./enrichment-runtime");
     const result = await runEnrichmentBatch({ browserFallback: true, browserFallbackMaxAttempts: 3 });
 
     // Browser failed → static failure classified as HTTP_ACCESS_BLOCKED
     expect(result.persist.byKind.HTTP_ACCESS_BLOCKED).toBe(1);
     expect(result.persist.byKind.UNSUPPORTED_STRUCTURE).toBe(0);
-    expect(result.browserFallbackStats?.attempted).toBe(1);
-    expect(result.browserFallbackStats?.failed).toBe(1);
-    expect(result.browserFallbackStats?.rateLimited).toBe(1);
+    expect(result.browserFallbackStats?.attempted).toBe(0);
+    expect(result.browserFallbackStats?.succeeded).toBe(0);
+    expect(result.browserFallbackStats?.failed).toBe(0);
+    expect(result.browserFallbackStats?.rateLimited).toBe(0);
+    expect(extractArticleContentWithBrowserMock).not.toHaveBeenCalled();
 
     // Verify artifact payload has browser fallback metadata
     const createCalls = artifactCreateMock.mock.calls;
@@ -2538,13 +2653,378 @@ describe("Agent 3 browser fallback integration", () => {
     expect(resultArtifact).toBeDefined();
     const payload = asObj((resultArtifact![0].data as Record<string, unknown>).payload);
     const bf = asObj(payload.browserFallback);
-    expect(bf.attempted).toBe(true);
+    expect(bf.attempted).toBe(false);
     expect(bf.succeeded).toBe(false);
-    expect(bf.rateLimited).toBe(true);
+    expect(bf.rateLimited).toBe(false);
+    expect(bf.staticStatusCode).toBe(429);
+    expect(asObj(payload.rejection).httpStatus).toBe(429);
+    expect(asObj(payload.rejection).retryAfterAt).toBeDefined();
     expect(bf.staticRejectedReason).toBe("http_error");
   });
 
-  it("repeated browser 429 failures stop further browser attempts after threshold", async () => {
+  it("persisted static 429 claim loss records no browser success counters or final writes", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue({
+      ok: false,
+      method: "http-dom",
+      resolvedUrl: "https://example.com/a",
+      statusCode: 429,
+      rejectedReason: "http_error",
+      detail: "HTTP 429 Too Many Requests",
+      retryAfterAt: "2026-08-10T10:02:00.000Z",
+      confidence: 0,
+      qualitySignals: ["http_429"],
+      diagnostics: {
+        selectedContainerSelector: null, selectedContainerScore: null,
+        selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+        candidateContainerCount: 0, bodyRejectedReason: null, scoreReasons: [],
+        excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none",
+        linkTextRatio: null, boilerplatePenalty: null,
+      },
+    });
+    claimDeleteManyMock.mockResolvedValue({ count: 0 });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: true });
+
+    expect(result.persist).toMatchObject({ persisted: 0, claimLost: 1, failed: 0 });
+    expect(result.persist.byKind.HTTP_ACCESS_BLOCKED).toBe(0);
+    expect(result.browserFallbackStats?.attempted).toBe(0);
+    expect(result.browserFallbackStats?.succeeded).toBe(0);
+    expect(result.browserFallbackStats?.failed).toBe(0);
+    expect(result.browserFallbackStats?.rateLimited).toBe(0);
+    expect(result.httpEvidence).toEqual({
+      static403: 0, static429: 0, browser403: 0, browser429: 0,
+      accessDenied403: 0, rateLimited403: 0, rateLimited429: 0,
+    });
+    const summaryCall = pipelineRunUpdateMock.mock.calls.find(
+      (call: any[]) => (call[0]?.data as Record<string, unknown>)?.summary !== undefined,
+    );
+    expect(summaryCall).toBeDefined();
+    expect(asObj(summaryCall![0].data.summary).httpEvidence).toEqual(result.httpEvidence);
+    expect(extractArticleContentWithBrowserMock).not.toHaveBeenCalled();
+    expect(articleUpdateMock).not.toHaveBeenCalled();
+    expect(artifactCreateMock.mock.calls.some((call: any[]) =>
+      call[0]?.data?.artifactType === "article_enrichment_rejection",
+    )).toBe(false);
+  });
+
+  it("claim loss after a browser attempt keeps actual-work browserAttempts but durable counters at zero", async () => {
+    extractArticleContentFromUrlMock.mockResolvedValue({
+      ok: false,
+      method: "http-dom",
+      resolvedUrl: "https://example.com/a",
+      statusCode: 403,
+      rejectedReason: "http_error",
+      detail: "HTTP 403 Forbidden",
+      confidence: 0,
+      qualitySignals: ["http_403"],
+      diagnostics: {
+        selectedContainerSelector: null, selectedContainerScore: null,
+        selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+        candidateContainerCount: 0, bodyRejectedReason: null, scoreReasons: [],
+        excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none",
+        linkTextRatio: null, boilerplatePenalty: null,
+      },
+    });
+    extractArticleContentWithBrowserMock.mockResolvedValue(makeBrowserFailure());
+    claimDeleteManyMock.mockResolvedValue({ count: 0 });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const tracker = new StageBatchTelemetryTracker({
+      orchestrationRunId: "run-test",
+      stage: "agent3",
+      batchSeq: 1,
+      batchSizeLimit: 10,
+      concurrencyLimit: 1,
+      now: () => 1_750_000_000_000,
+    });
+    const result = await runEnrichmentBatch({
+      browserFallback: true,
+      browserFallbackMaxAttempts: 2,
+      telemetry: tracker,
+    });
+    const actualWork = tracker.finalize({
+      processed: 1, succeeded: 0, failedRetryable: 0, failedPermanent: 0,
+      skipped: 0, deferred: 0, quarantined: 0, claimLost: 1,
+      remainingBefore: 1, remainingAfter: 1, complete: false,
+    });
+
+    expect(extractArticleContentWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(result.persist).toMatchObject({ persisted: 0, claimLost: 1, failed: 0 });
+    expect(result.httpEvidence).toEqual({
+      static403: 0, static429: 0, browser403: 0, browser429: 0,
+      accessDenied403: 0, rateLimited403: 0, rateLimited429: 0,
+    });
+    expect(result.browserFallbackStats).toMatchObject({
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      runtimeUnavailable: 0,
+      rateLimited: 0,
+    });
+    // The runtime's returned durable counters stay zero; the separate stage
+    // probe is the authority for physical browser work.
+    expect(actualWork.browserAttempts).toBe(1);
+    expect(actualWork.succeeded).toBe(0);
+    expect(actualWork.claimLost).toBe(1);
+    expect(articleUpdateMock).not.toHaveBeenCalled();
+    expect(artifactCreateMock.mock.calls.some((call: any[]) =>
+      call[0]?.data?.artifactType === "article_enrichment_rejection",
+    )).toBe(false);
+    expect(logAgentScanMock.mock.calls.some((call: any[]) =>
+      ["ARTICLE_CONTENT_ENRICHMENT_SUCCESS", "ARTICLE_CONTENT_ENRICHMENT_FAILED"]
+        .includes(call[0]?.status),
+    )).toBe(false);
+  });
+
+  it("static 429 stops same-host browser recovery but leaves another host processable", async () => {
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({ id: 1, sourceId: "src-rate-limited", canonicalUrl: "https://blocked.com/one", sourceUrl: "https://blocked.com/one" }),
+      makeArticle({ id: 2, sourceId: "src-same-host", canonicalUrl: "https://blocked.com/two", sourceUrl: "https://blocked.com/two" }),
+      makeArticle({ id: 3, sourceId: "src-other-host", canonicalUrl: "https://other.com/three", sourceUrl: "https://other.com/three" }),
+    ]);
+    extractArticleContentFromUrlMock.mockImplementation(async (input: any) => ({
+      ok: false,
+      method: "http-dom",
+      resolvedUrl: input.articleUrl,
+      statusCode: input.articleUrl.includes("blocked.com/one") ? 429 : 403,
+      rejectedReason: "http_error",
+      detail: input.articleUrl.includes("blocked.com/one") ? "HTTP 429 Too Many Requests" : "HTTP 403 Forbidden",
+      confidence: 0,
+      qualitySignals: [],
+      diagnostics: {
+        selectedContainerSelector: null, selectedContainerScore: null,
+        selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+        candidateContainerCount: 0, bodyRejectedReason: null, scoreReasons: [],
+        excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none",
+        linkTextRatio: null, boilerplatePenalty: null,
+      },
+    }));
+    extractArticleContentWithBrowserMock.mockResolvedValue(makeBrowserFailure());
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({
+      browserFallback: true,
+      browserFallbackMaxAttempts: 2,
+      maxArticlesPerSource: 10,
+    });
+
+    // The static 429 consumes no browser budget. The same-host second article
+    // is skipped, while the independent host still gets one browser attempt.
+    expect(extractArticleContentWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(extractArticleContentWithBrowserMock.mock.calls[0]?.[0]?.articleUrl)
+      .toBe("https://other.com/three");
+    expect(result.browserFallbackStats?.attempted).toBe(1);
+    expect(result.browserFallbackStats?.rateLimited).toBe(0);
+    expect(result.persist.persisted).toBe(3);
+
+    const rejectionPayloads = artifactCreateMock.mock.calls
+      .filter((call: any[]) => call[0]?.data?.artifactType === "article_enrichment_rejection")
+      .map((call: any[]) => asObj(call[0].data.payload));
+    expect(rejectionPayloads.some((payload) =>
+      asObj(payload.browserFallback).browserFallbackSkippedReason === "static_429_host",
+    )).toBe(true);
+  });
+
+  it("observed static 429 stops same-host browser work even when first claim is lost", async () => {
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({ id: 1, sourceId: "src-rate-limited", canonicalUrl: "https://blocked.com/one", sourceUrl: "https://blocked.com/one" }),
+      makeArticle({ id: 2, sourceId: "src-sibling", canonicalUrl: "https://blocked.com/two", sourceUrl: "https://blocked.com/two" }),
+      makeArticle({ id: 3, sourceId: "src-other", canonicalUrl: "https://other.com/three", sourceUrl: "https://other.com/three" }),
+    ]);
+    extractArticleContentFromUrlMock.mockImplementation(async (input: any) => ({
+      ok: false,
+      method: "http-dom",
+      resolvedUrl: input.articleUrl,
+      statusCode: input.articleUrl === "https://blocked.com/one" ? 429 : 403,
+      rejectedReason: "http_error",
+      detail: input.articleUrl === "https://blocked.com/one" ? "HTTP 429 Too Many Requests" : "HTTP 403 Forbidden",
+      confidence: 0,
+      qualitySignals: [],
+      diagnostics: {
+        selectedContainerSelector: null, selectedContainerScore: null,
+        selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+        candidateContainerCount: 0, bodyRejectedReason: null, scoreReasons: [],
+        excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none",
+        linkTextRatio: null, boilerplatePenalty: null,
+      },
+    }));
+    extractArticleContentWithBrowserMock.mockResolvedValue(makeBrowserFailure());
+    claimDeleteManyMock.mockResolvedValue({ count: 0 });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: true, browserFallbackMaxAttempts: 3 });
+
+    // Same hostname is suppressed despite a different sourceId; the other
+    // hostname remains independently browser-processable. Static 429 consumes
+    // no browser budget and claim loss produces no durable outcome counters.
+    expect(extractArticleContentWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(extractArticleContentWithBrowserMock.mock.calls[0]?.[0]?.articleUrl)
+      .toBe("https://other.com/three");
+    expect(result.browserFallbackStats).toMatchObject({
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      rateLimited: 0,
+    });
+    expect(result.persist).toMatchObject({ persisted: 0, claimLost: 3, failed: 0 });
+    expect(articleUpdateMock).not.toHaveBeenCalled();
+    expect(artifactCreateMock.mock.calls.some((call: any[]) =>
+      call[0]?.data?.artifactType === "article_enrichment_rejection",
+    )).toBe(false);
+    expect(logAgentScanMock.mock.calls.some((call: any[]) =>
+      ["ARTICLE_CONTENT_ENRICHMENT_SUCCESS", "ARTICLE_CONTENT_ENRICHMENT_FAILED"]
+        .includes(call[0]?.status),
+    )).toBe(false);
+  });
+
+  it("observed static 429 keeps the same-host stop after first persistence failure", async () => {
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({ id: 1, sourceId: "src-rate-limited", canonicalUrl: "https://blocked.com/one", sourceUrl: "https://blocked.com/one" }),
+      makeArticle({ id: 2, sourceId: "src-sibling", canonicalUrl: "https://blocked.com/two", sourceUrl: "https://blocked.com/two" }),
+      makeArticle({ id: 3, sourceId: "src-other", canonicalUrl: "https://other.com/three", sourceUrl: "https://other.com/three" }),
+    ]);
+    extractArticleContentFromUrlMock.mockImplementation(async (input: any) => ({
+      ok: false,
+      method: "http-dom",
+      resolvedUrl: input.articleUrl,
+      statusCode: input.articleUrl === "https://blocked.com/one" ? 429 : 403,
+      rejectedReason: "http_error",
+      detail: input.articleUrl === "https://blocked.com/one" ? "HTTP 429 Too Many Requests" : "HTTP 403 Forbidden",
+      confidence: 0,
+      qualitySignals: [],
+      diagnostics: {
+        selectedContainerSelector: null, selectedContainerScore: null,
+        selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+        candidateContainerCount: 0, bodyRejectedReason: null, scoreReasons: [],
+        excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none",
+        linkTextRatio: null, boilerplatePenalty: null,
+      },
+    }));
+    extractArticleContentWithBrowserMock.mockResolvedValue(makeBrowserFailure());
+    let failedFinalPersistence = false;
+    artifactCreateMock.mockImplementation((args: any) => {
+      if (args?.data?.artifactType === "article_enrichment_rejection" && !failedFinalPersistence) {
+        failedFinalPersistence = true;
+        throw new Error("simulated final rejection artifact persistence failure");
+      }
+      return { id: `artifact-${String(args?.data?.artifactType ?? "unknown")}` };
+    });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: true, browserFallbackMaxAttempts: 3 });
+
+    expect(extractArticleContentWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(extractArticleContentWithBrowserMock.mock.calls[0]?.[0]?.articleUrl)
+      .toBe("https://other.com/three");
+    expect(result.browserFallbackStats).toMatchObject({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+      rateLimited: 0,
+    });
+    expect(result.httpEvidence).toEqual({
+      static403: 2, static429: 0, browser403: 0, browser429: 0,
+      accessDenied403: 2, rateLimited403: 0, rateLimited429: 0,
+    });
+    expect(result.persist.failed).toBe(1);
+    expect(result.persist.persisted).toBe(2);
+    expect(articleUpdateMock.mock.calls.some((call: any[]) => call[0]?.where?.id === 1)).toBe(false);
+    expect(artifactCreateMock.mock.calls.some((call: any[]) =>
+      call[0]?.data?.artifactType === "article_enrichment_rejection" &&
+      (call[0]?.data?.payload as Record<string, unknown>)?.articleId === 1,
+    )).toBe(false);
+  });
+
+  it("reports static_429_host and browserFallbackCouldHelp for a same-host HTTP 200 interstitial", async () => {
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({ id: 1, sourceId: "src-rate-limited", canonicalUrl: "https://blocked.com/one", sourceUrl: "https://blocked.com/one" }),
+      makeArticle({ id: 2, sourceId: "src-interstitial", canonicalUrl: "https://blocked.com/two", sourceUrl: "https://blocked.com/two" }),
+    ]);
+    extractArticleContentFromUrlMock.mockImplementation(async (input: any) => input.articleId === 1
+      ? {
+          ok: false, method: "http-dom", resolvedUrl: input.articleUrl, statusCode: 429,
+          rejectedReason: "http_error", detail: "HTTP 429 Too Many Requests", confidence: 0,
+          qualitySignals: [], diagnostics: {
+            selectedContainerSelector: null, selectedContainerScore: null,
+            selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+            candidateContainerCount: 0, bodyRejectedReason: null, scoreReasons: [],
+            excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none",
+            linkTextRatio: null, boilerplatePenalty: null,
+          },
+        }
+      : {
+          ok: false, method: "http-dom", resolvedUrl: input.articleUrl, statusCode: 200,
+          rejectedReason: "interstitial_or_challenge", detail: "Cookie challenge",
+          confidence: 0, qualitySignals: ["http_200_interstitial"], diagnostics: {
+            selectedContainerSelector: null, selectedContainerScore: null,
+            selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+            candidateContainerCount: 0, bodyRejectedReason: "interstitial", scoreReasons: [],
+            excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none",
+            linkTextRatio: null, boilerplatePenalty: null,
+          },
+        });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: true });
+    const interstitialCall = artifactCreateMock.mock.calls.find((call: any[]) => {
+      const data = call[0]?.data;
+      return data?.artifactType === "article_enrichment_rejection" &&
+        (data.payload as Record<string, unknown>)?.articleId === 2;
+    });
+    expect(interstitialCall).toBeDefined();
+    const payload = asObj(interstitialCall![0].data.payload);
+    expect(asObj(payload.browserFallback).browserFallbackSkippedReason).toBe("static_429_host");
+    expect(asObj(payload.retryDiagnostics).browserFallbackCouldHelp).toBe(true);
+    expect(extractArticleContentWithBrowserMock).not.toHaveBeenCalled();
+    expect(result.persist.byKind.INTERSTITIAL_OR_CHALLENGE).toBe(1);
+  });
+
+  it("reports not_eligible for an inherently ineligible same-host failure", async () => {
+    articleFindManyMock.mockResolvedValue([
+      makeArticle({ id: 1, sourceId: "src-rate-limited", canonicalUrl: "https://blocked.com/one", sourceUrl: "https://blocked.com/one" }),
+      makeArticle({ id: 2, sourceId: "src-paywall", canonicalUrl: "https://blocked.com/two", sourceUrl: "https://blocked.com/two" }),
+    ]);
+    extractArticleContentFromUrlMock.mockImplementation(async (input: any) => input.articleId === 1
+      ? {
+          ok: false, method: "http-dom", resolvedUrl: input.articleUrl, statusCode: 429,
+          rejectedReason: "http_error", detail: "HTTP 429 Too Many Requests", confidence: 0,
+          qualitySignals: [], diagnostics: {
+            selectedContainerSelector: null, selectedContainerScore: null,
+            selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+            candidateContainerCount: 0, bodyRejectedReason: null, scoreReasons: [],
+            excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none",
+            linkTextRatio: null, boilerplatePenalty: null,
+          },
+        }
+      : {
+          ok: false, method: "http-dom", resolvedUrl: input.articleUrl, statusCode: 200,
+          rejectedReason: "paywall_or_blocked", detail: "Article-specific access gate",
+          confidence: 0, qualitySignals: [], diagnostics: {
+            selectedContainerSelector: null, selectedContainerScore: null,
+            selectedContainerParagraphCount: null, selectedContainerTextLength: null,
+            candidateContainerCount: 0, bodyRejectedReason: "paywall", scoreReasons: [],
+            excerptLength: null, bodyEqualsExcerpt: false, bodySource: "none",
+            linkTextRatio: null, boilerplatePenalty: null,
+          },
+        });
+
+    const { runEnrichmentBatch } = await import("./enrichment-runtime");
+    const result = await runEnrichmentBatch({ browserFallback: true });
+    const paywallCall = artifactCreateMock.mock.calls.find((call: any[]) => {
+      const data = call[0]?.data;
+      return data?.artifactType === "article_enrichment_rejection" &&
+        (data.payload as Record<string, unknown>)?.articleId === 2;
+    });
+    expect(paywallCall).toBeDefined();
+    const payload = asObj(paywallCall![0].data.payload);
+    expect(asObj(payload.browserFallback).browserFallbackSkippedReason).toBe("not_eligible");
+    expect(asObj(payload.retryDiagnostics).browserFallbackCouldHelp).toBe(false);
+    expect(extractArticleContentWithBrowserMock).not.toHaveBeenCalled();
+    expect(result.persist.byKind.PAYWALL_BLOCKED).toBe(1);
+  });
+
+  it("browser 429 defers neutrally and stops later same-host browser attempts", async () => {
     // 3 articles, all fail with static 403, browser also fails with 429
     articleFindManyMock.mockResolvedValue([
       makeArticle({ id: 1 }),
@@ -2572,13 +3052,13 @@ describe("Agent 3 browser fallback integration", () => {
     // maxAttempts=5 but rate limit threshold is 3
     const result = await runEnrichmentBatch({ browserFallback: true, browserFallbackMaxAttempts: 5 });
 
-    // Browser 429 causes immediate source cooldown via classifyHttpAccessBlocked,
-    // so only the first article's browser fallback runs before cooldown kicks in.
-    // Previous behavior was 3 attempts (threshold-based), now it's 1 (immediate).
-    expect(result.browserFallbackStats?.attempted).toBe(1);
-    expect(result.browserFallbackStats?.rateLimited).toBe(1);
-    // Source cooldown stops later claims after the first blocked article.
-    expect(result.articleCount).toBe(1);
+    // Browser 429 is actual work but a neutral durable boundary: the governor
+    // owns cooldown state and Agent 3 records no persisted browser outcome.
+    expect(extractArticleContentWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(result.browserFallbackStats?.attempted).toBe(0);
+    expect(result.browserFallbackStats?.rateLimited).toBe(0);
+    expect(result.governorDeferred).toBe(1);
+    expect(result.sourceCooldowns).toBeUndefined();
   });
 
   it("browser runtime unavailable stops browser fallback for the rest of the batch", async () => {
@@ -2869,9 +3349,9 @@ describe("isBrowserFallbackEligibleForFailure", () => {
     expect(isBrowserFallbackEligibleForFailure({ rejectedReason: "http_error", statusCode: 403 })).toBe(true);
   });
 
-  it("eligible for http_error 429", async () => {
+  it("NOT eligible for http_error 429", async () => {
     const { isBrowserFallbackEligibleForFailure } = await import("./article-content-browser-extractor");
-    expect(isBrowserFallbackEligibleForFailure({ rejectedReason: "http_error", statusCode: 429 })).toBe(true);
+    expect(isBrowserFallbackEligibleForFailure({ rejectedReason: "http_error", statusCode: 429 })).toBe(false);
   });
 
   it("NOT eligible for http_error 500", async () => {
@@ -4110,7 +4590,7 @@ describe("HTTP_ACCESS_BLOCKED source cooldown ordering", () => {
     pipelineRunFindFirstMock.mockResolvedValue(null);
   });
 
-  it("static non-429 failure + browser returns 429 → immediate source cooldown skips later same-source article", async () => {
+  it("static non-429 failure plus browser 429 defers without source cooldown side effects", async () => {
     // 3 articles from same source: static fails with no_article_text (not 429),
     // browser fallback returns 429 for the first article. Source cooldown
     // should be immediate (429), skipping articles 2 and 3.
@@ -4136,26 +4616,18 @@ describe("HTTP_ACCESS_BLOCKED source cooldown ordering", () => {
       maxArticlesPerSource: 10,
     });
 
-    // Only 1 browser attempt should have been made (immediate 429 cooldown)
-    expect(result.browserFallbackStats!.attempted).toBe(1);
-    expect(result.browserFallbackStats!.rateLimited).toBe(1);
-
-    // Source cooldown should be http_429 (immediate)
-    expect(result.sourceCooldowns).toBeDefined();
-    const blockedCooldown = result.sourceCooldowns!.find((c) => c.sourceId === "src-blocked");
-    expect(blockedCooldown).toBeDefined();
-    expect(blockedCooldown!.reason).toBe("http_429");
-    expect(blockedCooldown!.skippedInRun).toBeGreaterThanOrEqual(1);
-
-    // Persisted outcome should be HTTP_ACCESS_BLOCKED with httpStatus 429
-    expect(result.persist.byKind.HTTP_ACCESS_BLOCKED).toBeGreaterThanOrEqual(1);
-    expect(result.persist.byKind.UNSUPPORTED_STRUCTURE).toBe(0);
-
-    // Fewer extractor calls than total articles (cooldown skipped some)
-    expect(extractArticleContentFromUrlMock.mock.calls.length).toBeLessThan(3);
+    expect(extractArticleContentWithBrowserMock).toHaveBeenCalledTimes(1);
+    expect(result.browserFallbackStats!.attempted).toBe(0);
+    expect(result.browserFallbackStats!.rateLimited).toBe(0);
+    expect(result.governorDeferred).toBe(1);
+    expect(result.sourceCooldowns).toBeUndefined();
+    expect(artifactCreateMock.mock.calls.some((call: any[]) =>
+      call[0]?.data?.artifactType === "article_enrichment_rejection" &&
+      (call[0]?.data?.payload as Record<string, unknown>)?.articleId === 1,
+    )).toBe(false);
   });
 
-  it("static 403 + browser 429 → final persisted kind is HTTP_ACCESS_BLOCKED with httpStatus 429 and cooldown reason http_429", async () => {
+  it("static 403 plus browser 429 creates no final Article outcome or source cooldown", async () => {
     // 2 articles from same source: static 403 + browser 429
     const articles = [
       makeArticle({ id: 1, sourceId: "src-blocked", canonicalUrl: "https://blocked.com/1" }),
@@ -4176,36 +4648,14 @@ describe("HTTP_ACCESS_BLOCKED source cooldown ordering", () => {
       maxArticlesPerSource: 10,
     });
 
-    // Kind should be HTTP_ACCESS_BLOCKED (not UNSUPPORTED_STRUCTURE)
-    expect(result.persist.byKind.HTTP_ACCESS_BLOCKED).toBeGreaterThanOrEqual(1);
-    expect(result.persist.byKind.UNSUPPORTED_STRUCTURE).toBe(0);
-
-    // Source cooldown reason should be http_429 (browser's final status)
-    expect(result.sourceCooldowns).toBeDefined();
-    const blockedCooldown = result.sourceCooldowns!.find((c) => c.sourceId === "src-blocked");
-    expect(blockedCooldown).toBeDefined();
-    expect(blockedCooldown!.reason).toBe("http_429");
-
-    // Check the persisted artifact payload has the correct httpStatus
-    const createCalls = artifactCreateMock.mock.calls;
-    const rejectionArtifacts = createCalls.filter(
-      (c) => (c[0]?.data as Record<string, unknown>)?.artifactType === "article_enrichment_rejection",
-    );
-    expect(rejectionArtifacts.length).toBeGreaterThanOrEqual(1);
-    const payload = asObj((rejectionArtifacts[0]![0].data as Record<string, unknown>).payload);
-    expect(payload.kind).toBe("HTTP_ACCESS_BLOCKED");
-    const rejection = asObj(payload.rejection);
-    expect(rejection.code).toBe("HTTP_FORBIDDEN");
-    // httpStatus should be 429 (browser's final status, not static 403)
-    expect(rejection.httpStatus).toBe(429);
-
-    // Check the article row summary has httpStatus 429
-    const updateCalls = articleUpdateMock.mock.calls;
-    const articleUpdate = updateCalls.find((c: any[]) => c[0]?.where?.id === 1);
-    expect(articleUpdate).toBeDefined();
-    const summary = asObj(articleUpdate![0].data.enrichmentOutcome);
-    expect(summary.kind).toBe("HTTP_ACCESS_BLOCKED");
-    expect(summary.rejectionHttpStatus).toBe(429);
+    expect(result.governorDeferred).toBe(1);
+    expect(result.browserFallbackStats).toMatchObject({ attempted: 0, rateLimited: 0 });
+    expect(result.sourceCooldowns).toBeUndefined();
+    expect(articleUpdateMock.mock.calls.some((call: any[]) => call[0]?.where?.id === 1)).toBe(false);
+    expect(artifactCreateMock.mock.calls.some((call: any[]) =>
+      call[0]?.data?.artifactType === "article_enrichment_rejection" &&
+      (call[0]?.data?.payload as Record<string, unknown>)?.articleId === 1,
+    )).toBe(false);
   });
 
   it("persisted outcome with HTTP_ACCESS_BLOCKED + httpStatus 429 is detected by isRecentlyBlocked within 1h cooldown", async () => {

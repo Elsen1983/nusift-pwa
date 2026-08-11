@@ -2,8 +2,14 @@ import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
 
 // ─── Mock safeFetch ─────────────────────────────────────────────────────────
 const safeFetchMock = vi.hoisted(() => vi.fn());
+const safeFetchWithParserMock = vi.hoisted(() => vi.fn(async (
+  url: string,
+  _options: unknown,
+  parse: (response: Response) => Promise<unknown>,
+) => parse(await safeFetchMock(url, _options))));
 vi.mock("../ssrf-guard", () => ({
   safeFetch: safeFetchMock,
+  safeFetchWithParser: safeFetchWithParserMock,
   SSRFError: class SSRFError extends Error {
     detail: string;
     constructor(detail: string) {
@@ -12,6 +18,17 @@ vi.mock("../ssrf-guard", () => ({
       this.detail = detail;
     }
   },
+}));
+vi.mock("./robots-policy", () => ({
+  checkPublisherRobotsAccess: vi.fn(async () => ({
+    allowed: true,
+    decision: "allowed",
+    status: "no_policy",
+    reason: "test-robots-satisfied",
+    domainKey: "example.com",
+    cacheHit: true,
+    sitemapUrls: [],
+  })),
 }));
 
 // ─── Test HTML fixtures ─────────────────────────────────────────────────────
@@ -88,14 +105,23 @@ const jsonLdHtml = `<!DOCTYPE html>
 
 const nonHtmlResponse = "This is not HTML at all, just plain text content.";
 
-function makeResponse(body: string, ok = true, contentType = "text/html", status = 200, url = "https://example.com/article") {
+function makeResponse(
+  body: string,
+  ok = true,
+  contentType = "text/html",
+  status = 200,
+  url = "https://example.com/article",
+  retryAfter: string | null = null,
+) {
   return {
     ok,
     status,
     url,
     headers: {
       get: (name: string) => {
-        if (name.toLowerCase() === "content-type") return contentType;
+        const normalized = name.toLowerCase();
+        if (normalized === "content-type") return contentType;
+        if (normalized === "retry-after") return retryAfter;
         return null;
       },
     },
@@ -376,10 +402,9 @@ describe("extractArticleContentFromUrl", () => {
     }
   });
 
-  it("retries an HTTP 403 once over HTTPS on the same host and path", async () => {
+  it("uses HTTPS first for an HTTP article URL", async () => {
     const html = articleHtml();
     safeFetchMock
-      .mockResolvedValueOnce(makeResponse("", false, "text/html", 403, "http://example.com/news/42?edition=uk"))
       .mockResolvedValueOnce(makeResponse(html, true, "text/html", 200, "https://example.com/news/42?edition=uk"));
 
     const { extractArticleContentFromUrl } = await import("./article-content-extractor");
@@ -389,20 +414,54 @@ describe("extractArticleContentFromUrl", () => {
       existingTitle: "Test Article Title",
     });
 
-    expect(safeFetchMock).toHaveBeenCalledTimes(2);
-    expect(safeFetchMock.mock.calls[1]![0]).toBe("https://example.com/news/42?edition=uk");
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    expect(safeFetchMock.mock.calls[0]![0]).toBe("https://example.com/news/42?edition=uk");
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.resolvedUrl).toBe("https://example.com/news/42?edition=uk");
-      expect(result.qualitySignals).toContain("http_to_https_upgrade_succeeded");
+      expect(result.qualitySignals).toContain("https_first");
+      expect(result.transportUrl).toBe("https://example.com/news/42?edition=uk");
+      expect(result.originalArticleUrl).toBe("http://example.com/news/42?edition=uk");
+    }
+  });
+
+  it("uses one explicit host-allowlisted HTTP fallback after HTTPS fails", async () => {
+    const previous = process.env.NUSIFT_AGENT3_HTTP_FALLBACK_ALLOWED_HOSTS;
+    process.env.NUSIFT_AGENT3_HTTP_FALLBACK_ALLOWED_HOSTS = "example.com";
+    try {
+      safeFetchMock
+        .mockResolvedValueOnce(makeResponse("", false, "text/html", 503, "https://example.com/news/42"))
+        .mockResolvedValueOnce(makeResponse(articleHtml(), true, "text/html", 200, "http://example.com/news/42"));
+
+      const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+      const result = await extractArticleContentFromUrl({
+        articleId: 122,
+        articleUrl: "http://example.com/news/42",
+        existingTitle: "Test Article Title",
+      });
+
+      expect(safeFetchMock).toHaveBeenCalledTimes(2);
+      expect(safeFetchMock.mock.calls.map((call) => call[0])).toEqual([
+        "https://example.com/news/42",
+        "http://example.com/news/42",
+      ]);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.transportUrl).toBe("http://example.com/news/42");
+        expect(result.originalArticleUrl).toBe("http://example.com/news/42");
+        expect(result.qualitySignals).toContain("http_fallback_used");
+      }
+    } finally {
+      if (previous === undefined) delete process.env.NUSIFT_AGENT3_HTTP_FALLBACK_ALLOWED_HOSTS;
+      else process.env.NUSIFT_AGENT3_HTTP_FALLBACK_ALLOWED_HOSTS = previous;
     }
   });
 
   it.each([
-    ["https://example.com/forbidden", 403],
-    ["http://example.com/rate-limited", 429],
-    ["http://example.com:8080/forbidden", 403],
-  ])("does not upgrade ineligible request %s with status %i", async (articleUrl, status) => {
+    ["https://example.com/forbidden", 403, 1],
+    ["http://example.com/rate-limited", 429, 1],
+    ["http://example.com:8080/forbidden", 403, 0],
+  ])("does not use unsafe HTTP transport %s with status %i", async (articleUrl, status, expectedCalls) => {
     safeFetchMock.mockResolvedValue(makeResponse("", false, "text/html", status, articleUrl));
 
     const { extractArticleContentFromUrl } = await import("./article-content-extractor");
@@ -413,7 +472,7 @@ describe("extractArticleContentFromUrl", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    expect(safeFetchMock).toHaveBeenCalledTimes(expectedCalls);
   });
 
   it("uses existing bodyText as fallback when extraction produces nothing", async () => {
@@ -2425,6 +2484,66 @@ describe("HTTP 202 interstitial false-positive guard", () => {
         expect(result.statusCode).toBe(status);
       }
     }
+  });
+
+  it("preserves Retry-After delta-seconds as bounded retry evidence", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-10T10:00:00.000Z"));
+    safeFetchMock.mockResolvedValue(makeResponse(
+      "<html><body>rate limited</body></html>",
+      true,
+      "text/html",
+      429,
+      "https://example.com/rate-limited",
+      "120",
+    ));
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 429,
+      articleUrl: "https://example.com/rate-limited",
+      existingTitle: "Rate limited",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.retryAfterAt).toBe("2026-08-10T10:02:00.000Z");
+    vi.useRealTimers();
+  });
+
+  it("preserves Retry-After HTTP-date and fallback absence deterministically", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-10T10:00:00.000Z"));
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    safeFetchMock.mockResolvedValueOnce(makeResponse(
+      "<html><body>rate limited</body></html>",
+      true,
+      "text/html",
+      429,
+      "https://example.com/rate-limited-date",
+      "Mon, 10 Aug 2026 10:05:00 GMT",
+    ));
+    const dated = await extractArticleContentFromUrl({
+      articleId: 430,
+      articleUrl: "https://example.com/rate-limited-date",
+      existingTitle: "Rate limited",
+    });
+    expect(dated.ok).toBe(false);
+    if (!dated.ok) expect(dated.retryAfterAt).toBe("2026-08-10T10:05:00.000Z");
+
+    safeFetchMock.mockResolvedValueOnce(makeResponse(
+      "<html><body>rate limited</body></html>",
+      true,
+      "text/html",
+      429,
+      "https://example.com/rate-limited-fallback",
+      "not-a-valid-retry-after",
+    ));
+    const fallback = await extractArticleContentFromUrl({
+      articleId: 431,
+      articleUrl: "https://example.com/rate-limited-fallback",
+      existingTitle: "Rate limited",
+    });
+    expect(fallback.ok).toBe(false);
+    if (!fallback.ok) expect(fallback.retryAfterAt).toBeNull();
+    vi.useRealTimers();
   });
 
   it("HTTP 5xx stays fetch_failed (not interstitial)", async () => {

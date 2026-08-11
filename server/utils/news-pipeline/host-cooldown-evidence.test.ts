@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const findManyMock = vi.fn();
 
-import { STATIC_RETRY_AFTER_MAX_MS } from "./article-discovery-helpers";
+import { STATIC_RETRY_AFTER_MAX_MS } from "./retry-after-policy";
 
 afterEach(() => {
   vi.useRealTimers();

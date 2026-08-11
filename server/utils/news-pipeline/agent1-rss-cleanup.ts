@@ -22,7 +22,8 @@ import { logAgentScan } from "./log";
 
 export type ResolveAgent1RssCleanupInput = {
   sourceId: string;
-  categoryId: string;
+  /** Null means a source-level RSS feed and only source-level markers match. */
+  categoryId: string | null;
   targetUrl: string;
   rssFeedUrl: string;
   pipelineRunId?: string | null;
@@ -100,8 +101,10 @@ export async function resolveHeadlessMarkersByAgent1Rss(
     for (const marker of matchingMarkers) {
       try {
         const existingPayload = isPlainObject(marker.payload) ? marker.payload : {};
-        await prisma.pipelineArtifact.update({
-          where: { id: marker.id },
+        const transition = await prisma.pipelineArtifact.updateMany({
+          // Status-CAS prevents a concurrent headless worker from being
+          // overwritten after it claims the marker.
+          where: { id: marker.id, status: marker.status },
           data: {
             status: "RESOLVED_BY_AGENT1_RSS",
             payload: {
@@ -115,7 +118,7 @@ export async function resolveHeadlessMarkersByAgent1Rss(
             },
           },
         });
-        resolvedMarkerCount += 1;
+        if (transition.count === 1) resolvedMarkerCount += 1;
       } catch {
         // Individual marker update failure is non-fatal.
       }

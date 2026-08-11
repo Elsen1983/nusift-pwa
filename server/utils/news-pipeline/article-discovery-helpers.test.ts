@@ -1,9 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const safeFetchMock = vi.hoisted(() => vi.fn());
+const safeFetchWithParserMock = vi.hoisted(() => vi.fn(async (url: string, options: any, parse: (response: Response) => Promise<unknown>) => {
+  const lease = await options.transportHooks?.beforeTransport?.(url, true);
+  let response: Response;
+  try {
+    response = await safeFetchMock(url, options);
+  } catch (error) {
+    await options.transportHooks?.onTransportError?.(url, error, lease);
+    throw error;
+  }
+
+  let parseError: unknown | null = null;
+  try {
+    return await parse(response);
+  } catch (error) {
+    parseError = error;
+    throw error;
+  } finally {
+    await options.transportHooks?.onFinalResponse?.(url, response, lease, parseError);
+  }
+}));
 
 vi.mock("../ssrf-guard", () => ({
   safeFetch: safeFetchMock,
+  safeFetchWithParser: safeFetchWithParserMock,
 }));
 
 const makeResponse = (body: string, ok = true) => ({
@@ -18,7 +39,7 @@ describe("article-discovery-helpers", () => {
       STATIC_RETRY_AFTER_MAX_MS,
       STATIC_RETRY_AFTER_MIN_MS,
       parseBoundedStaticRetryAfter,
-    } = await import("./article-discovery-helpers");
+    } = await import("./retry-after-policy");
     const now = Date.parse("2026-07-30T12:00:00.000Z");
     expect(parseBoundedStaticRetryAfter("120", now)).toEqual({
       retryAfterAt: new Date(now + 120_000).toISOString(),
@@ -52,12 +73,9 @@ describe("article-discovery-helpers", () => {
 
   it("evaluates a real static HTTP 429 without a request budget and preserves Retry-After evidence", async () => {
     const { evaluateArticleLinkCandidate } = await import("./article-discovery-helpers");
-    safeFetchMock.mockResolvedValue({
-      ok: false,
-      status: 429,
-      headers: { "Retry-After": "120", "X-Do-Not-Persist": "secret" },
-      text: async () => "",
-    });
+    safeFetchMock.mockImplementation(async (url: string) => url.endsWith("/robots.txt")
+      ? { ok: false, status: 404, headers: {}, text: async () => "" }
+      : { ok: false, status: 429, headers: { "Retry-After": "120", "X-Do-Not-Persist": "secret" }, text: async () => "" });
 
     const result = await evaluateArticleLinkCandidate({
       articleUrl: "https://example.com/news/2026/07/20/rate-limited-story",
@@ -76,17 +94,14 @@ describe("article-discovery-helpers", () => {
     expect(Date.parse(result.outcome.retryAfterAt!)).toBeGreaterThan(Date.now());
     expect(result.outcome).not.toHaveProperty("headers");
     expect(result.outcome).not.toHaveProperty("body");
-    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    expect(safeFetchMock).toHaveBeenCalledTimes(2); // robots policy plus article request
   });
 
   it("evaluates a real static HTTP-date Retry-After header", async () => {
     const { evaluateArticleLinkCandidate } = await import("./article-discovery-helpers");
-    safeFetchMock.mockResolvedValue({
-      ok: false,
-      status: 429,
-      headers: { "retry-after": new Date(Date.now() + 10 * 60 * 1000).toUTCString() },
-      text: async () => "",
-    });
+    safeFetchMock.mockImplementation(async (url: string) => url.endsWith("/robots.txt")
+      ? { ok: false, status: 404, headers: {}, text: async () => "" }
+      : { ok: false, status: 429, headers: { "retry-after": new Date(Date.now() + 10 * 60 * 1000).toUTCString() }, text: async () => "" });
 
     const result = await evaluateArticleLinkCandidate({
       articleUrl: "https://example.com/news/2026/07/20/date-rate-limit",
@@ -100,9 +115,12 @@ describe("article-discovery-helpers", () => {
   });
 
   it("uses bounded fallback evidence for missing or invalid static Retry-After", async () => {
-    const { evaluateArticleLinkCandidate, STATIC_RETRY_AFTER_FALLBACK_MS, STATIC_RETRY_AFTER_MAX_MS } = await import("./article-discovery-helpers");
+    const { evaluateArticleLinkCandidate } = await import("./article-discovery-helpers");
+    const { STATIC_RETRY_AFTER_FALLBACK_MS, STATIC_RETRY_AFTER_MAX_MS } = await import("./retry-after-policy");
     for (const headers of [{}, { "Retry-After": "not-a-date" }, { "Retry-After": "999999999" }]) {
-      safeFetchMock.mockResolvedValue({ ok: false, status: 429, headers, text: async () => "" });
+      safeFetchMock.mockImplementation(async (url: string) => url.endsWith("/robots.txt")
+        ? { ok: false, status: 404, headers: {}, text: async () => "" }
+        : { ok: false, status: 429, headers, text: async () => "" });
       const result = await evaluateArticleLinkCandidate({
         articleUrl: "https://example.com/news/2026/07/20/fallback-rate-limit",
         sourcePageUrl: "https://example.com/news",
@@ -119,19 +137,16 @@ describe("article-discovery-helpers", () => {
 
   it("runs the real evaluator with a request budget and records one phase-specific 429 evidence item", async () => {
     const { createStaticDiscoveryRequestBudget, evaluateArticleLinkCandidate } = await import("./article-discovery-helpers");
-    const budget = createStaticDiscoveryRequestBudget(1);
+    const budget = createStaticDiscoveryRequestBudget(2); // robots policy plus article request
     const telemetry = {
       recordNetworkRequest: vi.fn(),
       recordLogicalRequestDuration: vi.fn(),
       recordTimeout: vi.fn(),
       recordRateLimited: vi.fn(),
     };
-    safeFetchMock.mockResolvedValue({
-      ok: false,
-      status: 429,
-      headers: { "Retry-After": "60" },
-      text: async () => "",
-    });
+    safeFetchMock.mockImplementation(async (url: string) => url.endsWith("/robots.txt")
+      ? { ok: false, status: 404, headers: {}, text: async () => "" }
+      : { ok: false, status: 429, headers: { "Retry-After": "60" }, text: async () => "" });
 
     const result = await evaluateArticleLinkCandidate({
       articleUrl: "https://example.com/news/2026/07/20/budget-rate-limit",
@@ -143,11 +158,11 @@ describe("article-discovery-helpers", () => {
     });
 
     expect(result.outcome).toMatchObject({ httpStatus: 429, rateLimited: true, retryAfterSource: "delta_seconds" });
-    expect(budget.snapshot()).toMatchObject({ used: 1, remaining: 0, exhausted: false });
+    expect(budget.snapshot()).toMatchObject({ used: 2, remaining: 0, exhausted: false });
     expect(budget.rateLimitEvidence).toHaveLength(1);
     expect(budget.rateLimitEvidence[0]).toMatchObject({ phase: "article_detail", status: 429, retryAfterSource: "delta_seconds" });
     expect(telemetry.recordRateLimited).not.toHaveBeenCalled();
-    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    expect(safeFetchMock).toHaveBeenCalledTimes(2); // robots policy plus article request
   });
 
   it("counts each budgeted safeFetch attempt once and records phase-specific 429 evidence", async () => {
@@ -250,7 +265,7 @@ describe("article-discovery-helpers", () => {
       // The exact boundary is complete only when no known work remains. Here
       // the remaining built-in sitemap probes are known work, so they are
       // explicitly recorded as skipped without invoking safeFetch.
-      expect(budget.snapshot().skippedWork).toHaveLength(3);
+      expect(budget.snapshot().skippedWork).toHaveLength(4);
       expect(safeFetchMock).toHaveBeenCalledTimes(budget.snapshot().used);
     });
 

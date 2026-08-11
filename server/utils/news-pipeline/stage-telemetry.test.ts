@@ -186,6 +186,39 @@ describe("StageBatchTelemetryTracker", () => {
   });
 });
 
+describe("metric authority contract", () => {
+  it("keeps actual browser work separate from durable disposition buckets", () => {
+    const tracker = makeTracker({ stage: "agent3", batchSizeLimit: 10, concurrencyLimit: 1 });
+    tracker.recordNetworkRequest();
+    tracker.recordBrowserAttempt();
+    tracker.recordBrowser(250);
+
+    const record = tracker.finalize({
+      processed: 1,
+      succeeded: 0,
+      failedRetryable: 0,
+      failedPermanent: 0,
+      skipped: 0,
+      deferred: 0,
+      quarantined: 0,
+      claimLost: 1,
+      persistenceFailed: 0,
+      remainingBefore: 1,
+      remainingAfter: 1,
+      complete: false,
+    });
+
+    // Physical work remains observable even though no durable outcome exists.
+    expect(record.browserAttempts).toBe(1);
+    expect(record.networkRequests).toBe(1);
+    expect(record.browserMs).toBe(250);
+    // Durable disposition remains claim-lost, not success/failure.
+    expect(record.succeeded).toBe(0);
+    expect(record.failedRetryable).toBe(0);
+    expect(record.claimLost).toBe(1);
+  });
+});
+
 describe("no-op probe", () => {
   it("preserves existing callers", async () => {
     const probe = createNoopStageBatchProbe();

@@ -1,45 +1,25 @@
-/**
- * RSS-owned target predicate.
- *
- * A target (source or category) is \"RSS-owned\" when a valid, trusted feed is
- * assigned to it. RSS-owned targets must NOT enter routine Agent 2 static
- * discovery while the feed is valid and productive — Agent 2 only escalates
- * under bounded, documented conditions.
- *
- * Trusted provenance (verified or explicitly trusted manual state):
- *  - USER_SUBMITTED  — user submitted the feed directly
- *  - ADMIN_CONFIRMED — admin confirmed the feed through review requests
- *
- * Escalation to Agent 2 happens ONLY when:
- *  - the feed is permanently invalidated (DOMAIN_DEAD) or invalid (FAILED
- *    with at least one confirmed non-productive run),
- *  - the feed is repeatedly non-productive (>= NON_PRODUCTIVE_ESCALATION_THRESHOLD
- *    consecutive non-productive runs),
- *  - category scope validation fails (caller-provided scopeMismatch),
- *  - an administrator explicitly requests discovery (caller bypass).
- *
- * A temporary RSS fetch failure never immediately removes RSS ownership: a
- * single FAILED status without a confirmed non-productive run keeps the target
- * RSS-owned and skips Agent 2 (bounded health/cooldown evidence).
- *
- * No publisher-specific hardcoding — fully generic.
- */
+import {
+  FEED_NON_PRODUCTIVE_FALLBACK_THRESHOLD,
+  shouldRunAgent2Discovery,
+} from "./feed-first-policy";
 
+/** Trusted feed assignment provenance used for compatibility diagnostics. */
 export const RSS_OWNED_TRUSTED_PROVENANCES: ReadonlySet<string> = new Set([
   "USER_SUBMITTED",
   "ADMIN_CONFIRMED",
 ]);
 
-/** Documented non-productivity threshold before an RSS-owned target escalates. */
-export const RSS_OWNED_NON_PRODUCTIVE_ESCALATION_THRESHOLD = 2;
+export const RSS_OWNED_NON_PRODUCTIVE_ESCALATION_THRESHOLD = FEED_NON_PRODUCTIVE_FALLBACK_THRESHOLD;
 
 export type RssOwnedTargetInput = {
   rssStatus: string | null | undefined;
   rssFeedUrl?: string | null;
   feedProvenance?: string | null;
   currentFeedProductive?: boolean;
+  lastProductiveAt?: Date | string | null;
   consecutiveNonProductiveRuns?: number;
-  /** Caller-supplied category-scope check; true when scope matches. */
+  nextRetryAt?: Date | string | null;
+  manualOverride?: boolean;
   scopeMatches?: boolean;
 };
 
@@ -52,14 +32,10 @@ export type RssOwnedTargetEvaluation = {
     | "rss_owned_waiting_evidence"
     | "rss_owned_repeatedly_non_productive"
     | "rss_owned_invalid_feed"
-    | "rss_owned_scope_mismatch";
+    | "rss_owned_scope_mismatch"
+    | "rss_owned_rate_limited";
 };
 
-/**
- * Generic RSS-owned predicate: active source/category relationship (implied by
- * the caller passing a DB row), active feed URL, verified or explicitly
- * trusted manual feed state, and not permanently invalidated.
- */
 export function isRssOwnedTarget(input: RssOwnedTargetInput): boolean {
   return (
     input.rssStatus === "ACTIVE" &&
@@ -68,88 +44,54 @@ export function isRssOwnedTarget(input: RssOwnedTargetInput): boolean {
   );
 }
 
-/**
- * Status-agnostic ownership gate used inside the escalation evaluation: a
- * target with a trusted feed assignment remains "RSS-owned" even while the
- * feed is FAILED or DOMAIN_DEAD, so those states produce their documented
- * escalation reasons instead of falling through as not-owned.
- */
-function hasTrustedFeedAssignment(input: RssOwnedTargetInput): boolean {
-  return (
-    Boolean(input.rssFeedUrl) &&
-    RSS_OWNED_TRUSTED_PROVENANCES.has(input.feedProvenance ?? "")
-  );
-}
+const hasTrustedFeedAssignment = (input: RssOwnedTargetInput): boolean =>
+  Boolean(input.rssFeedUrl) && RSS_OWNED_TRUSTED_PROVENANCES.has(input.feedProvenance ?? "");
 
-/**
- * Evaluate whether an RSS-owned target may enter Agent 2 discovery.
- *
- * Non-RSS-owned targets are always eligible (normal rules apply).
- * RSS-owned targets skip Agent 2 unless a documented escalation condition
- * holds.
- */
+/** Compatibility adapter. The feed-first policy remains the sole decision source. */
 export function evaluateRssOwnedTargetForAgent2(
   input: RssOwnedTargetInput,
 ): RssOwnedTargetEvaluation {
-  if (!hasTrustedFeedAssignment(input)) {
-    return { rssOwned: false, eligibleForAgent2: true, reason: "not_rss_owned" };
+  const rssOwned = hasTrustedFeedAssignment(input);
+  const result = shouldRunAgent2Discovery({
+    targetType: "category",
+    rssStatus: input.rssStatus,
+    rssFeedUrl: input.rssFeedUrl,
+    currentFeedProductive: input.currentFeedProductive,
+    lastProductiveAt: input.lastProductiveAt,
+    consecutiveNonProductiveRuns: input.consecutiveNonProductiveRuns,
+    nextRetryAt: input.nextRetryAt,
+    scopeMatches: input.scopeMatches,
+    manualOverride: input.manualOverride,
+  });
+
+  if (!rssOwned) {
+    return { rssOwned: false, eligibleForAgent2: result.runAgent2, reason: "not_rss_owned" };
   }
 
-  // Category-scope mismatch is a documented escalation condition.
-  if (input.scopeMatches === false) {
-    return { rssOwned: true, eligibleForAgent2: true, reason: "rss_owned_scope_mismatch" };
-  }
-
-  // Permanently unreachable / dead domain → escalate.
-  if (input.rssStatus === "DOMAIN_DEAD") {
-    return { rssOwned: true, eligibleForAgent2: true, reason: "rss_owned_invalid_feed" };
-  }
-
-  // Invalid feed: only escalate after at least one confirmed non-productive
-  // run, so a single temporary fetch failure never removes RSS ownership.
-  if (input.rssStatus === "FAILED") {
-    const nonProductiveRuns = Math.max(0, input.consecutiveNonProductiveRuns ?? 0);
-    if (nonProductiveRuns >= 1) {
+  switch (result.reason) {
+    case "productive_fresh_feed":
+      return { rssOwned: true, eligibleForAgent2: false, reason: "rss_owned_productive" };
+    case "active_feed_rate_limited":
+      return { rssOwned: true, eligibleForAgent2: false, reason: "rss_owned_rate_limited" };
+    case "nonproductive_below_threshold":
+      return { rssOwned: true, eligibleForAgent2: false, reason: "rss_owned_waiting_evidence" };
+    case "repeatedly_nonproductive":
+      return { rssOwned: true, eligibleForAgent2: true, reason: "rss_owned_repeatedly_non_productive" };
+    case "category_scope_mismatch":
+      return { rssOwned: true, eligibleForAgent2: true, reason: "rss_owned_scope_mismatch" };
+    case "productive_feed_stale":
+    case "missing_or_invalid_feed":
+    case "manual_override":
       return { rssOwned: true, eligibleForAgent2: true, reason: "rss_owned_invalid_feed" };
-    }
-    return { rssOwned: true, eligibleForAgent2: false, reason: "rss_owned_waiting_evidence" };
   }
-
-  // Productive feed → never routine Agent 2.
-  if (input.currentFeedProductive === true) {
-    return { rssOwned: true, eligibleForAgent2: false, reason: "rss_owned_productive" };
-  }
-
-  // Non-productive under the documented threshold → bounded evidence window.
-  const nonProductiveRuns = Math.max(0, input.consecutiveNonProductiveRuns ?? 0);
-  if (nonProductiveRuns >= RSS_OWNED_NON_PRODUCTIVE_ESCALATION_THRESHOLD) {
-    return {
-      rssOwned: true,
-      eligibleForAgent2: true,
-      reason: "rss_owned_repeatedly_non_productive",
-    };
-  }
-
-  return { rssOwned: true, eligibleForAgent2: false, reason: "rss_owned_waiting_evidence" };
 }
 
-/**
- * Map the RSS-owned evaluation to the Agent 2 skip-reason vocabulary used by
- * the target resolution diagnostics. Returns null when the target is eligible
- * for Agent 2.
- */
 export function rssOwnedSkipReason(
   evaluation: RssOwnedTargetEvaluation,
 ): RssOwnedTargetSkipReason | null {
   if (evaluation.eligibleForAgent2 || !evaluation.rssOwned) return null;
-  switch (evaluation.reason) {
-    case "rss_owned_productive":
-      return "rss_owned_productive";
-    case "rss_owned_waiting_evidence":
-      return "rss_owned_waiting_evidence";
-    default:
-      return null;
-  }
+  if (evaluation.reason === "rss_owned_productive") return "rss_owned_productive";
+  return "rss_owned_waiting_evidence";
 }
 
 export type RssOwnedTargetSkipReason =
