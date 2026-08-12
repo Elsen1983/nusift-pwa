@@ -29,6 +29,7 @@ This directory is the curated navigation layer above the generated Graphify note
 - [[17_Stale_Claim_And_Lease_Recovery]]
 - [[18_Poison_Row_And_Attempt_Accounting]]
 - [[19_Run_Productivity_And_Target_Funnels]]
+- [[20_Article_Identity_And_Deduplication]]
 
 ## Detailed reference
 

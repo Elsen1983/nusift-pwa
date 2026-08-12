@@ -182,6 +182,7 @@ describe("buildArticleEnrichmentUpdate", () => {
     }) as Record<string, unknown>;
 
     expect(update.canonicalUrl).toBe("https://example.com/a");
+    expect(update.canonicalIdentity).toBe("https://example.com/a");
     expect(update.publicationStatus).toBe("PUBLISHED");
   });
 

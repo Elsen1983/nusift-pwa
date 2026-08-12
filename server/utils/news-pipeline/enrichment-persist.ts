@@ -13,6 +13,7 @@ import {
   hasUsableAgent3BodyText,
 } from "./publication-gate";
 import { getArticleTransportIdentity } from "./article-transport-policy";
+import { normalizeArticleCanonicalIdentity } from "./article-identity";
 import { isUnsafePipelineInvariantError } from "./item-failure";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -173,7 +174,10 @@ export const buildArticleEnrichmentUpdate = (
     }),
   };
 
-  if (canonicalUrlUpdate) update.canonicalUrl = canonicalUrlUpdate;
+  if (canonicalUrlUpdate) {
+    update.canonicalUrl = canonicalUrlUpdate;
+    update.canonicalIdentity = normalizeArticleCanonicalIdentity(canonicalUrlUpdate);
+  }
 
   // Phase 2: persist extracted bodyText on SUCCESS when the extractor
   // produced a better value than the existing one.

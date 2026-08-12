@@ -35,6 +35,12 @@ import type { StageBatchProbe } from "./stage-telemetry";
 import { classifyEarlyAccessHint } from "./paywall-detection";
 import { getArticleTransportIdentity } from "./article-transport-policy";
 import { boundedPipelineItemError, isUnsafePipelineInvariantError } from "./item-failure";
+import {
+  emptyArticleDuplicateSummary,
+  normalizeArticleCanonicalIdentity,
+  normalizeScopedRssGuid,
+  scopedRssGuidIdentity,
+} from "./article-identity";
 
 type ParsedFeedItem = {
   title: string;
@@ -768,7 +774,7 @@ export function normalizeParsedFeedEntries(items: ParsedFeedItem[]): {
         item,
         rawLink,
         canonicalUrl: rawLink ? canonicalFromLink(rawLink) : "",
-        rssGuid: typeof item.guid === "string" ? item.guid.trim() || null : null,
+        rssGuid: typeof item.guid === "string" ? normalizeScopedRssGuid(item.guid) : null,
       });
     } catch {
       malformed += 1;
@@ -1895,21 +1901,25 @@ export async function ingestSource(
       });
     }
 
-    const feedRssGuids = [...new Set(feedEntries.map((entry: ParsedFeedEntry) => entry.rssGuid).filter(Boolean))] as string[];
+    const feedRssGuids = [...new Set(feedEntries.map((entry: ParsedFeedEntry) => normalizeScopedRssGuid(entry.rssGuid)).filter(Boolean))] as string[];
     const feedCanonicalUrls = [...new Set(feedEntries.map((entry: ParsedFeedEntry) => entry.canonicalUrl).filter(Boolean))];
+    const feedCanonicalIdentities = [...new Set(feedCanonicalUrls.map(normalizeArticleCanonicalIdentity).filter(Boolean))] as string[];
     const existingFeedArticles =
       feedRssGuids.length || feedCanonicalUrls.length
         ? await prisma.article.findMany({
             where: {
               OR: [
-                feedRssGuids.length ? { rssGuid: { in: feedRssGuids } } : undefined,
+                feedRssGuids.length ? { sourceId, rssGuid: { in: feedRssGuids } } : undefined,
+                feedCanonicalIdentities.length ? { canonicalIdentity: { in: feedCanonicalIdentities } } : undefined,
                 feedCanonicalUrls.length ? { canonicalUrl: { in: feedCanonicalUrls } } : undefined,
               ].filter(nonNullish),
             },
             select: {
               id: true,
+              sourceId: true,
               rssGuid: true,
               canonicalUrl: true,
+              canonicalIdentity: true,
               categoryId: true,
               tags: true,
             },
@@ -1924,7 +1934,7 @@ export async function ingestSource(
     const existingFeedArticlesByCanonicalUrl = new Map(
       existingFeedArticles
         .filter((article) => article.canonicalUrl)
-        .map((article) => [article.canonicalUrl!, article]),
+        .map((article) => [article.canonicalIdentity || normalizeArticleCanonicalIdentity(article.canonicalUrl)!, article]),
     );
 
     for (const entry of feedEntries) {
@@ -2133,11 +2143,12 @@ export async function ingestSource(
       // so do a targeted bounded lookup for the resolved final URL.
       let existingFeedArticle =
         (entry.rssGuid ? existingFeedArticlesByGuid.get(entry.rssGuid) : null) ||
-        existingFeedArticlesByCanonicalUrl.get(canonicalUrl);
+        existingFeedArticlesByCanonicalUrl.get(normalizeArticleCanonicalIdentity(canonicalUrl) || canonicalUrl);
       if (!existingFeedArticle && redirectedFromUrl && canonicalUrl !== redirectedFromUrl) {
-        existingFeedArticle = (await prisma.article.findUnique({
-          where: { canonicalUrl },
-          select: { id: true, rssGuid: true, canonicalUrl: true, categoryId: true, tags: true },
+        const canonicalIdentity = normalizeArticleCanonicalIdentity(canonicalUrl);
+        existingFeedArticle = (await prisma.article.findFirst({
+          where: canonicalIdentity ? { OR: [{ canonicalIdentity }, { canonicalUrl }] } : { canonicalUrl },
+          select: { id: true, sourceId: true, rssGuid: true, canonicalUrl: true, canonicalIdentity: true, categoryId: true, tags: true },
         })) ?? undefined;
       }
 
@@ -2212,7 +2223,7 @@ export async function ingestSource(
         categoryId: categoryId || undefined,
         sourceUrl: source.frontPageUrl,
         canonicalUrl,
-        rssGuid: item.guid.trim() || null,
+        rssGuid: normalizeScopedRssGuid(item.guid),
         rawTitle,
         title,
         publishedAt,
@@ -2546,96 +2557,105 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
   let skipped = 0;
   let failed = 0;
   let enriched = 0;
+  const duplicateSummary = emptyArticleDuplicateSummary();
+
+  const finish = async () => {
+    const duplicateCount = Object.values(duplicateSummary).reduce((sum, count) => sum + count, 0);
+    if (duplicateCount > 0) {
+      const first = candidates[0];
+      const oneSource = first && candidates.every((candidate) => candidate.sourceId === first.sourceId);
+      const oneCategory = first && candidates.every((candidate) => candidate.categoryId === first.categoryId);
+      await logAgentScan({
+        sourceId: oneSource && first ? first.sourceId : null,
+        categoryId: oneCategory && first ? first.categoryId : null,
+        status: "ARTICLE_DUPLICATE_SUMMARY",
+        executionTimeMs: 0,
+        errorLog: `duplicates=${duplicateCount}; kinds=${JSON.stringify(duplicateSummary)}`.slice(0, 500),
+      }).catch(() => {});
+    }
+    return { inserted, skipped, failed, enriched };
+  };
 
   const dedupedCandidates: IngestCandidate[] = [];
-  const seenKeys = new Set<string>();
+  const seenCanonicalIdentities = new Map<string, string>();
+  const seenScopedGuids = new Set<string>();
 
   for (const candidate of candidates) {
-    const canonicalIdentity = getArticleTransportIdentity(candidate.canonicalUrl) || candidate.canonicalUrl || "";
-    const rssGuidIdentity = candidate.rssGuid
-      ? getArticleTransportIdentity(candidate.rssGuid) || candidate.rssGuid
-      : "";
-    const dedupeKey = [
-      rssGuidIdentity,
-      canonicalIdentity,
-      candidate.contentHash || "",
-    ].join("|");
-
-    if (seenKeys.has(dedupeKey)) {
+    const canonicalIdentity = normalizeArticleCanonicalIdentity(candidate.canonicalUrl);
+    const rssGuidIdentity = scopedRssGuidIdentity(candidate.sourceId, candidate.rssGuid);
+    if (canonicalIdentity && seenCanonicalIdentities.has(canonicalIdentity)) {
       skipped += 1;
+      if (seenCanonicalIdentities.get(canonicalIdentity) === candidate.sourceId) duplicateSummary.same_canonical += 1;
+      else duplicateSummary.syndicated_canonical += 1;
       continue;
     }
-
-    seenKeys.add(dedupeKey);
+    if (rssGuidIdentity && seenScopedGuids.has(rssGuidIdentity)) {
+      skipped += 1;
+      duplicateSummary.same_source_guid += 1;
+      continue;
+    }
+    if (canonicalIdentity) seenCanonicalIdentities.set(canonicalIdentity, candidate.sourceId);
+    if (rssGuidIdentity) seenScopedGuids.add(rssGuidIdentity);
     dedupedCandidates.push(candidate);
   }
 
-  const rssGuids = [...new Set(dedupedCandidates.map((candidate) => candidate.rssGuid).filter(Boolean))] as string[];
+  const scopedGuidLookups = dedupedCandidates
+    .map((candidate) => ({ sourceId: candidate.sourceId, rssGuid: normalizeScopedRssGuid(candidate.rssGuid) }))
+    .filter((item): item is { sourceId: string; rssGuid: string } => Boolean(item.rssGuid));
   const canonicalUrls = [...new Set(dedupedCandidates.map((candidate) => candidate.canonicalUrl).filter(Boolean))] as string[];
+  const canonicalIdentities = [...new Set(canonicalUrls.map(normalizeArticleCanonicalIdentity).filter(Boolean))] as string[];
   const expandTransportVariants = (urls: string[]) => [...new Set(urls.flatMap((url) => {
     const identity = getArticleTransportIdentity(url);
     if (!identity) return [url];
     return [url, identity, identity.replace(/^https:/i, "http:")];
   }))];
-  const rssGuidLookupUrls = expandTransportVariants(rssGuids);
   const canonicalLookupUrls = expandTransportVariants(canonicalUrls);
-  const contentHashes = [...new Set(dedupedCandidates.map((candidate) => candidate.contentHash).filter(Boolean))] as string[];
 
   const existingArticles =
-    rssGuids.length || canonicalUrls.length || contentHashes.length
+    scopedGuidLookups.length || canonicalUrls.length
       ? await prisma.article.findMany({
           where: {
             OR: [
-              rssGuidLookupUrls.length ? { rssGuid: { in: rssGuidLookupUrls } } : undefined,
+              ...scopedGuidLookups.map(({ sourceId, rssGuid }) => ({ sourceId, rssGuid })),
+              canonicalIdentities.length ? { canonicalIdentity: { in: canonicalIdentities } } : undefined,
               canonicalLookupUrls.length ? { canonicalUrl: { in: canonicalLookupUrls } } : undefined,
-              contentHashes.length ? { contentHash: { in: contentHashes } } : undefined,
             ].filter(nonNullish),
           },
           select: {
             id: true,
+            sourceId: true,
             rssGuid: true,
             canonicalUrl: true,
-            contentHash: true,
+            canonicalIdentity: true,
             categoryId: true,
             tags: true,
           },
         })
       : [];
 
-  const existingRssGuidIdentities = new Set(
-    existingArticles
-      .map((article) => article.rssGuid)
-      .filter(Boolean)
-      .map((guid) => getArticleTransportIdentity(guid!) || guid!),
-  );
+  const existingRssGuidIdentities = new Set(existingArticles.map((article) => scopedRssGuidIdentity(article.sourceId, article.rssGuid)).filter(Boolean));
   const existingCanonicalIdentities = new Set(
     existingArticles
-      .map((article) => article.canonicalUrl)
+      .map((article) => article.canonicalIdentity || normalizeArticleCanonicalIdentity(article.canonicalUrl))
       .filter(Boolean)
-      .map((url) => getArticleTransportIdentity(url!) || url!),
   );
-  const existingContentHashes = new Set(existingArticles.map((article) => article.contentHash).filter(Boolean));
   const existingByRssGuidIdentity = new Map(
     existingArticles
       .filter((article) => article.rssGuid)
-      .map((article) => [getArticleTransportIdentity(article.rssGuid!) || article.rssGuid!, article]),
+      .map((article) => [scopedRssGuidIdentity(article.sourceId, article.rssGuid)!, article]),
   );
   const existingByCanonicalIdentity = new Map(
     existingArticles
       .filter((article) => article.canonicalUrl)
-      .map((article) => [getArticleTransportIdentity(article.canonicalUrl!) || article.canonicalUrl!, article]),
+      .map((article) => [article.canonicalIdentity || normalizeArticleCanonicalIdentity(article.canonicalUrl)!, article]),
   );
-  const existingByContentHash = new Map(existingArticles.filter((article) => article.contentHash).map((article) => [article.contentHash!, article]));
 
   const enrichmentUpdates = new Map<number, { categoryId?: string | null; tags?: string[] }>();
 
   for (const candidate of dedupedCandidates) {
     const existingArticle =
-      (candidate.rssGuid
-        ? existingByRssGuidIdentity.get(getArticleTransportIdentity(candidate.rssGuid) || candidate.rssGuid)
-        : null) ||
-      existingByCanonicalIdentity.get(getArticleTransportIdentity(candidate.canonicalUrl) || candidate.canonicalUrl) ||
-      existingByContentHash.get(candidate.contentHash);
+      existingByCanonicalIdentity.get(normalizeArticleCanonicalIdentity(candidate.canonicalUrl) || "") ||
+      existingByRssGuidIdentity.get(scopedRssGuidIdentity(candidate.sourceId, candidate.rssGuid) || "");
 
     if (!existingArticle) continue;
 
@@ -2667,13 +2687,15 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
   }
 
   const newCandidates = dedupedCandidates.filter((candidate) => {
-    const isDuplicate =
-      (candidate.rssGuid && existingRssGuidIdentities.has(getArticleTransportIdentity(candidate.rssGuid) || candidate.rssGuid)) ||
-      (candidate.canonicalUrl && existingCanonicalIdentities.has(getArticleTransportIdentity(candidate.canonicalUrl) || candidate.canonicalUrl)) ||
-      (candidate.contentHash && existingContentHashes.has(candidate.contentHash));
-
-    if (isDuplicate) {
+    const canonicalIdentity = normalizeArticleCanonicalIdentity(candidate.canonicalUrl) || "";
+    const canonicalOwner = existingByCanonicalIdentity.get(canonicalIdentity);
+    const canonicalDuplicate = existingCanonicalIdentities.has(canonicalIdentity);
+    const guidDuplicate = existingRssGuidIdentities.has(scopedRssGuidIdentity(candidate.sourceId, candidate.rssGuid) || "");
+    if (canonicalDuplicate || guidDuplicate) {
       skipped += 1;
+      if (canonicalDuplicate && canonicalOwner?.sourceId !== candidate.sourceId) duplicateSummary.syndicated_canonical += 1;
+      else if (canonicalDuplicate) duplicateSummary.same_canonical += 1;
+      else duplicateSummary.same_source_guid += 1;
       return false;
     }
 
@@ -2681,7 +2703,7 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
   });
 
   if (newCandidates.length === 0) {
-    return { inserted, skipped, failed, enriched };
+    return finish();
   }
 
   const articleCreateData = (candidate: IngestCandidate) => ({
@@ -2690,7 +2712,8 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
     categoryId: candidate.categoryId,
     sourceUrl: candidate.sourceUrl,
     canonicalUrl: candidate.canonicalUrl,
-    rssGuid: candidate.rssGuid,
+    canonicalIdentity: normalizeArticleCanonicalIdentity(candidate.canonicalUrl),
+    rssGuid: normalizeScopedRssGuid(candidate.rssGuid),
     contentHash: candidate.contentHash,
     bodyText: candidate.bodyText,
     publishedAt: candidate.publishedAt,
@@ -2709,7 +2732,9 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
       skipDuplicates: true,
     });
     inserted += result.count;
-    skipped += newCandidates.length - result.count;
+    const conflicts = newCandidates.length - result.count;
+    skipped += conflicts;
+    duplicateSummary.concurrent_unique_conflict += conflicts;
   } catch (error: any) {
     if (isUnsafePipelineInvariantError(error)) throw error;
     // createMany is one atomic statement. On failure, retry each bounded input
@@ -2723,6 +2748,7 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
         if (isUnsafePipelineInvariantError(candidateError)) throw candidateError;
         if (candidateError?.code === "P2002") {
           skipped += 1;
+          duplicateSummary.concurrent_unique_conflict += 1;
           continue;
         }
         failed += 1;
@@ -2737,5 +2763,5 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
     }
   }
 
-  return { inserted, skipped, failed, enriched };
+  return finish();
 }

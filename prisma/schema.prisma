@@ -371,8 +371,9 @@ model Article {
   category   SourceCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   sourceUrl  String?
   canonicalUrl String?       @unique
-  rssGuid    String?         @unique
-  contentHash String?        @unique
+  canonicalIdentity String?  @unique
+  rssGuid    String?
+  contentHash String?
   bodyText   String?         @db.Text
   publishedAt DateTime?
   processingStage String     @default("PENDING")
@@ -428,6 +429,8 @@ model Article {
   @@index([date])
   @@index([sourceId, date])
   @@index([categoryId, date])
+  @@unique([sourceId, rssGuid])
+  @@index([contentHash])
   // Supports Agent 2 batch selection: fresh + not-yet-enriched / retryable
   @@index([enrichmentStatus, date])
   @@index([publicationStatus, publicationReadyAt])

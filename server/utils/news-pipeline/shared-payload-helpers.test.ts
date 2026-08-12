@@ -334,57 +334,57 @@ describe("nonNullish", () => {
     expect(filters).toHaveLength(1);
   });
 
-  it("builds correct Prisma OR array for persistCandidates (rssGuids + canonicalUrls + contentHashes)", () => {
-    // Regression test: verifies the persistCandidates Prisma OR filter pattern
-    // produces the same result as the old `filter(Boolean) as any` approach.
-    const rssGuids = ["guid-1", "guid-2"];
+  it("builds the source-scoped GUID and canonical identity OR filters for persistCandidates", () => {
+    const scopedGuids = [{ sourceId: "source-1", rssGuid: "guid-1" }, { sourceId: "source-2", rssGuid: "guid-1" }];
+    const canonicalIdentities = ["https://example.com/a"];
     const canonicalUrls = ["https://example.com/a"];
-    const contentHashes: string[] = [];
 
     const or = [
-      rssGuids.length ? { rssGuid: { in: rssGuids } } : undefined,
+      ...scopedGuids,
+      canonicalIdentities.length ? { canonicalIdentity: { in: canonicalIdentities } } : undefined,
       canonicalUrls.length ? { canonicalUrl: { in: canonicalUrls } } : undefined,
-      contentHashes.length ? { contentHash: { in: contentHashes } } : undefined,
     ].filter(nonNullish);
 
     expect(or).toEqual([
-      { rssGuid: { in: ["guid-1", "guid-2"] } },
+      { sourceId: "source-1", rssGuid: "guid-1" },
+      { sourceId: "source-2", rssGuid: "guid-1" },
+      { canonicalIdentity: { in: ["https://example.com/a"] } },
       { canonicalUrl: { in: ["https://example.com/a"] } },
     ]);
-    expect(or).toHaveLength(2);
+    expect(or).toHaveLength(4);
   });
 
   it("produces empty Prisma OR array when all candidates are empty", () => {
-    const rssGuids: string[] = [];
+    const scopedGuids: Array<{ sourceId: string; rssGuid: string }> = [];
+    const canonicalIdentities: string[] = [];
     const canonicalUrls: string[] = [];
-    const contentHashes: string[] = [];
 
     const or = [
-      rssGuids.length ? { rssGuid: { in: rssGuids } } : undefined,
+      ...scopedGuids,
+      canonicalIdentities.length ? { canonicalIdentity: { in: canonicalIdentities } } : undefined,
       canonicalUrls.length ? { canonicalUrl: { in: canonicalUrls } } : undefined,
-      contentHashes.length ? { contentHash: { in: contentHashes } } : undefined,
     ].filter(nonNullish);
 
     expect(or).toEqual([]);
     expect(or).toHaveLength(0);
   });
 
-  it("includes all three filter types when all have values", () => {
-    const rssGuids = ["g1"];
+  it("does not include content hashes in identity lookups", () => {
+    const scopedGuids = [{ sourceId: "source-1", rssGuid: "g1" }];
+    const canonicalIdentities = ["https://a.com/"];
     const canonicalUrls = ["https://a.com"];
-    const contentHashes = ["hash-abc"];
 
     const or = [
-      rssGuids.length ? { rssGuid: { in: rssGuids } } : undefined,
+      ...scopedGuids,
+      canonicalIdentities.length ? { canonicalIdentity: { in: canonicalIdentities } } : undefined,
       canonicalUrls.length ? { canonicalUrl: { in: canonicalUrls } } : undefined,
-      contentHashes.length ? { contentHash: { in: contentHashes } } : undefined,
     ].filter(nonNullish);
 
     expect(or).toHaveLength(3);
     expect(or).toEqual([
-      { rssGuid: { in: ["g1"] } },
+      { sourceId: "source-1", rssGuid: "g1" },
+      { canonicalIdentity: { in: ["https://a.com/"] } },
       { canonicalUrl: { in: ["https://a.com"] } },
-      { contentHash: { in: ["hash-abc"] } },
     ]);
   });
 });

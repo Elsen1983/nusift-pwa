@@ -5,6 +5,7 @@ const prismaUpdateMock = vi.fn();
 const prismaCreateManyMock = vi.fn();
 const prismaCreateMock = vi.fn();
 const prismaTransactionMock = vi.fn();
+const logAgentScanMock = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -17,6 +18,7 @@ vi.mock("../prisma", () => ({
     $transaction: (...args: any[]) => prismaTransactionMock(...args),
   },
 }));
+vi.mock("./log", () => ({ logAgentScan: (...args: any[]) => logAgentScanMock(...args) }));
 
 const makeCandidate = (overrides: Record<string, unknown> = {}) => ({
   sourceId: "src-1",
@@ -51,14 +53,17 @@ describe("persistCandidates", () => {
     prismaCreateManyMock.mockResolvedValue({ count: 0 });
     prismaCreateMock.mockResolvedValue({ id: 1 });
     prismaTransactionMock.mockImplementation((promises: Promise<unknown>[]) => Promise.all(promises));
+    logAgentScanMock.mockResolvedValue(undefined);
   });
 
   it("enriches an existing uncategorized article when category ingest finds the same article", async () => {
     prismaFindManyMock.mockResolvedValue([
       {
         id: 101,
+        sourceId: "src-1",
         rssGuid: "guid-1",
         canonicalUrl: "https://example.com/articles/1",
+        canonicalIdentity: "https://example.com/articles/1",
         contentHash: "hash-1",
         categoryId: null,
         tags: [],
@@ -91,8 +96,10 @@ describe("persistCandidates", () => {
       .mockResolvedValueOnce([
         {
           id: 303,
+          sourceId: "src-1",
           rssGuid: "guid-1",
           canonicalUrl: "https://example.com/articles/1",
+          canonicalIdentity: "https://example.com/articles/1",
           contentHash: "hash-1",
           categoryId: null,
           tags: [],
@@ -113,8 +120,10 @@ describe("persistCandidates", () => {
     prismaFindManyMock.mockResolvedValue([
       {
         id: 404,
+        sourceId: "src-1",
         rssGuid: "http://example.com/articles/1",
         canonicalUrl: "http://example.com/articles/1",
+        canonicalIdentity: "https://example.com/articles/1",
         contentHash: "old-hash",
         categoryId: null,
         tags: [],
@@ -138,8 +147,10 @@ describe("persistCandidates", () => {
     prismaFindManyMock.mockResolvedValue([
       {
         id: 202,
+        sourceId: "src-1",
         rssGuid: "guid-1",
         canonicalUrl: "https://example.com/articles/1",
+        canonicalIdentity: "https://example.com/articles/1",
         contentHash: "hash-1",
         categoryId: "cat-existing",
         tags: ["Existing"],
@@ -186,6 +197,105 @@ describe("persistCandidates", () => {
     const result = await persistCandidates([makeCandidate()]);
 
     expect(result).toEqual({ inserted: 0, skipped: 1, failed: 0, enriched: 0 });
+    expect(logAgentScanMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: "ARTICLE_DUPLICATE_SUMMARY",
+      errorLog: expect.stringContaining('"concurrent_unique_conflict":1'),
+    }));
+  });
+
+  it("normalizes malformed or missing GUIDs to null before persistence", async () => {
+    prismaCreateManyMock.mockResolvedValue({ count: 2 });
+    const { persistCandidates } = await import("./ingest");
+    await persistCandidates([
+      makeCandidate({ canonicalUrl: "https://example.com/no-guid", rssGuid: "null" }),
+      makeCandidate({ canonicalUrl: "https://example.com/bad-guid", rssGuid: "bad\u0000guid" }),
+    ]);
+    expect(prismaCreateManyMock.mock.calls[0]?.[0]?.data.map((row: any) => row.rssGuid)).toEqual([null, null]);
+  });
+
+  it("allows the same RSS GUID for different sources", async () => {
+    prismaCreateManyMock.mockResolvedValue({ count: 2 });
+    const { persistCandidates } = await import("./ingest");
+
+    const result = await persistCandidates([
+      makeCandidate({ sourceId: "src-1", rssGuid: "shared-guid", canonicalUrl: "https://publisher-a.test/story", contentHash: "same-body" }),
+      makeCandidate({ sourceId: "src-2", rssGuid: "shared-guid", canonicalUrl: "https://publisher-b.test/story", contentHash: "same-body" }),
+    ]);
+
+    expect(result).toEqual({ inserted: 2, skipped: 0, failed: 0, enriched: 0 });
+    const data = prismaCreateManyMock.mock.calls[0]?.[0]?.data;
+    expect(data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceId: "src-1", rssGuid: "shared-guid" }),
+      expect.objectContaining({ sourceId: "src-2", rssGuid: "shared-guid" }),
+    ]));
+  });
+
+  it("stores identical content hashes when canonical publisher destinations differ", async () => {
+    prismaCreateManyMock.mockResolvedValue({ count: 2 });
+    const { persistCandidates } = await import("./ingest");
+
+    const result = await persistCandidates([
+      makeCandidate({ sourceId: "src-1", rssGuid: null, canonicalUrl: "https://publisher-a.test/wire/1", contentHash: "wire-body" }),
+      makeCandidate({ sourceId: "src-2", rssGuid: null, canonicalUrl: "https://publisher-b.test/wire/1", contentHash: "wire-body" }),
+    ]);
+
+    expect(result).toEqual({ inserted: 2, skipped: 0, failed: 0, enriched: 0 });
+  });
+
+  it("does not let an identical short boilerplate hash suppress a valid canonical article", async () => {
+    prismaFindManyMock.mockResolvedValue([]);
+    prismaCreateManyMock.mockResolvedValue({ count: 1 });
+    const { persistCandidates } = await import("./ingest");
+
+    const result = await persistCandidates([
+      makeCandidate({ rssGuid: null, canonicalUrl: "https://publisher.test/valid-story", contentHash: "blocked-page-hash", bodyText: "Valid article body" }),
+    ]);
+
+    expect(result.inserted).toBe(1);
+    expect(prismaFindManyMock.mock.calls[0]?.[0]?.where).not.toEqual(expect.objectContaining({ contentHash: expect.anything() }));
+  });
+
+  it("stores an external destination with the aggregator collection source", async () => {
+    prismaCreateManyMock.mockResolvedValue({ count: 1 });
+    const { persistCandidates } = await import("./ingest");
+
+    await persistCandidates([makeCandidate({
+      sourceId: "aggregator-source",
+      sourceUrl: "https://aggregator.test",
+      canonicalUrl: "https://external-publisher.test/story/1",
+    })]);
+
+    expect(prismaCreateManyMock.mock.calls[0]?.[0]?.data[0]).toEqual(expect.objectContaining({
+      sourceId: "aggregator-source",
+      sourceUrl: "https://aggregator.test",
+      canonicalUrl: "https://external-publisher.test/story/1",
+      canonicalIdentity: "https://external-publisher.test/story/1",
+    }));
+  });
+
+  it("classifies an external canonical already collected by another source as syndicated", async () => {
+    prismaFindManyMock.mockResolvedValue([{
+      id: 500,
+      sourceId: "first-aggregator",
+      rssGuid: null,
+      canonicalUrl: "https://external-publisher.test/story/1",
+      canonicalIdentity: "https://external-publisher.test/story/1",
+      categoryId: null,
+      tags: [],
+    }]);
+    const { persistCandidates } = await import("./ingest");
+
+    const result = await persistCandidates([makeCandidate({
+      sourceId: "second-aggregator",
+      rssGuid: null,
+      canonicalUrl: "https://external-publisher.test/story/1",
+    })]);
+
+    expect(result.skipped).toBe(1);
+    expect(logAgentScanMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: "ARTICLE_DUPLICATE_SUMMARY",
+      errorLog: expect.stringContaining('"syndicated_canonical":1'),
+    }));
   });
 });
 

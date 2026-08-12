@@ -7,6 +7,7 @@ const prismaSourceCategoryUpdateMock = vi.hoisted(() => vi.fn());
 const prismaSourceCategoryFindManyMock = vi.hoisted(() => vi.fn());
 const prismaArticleFindManyMock = vi.hoisted(() => vi.fn());
 const prismaArticleFindUniqueMock = vi.hoisted(() => vi.fn());
+const prismaArticleFindFirstMock = vi.hoisted(() => vi.fn());
 const prismaArticleCreateManyMock = vi.hoisted(() => vi.fn());
 const prismaArticleUpdateMock = vi.hoisted(() => vi.fn());
 const prismaTransactionMock = vi.hoisted(() => vi.fn());
@@ -30,6 +31,7 @@ vi.mock("../prisma", () => ({
     article: {
       findMany: (...args: any[]) => prismaArticleFindManyMock(...args),
       findUnique: (...args: any[]) => prismaArticleFindUniqueMock(...args),
+      findFirst: (...args: any[]) => prismaArticleFindFirstMock(...args),
       createMany: (...args: any[]) => prismaArticleCreateManyMock(...args),
       update: (...args: any[]) => prismaArticleUpdateMock(...args),
     },
@@ -169,6 +171,7 @@ describe("generic RSS fallback integration", () => {
     prismaSourceCategoryUpdateMock.mockResolvedValue({});
     prismaSourceCategoryFindManyMock.mockResolvedValue([]);
     prismaArticleFindManyMock.mockResolvedValue([]);
+    prismaArticleFindFirstMock.mockResolvedValue(null);
     prismaArticleCreateManyMock.mockResolvedValue({ count: 0 });
     prismaArticleUpdateMock.mockResolvedValue({});
     prismaTransactionMock.mockResolvedValue([]);

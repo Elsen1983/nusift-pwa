@@ -31,17 +31,7 @@ export const getHttpsArticleUrl = (rawUrl: string): string | null => {
  * identity remains unchanged.
  */
 export const getArticleTransportIdentity = (rawUrl: string): string | null => {
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    if (url.username || url.password) return null;
-    url.protocol = "https:";
-    if (url.port === "80") url.port = "";
-    url.hash = "";
-    return url.toString();
-  } catch {
-    return null;
-  }
+  return normalizeArticleCanonicalIdentity(rawUrl);
 };
 
 /**
@@ -63,3 +53,4 @@ export const isExplicitHttpFallbackAllowed = (
 };
 
 export const ARTICLE_HTTP_FALLBACK_HOSTS_ENV = HTTP_FALLBACK_HOSTS_ENV;
+import { normalizeArticleCanonicalIdentity } from "./article-identity";
