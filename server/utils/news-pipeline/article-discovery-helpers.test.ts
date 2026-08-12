@@ -334,6 +334,22 @@ describe("article-discovery-helpers", () => {
       expect(entries.some((e) => e.url.includes("robot-discovered"))).toBe(true);
     });
 
+    it("treats apex and www hosts as the same sitemap-index scope", async () => {
+      const { discoverSitemapUrls } = await import("./article-discovery-helpers");
+      const sitemapIndex = `<?xml version="1.0"?><sitemapindex><sitemap><loc>https://www.example.com/custom-sitemap.xml</loc></sitemap></sitemapindex>`;
+      const customSitemap = `<?xml version="1.0"?><urlset><url><loc>https://www.example.com/news/www-story</loc></url></urlset>`;
+
+      safeFetchMock.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/sitemap.xml") return makeResponse(sitemapIndex);
+        if (url === "https://www.example.com/custom-sitemap.xml") return makeResponse(customSitemap);
+        return makeResponse("", false);
+      });
+
+      const entries = await discoverSitemapUrls("https://example.com/");
+      expect(safeFetchMock).toHaveBeenCalledWith("https://www.example.com/custom-sitemap.xml", expect.anything());
+      expect(entries.some((entry) => entry.url.includes("www-story"))).toBe(true);
+    });
+
     it("handles missing sitemaps gracefully", async () => {
       const { discoverSitemapUrls } = await import("./article-discovery-helpers");
 

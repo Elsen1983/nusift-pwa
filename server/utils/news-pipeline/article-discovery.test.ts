@@ -2391,8 +2391,9 @@ describe("article-discovery", () => {
     const result = await runArticleDiscoveryBatch({ maxTargets: 1 });
 
     expect(result.processed).toBe(1);
-    expect(result.deferred).toBe(0);
-    expect(result.remainingEligible).toBe(0);
+    expect(result.deferred).toBe(2);
+    expect(result.remainingEligible).toBe(2);
+    expect(result.stoppedReason).toBe("max_targets");
     expect(result.targets[0]?.sourceId).toBe("src-3");
     expect(result.targets[0]?.categoryId).toBe("cat-times");
     expect(prismaArtifactCreateMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -2401,6 +2402,12 @@ describe("article-discovery", () => {
         categoryId: "cat-times",
         artifactType: "article_discovery_candidates",
       }),
+    }));
+    expect(prismaArtifactCreateManyMock).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.arrayContaining([
+        expect.objectContaining({ sourceId: "src-1" }),
+        expect.objectContaining({ sourceId: "src-2" }),
+      ]),
     }));
   });
 

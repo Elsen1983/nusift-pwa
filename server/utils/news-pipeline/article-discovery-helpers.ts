@@ -276,7 +276,7 @@ const safeFetchText = async (
   // Validate publisher scope before accounting or invoking safeFetch. A
   // robots.txt directive to an external host is ignored without spending the
   // target's budget or appearing as a publisher request failure.
-  if (urlObj.hostname.replace(/^www\\./, "") !== targetObj.hostname.replace(/^www\\./, "")) {
+  if (urlObj.hostname.replace(/^www\./, "") !== targetObj.hostname.replace(/^www\./, "")) {
     return null;
   }
 

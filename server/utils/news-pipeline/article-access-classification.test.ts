@@ -5,6 +5,7 @@ import {
   classifyArticleAccess,
   extractJsonLdPaywallSignalsFromMarkup,
   extractJsonLdPaywallSignalsFromValue,
+  isSubstantialBodyText,
   mapClassificationToIsPaywall,
   type ArticleAccessClassification,
   type ArticleAccessClassificationInput,
@@ -37,6 +38,17 @@ const expectClassification = (
   expect(result.classification).toBe(expected);
   return result;
 };
+
+describe("isSubstantialBodyText Unicode sentence boundaries", () => {
+  it("accepts a sufficiently long CJK body with CJK punctuation", () => {
+    const body = `${"これは公開された記事の詳細な本文であり、読者に必要な背景と分析を提供します".repeat(6)}。` +
+      `${"追加の段落では新しい事実と関係者の説明を分かりやすく紹介します".repeat(5)}！` +
+      `${"最後の段落では調査結果の意味と今後の見通しを慎重にまとめています".repeat(5)}？`;
+
+    expect(body.length).toBeGreaterThanOrEqual(400);
+    expect(isSubstantialBodyText(body)).toBe(true);
+  });
+});
 
 describe("classifyArticleAccess — Prompt 15A regression fixtures", () => {
   it("A: fully accessible article whose topic repeatedly includes paywall/subscription words → ACCESSIBLE", () => {

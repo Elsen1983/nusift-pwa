@@ -451,11 +451,17 @@ describe("orchestrator – runAgent1Batch", () => {
     const result = await runAgent1Batch({ maxTargets: 2 });
 
     expect(result.processed).toBe(2);
-    expect(result.deferred).toBe(0);
-    expect(result.remainingEligible).toBe(0);
-    expect(result.stoppedReason).toBe("completed");
+    expect(result.deferred).toBe(2);
+    expect(result.remainingEligible).toBe(2);
+    expect(result.stoppedReason).toBe("max_targets");
     expect(ingestSourceMock).toHaveBeenNthCalledWith(1, "src-3", undefined, undefined, expect.any(String), expect.objectContaining({ static429Hostnames: expect.any(Set) }));
     expect(ingestSourceMock).toHaveBeenNthCalledWith(2, "src-4", undefined, undefined, expect.any(String), expect.objectContaining({ static429Hostnames: expect.any(Set) }));
+    expect(prismaMock.pipelineArtifact.createMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.arrayContaining([
+        expect.objectContaining({ sourceId: "src-1" }),
+        expect.objectContaining({ sourceId: "src-2" }),
+      ]),
+    }));
   });
 
   it("failures count as processed and do not abort the batch", async () => {

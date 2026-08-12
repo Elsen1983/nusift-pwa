@@ -1962,7 +1962,7 @@ async function getLatestDeferredTargetPriority(input?: {
       createdAt: true,
     },
     orderBy: { createdAt: "desc" },
-    take: 100,
+    take: 1000,
   });
 
   return deferredArtifacts
@@ -2000,13 +2000,20 @@ async function prioritizeDeferredTargets(
   if (deferredPriority.length === 0) return targets;
 
   const priorityByKey = new Map(deferredPriority.map((key, index) => [key, index]));
-  return targets
+  const deferredTargets = targets
     .filter((target) => priorityByKey.has(agent2TargetKey(target)))
     .sort((a, b) => {
       const aPriority = priorityByKey.get(agent2TargetKey(a)) ?? Number.MAX_SAFE_INTEGER;
       const bPriority = priorityByKey.get(agent2TargetKey(b)) ?? Number.MAX_SAFE_INTEGER;
       return aPriority - bPriority;
     });
+  if (deferredTargets.length === 0) return targets;
+
+  const deferredKeys = new Set(deferredTargets.map(agent2TargetKey));
+  return [
+    ...deferredTargets,
+    ...targets.filter((target) => !deferredKeys.has(agent2TargetKey(target))),
+  ];
 }
 
 export async function runArticleDiscoveryBatch(input?: {

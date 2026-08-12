@@ -252,7 +252,7 @@ export function matchTopicWordPatterns(text: string): string[] {
 export function isSubstantialBodyText(text: string | null | undefined): boolean {
   const trimmed = (text ?? "").trim();
   if (trimmed.length < 400) return false;
-  const sentenceEnders = trimmed.match(/[.!?]+(?=\s|$)/g);
+  const sentenceEnders = trimmed.match(/(?:[.!?]+(?=\s|$)|[。！？؟…]+)/gu);
   return (sentenceEnders?.length ?? 0) >= 3;
 }
 

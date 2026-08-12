@@ -104,6 +104,27 @@ describe("POST /api/internal/run-agent2-headless", () => {
     expect(mocks.persistTelemetry).toHaveBeenCalledTimes(1);
   });
 
+  it("completes neutrally without queue work when browser fallback is disabled", async () => {
+    mocks.browserEnabled.mockReturnValue(false);
+
+    const result = await (await loadHandler())({} as any);
+
+    expect(mocks.processQueue).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      stage: "agent2-headless",
+      processed: 0,
+      remaining: 0,
+      complete: true,
+      skipReason: "browser_disabled",
+      telemetry: {
+        processed: 0,
+        complete: true,
+        productivity: {},
+      },
+    });
+    expect(mocks.persistTelemetry).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retry completed browser work when telemetry persistence fails", async () => {
     mocks.persistTelemetry.mockRejectedValue(new Error("database unavailable"));
 

@@ -1999,11 +1999,18 @@ function isMeaningfulParagraph(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length < 20) return false;
 
-  // Skip lines that are mostly punctuation or special chars
-  const alphaRatio = (trimmed.replace(/[^a-zA-Z0-9]/g, "").length) / trimmed.length;
+  // Unicode letters and numbers are meaningful regardless of writing system.
+  const alphaNumericLength = trimmed.replace(/[^\p{L}\p{N}]/gu, "").length;
+  const alphaRatio = alphaNumericLength / trimmed.length;
   if (alphaRatio < 0.4) return false;
 
-  // Skip single-word or very short fragments
+  // CJK and Thai text commonly has no spaces, so a word-count gate would
+  // discard valid paragraphs. The length and density gates above are enough.
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}]/u.test(trimmed)) {
+    return alphaNumericLength >= 12;
+  }
+
+  // Space-delimited scripts still reject single-word and short fragments.
   const words = trimmed.split(/\s+/);
   if (words.length < 4) return false;
 
@@ -2190,7 +2197,7 @@ function bodyEqualsExcerpt(bodyText: string | null, excerpt: string | null): boo
  * Count sentence-ending punctuation marks in text.
  */
 function countSentenceEnders(text: string): number {
-  const matches = text.match(/[.!?]+(?=\s|$)/g);
+  const matches = text.match(/(?:[.!?]+(?=\s|$)|[。！？؟…]+)/gu);
   return matches ? matches.length : 0;
 }
 

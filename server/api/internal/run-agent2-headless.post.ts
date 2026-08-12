@@ -23,13 +23,6 @@ export default defineEventHandler(async (event) => {
   if (!secretsMatch(providedSecret, expectedSecret)) {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized." });
   }
-  if (!isBrowserFallbackEnabled()) {
-    throw createError({
-      statusCode: 503,
-      statusMessage: "Agent 2 browser fallback is disabled.",
-    });
-  }
-
   const body = await readBody(event).catch(() => ({}));
   const orchestrationRunId = typeof body?.orchestrationRunId === "string"
     ? body.orchestrationRunId.trim().slice(0, 100)
@@ -51,6 +44,40 @@ export default defineEventHandler(async (event) => {
     concurrencyLimit: 1,
   });
   tracker.recordSleep(sleepMs);
+
+  if (!isBrowserFallbackEnabled()) {
+    const telemetry = tracker.finalize({
+      processed: 0,
+      succeeded: 0,
+      failedRetryable: 0,
+      failedPermanent: 0,
+      skipped: 0,
+      deferred: 0,
+      quarantined: 0,
+      claimLost: 0,
+      persistenceFailed: 0,
+      productivity: {},
+      remainingBefore,
+      remainingAfter: 0,
+      complete: true,
+    });
+    try {
+      await persistStageBatchTelemetry({ pipelineRunId: orchestrationRunId, telemetry });
+    } catch {
+      console.error("[agent2-headless] Disabled-stage telemetry persistence failed.", {
+        orchestrationRunId,
+        batchSeq,
+      });
+    }
+    return {
+      stage: "agent2-headless" as const,
+      processed: 0,
+      remaining: 0,
+      complete: true,
+      skipReason: "browser_disabled" as const,
+      telemetry,
+    };
+  }
 
   const result = await processArticleDiscoveryHeadlessQueue({
     limit: 3,

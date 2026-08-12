@@ -286,7 +286,7 @@ async function getLatestAgent1DeferredTargetPriority(input?: {
       createdAt: true,
     },
     orderBy: { createdAt: "desc" },
-    take: 100,
+    take: 1000,
   });
 
   return deferredArtifacts
@@ -329,8 +329,13 @@ async function prioritizeAgent1DeferredTargets(
       const bPriority = priorityByKey.get(agent1TargetKey(b)) ?? Number.MAX_SAFE_INTEGER;
       return aPriority - bPriority;
     });
+  if (deferredTargets.length === 0) return targets;
 
-  return deferredTargets.length > 0 ? deferredTargets : targets;
+  const deferredKeys = new Set(deferredTargets.map(agent1TargetKey));
+  return [
+    ...deferredTargets,
+    ...targets.filter((target) => !deferredKeys.has(agent1TargetKey(target))),
+  ];
 }
 
 /**

@@ -2076,6 +2076,22 @@ describe("text normalization helpers", () => {
     expect(paragraphs.length).toBe(1);
     expect(paragraphs[0]).toContain("meaningful paragraph");
   });
+
+  it("extractMeaningfulParagraphs keeps meaningful non-Latin paragraphs", async () => {
+    const { extractMeaningfulParagraphs } = await import("./article-content-extractor");
+    const { JSDOM } = await import("./jsdom-runtime").then((module) => module.loadJsdom());
+    const dom = new JSDOM(`<div>
+      <p>これは空白を使わずに書かれた十分な長さの日本語の記事本文です。重要な内容を詳しく説明しています。</p>
+      <p>Эта содержательная русская часть статьи содержит достаточно слов и символов.</p>
+      <p>短い</p>
+    </div>`);
+    const container = dom.window.document.querySelector("div")!;
+
+    expect(extractMeaningfulParagraphs(container)).toEqual([
+      "これは空白を使わずに書かれた十分な長さの日本語の記事本文です。重要な内容を詳しく説明しています。",
+      "Эта содержательная русская часть статьи содержит достаточно слов и символов.",
+    ]);
+  });
 });
 
 // ─── HTTP 202 interstitial/challenge + JSON-LD articleBody ──────────────────
