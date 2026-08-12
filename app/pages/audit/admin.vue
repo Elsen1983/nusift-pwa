@@ -347,7 +347,7 @@
               :disabled="isPipelineRunning || !canRunManualPipeline"
               class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {{ isPipelineRunning ? "Running..." : "Run Agent 1 batch" }}
+              {{ isPipelineRunning ? "Running..." : agent1Progress?.remainingEligible ? "Continue Agent 1 batch" : "Run Agent 1 batch" }}
             </button>
             <button
               @click="runArticleDiscovery"
@@ -355,7 +355,7 @@
               :title="agent2BatchDisabledReason || 'Run the next bounded Agent 2 discovery batch.'"
               class="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm font-bold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {{ isArticleDiscoveryRunning ? "Discovering..." : "Run Agent 2 batch" }}
+              {{ isArticleDiscoveryRunning ? "Discovering..." : agent2Progress?.remainingEligible ? "Continue Agent 2 batch" : "Run Agent 2 batch" }}
             </button>
             <p v-if="agent2BatchDisabledReason" class="basis-full text-[11px] font-medium text-amber-200">
               Agent 2 batch unavailable: {{ agent2BatchDisabledReason }}
@@ -463,7 +463,7 @@
                 :disabled="isPipelineRunning || !canRunManualPipeline"
                 class="rounded-lg bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {{ isPipelineRunning ? "Running..." : "Run Agent 1 batch" }}
+                {{ isPipelineRunning ? "Running..." : agent1Progress?.remainingEligible ? "Continue Agent 1 batch" : "Run Agent 1 batch" }}
               </button>
             </div>
           </div>
@@ -582,17 +582,17 @@
             </button>
           </div>
           <div v-if="agent1Progress" class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px] text-on-surface-variant">
-            <span>Eligible now: <strong class="text-cyan-200">{{ agent1Progress.totalEligibleNow }}</strong></span>
+            <span>Next-cycle scope: <strong class="text-cyan-200">{{ agent1Progress.totalEligibleNow }}</strong></span>
             <span v-if="agent1Progress.processedLastRun > 0">Last run processed: <strong>{{ agent1Progress.processedLastRun }}</strong></span>
             <span>Latest batch deferred: <strong :class="agent1Progress.deferredLastRun > 0 ? 'text-amber-200' : 'text-emerald-300'">{{ agent1Progress.deferredLastRun }}</strong></span>
             <span v-if="agent1Progress.stoppedReason" class="font-medium text-amber-200">stopped: {{ agent1Progress.stoppedReason }}</span>
             <span v-if="agent1Progress.lastDurationMs != null">Duration: <strong>{{ Math.round(agent1Progress.lastDurationMs / 1000) }}s</strong></span>
           </div>
           <p v-if="agent1Progress && agent1Progress.remainingEligible === 0 && agent1Progress.lastRunAt" class="mt-2 text-xs text-emerald-300">
-            The latest Agent 1 batch left no deferred targets. "Eligible now" is the current next-cycle scope.
+            The latest Agent 1 batch left no deferred targets. "Next-cycle scope" is the recurring subscribed target set.
           </p>
           <p v-else-if="agent1Progress && agent1Progress.remainingEligible > 0" class="mt-2 text-xs text-amber-200">
-            More Agent 1 targets remain. Run Agent 1 again or wait for the next scheduled batch.
+            {{ agent1Progress.remainingEligible }} target(s) remain in the current manual batch. Continue Agent 1 to drain them, or wait for the next scheduled batch.
           </p>
           <div v-if="agent1Progress && agent1Progress.recentDeferredTargets.length > 0" class="mt-3">
             <p class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant/70">
@@ -628,7 +628,7 @@
                   :title="agent2BatchDisabledReason || 'Run the next bounded Agent 2 discovery batch.'"
                   class="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm font-bold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {{ isArticleDiscoveryRunning ? "Discovering..." : "Run Agent 2 batch" }}
+                {{ isArticleDiscoveryRunning ? "Discovering..." : agent2Progress?.remainingEligible ? "Continue Agent 2 batch" : "Run Agent 2 batch" }}
                 </button>
                 <button
                   v-if="canRunManualPipeline"
@@ -665,7 +665,7 @@
             </button>
           </div>
           <div v-if="agent2Progress" class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px] text-on-surface-variant">
-            <span>Eligible now: <strong class="text-cyan-200">{{ agent2Progress.totalEligibleNow }}</strong></span>
+            <span>Next-cycle scope: <strong class="text-cyan-200">{{ agent2Progress.totalEligibleNow }}</strong></span>
             <span v-if="agent2Progress.processedLastRun > 0">Last run processed: <strong>{{ agent2Progress.processedLastRun }}</strong></span>
             <span>Latest batch deferred: <strong :class="agent2Progress.deferredLastRun > 0 ? 'text-amber-200' : 'text-emerald-300'">{{ agent2Progress.deferredLastRun }}</strong></span>
             <span v-if="agent2Progress.stoppedReason" class="font-medium text-amber-200">stopped: {{ agent2Progress.stoppedReason }}</span>
@@ -678,7 +678,7 @@
             No Agent 2 targets currently eligible.
           </p>
           <p v-else-if="agent2Progress && agent2Progress.remainingEligible > 0 && agent2Progress.stoppedReason" class="mt-2 text-xs text-amber-200">
-            More eligible targets remain. Run Agent 2 again or wait for the next scheduled batch.
+            {{ agent2Progress.remainingEligible }} target(s) remain in the current batch. Continue Agent 2 to drain them, or wait for the next scheduled batch.
           </p>
           <div v-if="agent2Progress && agent2Progress.recentDeferredTargets.length > 0" class="mt-3">
             <p class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant/70">

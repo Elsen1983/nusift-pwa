@@ -2011,7 +2011,7 @@ async function getLatestDeferredTargetPriority(input?: {
     .map((entry) => entry.key);
 }
 
-async function prioritizeDeferredTargets(
+async function selectAgent2BatchTargets(
   targets: ArticleDiscoveryTarget[],
   input?: { sourceIds?: string[]; categoryIds?: string[] }
 ): Promise<ArticleDiscoveryTarget[]> {
@@ -2033,11 +2033,9 @@ async function prioritizeDeferredTargets(
     });
   if (deferredTargets.length === 0) return targets;
 
-  const deferredKeys = new Set(deferredTargets.map(agent2TargetKey));
-  return [
-    ...deferredTargets,
-    ...targets.filter((target) => !deferredKeys.has(agent2TargetKey(target))),
-  ];
+  // A bounded batch is a durable cycle. Do not append a new cycle behind its
+  // unfinished targets, otherwise every invocation re-defers work forever.
+  return deferredTargets;
 }
 
 export async function runArticleDiscoveryBatch(input?: {
@@ -2078,7 +2076,7 @@ export async function runArticleDiscoveryBatch(input?: {
 
   const startedAt = Date.now();
   const { targets: resolvedTargets, diagnostics: resolutionDiagnostics } = await resolveAgent2Targets(input);
-  const targets = await prioritizeDeferredTargets(resolvedTargets, input);
+  const targets = await selectAgent2BatchTargets(resolvedTargets, input);
 
   if (targets.length === 0) {
     if (input?.orchestrationRunId && resolutionDiagnostics.skippedTargets.length > 0) {

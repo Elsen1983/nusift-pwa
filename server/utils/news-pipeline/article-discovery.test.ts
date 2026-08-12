@@ -2349,7 +2349,7 @@ describe("article-discovery", () => {
     expect(result.pipelineRunId).toBe("run-bounded");
   });
 
-  it("prioritizes latest deferred targets on the next bounded run", async () => {
+  it("drains latest deferred targets before starting a new discovery cycle", async () => {
     const { runArticleDiscoveryBatch } = await import("./article-discovery");
     const { resolveActivePipelineTargets } = await import("./targets");
     const { createPipelineRun } = await import("./artifacts");
@@ -2399,9 +2399,9 @@ describe("article-discovery", () => {
     const result = await runArticleDiscoveryBatch({ maxTargets: 1 });
 
     expect(result.processed).toBe(1);
-    expect(result.deferred).toBe(2);
-    expect(result.remainingEligible).toBe(2);
-    expect(result.stoppedReason).toBe("max_targets");
+    expect(result.deferred).toBe(0);
+    expect(result.remainingEligible).toBe(0);
+    expect(result.stoppedReason).toBe("completed");
     expect(result.targets[0]?.sourceId).toBe("src-3");
     expect(result.targets[0]?.categoryId).toBe("cat-times");
     expect(prismaArtifactCreateMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -2411,12 +2411,7 @@ describe("article-discovery", () => {
         artifactType: "article_discovery_candidates",
       }),
     }));
-    expect(prismaArtifactCreateManyMock).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.arrayContaining([
-        expect.objectContaining({ sourceId: "src-1" }),
-        expect.objectContaining({ sourceId: "src-2" }),
-      ]),
-    }));
+    expect(prismaArtifactCreateManyMock).not.toHaveBeenCalled();
   });
 
   it("creates deferred artifacts with compact payload for unprocessed targets", async () => {

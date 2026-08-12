@@ -311,7 +311,7 @@ async function getLatestAgent1DeferredTargetPriority(input?: {
     .map((entry) => entry.key);
 }
 
-async function prioritizeAgent1DeferredTargets(
+async function selectAgent1BatchTargets(
   targets: PipelineTarget[],
   input?: { sourceIds?: string[]; categoryIds?: string[] },
 ): Promise<PipelineTarget[]> {
@@ -333,11 +333,9 @@ async function prioritizeAgent1DeferredTargets(
     });
   if (deferredTargets.length === 0) return targets;
 
-  const deferredKeys = new Set(deferredTargets.map(agent1TargetKey));
-  return [
-    ...deferredTargets,
-    ...targets.filter((target) => !deferredKeys.has(agent1TargetKey(target))),
-  ];
+  // A bounded batch is a durable cycle. Do not append a new cycle behind its
+  // unfinished targets, otherwise every invocation re-defers work forever.
+  return deferredTargets;
 }
 
 /**
@@ -389,7 +387,7 @@ export async function runAgent1Batch(input?: {
 
   const startedAt = Date.now();
   const { targets } = await resolveAgent1Targets(input);
-  const resolvedTargets = await prioritizeAgent1DeferredTargets(targets, input);
+  const resolvedTargets = await selectAgent1BatchTargets(targets, input);
 
   if (resolvedTargets.length === 0) {
     await logAgentScan({
