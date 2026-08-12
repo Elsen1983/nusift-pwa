@@ -465,8 +465,8 @@ describe("paywall repair assessment and execution", () => {
 
     const headlessPersistence = await persistEnrichmentOutcome(headlessOutcome, "run-1", "claim-headless");
     const recoveredPersistence = await persistEnrichmentOutcome(recoveredOutcome, "run-1", "claim-recovered");
-    expect(headlessPersistence).toEqual({ artifactId: "persisted-1", applied: true, claimLost: false });
-    expect(recoveredPersistence).toEqual({ artifactId: "persisted-2", applied: true, claimLost: false });
+    expect(headlessPersistence).toEqual({ artifactId: "persisted-1", applied: true, claimLost: false, madePublishable: false });
+    expect(recoveredPersistence).toEqual({ artifactId: "persisted-2", applied: true, claimLost: false, madePublishable: true });
     expect(prismaMock.articleUpdateMany).toHaveBeenCalledTimes(2);
     expect(prismaMock.claimDeleteMany).toHaveBeenCalledTimes(2);
     expect(activeClaims).toEqual(new Set());
