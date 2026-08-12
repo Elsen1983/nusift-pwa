@@ -136,6 +136,10 @@ export default defineEventHandler(async (event) => {
     quarantined: result.dispositions?.quarantined ?? interstitialCounts.quarantined,
     claimLost: result.dispositions?.claimLost ?? (result.persist?.claimLost ?? 0),
     persistenceFailed: result.dispositions?.persistenceFailed ?? (result.persist?.failed ?? 0),
+    productivity: {
+      articlesEnriched: result.dispositions?.succeeded ?? (byKind.SUCCESS ?? 0),
+      articlesPublishable: result.persist?.madePublishable ?? 0,
+    },
     remainingBefore,
     remainingAfter: progress.retryableNow,
     complete,

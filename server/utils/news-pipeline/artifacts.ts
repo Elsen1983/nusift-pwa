@@ -121,6 +121,7 @@ export async function createPipelineRun(targetCount: number) {
 
 export async function persistPipelineArtifact(input: {
   pipelineRunId: string;
+  orchestrationRunId?: string | null;
   result: IngestResult;
 }) {
   const payload: Prisma.InputJsonObject = {
@@ -145,6 +146,7 @@ export async function persistPipelineArtifact(input: {
   return prisma.pipelineArtifact.create({
     data: {
       pipelineRunId: input.pipelineRunId,
+      orchestrationRunId: input.orchestrationRunId ?? null,
       sourceId: input.result.sourceId,
       categoryId: input.result.categoryId || null,
       artifactType: "rss_candidates",
@@ -170,6 +172,7 @@ export async function persistPipelineArtifact(input: {
 
 export async function persistAgent1TargetOutcomeArtifact(input: {
   pipelineRunId: string;
+  orchestrationRunId?: string | null;
   result: IngestResult;
   persisted: { inserted: number; skipped: number; failed: number; enriched?: number };
 }) {
@@ -245,6 +248,7 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
   return prisma.pipelineArtifact.create({
     data: {
       pipelineRunId: input.pipelineRunId,
+      orchestrationRunId: input.orchestrationRunId ?? null,
       sourceId: input.result.sourceId,
       categoryId: input.result.categoryId || null,
       artifactType: "agent1_target_outcome",
@@ -272,6 +276,7 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
 
 export async function persistHardCaseDiscoveryArtifacts(input: {
   pipelineRunId: string;
+  orchestrationRunId?: string | null;
   result: IngestResult;
 }) {
   const queueCandidates = input.result.hardCaseQueueCandidates || [];
@@ -282,6 +287,7 @@ export async function persistHardCaseDiscoveryArtifacts(input: {
   await prisma.pipelineArtifact.createMany({
     data: queueCandidates.map((candidate) => ({
       pipelineRunId: input.pipelineRunId,
+      orchestrationRunId: input.orchestrationRunId ?? null,
       sourceId: candidate.sourceId,
       categoryId: candidate.categoryId || null,
       artifactType: "hard_case_discovery_candidate",

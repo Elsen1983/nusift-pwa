@@ -5,6 +5,10 @@ import {
   type PipelineStageTimingSummary,
   type StageBatchTelemetry,
 } from "../utils/news-pipeline/stage-telemetry";
+import {
+  assessRunProductivity,
+  type RunProductivityAssessment,
+} from "../utils/news-pipeline/run-productivity";
 import type { Agent3CompletionSummary } from "../utils/news-pipeline/agent3-completion";
 
 /**
@@ -126,6 +130,16 @@ export type DailyPipelineWorkflowResult = {
   notificationsProcessed: number;
   /** Aggregated per-stage timing summary (which stage consumed most runtime). */
   stageTimings: PipelineStageTimingSummary[];
+  /**
+   * Repair 15 run-level productivity assertion.
+   *
+   * Independent of `runOutcome`: a COMPLETED_PARTIAL run that produced no
+   * articles must not be indistinguishable from one that produced normally.
+   * Observation-only — never gates control flow. Null only when the run was
+   * skipped before any stage could execute.
+   */
+  productivity: RunProductivityAssessment | null;
+  funnel: { targets: number; truncated: boolean; incomplete: number } | null;
   /** Wall-clock duration of the terminal notification phase in ms. */
   notificationsDurationMs: number;
 };
@@ -454,6 +468,7 @@ export async function runDailyPipelineStageBatch(
         timeBudgetMs: 240_000,
         minRemainingMs: 30_000,
         telemetry: tracker,
+        orchestrationRunId,
       });
       const complete = result.remainingEligible === 0;
       // Target dispositions are authoritative. Article insertion/skips remain
@@ -491,6 +506,7 @@ export async function runDailyPipelineStageBatch(
         timeBudgetMs: 240_000,
         minRemainingMs: 30_000,
         telemetry: tracker,
+        orchestrationRunId,
       });
       const complete = result.remainingEligible === 0;
       const dispositions = result.targetDispositions;
@@ -584,6 +600,8 @@ async function finishDailyPipeline(
     stageTimings?: PipelineStageTimingSummary[];
     notificationsDurationMs?: number;
     completion?: Agent3CompletionSummary | null;
+    productivity?: RunProductivityAssessment | null;
+    funnel?: { targets: number; truncated: boolean; incomplete: number } | null;
   },
 ) {
   "use step";
@@ -601,11 +619,27 @@ async function finishDailyPipeline(
         recovery: options?.recovery ?? null,
         stageTimings: options?.stageTimings ?? [],
         notificationsDurationMs: options?.notificationsDurationMs ?? 0,
+        // Repair 15: persisted alongside runOutcome, never folded into it.
+        // `productivity.productive === false` is the queryable signal for a run
+        // that executed truthfully and produced nothing.
+        ...(options?.productivity ? { productivity: options.productivity } : {}),
+        ...(options?.funnel ? { funnel: options.funnel } : {}),
         ...(options?.completion ? { completion: options.completion } : {}),
         ...(options?.error ? { error: options.error } : {}),
       },
     },
   });
+}
+
+async function finalizeRunFunnelsStep(orchestrationRunId: string) {
+  "use step";
+  try {
+    const { finalizeOrchestrationFunnels } =
+      await import("../utils/news-pipeline/run-funnel");
+    return await finalizeOrchestrationFunnels({ orchestrationRunId });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -653,6 +687,10 @@ export async function runDailyNewsPipelineWorkflow(
       notificationsProcessed: 0,
       stageTimings: [],
       notificationsDurationMs: 0,
+      // A skipped run never held the lock and executed nothing. That is not an
+      // unproductive run — it is an absent one.
+      productivity: null,
+      funnel: null,
     };
   }
 
@@ -795,6 +833,11 @@ export async function runDailyNewsPipelineWorkflow(
 
     const stageTimings = summarizeStageTimings(stageTelemetry);
     const runOutcome = deriveDailyPipelineRunOutcome(stageOutcomes);
+    // Repair 15: output-based assertion, evaluated independently of the
+    // execution-based stage outcomes above. Pure and total — it cannot throw
+    // and must never alter runOutcome or stage control flow.
+    const productivity = assessRunProductivity({ stageTimings, stageOutcomes });
+    const funnel = await finalizeRunFunnelsStep(lock.orchestrationRunId);
 
     // Completion semantics: the workflow reports COMPLETED when the current
     // orchestration has drained everything actionable inside it. Future-run
@@ -822,6 +865,8 @@ export async function runDailyNewsPipelineWorkflow(
         stageTimings,
         notificationsDurationMs,
         completion,
+        productivity,
+        funnel,
       },
     );
     return {
@@ -835,12 +880,15 @@ export async function runDailyNewsPipelineWorkflow(
       notificationsProcessed,
       stageTimings,
       notificationsDurationMs,
+      productivity,
+      funnel,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Finalization is observation-only. Never replace the original pipeline
     // error with a failure from the diagnostic status update.
     try {
+      const failedStageTimings = summarizeStageTimings(stageTelemetry);
       await finishDailyPipeline(
         lock.orchestrationRunId,
         "FAILED",
@@ -849,8 +897,14 @@ export async function runDailyNewsPipelineWorkflow(
           error: message,
           stageOutcomes,
           recovery,
-          stageTimings: summarizeStageTimings(stageTelemetry),
+          stageTimings: failedStageTimings,
           notificationsDurationMs: 0,
+          // A fatal run still records what it managed to produce before the
+          // failure, so partial output is not misread as zero output.
+          productivity: assessRunProductivity({
+            stageTimings: failedStageTimings,
+            stageOutcomes,
+          }),
         },
       );
     } catch {

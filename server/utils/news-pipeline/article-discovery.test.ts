@@ -172,6 +172,11 @@ describe("article-discovery", () => {
     expect(diagnostics.skippedReasons.rss_pending_discovery).toBe(1);
     expect(diagnostics.skippedReasons.rss_active_waiting_for_second_nonproductive_run).toBe(0);
     expect(diagnostics.skippedReasons.not_found_in_db).toBe(0);
+    expect(diagnostics.skippedTargets).toEqual(expect.arrayContaining([
+      { sourceId: "src-1", categoryId: null, reason: "rss_active_productive" },
+      { sourceId: "src-3", categoryId: "cat-pending", reason: "rss_pending_discovery" },
+    ]));
+    expect(diagnostics.skippedTargetsTruncated).toBe(false);
 
     // Log should be present with ARTICLE_DISCOVERY_TARGETS_RESOLVED
     const resolvedLog = logAgentScanMock.mock.calls.find((call: any[]) => call[0]?.status === "ARTICLE_DISCOVERY_TARGETS_RESOLVED");
@@ -267,6 +272,9 @@ describe("article-discovery", () => {
     const routine = await resolveAgent2Targets();
     expect(routine.targets).toHaveLength(0);
     expect(routine.diagnostics.skippedReasons.rss_owned_productive).toBe(1);
+    expect(routine.diagnostics.skippedTargets).toEqual([
+      { sourceId: "src-owned", categoryId: null, reason: "rss_owned_productive" },
+    ]);
 
     // Explicit admin request (bypassRssOwned): target becomes eligible.
     const explicit = await resolveAgent2Targets({

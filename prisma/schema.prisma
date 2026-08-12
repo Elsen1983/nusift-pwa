@@ -517,7 +517,8 @@ model PipelineRun {
   artifactCount   Int  @default(0)
   summary         Json?
 
-  artifacts PipelineArtifact[]
+  artifacts             PipelineArtifact[] @relation("ArtifactOwner")
+  orchestratedArtifacts PipelineArtifact[] @relation("ArtifactOrchestration")
 
   @@index([createdAt])
   @@index([status, createdAt])
@@ -529,7 +530,12 @@ model PipelineArtifact {
   updatedAt DateTime @updatedAt
 
   pipelineRunId String
-  pipelineRun   PipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+  pipelineRun   PipelineRun @relation("ArtifactOwner", fields: [pipelineRunId], references: [id], onDelete: Cascade)
+
+  // Nullable for legacy/manual artifacts. Daily workflow artifacts use this
+  // independent correlation ID while retaining their owning batch run.
+  orchestrationRunId String?
+  orchestrationRun   PipelineRun? @relation("ArtifactOrchestration", fields: [orchestrationRunId], references: [id], onDelete: SetNull)
 
   sourceId   String?
   categoryId String?
@@ -547,6 +553,7 @@ model PipelineArtifact {
   errorLog       String? @db.Text
 
   @@index([pipelineRunId, createdAt])
+  @@index([orchestrationRunId, sourceId, categoryId, createdAt])
   @@index([sourceId, createdAt])
   @@index([categoryId, createdAt])
   @@index([artifactType, status])

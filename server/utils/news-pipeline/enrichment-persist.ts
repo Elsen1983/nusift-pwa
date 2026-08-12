@@ -218,6 +218,7 @@ export const buildEnrichmentArtifactCreate = (
   const { artifactType, status } = outcomeKindToArtifact(outcome.kind);
   return {
     pipelineRunId,
+    orchestrationRunId: pipelineRunId,
     sourceId: outcome.provenance.sourceId,
     categoryId: outcome.provenance.categoryId ?? null,
     artifactType,
@@ -254,6 +255,7 @@ export const buildAttemptMarkerArtifact = (
   categoryId: string | null,
 ): Prisma.PipelineArtifactCreateArgs["data"] => ({
   pipelineRunId,
+  orchestrationRunId: pipelineRunId,
   sourceId,
   categoryId: categoryId ?? null,
   artifactType: "article_enrichment_attempt" as EnrichmentArtifactType,
@@ -472,7 +474,7 @@ export const persistEnrichmentOutcome = async (
   claimToken: string,
   now: Date = new Date(),
   options?: { retryDisposition?: { state: string } | null },
-): Promise<{ artifactId: string | null; applied: boolean; claimLost: boolean }> => {
+): Promise<{ artifactId: string | null; applied: boolean; claimLost: boolean; madePublishable: boolean }> => {
   return prisma.$transaction(async (tx) => {
     const claim = await tx.articleEnrichmentClaim.findUnique({
       where: { token: claimToken },
@@ -491,17 +493,17 @@ export const persistEnrichmentOutcome = async (
       claim.pipelineRunId !== pipelineRunId ||
       claim.expiresAt <= now
     ) {
-      return { artifactId: null, applied: false, claimLost: true };
+      return { artifactId: null, applied: false, claimLost: true, madePublishable: false };
     }
 
     // Consume the lease first. DELETE takes a row lock, so expiry recovery or
     // a new claimant cannot interleave with the CAS and final writes below.
     const currentArticle = await tx.article.findUnique({
       where: { id: outcome.articleId },
-      select: { bodyText: true, title: true, canonicalUrl: true },
+      select: { bodyText: true, title: true, canonicalUrl: true, publicationStatus: true },
     });
     if (!currentArticle) {
-      return { artifactId: null, applied: false, claimLost: true };
+      return { artifactId: null, applied: false, claimLost: true, madePublishable: false };
     }
 
     const released = await tx.articleEnrichmentClaim.deleteMany({
@@ -513,9 +515,15 @@ export const persistEnrichmentOutcome = async (
       },
     });
     if (released.count !== 1) {
-      return { artifactId: null, applied: false, claimLost: true };
+      return { artifactId: null, applied: false, claimLost: true, madePublishable: false };
     }
 
+    const updateData = buildArticleEnrichmentUpdate(outcome, {
+      existingBodyText: currentArticle.bodyText,
+      existingTitle: currentArticle.title,
+      existingCanonicalUrl: currentArticle.canonicalUrl,
+      retryDisposition: options?.retryDisposition ?? null,
+    });
     const updated = await tx.article.updateMany({
       where: {
         id: outcome.articleId,
@@ -530,23 +538,31 @@ export const persistEnrichmentOutcome = async (
         canonicalUrl: currentArticle.canonicalUrl,
         bodyText: currentArticle.bodyText,
       },
-      data: buildArticleEnrichmentUpdate(outcome, {
-        existingBodyText: currentArticle.bodyText,
-        existingTitle: currentArticle.title,
-        existingCanonicalUrl: currentArticle.canonicalUrl,
-        retryDisposition: options?.retryDisposition ?? null,
-      }),
+      data: updateData,
     });
     if (updated.count !== 1) {
-      return { artifactId: null, applied: false, claimLost: true };
+      return { artifactId: null, applied: false, claimLost: true, madePublishable: false };
     }
 
+    const madePublishable = currentArticle.publicationStatus !== "PUBLISHED" && updateData.publicationStatus === "PUBLISHED";
+    const artifactData = buildEnrichmentArtifactCreate(outcome, pipelineRunId);
     const artifact = await tx.pipelineArtifact.create({
-      data: buildEnrichmentArtifactCreate(outcome, pipelineRunId),
+      data: {
+        ...artifactData,
+        payload: {
+          ...(artifactData.payload as Prisma.InputJsonObject),
+          runAttribution: { madePublishable },
+        },
+      },
       select: { id: true },
     });
 
-    return { artifactId: artifact.id, applied: true, claimLost: false };
+    return {
+      artifactId: artifact.id,
+      applied: true,
+      claimLost: false,
+      madePublishable,
+    };
   });
 };
 
@@ -564,6 +580,8 @@ export interface EnrichmentBatchPersistResult {
   byKind: Record<EnrichmentOutcomeKind, number>;
   /** Created artifact ids. */
   artifactIds: string[];
+  /** Persisted transitions from a non-published state to PUBLISHED. */
+  madePublishable?: number;
 }
 
 const emptyByKind = (): Record<EnrichmentOutcomeKind, number> => ({
@@ -585,6 +603,7 @@ export const createEmptyEnrichmentBatchPersistResult = (): EnrichmentBatchPersis
   claimLost: 0,
   byKind: emptyByKind(),
   artifactIds: [],
+  madePublishable: 0,
 });
 
 /** Add one per-article persistence result to the batch aggregate in place. */
@@ -599,6 +618,7 @@ export const mergeEnrichmentBatchPersistResult = (
     target.byKind[kind] += addition.byKind[kind];
   }
   target.artifactIds.push(...addition.artifactIds);
+  target.madePublishable = (target.madePublishable ?? 0) + (addition.madePublishable ?? 0);
 };
 
 /**
@@ -638,6 +658,7 @@ export const persistEnrichmentBatch = async (
         continue;
       }
       result.persisted += 1;
+      if (persisted.madePublishable) result.madePublishable = (result.madePublishable ?? 0) + 1;
       result.byKind[outcome.kind] += 1;
       if (persisted.artifactId) result.artifactIds.push(persisted.artifactId);
     } catch (error) {
@@ -710,6 +731,7 @@ export const buildEnrichmentRunSummary = (
     claimLost: result.claimLost,
     byKind: result.byKind,
     artifactCount: result.artifactIds.length,
+    madePublishable: result.madePublishable ?? 0,
     durationMs: options?.durationMs ?? null,
     ...(options?.optionsUsed ? { optionsUsed: options.optionsUsed } : {}),
     ...(options?.browserFallbackStats ? { browserFallbackStats: options.browserFallbackStats } : {}),

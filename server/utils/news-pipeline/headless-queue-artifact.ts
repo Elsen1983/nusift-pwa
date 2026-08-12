@@ -10,6 +10,7 @@ export const ACTIVE_HEADLESS_QUEUE_STATUSES = [
 
 type CreateHeadlessQueueArtifactInput = {
   pipelineRunId: string;
+  orchestrationRunId?: string | null;
   sourceId: string;
   categoryId: string | null;
   targetUrl: string;
@@ -306,6 +307,7 @@ export async function createHeadlessQueueArtifactIfAbsent(
     const artifact = await tx.pipelineArtifact.create({
       data: {
         pipelineRunId: input.pipelineRunId,
+        orchestrationRunId: input.orchestrationRunId ?? null,
         sourceId: input.sourceId,
         categoryId: input.categoryId,
         artifactType: "article_discovery_headless_required",

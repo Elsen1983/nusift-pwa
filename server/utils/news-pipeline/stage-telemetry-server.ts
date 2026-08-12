@@ -68,6 +68,7 @@ export async function persistStageBatchTelemetry(input: {
   await prisma.pipelineArtifact.create({
     data: {
       pipelineRunId: input.pipelineRunId,
+      orchestrationRunId: input.telemetry.orchestrationRunId,
       sourceId: null,
       categoryId: null,
       artifactType: "stage_batch_telemetry",

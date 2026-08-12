@@ -84,6 +84,7 @@ export default defineEventHandler(async (event) => {
     dryRun: false,
     runBrowser: true,
     telemetry: tracker,
+    orchestrationRunId,
   });
   if (result.dryRun) {
     throw createError({ statusCode: 500, statusMessage: "Headless queue ran in dry-run mode." });

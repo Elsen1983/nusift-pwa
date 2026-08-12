@@ -23,6 +23,7 @@ import {
   type StageBatchProbe,
 } from "./stage-telemetry";
 import { boundedPipelineItemError, isUnsafePipelineInvariantError } from "./item-failure";
+import { persistRunTargetManifest } from "./run-funnel";
 
 export type RunNewsPipelineOptions = {
   /**
@@ -378,6 +379,8 @@ export async function runAgent1Batch(input?: {
   bypassRedirectTerminal?: boolean;
   /** Operation-level stage telemetry probe (optional, no-op by default). */
   telemetry?: StageBatchProbe;
+  /** Daily workflow correlation; never replaces the owning batch run ID. */
+  orchestrationRunId?: string | null;
 }): Promise<Agent1BatchResult> {
   const probe = input?.telemetry ?? createNoopStageBatchProbe();
   const maxTargets = readBoundedNumber(input?.maxTargets, 5, 1, 50);
@@ -418,6 +421,18 @@ export async function runAgent1Batch(input?: {
 
   const sameInvocationStatic429Hostnames = new Set<string>();
   const pipelineRun = await createPipelineRun(Math.min(resolvedTargets.length, maxTargets));
+  if (input?.orchestrationRunId) {
+    await persistRunTargetManifest({
+      pipelineRunId: pipelineRun.id,
+      orchestrationRunId: input.orchestrationRunId,
+      stage: "agent1",
+      targets: resolvedTargets.slice(0, maxTargets).map((target) => ({
+        sourceId: target.sourceId,
+        categoryId: target.categoryId ?? null,
+        disposition: "selected" as const,
+      })),
+    }).catch(() => undefined);
+  }
 
   await logAgentScan({
     status: "A1_BATCH_STARTED",
@@ -497,12 +512,14 @@ export async function runAgent1Batch(input?: {
       candidatesFound += result.candidates.length;
       await probe.timed("persistence", () => persistPipelineArtifact({
         pipelineRunId: pipelineRun.id,
+        orchestrationRunId: input?.orchestrationRunId,
         result,
       }));
       probe.recordDbOperation();
       artifactCount += 1;
       const hardCaseArtifactCount = await probe.timed("persistence", () => persistHardCaseDiscoveryArtifacts({
         pipelineRunId: pipelineRun.id,
+        orchestrationRunId: input?.orchestrationRunId,
         result,
       }));
       probe.recordDbOperation();
@@ -527,6 +544,7 @@ export async function runAgent1Batch(input?: {
       }
       await probe.timed("persistence", () => persistAgent1TargetOutcomeArtifact({
         pipelineRunId: pipelineRun.id,
+        orchestrationRunId: input?.orchestrationRunId,
         result,
         persisted,
       }));
@@ -591,6 +609,7 @@ export async function runAgent1Batch(input?: {
     await prisma.pipelineArtifact.createMany({
       data: budgetDeferredTargets.map((target, position) => ({
         pipelineRunId: pipelineRun.id,
+        orchestrationRunId: input?.orchestrationRunId ?? null,
         sourceId: target.sourceId,
         categoryId: target.categoryId || null,
         artifactType: "agent1_deferred",

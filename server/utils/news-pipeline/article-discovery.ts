@@ -47,6 +47,7 @@ import { boundedPipelineItemError, isUnsafePipelineInvariantError } from "./item
 import { evaluateRssOwnedTargetForAgent2 } from "./rss-owned-target";
 import { shouldRunAgent2Discovery } from "./feed-first-policy";
 import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
+import { persistRunTargetManifest } from "./run-funnel";
 
 // DISCOVERY_FRESHNESS_MS re-exported from article-discovery-helpers for backward compat
 const MAX_LISTING_PAGES = 3;
@@ -932,7 +933,13 @@ export async function resolveAgent2Targets(input?: {
   categoryIds?: string[];
   /** Explicit admin request: bypass the RSS-owned skip for requested targets. */
   bypassRssOwned?: boolean;
-}): Promise<{ targets: ArticleDiscoveryTarget[]; diagnostics: TargetResolutionDiagnostics }> {
+}): Promise<{
+  targets: ArticleDiscoveryTarget[];
+  diagnostics: TargetResolutionDiagnostics & {
+    skippedTargets: Array<{ sourceId: string; categoryId: string | null; reason: TargetSkipReason }>;
+    skippedTargetsTruncated: boolean;
+  };
+}> {
   const activeTargets = await resolveActivePipelineTargets();
   const targetKeys = new Set(activeTargets.map((target) => `${target.sourceId}|${target.categoryId || ""}`));
 
@@ -1000,6 +1007,13 @@ export async function resolveAgent2Targets(input?: {
     skipReason: TargetSkipReason;
   }> = [];
   const MAX_SKIP_SAMPLES = 5;
+  const skippedTargets: Array<{ sourceId: string; categoryId: string | null; reason: TargetSkipReason }> = [];
+  const MAX_MANIFEST_SKIPS = 50;
+  let skippedTargetsTruncated = false;
+  const recordManifestSkip = (sourceId: string, categoryId: string | null, reason: TargetSkipReason) => {
+    if (skippedTargets.length < MAX_MANIFEST_SKIPS) skippedTargets.push({ sourceId, categoryId, reason });
+    else skippedTargetsTruncated = true;
+  };
 
   // Collect all category-level targets (eligible + skipped) for audit diagnostics.
   // This makes it possible to trace a specific category through A2 resolution.
@@ -1036,6 +1050,7 @@ export async function resolveAgent2Targets(input?: {
       const source = sourceById.get(target.sourceId);
       if (!category || !source) {
         skippedReasons.not_found_in_db += 1;
+        recordManifestSkip(target.sourceId, target.categoryId, "not_found_in_db");
         if (categoryAuditEntries.length < MAX_CATEGORY_AUDIT) {
           categoryAuditEntries.push({
             sourceId: target.sourceId,
@@ -1088,6 +1103,7 @@ export async function resolveAgent2Targets(input?: {
       }
       if (categorySkipReason) {
         skippedReasons[categorySkipReason] += 1;
+        recordManifestSkip(target.sourceId, target.categoryId, categorySkipReason);
         if (skippedSamples.length < MAX_SKIP_SAMPLES) {
           skippedSamples.push({
             sourceId: target.sourceId,
@@ -1121,6 +1137,7 @@ export async function resolveAgent2Targets(input?: {
       const source = sourceById.get(target.sourceId);
       if (!source) {
         skippedReasons.not_found_in_db += 1;
+        recordManifestSkip(target.sourceId, null, "not_found_in_db");
         continue;
       }
       const sourceEvaluation = evaluateRssOwnedTargetForAgent2({
@@ -1148,6 +1165,7 @@ export async function resolveAgent2Targets(input?: {
           bypassRssOwned: input?.bypassRssOwned,
         });
         skippedReasons[reason] += 1;
+        recordManifestSkip(target.sourceId, null, reason);
         if (skippedSamples.length < MAX_SKIP_SAMPLES) {
           skippedSamples.push({
             sourceId: target.sourceId,
@@ -1222,6 +1240,8 @@ export async function resolveAgent2Targets(input?: {
       eligible: targets.length,
       skipped,
       skippedReasons,
+      skippedTargets,
+      skippedTargetsTruncated,
     },
   };
 }
@@ -1277,6 +1297,7 @@ const serializeRejectedItem = (item: IngestRejectedItem) => ({
 
 export async function persistArticleDiscoveryArtifact(input: {
   pipelineRunId: string;
+  orchestrationRunId?: string | null;
   result: ArticleDiscoveryResult;
 }) {
   const payload = {
@@ -1315,6 +1336,7 @@ export async function persistArticleDiscoveryArtifact(input: {
   return prisma.pipelineArtifact.create({
     data: {
       pipelineRunId: input.pipelineRunId,
+      orchestrationRunId: input.orchestrationRunId ?? null,
       sourceId: input.result.sourceId,
       categoryId: input.result.categoryId || null,
       artifactType: "article_discovery_candidates",
@@ -2045,6 +2067,8 @@ export async function runArticleDiscoveryBatch(input?: {
   minRemainingMs?: number;
   /** Operation-level stage telemetry probe (optional, no-op by default). */
   telemetry?: StageBatchProbe;
+  /** Daily workflow correlation; never replaces the owning batch run ID. */
+  orchestrationRunId?: string | null;
 }): Promise<Agent2BatchResult> {
   const probe = input?.telemetry ?? createNoopStageBatchProbe();
   const maxTargets = input?.maxTargets ?? 5;
@@ -2052,10 +2076,24 @@ export async function runArticleDiscoveryBatch(input?: {
   const minRemainingMs = input?.minRemainingMs ?? 30_000;
 
   const startedAt = Date.now();
-  const { targets: resolvedTargets } = await resolveAgent2Targets(input);
+  const { targets: resolvedTargets, diagnostics: resolutionDiagnostics } = await resolveAgent2Targets(input);
   const targets = await prioritizeDeferredTargets(resolvedTargets, input);
 
   if (targets.length === 0) {
+    if (input?.orchestrationRunId && resolutionDiagnostics.skippedTargets.length > 0) {
+      await persistRunTargetManifest({
+        pipelineRunId: input.orchestrationRunId,
+        orchestrationRunId: input.orchestrationRunId,
+        stage: "agent2-static",
+        truncated: resolutionDiagnostics.skippedTargetsTruncated,
+        targets: resolutionDiagnostics.skippedTargets.map((target) => ({
+          sourceId: target.sourceId,
+          categoryId: target.categoryId,
+          disposition: "policy_skipped" as const,
+          reason: target.reason,
+        })),
+      }).catch(() => undefined);
+    }
     await logAgentScan({
       status: "A2_BATCH_STOPPED",
       executionTimeMs: Date.now() - startedAt,
@@ -2085,6 +2123,24 @@ export async function runArticleDiscoveryBatch(input?: {
   }
 
   const pipelineRun = await createPipelineRun(Math.min(targets.length, maxTargets));
+  if (input?.orchestrationRunId) {
+    await persistRunTargetManifest({
+      pipelineRunId: pipelineRun.id,
+      orchestrationRunId: input.orchestrationRunId,
+      stage: "agent2-static",
+      truncated: resolutionDiagnostics.skippedTargetsTruncated,
+      targets: [...targets.slice(0, Math.max(1, Math.min(maxTargets, 50))).map((target) => ({
+        sourceId: target.sourceId,
+        categoryId: target.categoryId ?? null,
+        disposition: "selected" as const,
+      })), ...resolutionDiagnostics.skippedTargets.map((target) => ({
+        sourceId: target.sourceId,
+        categoryId: target.categoryId,
+        disposition: "policy_skipped" as const,
+        reason: target.reason,
+      }))],
+    }).catch(() => undefined);
+  }
 
   await logAgentScan({
     status: "ARTICLE_DISCOVERY_BATCH_STARTED",
@@ -2141,7 +2197,11 @@ export async function runArticleDiscoveryBatch(input?: {
       acceptedCandidates += result.candidates.length;
       rejectedCandidates += result.outcomeSummary.rejected;
       candidatesFound += result.candidates.length;
-      const artifact = await probe.timed("persistence", () => persistArticleDiscoveryArtifact({ pipelineRunId: pipelineRun.id, result }));
+      const artifact = await probe.timed("persistence", () => persistArticleDiscoveryArtifact({
+        pipelineRunId: pipelineRun.id,
+        orchestrationRunId: input?.orchestrationRunId,
+        result,
+      }));
       probe.recordDbOperation();
       artifactCount += 1;
 
@@ -2155,6 +2215,7 @@ export async function runArticleDiscoveryBatch(input?: {
         const rateLimit = result.rateLimitEvidence[0] ?? null;
         const queued = await probe.timed("persistence", () => createHeadlessQueueArtifactIfAbsent({
           pipelineRunId: pipelineRun.id,
+          orchestrationRunId: input?.orchestrationRunId,
           sourceId: target.sourceId,
           categoryId: target.categoryId || null,
           targetUrl: target.targetUrl,
@@ -2194,6 +2255,32 @@ export async function runArticleDiscoveryBatch(input?: {
       inserted += persisted.inserted;
       skipped += persisted.skipped;
       failed += persisted.failed + result.failed;
+
+      if (input?.orchestrationRunId) {
+        await prisma.pipelineArtifact.create({
+          data: {
+            pipelineRunId: pipelineRun.id,
+            orchestrationRunId: input.orchestrationRunId,
+            sourceId: target.sourceId,
+            categoryId: target.categoryId ?? null,
+            artifactType: "agent2_target_outcome",
+            status: persisted.failed > 0 ? "PERSISTENCE_FAILED" : result.retryable ? "DEFERRED" : "CAPTURED",
+            candidateCount: result.candidates.length,
+            payload: {
+              schemaVersion: 1,
+              artifactKind: "agent2_target_outcome",
+              candidates: result.candidates.length,
+              evaluated: result.outcomeSummary.totalEvaluated,
+              inserted: persisted.inserted,
+              skipped: persisted.skipped,
+              failed: persisted.failed,
+              reason: result.detailEvaluationStoppedReason,
+              discoveryComplete: result.discoveryComplete,
+            } satisfies Prisma.InputJsonValue,
+            errorLog: null,
+          },
+        }).catch(() => undefined);
+      }
 
       if (persisted.failed === 0 && !result.retryable && result.discoveryComplete) {
         // A fully completed productive static shortlist may resolve older
@@ -2246,6 +2333,7 @@ export async function runArticleDiscoveryBatch(input?: {
     await prisma.pipelineArtifact.createMany({
       data: deferredTargets.map((target, position) => ({
         pipelineRunId: pipelineRun.id,
+        orchestrationRunId: input?.orchestrationRunId ?? null,
         sourceId: target.sourceId,
         categoryId: target.categoryId || null,
         artifactType: "article_discovery_deferred",

@@ -34,6 +34,10 @@ export type StageBatchProductivity = {
   insertedCandidates?: number;
   skippedCandidates?: number;
   candidatePersistenceFailures?: number;
+  /** Persisted Agent 3 SUCCESS outcomes. */
+  articlesEnriched?: number;
+  /** Articles newly moved to the terminal PUBLISHED state by this batch. */
+  articlesPublishable?: number;
 };
 
 export type StageDispositionCounts = {
@@ -427,6 +431,7 @@ const sumProductivity = (batches: StageBatchTelemetry[]): StageBatchProductivity
     "candidateArticlesFound", "articlesInserted", "articlesSkipped", "articlePersistenceFailures",
     "rawLinks", "evaluatedCandidates", "acceptedCandidates", "rejectedCandidates",
     "insertedCandidates", "skippedCandidates", "candidatePersistenceFailures",
+    "articlesEnriched", "articlesPublishable",
   ];
   return Object.fromEntries(
     keys.filter((key) => batches.some((batch) => batch.productivity?.[key] !== undefined))

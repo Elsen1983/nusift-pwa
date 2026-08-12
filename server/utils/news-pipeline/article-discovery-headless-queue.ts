@@ -46,6 +46,7 @@ import {
 import type { BrowserArticleDetailSession } from "./article-discovery-browser";
 import { GovernedFetchDeferredError } from "./governed-fetch";
 import { shouldRunAgent2Discovery, type FeedFirstDecision } from "./feed-first-policy";
+import { persistRunTargetManifest } from "./run-funnel";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 25;
@@ -63,11 +64,13 @@ type HeadlessQueueInput = {
   telemetry?: StageBatchProbe;
   /** Injectable clock for deterministic target wall-clock budget tests. */
   now?: () => number;
+  orchestrationRunId?: string | null;
 };
 
 type HeadlessQueueArtifact = {
   id: string;
   pipelineRunId: string;
+  orchestrationRunId: string | null;
   sourceId: string | null;
   categoryId: string | null;
   createdAt: Date;
@@ -398,6 +401,7 @@ export async function processArticleDiscoveryHeadlessQueue(
     select: {
       id: true,
       pipelineRunId: true,
+      orchestrationRunId: true,
       sourceId: true,
       categoryId: true,
       createdAt: true,
@@ -408,11 +412,24 @@ export async function processArticleDiscoveryHeadlessQueue(
   const items: HeadlessQueueArtifact[] = artifacts.map((a) => ({
     id: a.id,
     pipelineRunId: a.pipelineRunId,
+    orchestrationRunId: a.orchestrationRunId,
     sourceId: a.sourceId,
     categoryId: a.categoryId,
     createdAt: a.createdAt,
     payload: (a.payload as Record<string, unknown>) || {},
   }));
+  if (input?.orchestrationRunId && !dryRun) {
+    await persistRunTargetManifest({
+      pipelineRunId: input.orchestrationRunId,
+      orchestrationRunId: input.orchestrationRunId,
+      stage: "agent2-headless",
+      targets: items.map((item) => ({
+        sourceId: item.sourceId ?? "unknown",
+        categoryId: item.categoryId,
+        disposition: "selected" as const,
+      })).filter((target) => target.sourceId !== "unknown"),
+    }).catch(() => undefined);
+  }
 
   // ── Dry-run mode ─────────────────────────────────────────────────────
   if (dryRun) {
@@ -788,6 +805,7 @@ export async function processArticleDiscoveryHeadlessQueue(
         },
         data: {
           status: "HEADLESS_PROCESSING",
+          ...(input?.orchestrationRunId ? { orchestrationRunId: input.orchestrationRunId } : {}),
           nextEligibleAt: null,
           headlessClaimToken,
           headlessClaimExpiresAt,

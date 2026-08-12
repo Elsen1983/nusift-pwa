@@ -30,6 +30,7 @@ import {
   recoverExpiredEnrichmentClaims,
   type EnrichmentBatchPersistResult,
 } from "./enrichment-persist";
+import { persistRunTargetManifest } from "./run-funnel";
 import { createPipelineRun } from "./artifacts";
 import { normalizeTargetUrl } from "./text";
 import { logAgentScan } from "./log";
@@ -2988,6 +2989,25 @@ export const runEnrichmentBatch = async (
       ? articles.slice(0, batchLimit)
       : applySourceDiversity(articles, maxArticlesPerSource, batchLimit);
 
+    if (options?.pipelineRunId) {
+      const uniqueTargets = new Map<string, { sourceId: string; categoryId: string | null; selectedCount: number }>();
+      for (const article of diversified) {
+        const key = `${article.sourceId}:${article.categoryId ?? "source"}`;
+        const existing = uniqueTargets.get(key);
+        uniqueTargets.set(key, {
+          sourceId: article.sourceId,
+          categoryId: article.categoryId ?? null,
+          selectedCount: (existing?.selectedCount ?? 0) + 1,
+        });
+      }
+      await persistRunTargetManifest({
+        pipelineRunId: pipelineRun.id,
+        orchestrationRunId: options.pipelineRunId,
+        stage: "agent3",
+        targets: [...uniqueTargets.values()].map((target) => ({ ...target, disposition: "selected" as const })),
+      }).catch(() => undefined);
+    }
+
     // Recover precise upstream provenance from Agent 1 ingest artifacts.
     // This replaces the conservative fallback when artifact data exists.
     const provenanceMap = await recoverUpstreamProvenanceBatch(diversified);
@@ -3481,6 +3501,7 @@ export const runEnrichmentBatch = async (
       await prisma.pipelineArtifact.create({
         data: {
           pipelineRunId: pipelineRun.id,
+          orchestrationRunId: pipelineRun.id,
           sourceId: null,
           categoryId: null,
           artifactType: "agent3_progress_diagnostic",

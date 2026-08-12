@@ -514,6 +514,7 @@ describe("persistEnrichmentOutcome", () => {
       bodyText: "A".repeat(1200),
       title: "Published title",
       canonicalUrl: "https://example.com/a",
+      publicationStatus: "PROCESSING",
     });
     claimFindUniqueMock.mockResolvedValue({
       articleId: 42,
@@ -559,6 +560,7 @@ describe("persistEnrichmentOutcome", () => {
     expect(result.artifactId).toBe("art-1");
     expect(result.applied).toBe(true);
     expect(result.claimLost).toBe(false);
+    expect(result.madePublishable).toBe(true);
     expect(claimDeleteManyMock).toHaveBeenCalledWith({
       where: expect.objectContaining({ articleId: 42, pipelineRunId: "run-1", token: "claim-1" }),
     });
@@ -574,6 +576,7 @@ describe("persistEnrichmentOutcome", () => {
     const createArgs = artifactCreateMock.mock.calls[0]![0];
     expect(createArgs.data.pipelineRunId).toBe("run-1");
     expect(createArgs.data.artifactType).toBe("article_enrichment_result");
+    expect(createArgs.data.payload.runAttribution).toEqual({ madePublishable: true });
   });
 
   it("does not write the row or artifact after a stale worker loses its claim", async () => {
@@ -582,7 +585,7 @@ describe("persistEnrichmentOutcome", () => {
 
     const result = await persistEnrichmentOutcome(makeSuccess(), "run-1", "stale-token");
 
-    expect(result).toEqual({ artifactId: null, applied: false, claimLost: true });
+    expect(result).toEqual({ artifactId: null, applied: false, claimLost: true, madePublishable: false });
     expect(articleUpdateMock).not.toHaveBeenCalled();
     expect(artifactCreateMock).not.toHaveBeenCalled();
   });
@@ -688,7 +691,7 @@ describe("claimEnrichmentArticle and recovery", () => {
 
     const result = await persistEnrichmentOutcome(makeSuccess(), "run-1", "claim-1");
 
-    expect(result).toEqual({ artifactId: null, applied: false, claimLost: true });
+    expect(result).toEqual({ artifactId: null, applied: false, claimLost: true, madePublishable: false });
     expect(artifactCreateMock).not.toHaveBeenCalled();
   });
 

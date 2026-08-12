@@ -28,6 +28,7 @@ This directory is the curated navigation layer above the generated Graphify note
 - [[16_Testing_And_Safety_Invariants]]
 - [[17_Stale_Claim_And_Lease_Recovery]]
 - [[18_Poison_Row_And_Attempt_Accounting]]
+- [[19_Run_Productivity_And_Target_Funnels]]
 
 ## Detailed reference
 
