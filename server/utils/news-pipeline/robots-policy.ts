@@ -7,6 +7,7 @@ import {
   governedSafeFetchAndParse,
   type GovernedFetchContext,
 } from "./governed-fetch";
+import { decodeResponseText, ResponseBodyTooLargeError } from "./response-text-decoder";
 
 export const ROBOTS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 export const ROBOTS_UNAVAILABLE_RETRY_MS = 5 * 60 * 1000;
@@ -257,31 +258,17 @@ const responseHeader = (response: any, name: string): string | null => {
 };
 
 const readBoundedBody = async (response: any): Promise<{ body: string; oversized: boolean }> => {
-  const contentLength = Number(responseHeader(response, "content-length"));
-  if (Number.isFinite(contentLength) && contentLength > ROBOTS_MAX_BODY_BYTES) {
-    return { body: "", oversized: true };
+  try {
+    const decoded = await decodeResponseText(response as Response, {
+      kind: "text",
+      maxBytes: ROBOTS_MAX_BODY_BYTES,
+      overflow: "reject",
+    });
+    return { body: decoded.text, oversized: false };
+  } catch (error) {
+    if (error instanceof ResponseBodyTooLargeError) return { body: "", oversized: true };
+    throw error;
   }
-  if (response?.body?.getReader) {
-    const reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    try {
-      while (total <= ROBOTS_MAX_BODY_BYTES) {
-        const next = await reader.read();
-        if (next.done) break;
-        const chunk = next.value instanceof Uint8Array ? next.value : new Uint8Array(next.value);
-        total += chunk.byteLength;
-        if (total > ROBOTS_MAX_BODY_BYTES) return { body: "", oversized: true };
-        chunks.push(chunk);
-      }
-      const merged = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
-      return { body: new TextDecoder().decode(merged), oversized: false };
-    } finally { await reader.cancel?.().catch(() => {}); }
-  }
-  const body = typeof response?.text === "function" ? await response.text() : "";
-  return { body: String(body), oversized: Buffer.byteLength(String(body), "utf8") > ROBOTS_MAX_BODY_BYTES };
 };
 
 const makeDecision = (

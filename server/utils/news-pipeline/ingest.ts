@@ -1,6 +1,7 @@
 import { prisma } from "../prisma";
 import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
 import { governedSafeFetchAndParse, GovernedFetchDeferredError } from "./governed-fetch";
+import { decodeResponseText } from "./response-text-decoder";
 import type { GovernedFetchContext } from "./governed-fetch";
 import { SSRFError } from "../ssrf-guard";
 import { isLikelyRedirectorUrl, resolveSafeRedirectChain } from "../safe-redirect-resolver";
@@ -527,7 +528,7 @@ const resolvePublishedAtForFeedItem = async (
       purpose: "article_detail",
     }, async (response) => ({
       response,
-      html: response.ok ? await response.text() : "",
+      html: response.ok ? (await decodeResponseText(response, { kind: "html" })).text : "",
     }));
 
     if (!fetched.response.ok) {
@@ -641,7 +642,7 @@ const extractHtmlCandidates = async (
       purpose: "article_detail",
     }, async (response) => ({
       response,
-      html: response.ok ? await response.text() : "",
+      html: response.ok ? (await decodeResponseText(response, { kind: "html" })).text : "",
     })).catch((error) => {
       if (error instanceof GovernedFetchDeferredError) throw error;
       return null;
@@ -1751,7 +1752,7 @@ export async function ingestSource(
           },
           async (candidateResponse) => ({
             response: candidateResponse,
-            body: candidateResponse.ok ? await candidateResponse.text() : "",
+            body: candidateResponse.ok ? (await decodeResponseText(candidateResponse, { kind: "xml" })).text : "",
           }),
         );
         let fetchedCandidate = await fetchWithBody(fetchOptions);
@@ -2282,7 +2283,7 @@ export async function ingestSource(
               purpose: "article_detail",
             }, async (fallbackResponse) => ({
               response: fallbackResponse,
-              body: fallbackResponse.ok ? await fallbackResponse.text() : "",
+              body: fallbackResponse.ok ? (await decodeResponseText(fallbackResponse, { kind: "html" })).text : "",
             }));
         const htmlResponse = htmlFetched?.response ?? null;
 
@@ -2463,7 +2464,7 @@ export async function ingestSource(
           purpose: "article_detail",
         }, async (htmlResponse) => ({
           response: htmlResponse,
-          body: htmlResponse.ok ? await htmlResponse.text() : "",
+          body: htmlResponse.ok ? (await decodeResponseText(htmlResponse, { kind: "html" })).text : "",
         }));
 
         if (htmlFetched.response.ok) {

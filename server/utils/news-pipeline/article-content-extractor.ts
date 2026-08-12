@@ -23,6 +23,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { governedSafeFetchAndParse, GovernedFetchDeferredError } from "./governed-fetch";
+import { decodeResponseText } from "./response-text-decoder";
 import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
 import {
   classifyArticleAccess,
@@ -409,13 +410,14 @@ async function fetchArticleHtmlOnce(
         return { response, rawHtml: null, bodyReadError: null };
       }
       try {
-        const buffer = await response.arrayBuffer();
-        const truncated = buffer.byteLength > MAX_HTML_BYTES
-          ? buffer.slice(0, MAX_HTML_BYTES)
-          : buffer;
+        const decoded = await decodeResponseText(response, {
+          kind: "html",
+          maxBytes: MAX_HTML_BYTES,
+          overflow: "truncate",
+        });
         return {
           response,
-          rawHtml: new TextDecoder("utf-8", { fatal: false }).decode(truncated),
+          rawHtml: decoded.text,
           bodyReadError: null,
         };
       } catch (error: unknown) {

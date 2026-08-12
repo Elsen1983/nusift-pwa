@@ -30,6 +30,7 @@
  * Playwright is opt-in and only attempted when PLAYWRIGHT_ENABLED=true.
  */
 import { governedSafeFetch, governedSafeFetchAndParse, type GovernedFetchContext } from "./governed-fetch";
+import { decodeResponseText } from "./response-text-decoder";
 import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
 import { loadJsdom } from "./jsdom-runtime";
 import {
@@ -381,7 +382,7 @@ export async function resolveWithJsdom(input: {
       purpose: "article_detail",
     }, async (response) => ({
       response,
-      html: response.ok ? await response.text() : "",
+      html: response.ok ? (await decodeResponseText(response, { kind: "html" })).text : "",
     }));
 
     if (!fetched.response.ok) return [];

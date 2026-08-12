@@ -10,6 +10,7 @@
 import { governedSafeFetchAndParse, GovernedFetchDeferredError, GovernedFetchRequestBudgetError, type GovernedFetchContext } from "./governed-fetch";
 import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
 import { normalizeFeedTextDetailed } from "./normalize-feed-text";
+import { decodeResponseText } from "./response-text-decoder";
 import { hashText, normalizeUrl, stripHtml } from "./text";
 import {
   ARTICLE_RETENTION_DAYS,
@@ -291,7 +292,7 @@ const safeFetchText = async (
         return null;
       }
       if (!response.ok) return null;
-      return await response.text();
+      return (await decodeResponseText(response, { kind: phase === "sitemap" ? "xml" : "text" })).text;
     });
   } catch (error) {
     if (error instanceof GovernedFetchDeferredError) throw error;
@@ -1713,7 +1714,7 @@ export async function evaluateArticleLinkCandidate(input: {
       telemetry: input.telemetry,
     }, governedContextForDiscovery(input.governedFetchContext, "article_detail", input.requestBudget), async (candidateResponse) => ({
       response: candidateResponse,
-      html: candidateResponse.ok ? await candidateResponse.text() : "",
+      html: candidateResponse.ok ? (await decodeResponseText(candidateResponse, { kind: "html" })).text : "",
     }));
     response = fetched.response;
   } catch (error) {

@@ -130,6 +130,16 @@ function makeResponse(
   } as unknown as Response;
 }
 
+function makeByteResponse(bytes: Uint8Array, contentType: string) {
+  return {
+    ok: true,
+    status: 200,
+    url: "https://example.com/legacy-article",
+    headers: { get: (name: string) => name.toLowerCase() === "content-type" ? contentType : null },
+    arrayBuffer: () => Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)),
+  } as unknown as Response;
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe("extractArticleContentFromUrl", () => {
@@ -158,6 +168,22 @@ describe("extractArticleContentFromUrl", () => {
       expect(result.imageUrl).toBe("https://example.com/image.jpg");
       expect(result.author).toBe("Test Author");
     }
+  });
+
+  it("decodes a Windows-1250 article before DOM extraction", async () => {
+    const html = articleHtml({ title: "Škola publishes a detailed regional report" });
+    const bytes = Uint8Array.from([...html].map((character) => character === "Š" ? 0x8a : character.charCodeAt(0)));
+    safeFetchMock.mockResolvedValue(makeByteResponse(bytes, "text/html; charset=windows-1250"));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 101,
+      articleUrl: "https://example.com/legacy-article",
+      existingTitle: "Škola publishes a detailed regional report",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.title).toContain("Škola");
   });
 
   it("extracts body text from main/articleBody fallback", async () => {

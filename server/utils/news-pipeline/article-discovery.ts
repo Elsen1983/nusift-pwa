@@ -1,6 +1,7 @@
 import { prisma } from "../prisma";
 import { createHeadlessQueueArtifactIfAbsent } from "./headless-queue-artifact";
 import { governedSafeFetch, governedSafeFetchAndParse, GovernedFetchDeferredError, GovernedFetchRequestBudgetError } from "./governed-fetch";
+import { decodeResponseText } from "./response-text-decoder";
 import { logAgentScan } from "./log";
 import { createPipelineRun, finalizePipelineRun } from "./artifacts";
 import { normalizeUrl } from "./text";
@@ -480,7 +481,7 @@ const crawlListingPages = async (
         } : undefined,
       }, async (response) => ({
         response,
-        html: response.ok ? await response.text() : "",
+        html: response.ok ? (await decodeResponseText(response, { kind: "html" })).text : "",
       }));
     } catch (error: any) {
       if (error instanceof GovernedFetchRequestBudgetError) {

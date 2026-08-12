@@ -109,6 +109,14 @@ const makeResponse = (
   },
 });
 
+const makeByteResponse = (bytes: Uint8Array, contentType: string) => ({
+  ok: true,
+  status: 200,
+  url: "https://example.com/rss",
+  arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  headers: { get: (name: string) => name.toLowerCase() === "content-type" ? contentType : null },
+});
+
 const freshDate = () => new Date(Date.now() - 24 * 60 * 60 * 1000);
 const staleDate = () => new Date("2020-01-01T00:00:00Z");
 
@@ -238,6 +246,21 @@ describe("generic RSS fallback integration", () => {
       targetUrl: "https://example.com",
       rssFeedUrl: "https://example.com/rss",
     });
+  });
+
+  it("decodes a Windows-1250 RSS title before candidate normalization", async () => {
+    const { ingestSource } = await import("./ingest");
+    const xml = rssXml([{
+      title: "Škola publishes a sufficiently descriptive regional report",
+      link: "https://example.com/news/legacy-encoding",
+      pubDate: freshDate().toISOString(),
+    }]).replace('encoding="UTF-8"', 'encoding="windows-1250"');
+    const bytes = Uint8Array.from([...xml].map((character) => character === "Š" ? 0x8a : character.charCodeAt(0)));
+    safeFetchMock.mockResolvedValue(makeByteResponse(bytes, "application/rss+xml; charset=windows-1250"));
+
+    const result = await ingestSource("src-1");
+
+    expect(result.candidates.some((candidate) => candidate.title.startsWith("Škola"))).toBe(true);
   });
 
   it("generic fallback is used without saving rssFeedUrl to SourceCategory", async () => {

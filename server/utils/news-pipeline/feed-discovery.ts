@@ -1,4 +1,5 @@
 import { governedSafeFetch, governedSafeFetchAndParse, GovernedFetchDeferredError } from "./governed-fetch";
+import { decodeResponseText } from "./response-text-decoder";
 import type { GovernedFetchContext } from "./governed-fetch";
 import type { StageBatchProbe } from "./stage-telemetry";
 import { buildFeedUrlCandidates } from "./import-rss";
@@ -788,7 +789,7 @@ const collectSitemapFeedCandidates = async (
         purpose: "robots",
       }, async (response) => ({
         response,
-        body: response.ok ? await response.text() : "",
+        body: response.ok ? (await decodeResponseText(response, { kind: "text" })).text : "",
       }));
       const { response } = fetched;
       if (!response.ok) continue;
@@ -819,7 +820,7 @@ const collectSitemapFeedCandidates = async (
         purpose: "sitemap",
       }, async (response) => ({
         response,
-        body: response.ok ? await response.text() : "",
+        body: response.ok ? (await decodeResponseText(response, { kind: "xml" })).text : "",
       }));
       const { response, body } = fetched;
       if (!response.ok) continue;
@@ -2397,7 +2398,7 @@ export const verifyFeedCandidate = async (
     purpose: "feed",
   }, async (response) => ({
     response,
-    body: response.ok ? await response.text() : "",
+    body: response.ok ? (await decodeResponseText(response, { kind: "xml" })).text : "",
   }));
   const { response, body } = fetched;
 
@@ -2555,7 +2556,7 @@ export async function discoverFeedForUrl(input: {
         purpose: "feed",
       }, async (response) => ({
         response,
-        body: response.ok ? await response.text() : "",
+        body: response.ok ? (await decodeResponseText(response, { kind: "xml" })).text : "",
       }));
       const { response, body } = fetched;
 
@@ -2819,7 +2820,7 @@ export async function discoverFeedForUrl(input: {
           purpose: "listing",
         }, async (response) => ({
           response,
-          body: response.ok ? await response.text() : "",
+          body: response.ok ? (await decodeResponseText(response, { kind: "html" })).text : "",
         }));
         const { response: dirResponse, body: dirHtml } = dirFetched;
 

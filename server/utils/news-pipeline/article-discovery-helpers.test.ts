@@ -32,6 +32,13 @@ const makeResponse = (body: string, ok = true) => ({
   text: async () => body,
 });
 
+const makeByteResponse = (bytes: Uint8Array, contentType: string) => ({
+  ok: true,
+  status: 200,
+  headers: { get: (name: string) => name.toLowerCase() === "content-type" ? contentType : null },
+  arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+});
+
 describe("article-discovery-helpers", () => {
   it("parses and bounds Retry-After delta-seconds, HTTP-date, and fallback values", async () => {
     const {
@@ -332,6 +339,19 @@ describe("article-discovery-helpers", () => {
 
       const entries = await discoverSitemapUrls("https://example.com/");
       expect(entries.some((e) => e.url.includes("robot-discovered"))).toBe(true);
+    });
+
+    it("decodes a Windows-1250 sitemap before extracting URLs", async () => {
+      const { discoverSitemapUrls } = await import("./article-discovery-helpers");
+      const xml = '<?xml version="1.0" encoding="windows-1250"?><urlset><url><loc>https://example.com/news/2026/08/12/Škola-report</loc></url></urlset>';
+      const bytes = Uint8Array.from([...xml].map((character) => character === "Š" ? 0x8a : character.charCodeAt(0)));
+      safeFetchMock.mockImplementation(async (url: string) => url === "https://example.com/sitemap.xml"
+        ? makeByteResponse(bytes, "application/xml")
+        : makeResponse("", false));
+
+      const entries = await discoverSitemapUrls("https://example.com/");
+
+      expect(entries.some((entry) => entry.url.endsWith("/Škola-report"))).toBe(true);
     });
 
     it("treats apex and www hosts as the same sitemap-index scope", async () => {
