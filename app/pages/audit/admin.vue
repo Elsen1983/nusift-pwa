@@ -53,7 +53,7 @@
             <div class="flex flex-wrap items-center gap-2">
               <span class="material-symbols-outlined text-[19px] text-cyan-300">monitoring</span>
               <h2 class="font-headline text-base font-bold text-on-surface">Daily pipeline telemetry</h2>
-              <span v-if="dailyPipelineTelemetry.run" class="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider" :class="dailyPipelineTelemetry.run.status.includes('FAILED') || dailyPipelineTelemetry.run.status.includes('STALE') ? 'bg-rose-500/15 text-rose-200' : dailyPipelineTelemetry.run.status.includes('RUNNING') ? 'bg-amber-500/15 text-amber-200' : 'bg-emerald-500/15 text-emerald-200'">
+              <span v-if="dailyPipelineTelemetry.run" class="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider" :class="dailyPipelineTelemetry.run.status.includes('FAILED') || dailyPipelineTelemetry.run.status.includes('STALE') ? 'bg-rose-500/15 text-rose-200' : dailyPipelineTelemetry.run.status.includes('RUNNING') || dailyPipelineTelemetry.run.status.includes('PARTIAL') ? 'bg-amber-500/15 text-amber-200' : 'bg-emerald-500/15 text-emerald-200'">
                 {{ dailyPipelineTelemetry.run.status.replace('DAILY_PIPELINE_WORKFLOW_', '') }}
               </span>
             </div>
@@ -75,6 +75,17 @@
           </div>
           <div class="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-on-surface-variant">
             <span>processed targets/articles: <strong class="text-on-surface">{{ telemetryProcessed }}</strong></span><span>succeeded targets/articles: <strong class="text-emerald-300">{{ telemetrySucceeded }}</strong></span><span>retryable failed: {{ telemetryCount('failedRetryable') }}</span><span>permanent failed: {{ telemetryCount('failedPermanent') }}</span><span>skipped: {{ telemetryCount('skipped') }}</span><span>deferred: {{ telemetryCount('deferred') }}</span><span>quarantined: {{ telemetryCount('quarantined') }}</span><span>claim lost: {{ telemetryCount('claimLost') }}</span><span>persistence failed: {{ telemetryCount('persistenceFailed') }}</span><span>logical request: {{ formatTelemetryMs(telemetryDuration('logicalRequestDurationMs')) }}</span><span>extraction: {{ formatTelemetryMs(telemetryDuration('extractionDurationMs')) }}</span><span>browser: {{ formatTelemetryMs(telemetryDuration('browserDurationMs')) }}</span><span>persistence: {{ formatTelemetryMs(telemetryDuration('persistenceDurationMs')) }}</span><span>sleep: {{ formatTelemetryMs(telemetryDuration('sleepDurationMs')) }}</span><span>403 denied: {{ telemetryCount('accessDenied403') }}</span><span>403 limit: {{ telemetryCount('rateLimited403') }}</span><span>429: <strong class="text-amber-200">{{ telemetryCount('rateLimited429') }}</strong></span><span>timeouts: {{ telemetryCount('timedOut') }}</span>
+          </div>
+          <div v-if="dailyPipelineTelemetry.run.stageOutcomes?.length" class="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <div v-for="outcome in dailyPipelineTelemetry.run.stageOutcomes" :key="outcome.stage" class="rounded-lg border border-outline-variant/15 bg-surface-container/50 px-3 py-2">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-xs font-bold text-on-surface">{{ outcome.stage }}</span>
+                <span class="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase" :class="outcome.status === 'completed' ? 'bg-emerald-500/15 text-emerald-200' : outcome.status === 'degraded' ? 'bg-amber-500/15 text-amber-200' : 'bg-rose-500/15 text-rose-200'">{{ outcome.status }}</span>
+              </div>
+              <p class="mt-1 text-[10px] text-on-surface-variant">{{ outcome.batchCount }} batch{{ outcome.batchCount === 1 ? '' : 'es' }} Â· remaining {{ outcome.actionableRemaining ?? outcome.remaining ?? 'â€”' }}</p>
+              <p v-if="outcome.reason" class="mt-1 break-words text-[10px]" :class="outcome.status === 'failed' ? 'text-rose-200' : 'text-amber-200'">{{ outcome.reason }}</p>
+              <p v-if="outcome.nextRetryAt" class="mt-1 text-[10px] text-amber-200">next retry: {{ formatLogTime(outcome.nextRetryAt) }}</p>
+            </div>
           </div>
           <div class="space-y-2">
             <div v-for="stage in dailyPipelineTelemetry.stageTimings" :key="stage.stage" class="rounded-lg border border-outline-variant/15 bg-surface-container/50 px-3 py-2">

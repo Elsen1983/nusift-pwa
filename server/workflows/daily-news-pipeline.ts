@@ -37,11 +37,12 @@ export const DAILY_PIPELINE_STAGES = [
 
 export type DailyPipelineStage = (typeof DAILY_PIPELINE_STAGES)[number];
 
-type StageBatchResult = {
+export type StageBatchResult = {
   stage: DailyPipelineStage;
   processed: number;
   remaining: number;
   complete: boolean;
+  skipReason?: string | null;
   succeeded?: number;
   failedRetryable?: number;
   deferred?: number;
@@ -64,6 +65,8 @@ const FAIRNESS_YIELD = "1m";
 const STAGNANT_BATCHES_BEFORE_BACKOFF = 3;
 const STAGNANT_BACKOFF = "30m";
 const MAX_STAGNANT_BACKOFFS = 1;
+const INTERNAL_RUNNER_TIMEOUT_MS = 240_000;
+const STAGE_REASON_MAX_LENGTH = 500;
 
 /** Phase 1 is serial; these are measured active-operation limits, not batch sizes. */
 const STAGE_CONCURRENCY_LIMIT: Record<DailyPipelineStage, number> = {
@@ -86,11 +89,39 @@ export type DailyPipelineWorkflowInput = {
   triggeredAt: string;
 };
 
+export type DailyPipelineStageOutcomeStatus = "completed" | "degraded" | "failed";
+export type DailyPipelineRunOutcome = "COMPLETED" | "COMPLETED_PARTIAL" | "FAILED";
+
+export type DailyPipelineStageOutcome = {
+  stage: DailyPipelineStage;
+  status: DailyPipelineStageOutcomeStatus;
+  reason: string | null;
+  batchCount: number;
+  elapsedMs: number;
+  remaining: number | null;
+  actionableRemaining: number | null;
+  nextRetryAt: string | null;
+};
+
+export function deriveDailyPipelineRunOutcome(
+  outcomes: readonly DailyPipelineStageOutcome[],
+): DailyPipelineRunOutcome {
+  const hasCompletedOrDegraded = outcomes.some(
+    (outcome) => outcome.status === "completed" || outcome.status === "degraded",
+  );
+  if (!hasCompletedOrDegraded) return "FAILED";
+  return outcomes.some((outcome) => outcome.status !== "completed")
+    ? "COMPLETED_PARTIAL"
+    : "COMPLETED";
+}
+
 export type DailyPipelineWorkflowResult = {
   orchestrationId: string;
   orchestrationRunId: string | null;
   skipped: boolean;
   completedStages: DailyPipelineStage[];
+  runOutcome: DailyPipelineRunOutcome | null;
+  stageOutcomes: DailyPipelineStageOutcome[];
   notificationsProcessed: number;
   /** Aggregated per-stage timing summary (which stage consumed most runtime). */
   stageTimings: PipelineStageTimingSummary[];
@@ -200,25 +231,98 @@ const internalRunnerConfig = () => {
   return { baseUrl: baseUrl.replace(/\/$/, ""), secret };
 };
 
-const postInternalRunner = async <T>(path: string, body: Record<string, unknown>): Promise<T> => {
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+
+const boundedStageReason = (value: unknown): string => {
+  const raw = value instanceof Error ? value.message : String(value);
+  const redacted = raw
+    .replace(/https?:\/\/[^\s]+/gi, (candidate) => {
+      try {
+        const url = new URL(candidate);
+        url.search = "";
+        url.hash = "";
+        return url.toString();
+      } catch {
+        return "[redacted-url]";
+      }
+    })
+    .replace(/\b(authorization|cookie|password|secret|token)=\S+/gi, "$1=[redacted]");
+  return redacted.slice(0, STAGE_REASON_MAX_LENGTH);
+};
+
+const isNonNegativeInteger = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0;
+
+const validateStageBatchResult = (
+  value: unknown,
+  expectedStage: DailyPipelineStage,
+): StageBatchResult => {
+  const raw = asRecord(value);
+  if (
+    !raw ||
+    raw.stage !== expectedStage ||
+    !isNonNegativeInteger(raw.processed) ||
+    !isNonNegativeInteger(raw.remaining) ||
+    typeof raw.complete !== "boolean" ||
+    (raw.skipReason != null && typeof raw.skipReason !== "string") ||
+    (raw.nextRetryAt != null &&
+      (typeof raw.nextRetryAt !== "string" || !Number.isFinite(Date.parse(raw.nextRetryAt))))
+  ) {
+    throw new FatalError(
+      `Daily pipeline internal runner returned an invalid ${expectedStage} contract.`,
+    );
+  }
+  return value as StageBatchResult;
+};
+
+const postInternalRunner = async <T>(
+  path: string,
+  body: Record<string, unknown>,
+  validate?: (value: unknown) => T,
+): Promise<T> => {
   const { baseUrl, secret } = internalRunnerConfig();
-  const response = await fetch(`${baseUrl}${path}`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${secret}`,
-      "x-cron-secret": secret,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${secret}`,
+        "x-cron-secret": secret,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(INTERNAL_RUNNER_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) {
+      throw new Error(
+        `Daily pipeline internal runner ${path} timed out after ${INTERNAL_RUNNER_TIMEOUT_MS}ms.`,
+      );
+    }
+    throw error;
+  }
   if (!response.ok) {
     const message = `Daily pipeline internal runner ${path} failed with HTTP ${response.status}.`;
     if ([400, 401, 403, 404].includes(response.status)) {
       throw new FatalError(message);
     }
-    throw new Error(message);
+    if ([408, 429, 500, 502, 503, 504].includes(response.status)) {
+      throw new Error(message);
+    }
+    throw new FatalError(message);
   }
-  return await response.json() as T;
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new FatalError(
+      `Daily pipeline internal runner ${path} returned malformed JSON.`,
+    );
+  }
+  return validate ? validate(payload) : payload as T;
 };
 
 export async function runDailyPipelineStageBatch(
@@ -342,21 +446,31 @@ export async function runDailyPipelineStageBatch(
           remainingBefore: telemetryInput?.remainingBefore ?? null,
           sleepMs: telemetryInput?.sleepMs ?? 0,
         },
+        (value) => validateStageBatchResult(value, "agent2-headless"),
       );
     }
 
-    return await postInternalRunner<StageBatchResult>("/api/internal/run-agent3", {
-      action: "batch",
-      orchestrationRunId,
-      batchSeq: telemetryInput?.batchSeq ?? 1,
-      remainingBefore: telemetryInput?.remainingBefore ?? null,
-      sleepMs: telemetryInput?.sleepMs ?? 0,
-    });
+    return await postInternalRunner<StageBatchResult>(
+      "/api/internal/run-agent3",
+      {
+        action: "batch",
+        orchestrationRunId,
+        batchSeq: telemetryInput?.batchSeq ?? 1,
+        remainingBefore: telemetryInput?.remainingBefore ?? null,
+        sleepMs: telemetryInput?.sleepMs ?? 0,
+      },
+      (value) => validateStageBatchResult(value, "agent3"),
+    );
   } catch (error) {
     // Preserve a bounded diagnostic artifact even when the stage operation
     // throws before it can produce an authoritative result. This is additive
     // observation-only telemetry; the original error remains authoritative.
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = boundedStageReason(error);
+    const batchErrorClassification = error instanceof FatalError
+      ? "fatal_internal_runner"
+      : /timed out after \d+ms/i.test(reason)
+        ? "internal_runner_timeout"
+        : "retryable_or_runtime_failure";
     const telemetry = tracker.finalize({
       processed: 0,
       succeeded: 0,
@@ -366,7 +480,7 @@ export async function runDailyPipelineStageBatch(
       deferred: 0,
       quarantined: 0,
       batchExecutionErrors: 1,
-      batchErrorClassification: "unclassified",
+      batchErrorClassification,
       batchErrorReason: reason,
       remainingBefore: telemetryInput?.remainingBefore ?? null,
       remainingAfter: telemetryInput?.remainingBefore ?? null,
@@ -380,10 +494,11 @@ export async function runDailyPipelineStageBatch(
 
 async function finishDailyPipeline(
   orchestrationRunId: string,
-  status: "COMPLETED" | "FAILED",
+  status: DailyPipelineRunOutcome,
   completedStages: DailyPipelineStage[],
   options?: {
     error?: string;
+    stageOutcomes?: DailyPipelineStageOutcome[];
     stageTimings?: PipelineStageTimingSummary[];
     notificationsDurationMs?: number;
     completion?: Agent3CompletionSummary | null;
@@ -398,7 +513,9 @@ async function finishDailyPipeline(
       finishedAt: new Date(),
       summary: {
         kind: "daily_news_pipeline_workflow",
+        runOutcome: status,
         completedStages,
+        stageOutcomes: options?.stageOutcomes ?? [],
         stageTimings: options?.stageTimings ?? [],
         notificationsDurationMs: options?.notificationsDurationMs ?? 0,
         ...(options?.completion ? { completion: options.completion } : {}),
@@ -447,6 +564,8 @@ export async function runDailyNewsPipelineWorkflow(
       orchestrationRunId: lock.orchestrationRunId,
       skipped: true,
       completedStages: [],
+      runOutcome: null,
+      stageOutcomes: [],
       notificationsProcessed: 0,
       stageTimings: [],
       notificationsDurationMs: 0,
@@ -454,6 +573,7 @@ export async function runDailyNewsPipelineWorkflow(
   }
 
   const completedStages: DailyPipelineStage[] = [];
+  const stageOutcomes: DailyPipelineStageOutcome[] = [];
   // Durable per-batch telemetry records accumulated across the workflow loop.
   const stageTelemetry: StageBatchTelemetry[] = [];
   try {
@@ -466,37 +586,59 @@ export async function runDailyNewsPipelineWorkflow(
       // Requested durable sleep before the next batch. This is intentionally
       // the configured delay, not replay-dependent wall-clock suspension time.
       let sleepMsSinceLastBatch = 0;
+      let stageFinished = false;
 
-      while (true) {
-        batchSeq += 1;
-        const batch = await runDailyPipelineStageBatch(
-          lock.orchestrationRunId,
-          stage,
-          {
-            batchSeq,
-            remainingBefore: previousRemaining,
-            sleepMs: sleepMsSinceLastBatch,
-          },
-        );
-        sleepMsSinceLastBatch = 0;
-        if (batch.telemetry) stageTelemetry.push(batch.telemetry);
-        if (batch.complete) break;
-        batchesSinceYield += 1;
+      try {
+        while (true) {
+          batchSeq += 1;
+          const priorRemaining = previousRemaining;
+          const batch = await runDailyPipelineStageBatch(
+            lock.orchestrationRunId,
+            stage,
+            {
+              batchSeq,
+              remainingBefore: previousRemaining,
+              sleepMs: sleepMsSinceLastBatch,
+            },
+          );
+          sleepMsSinceLastBatch = 0;
+          if (batch.telemetry) stageTelemetry.push(batch.telemetry);
+          previousRemaining = batch.remaining;
+          if (batch.complete) {
+            const reason = batch.skipReason
+              ? boundedStageReason(batch.skipReason)
+              : batch.deferred && batch.nextRetryAt
+                ? "only_future_deferred_work_remains"
+                : null;
+            stageOutcomes.push({
+              stage,
+              status: "completed",
+              reason,
+              batchCount: batchSeq,
+              elapsedMs: stageTelemetry
+                .filter((item) => item.stage === stage)
+                .reduce((total, item) => total + item.durationMs + item.sleepMs, 0),
+              remaining: batch.remaining,
+              actionableRemaining: batch.retryableNow ?? batch.remaining,
+              nextRetryAt: batch.nextRetryAt ?? null,
+            });
+            completedStages.push(stage);
+            stageFinished = true;
+            break;
+          }
+          batchesSinceYield += 1;
 
-        const priorRemaining = previousRemaining;
-        const stagnant =
-          batch.processed === 0 ||
-          (priorRemaining !== null && batch.remaining >= priorRemaining);
-        stagnantBatches = stagnant ? stagnantBatches + 1 : 0;
-        previousRemaining = batch.remaining;
+          const stagnant =
+            batch.processed === 0 ||
+            (priorRemaining !== null && batch.remaining >= priorRemaining);
+          stagnantBatches = stagnant ? stagnantBatches + 1 : 0;
 
-        const waitAction = decideStageLoopWait({
-          batchesSinceYield,
-          stagnantBatches,
-          stagnantBackoffs,
-        });
-        if (waitAction === "fail" || waitAction === "stagnant_backoff") {
-          if (stage !== "agent3" && waitAction === "stagnant_backoff") {
+          const waitAction = decideStageLoopWait({
+            batchesSinceYield,
+            stagnantBatches,
+            stagnantBackoffs,
+          });
+          if (waitAction === "stagnant_backoff") {
             await sleep(STAGNANT_BACKOFF);
             sleepMsSinceLastBatch += 30 * 60 * 1000;
             stagnantBackoffs += 1;
@@ -504,42 +646,77 @@ export async function runDailyNewsPipelineWorkflow(
             stagnantBatches = 0;
             continue;
           }
-          const message =
-            `${stage} made no progress: ` +
-            `previousRemaining=${priorRemaining ?? "null"}, ` +
-            `currentRemaining=${batch.remaining}, processed=${batch.processed}, ` +
-            `readyNew=${batch.readyNew ?? "n/a"}, readyRetry=${batch.readyRetry ?? "n/a"}, ` +
-            `retryableNow=${batch.retryableNow ?? batch.remaining}, ` +
-            `deferred=${batch.deferred ?? "n/a"}, quarantined=${batch.quarantined ?? "n/a"}, ` +
-            `nextRetryAt=${batch.nextRetryAt ?? "null"}. Manual diagnosis required.`;
-          // Keep the in-memory summary truthful as well as updating the
-          // durable artifact. The attach step is non-fatal, but the summary
-          // must still retain the reason when the workflow rethrows.
-          if (batch.telemetry) batch.telemetry.noProgressReason = message;
-          await recordStageBatchNoProgress(
-            lock.orchestrationRunId,
+          if (waitAction === "fail") {
+            const message = boundedStageReason(
+              `${stage} made no progress: ` +
+              `previousRemaining=${priorRemaining ?? "null"}, ` +
+              `currentRemaining=${batch.remaining}, processed=${batch.processed}, ` +
+              `readyNew=${batch.readyNew ?? "n/a"}, readyRetry=${batch.readyRetry ?? "n/a"}, ` +
+              `retryableNow=${batch.retryableNow ?? batch.remaining}, ` +
+              `deferred=${batch.deferred ?? "n/a"}, quarantined=${batch.quarantined ?? "n/a"}, ` +
+              `nextRetryAt=${batch.nextRetryAt ?? "null"}. Manual diagnosis required.`,
+            );
+            if (batch.telemetry) batch.telemetry.noProgressReason = message;
+            try {
+              await recordStageBatchNoProgress(
+                lock.orchestrationRunId,
+                stage,
+                batchSeq,
+                message,
+              );
+            } catch {
+              // Observation-only; the stage outcome below remains authoritative.
+            }
+            stageOutcomes.push({
+              stage,
+              status: "degraded",
+              reason: message,
+              batchCount: batchSeq,
+              elapsedMs: stageTelemetry
+                .filter((item) => item.stage === stage)
+                .reduce((total, item) => total + item.durationMs + item.sleepMs, 0),
+              remaining: batch.remaining,
+              actionableRemaining: batch.retryableNow ?? batch.remaining,
+              nextRetryAt: batch.nextRetryAt ?? null,
+            });
+            stageFinished = true;
+            break;
+          }
+          if (waitAction === "fairness_yield") {
+            await sleep(FAIRNESS_YIELD);
+            sleepMsSinceLastBatch += 60 * 1000;
+            batchesSinceYield = 0;
+          }
+        }
+      } catch (error) {
+        if (!stageFinished) {
+          stageOutcomes.push({
             stage,
-            batchSeq,
-            message,
-          );
-          throw new FatalError(message);
+            status: "failed",
+            reason: boundedStageReason(error),
+            batchCount: batchSeq,
+            elapsedMs: stageTelemetry
+              .filter((item) => item.stage === stage)
+              .reduce((total, item) => total + item.durationMs + item.sleepMs, 0),
+            remaining: previousRemaining,
+            actionableRemaining: previousRemaining,
+            nextRetryAt: null,
+          });
         }
-        if (waitAction === "fairness_yield") {
-          await sleep(FAIRNESS_YIELD);
-          sleepMsSinceLastBatch += 60 * 1000;
-          batchesSinceYield = 0;
-        }
+        if (error instanceof FatalError) throw error;
       }
-      completedStages.push(stage);
     }
 
     const stageTimings = summarizeStageTimings(stageTelemetry);
+    const runOutcome = deriveDailyPipelineRunOutcome(stageOutcomes);
 
     // Completion semantics: the workflow reports COMPLETED when the current
     // orchestration has drained everything actionable inside it. Future-run
     // work (cooldown-expired retries, newly ingested rows) is recorded in the
     // completion summary so the admin UI never implies global completeness.
-    const completion = await finalizeAgent3CompletionStep(lock.orchestrationRunId);
+    const completion = runOutcome === "FAILED"
+      ? null
+      : await finalizeAgent3CompletionStep(lock.orchestrationRunId);
 
     // Digest delivery has its own scheduled endpoint. Keeping future delivery
     // sleeps out of this workflow releases the pipeline lock immediately after
@@ -548,9 +725,13 @@ export async function runDailyNewsPipelineWorkflow(
     const notificationsDurationMs = 0;
     await finishDailyPipeline(
       lock.orchestrationRunId,
-      "COMPLETED",
+      runOutcome,
       completedStages,
       {
+        ...(runOutcome === "FAILED"
+          ? { error: "No stage reached a completed or degraded outcome." }
+          : {}),
+        stageOutcomes,
         stageTimings,
         notificationsDurationMs,
         completion,
@@ -561,6 +742,8 @@ export async function runDailyNewsPipelineWorkflow(
       orchestrationRunId: lock.orchestrationRunId,
       skipped: false,
       completedStages,
+      runOutcome,
+      stageOutcomes,
       notificationsProcessed,
       stageTimings,
       notificationsDurationMs,
@@ -576,6 +759,7 @@ export async function runDailyNewsPipelineWorkflow(
         completedStages,
         {
           error: message,
+          stageOutcomes,
           stageTimings: summarizeStageTimings(stageTelemetry),
           notificationsDurationMs: 0,
         },

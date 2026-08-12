@@ -69,12 +69,35 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
   it("returns the run summary, stage timings, and bounded batch telemetry", async () => {
     mockPipelineRunFindFirst.mockResolvedValue({
       id: "run-1",
-      status: "DAILY_PIPELINE_WORKFLOW_COMPLETED",
+      status: "DAILY_PIPELINE_WORKFLOW_COMPLETED_PARTIAL",
       createdAt: "2026-08-01T10:00:00Z",
       finishedAt: "2026-08-01T10:46:00Z",
       summary: {
         kind: "daily_news_pipeline_workflow",
+        runOutcome: "COMPLETED_PARTIAL",
         completedStages: ["agent1", "agent2-static", "agent2-headless", "agent3"],
+        stageOutcomes: [
+          {
+            stage: "agent1",
+            status: "degraded",
+            reason: "bounded no progress",
+            batchCount: 6,
+            elapsedMs: 1234,
+            remaining: 2,
+            actionableRemaining: 2,
+            nextRetryAt: "2026-08-01T12:00:00.000Z",
+          },
+          {
+            stage: "agent3",
+            status: "completed",
+            reason: null,
+            batchCount: 1,
+            elapsedMs: 50,
+            remaining: 0,
+            actionableRemaining: 0,
+            nextRetryAt: null,
+          },
+        ],
         stageTimings: [
           {
             stage: "agent1",
@@ -147,7 +170,18 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
     expect(result.ok).toBe(true);
     expect(result.run).not.toBeNull();
     expect(result.run!.id).toBe("run-1");
-    expect(result.run!.status).toBe("DAILY_PIPELINE_WORKFLOW_COMPLETED");
+    expect(result.run!.status).toBe("DAILY_PIPELINE_WORKFLOW_COMPLETED_PARTIAL");
+    expect(result.run!.runOutcome).toBe("COMPLETED_PARTIAL");
+    expect(result.run!.stageOutcomes).toEqual([
+      expect.objectContaining({
+        stage: "agent1",
+        status: "degraded",
+        reason: "bounded no progress",
+        batchCount: 6,
+        actionableRemaining: 2,
+      }),
+      expect.objectContaining({ stage: "agent3", status: "completed" }),
+    ]);
     expect(result.stageTimings).toHaveLength(2);
     expect(result.stageTimings[0]).toMatchObject({ stage: "agent1", durationMs: 240000 });
     expect(result.stageTimings[1]).toMatchObject({ stage: "agent3", durationMs: 1200000 });

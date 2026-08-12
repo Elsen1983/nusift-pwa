@@ -18,7 +18,15 @@ const mocks = vi.hoisted(() => ({
   agent3Progress: vi.fn(),
   completionForRun: vi.fn(),
   fetch: vi.fn(),
+  sleep: vi.fn(),
 }));
+
+vi.mock("workflow", () => {
+  class FatalError extends Error {
+    override name = "FatalError";
+  }
+  return { FatalError, sleep: mocks.sleep };
+});
 
 vi.mock("../utils/prisma", () => ({
   prisma: {
@@ -59,13 +67,58 @@ import {
   acquireDailyPipelineLock,
   DAILY_PIPELINE_STAGES,
   decideStageLoopWait,
+  deriveDailyPipelineRunOutcome,
+  runDailyNewsPipelineWorkflow,
   runDailyPipelineStageBatch,
 } from "./daily-news-pipeline";
+
+const completedAgent1Result = () => ({
+  processed: 1,
+  selectedTargets: 1,
+  remainingEligible: 0,
+  targetDispositions: {
+    succeeded: 1,
+    failedRetryable: 0,
+    failedPermanent: 0,
+    skipped: 0,
+    deferred: 0,
+    quarantined: 0,
+    persistenceFailed: 0,
+  },
+  productivity: {},
+});
+
+const completedAgent2Result = () => ({
+  processed: 1,
+  selectedTargets: 1,
+  remainingEligible: 0,
+  targetDispositions: {
+    succeeded: 1,
+    failedRetryable: 0,
+    failedPermanent: 0,
+    skipped: 0,
+    deferred: 0,
+    quarantined: 0,
+    claimLost: 0,
+    persistenceFailed: 0,
+  },
+  productivity: {},
+});
+
+const runnerResponse = (body: Record<string, unknown>) => ({
+  ok: true,
+  status: 200,
+  json: vi.fn().mockResolvedValue(body),
+});
 
 describe("daily news pipeline stage batches", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.updateMany.mockResolvedValue({ count: 1 });
+    mocks.queryRaw.mockResolvedValue([{ lock: "" }]);
+    mocks.findFirst.mockResolvedValue(null);
+    mocks.create.mockResolvedValue({ id: "orchestration-1" });
+    mocks.sleep.mockResolvedValue(undefined);
     mocks.artifactCount.mockResolvedValue(0);
     mocks.artifactCreate.mockResolvedValue({ id: "telemetry-1" });
     mocks.browserEnabled.mockReturnValue(true);
@@ -179,6 +232,23 @@ describe("daily news pipeline stage batches", () => {
         stagnantBackoffs: 1,
       }),
     ).toBe("fail");
+  });
+
+  it("derives truthful completed, partial, and failed run outcomes", () => {
+    const outcome = (status: "completed" | "degraded" | "failed") => ({
+      stage: "agent1" as const,
+      status,
+      reason: null,
+      batchCount: 1,
+      elapsedMs: 1,
+      remaining: 0,
+      actionableRemaining: 0,
+      nextRetryAt: null,
+    });
+    expect(deriveDailyPipelineRunOutcome([outcome("completed")])).toBe("COMPLETED");
+    expect(deriveDailyPipelineRunOutcome([outcome("degraded"), outcome("degraded")]))
+      .toBe("COMPLETED_PARTIAL");
+    expect(deriveDailyPipelineRunOutcome([outcome("failed"), outcome("failed")])).toBe("FAILED");
   });
 
   it("runs Agent 1 with the production bounded batch contract", async () => {
@@ -458,6 +528,47 @@ describe("daily news pipeline stage batches", () => {
     ).rejects.toMatchObject({ name: "FatalError" });
   });
 
+  it.each([400, 401, 403, 404])(
+    "treats internal-runner HTTP %i as fatal",
+    async (status) => {
+      mocks.fetch.mockResolvedValue({ ok: false, status });
+      await expect(
+        runDailyPipelineStageBatch("orchestration-1", "agent2-headless"),
+      ).rejects.toMatchObject({ name: "FatalError" });
+    },
+  );
+
+  it("keeps generic HTTP 503 retryable instead of treating it as a skip", async () => {
+    mocks.fetch.mockResolvedValue({ ok: false, status: 503 });
+    await expect(
+      runDailyPipelineStageBatch("orchestration-1", "agent2-headless"),
+    ).rejects.toMatchObject({
+      name: "Error",
+      message: expect.stringContaining("HTTP 503"),
+    });
+  });
+
+  it("treats malformed successful runner payloads as fatal contract mismatches", async () => {
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ stage: "agent2-headless", complete: true }),
+    });
+    await expect(
+      runDailyPipelineStageBatch("orchestration-1", "agent2-headless"),
+    ).rejects.toMatchObject({ name: "FatalError" });
+  });
+
+  it("bounds internal runner requests and classifies transport timeout as retryable", async () => {
+    mocks.fetch.mockRejectedValue(Object.assign(new Error("aborted"), { name: "TimeoutError" }));
+    await expect(
+      runDailyPipelineStageBatch("orchestration-1", "agent3"),
+    ).rejects.toMatchObject({
+      name: "Error",
+      message: expect.stringContaining("timed out after 240000ms"),
+    });
+    expect(mocks.fetch.mock.calls[0]![1].signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("delegates Agent 3 to the bounded internal runner without a daily article cap", async () => {
     mocks.fetch.mockResolvedValue({
       ok: true,
@@ -634,5 +745,131 @@ describe("daily news pipeline stage batches", () => {
       action: "completion",
       orchestrationRunId: "orchestration-1",
     });
+  });
+
+  it("continues through Agent 3 after Agent 1 stagnates and reports partial completion", async () => {
+    mocks.agent1.mockResolvedValue({
+      ...completedAgent1Result(),
+      processed: 0,
+      remainingEligible: 1,
+      targetDispositions: {
+        ...completedAgent1Result().targetDispositions,
+        succeeded: 0,
+        deferred: 1,
+      },
+    });
+    mocks.agent2.mockResolvedValue(completedAgent2Result());
+    mocks.fetch.mockImplementation(async (url, options) => {
+      const body = JSON.parse(String(options.body));
+      if (body.action === "completion") {
+        return runnerResponse({ summary: {
+          completionReason: "globally_complete",
+          currentRunDrained: true,
+          globallyComplete: true,
+          eligibleNextRun: 0,
+          retryableNextRun: 0,
+          deferred: 0,
+          quarantined: 0,
+          nonRetryable: 0,
+          nextRetryAt: null,
+        } });
+      }
+      const stage = String(url).includes("agent2-headless") ? "agent2-headless" : "agent3";
+      return runnerResponse({ stage, processed: 1, remaining: 0, complete: true });
+    });
+
+    const result = await runDailyNewsPipelineWorkflow({
+      orchestrationId: "workflow-partial",
+      triggeredAt: "2026-08-12T10:00:00.000Z",
+    });
+
+    expect(result.runOutcome).toBe("COMPLETED_PARTIAL");
+    expect(result.stageOutcomes).toHaveLength(4);
+    expect(result.stageOutcomes[0]).toMatchObject({ stage: "agent1", status: "degraded" });
+    expect(result.stageOutcomes.at(-1)).toMatchObject({ stage: "agent3", status: "completed" });
+    expect(mocks.agent2).toHaveBeenCalled();
+    expect(mocks.fetch).toHaveBeenCalledWith(
+      "https://www.nusift.test/api/internal/run-agent3",
+      expect.any(Object),
+    );
+    expect(mocks.sleep).toHaveBeenCalledWith("30m");
+  });
+
+  it("continues Agent 3 after a retryable Agent 2 headless runner failure", async () => {
+    mocks.agent1.mockResolvedValue(completedAgent1Result());
+    mocks.agent2.mockResolvedValue(completedAgent2Result());
+    mocks.fetch.mockImplementation(async (url, options) => {
+      const body = JSON.parse(String(options.body));
+      if (String(url).includes("agent2-headless")) return { ok: false, status: 503 };
+      if (body.action === "completion") return runnerResponse({ summary: null });
+      return runnerResponse({ stage: "agent3", processed: 1, remaining: 0, complete: true });
+    });
+
+    const result = await runDailyNewsPipelineWorkflow({
+      orchestrationId: "workflow-headless-failed",
+      triggeredAt: "2026-08-12T10:00:00.000Z",
+    });
+
+    expect(result.runOutcome).toBe("COMPLETED_PARTIAL");
+    expect(result.stageOutcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: "agent2-headless", status: "failed" }),
+      expect.objectContaining({ stage: "agent3", status: "completed" }),
+    ]));
+  });
+
+  it("gives Agent 3 one bounded stagnation backoff before degrading", async () => {
+    mocks.agent1.mockResolvedValue(completedAgent1Result());
+    mocks.agent2.mockResolvedValue(completedAgent2Result());
+    mocks.fetch.mockImplementation(async (url, options) => {
+      const body = JSON.parse(String(options.body));
+      if (String(url).includes("agent2-headless")) {
+        return runnerResponse({ stage: "agent2-headless", processed: 0, remaining: 0, complete: true });
+      }
+      if (body.action === "completion") return runnerResponse({ summary: null });
+      return runnerResponse({ stage: "agent3", processed: 0, remaining: 2, complete: false });
+    });
+
+    const result = await runDailyNewsPipelineWorkflow({
+      orchestrationId: "workflow-agent3-stagnant",
+      triggeredAt: "2026-08-12T10:00:00.000Z",
+    });
+
+    expect(mocks.sleep).toHaveBeenCalledTimes(1);
+    expect(mocks.sleep).toHaveBeenCalledWith("30m");
+    expect(result.stageOutcomes.at(-1)).toMatchObject({
+      stage: "agent3",
+      status: "degraded",
+      batchCount: 6,
+      remaining: 2,
+    });
+  });
+
+  it("reports FAILED when every stage runner fails without trustworthy progress", async () => {
+    mocks.agent1.mockRejectedValue(new Error("agent1 unavailable"));
+    mocks.agent2.mockRejectedValue(new Error("agent2 unavailable"));
+    mocks.fetch.mockRejectedValue(new Error("runner unavailable"));
+
+    const result = await runDailyNewsPipelineWorkflow({
+      orchestrationId: "workflow-all-failed",
+      triggeredAt: "2026-08-12T10:00:00.000Z",
+    });
+
+    expect(result.runOutcome).toBe("FAILED");
+    expect(result.stageOutcomes).toHaveLength(4);
+    expect(result.stageOutcomes.every((outcome) => outcome.status === "failed")).toBe(true);
+  });
+
+  it("keeps lock loss fatal and does not execute later stages", async () => {
+    mocks.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+
+    await expect(runDailyNewsPipelineWorkflow({
+      orchestrationId: "workflow-lock-lost",
+      triggeredAt: "2026-08-12T10:00:00.000Z",
+    })).rejects.toMatchObject({ name: "FatalError" });
+
+    expect(mocks.agent1).not.toHaveBeenCalled();
+    expect(mocks.agent2).not.toHaveBeenCalled();
   });
 });

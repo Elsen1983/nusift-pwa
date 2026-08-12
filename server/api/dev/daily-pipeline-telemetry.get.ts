@@ -13,10 +13,12 @@ import { normalizeAgent3CompletionSummary } from "../../utils/news-pipeline/agen
 const DAILY_STATUSES = [
   "DAILY_PIPELINE_WORKFLOW_RUNNING",
   "DAILY_PIPELINE_WORKFLOW_COMPLETED",
+  "DAILY_PIPELINE_WORKFLOW_COMPLETED_PARTIAL",
   "DAILY_PIPELINE_WORKFLOW_FAILED",
   "DAILY_PIPELINE_WORKFLOW_STALE",
 ] as const;
 const STAGES: ReadonlySet<TelemetryStage> = new Set(["agent1", "agent2-static", "agent2-headless", "agent3"]);
+const STAGE_OUTCOMES = new Set(["completed", "degraded", "failed"]);
 const isTelemetryStage = (value: unknown): value is TelemetryStage =>
   typeof value === "string" && STAGES.has(value as TelemetryStage);
 const MAX_RUN_ID_LENGTH = 100;
@@ -98,6 +100,29 @@ const normalizeStageTiming = (value: unknown): JsonRecord | null => {
     batchErrorReason: typeof raw.batchErrorReason === "string"
       ? boundText(raw.batchErrorReason, 300)
       : null,
+  };
+};
+
+const normalizeStageOutcome = (value: unknown): JsonRecord | null => {
+  const raw = asRecord(value);
+  if (!raw || !isTelemetryStage(raw.stage)) return null;
+  if (typeof raw.status !== "string" || !STAGE_OUTCOMES.has(raw.status)) {
+    return null;
+  }
+  const nextRetryAt = typeof raw.nextRetryAt === "string" && Number.isFinite(Date.parse(raw.nextRetryAt))
+    ? raw.nextRetryAt
+    : null;
+  return {
+    stage: raw.stage,
+    status: raw.status,
+    reason: typeof raw.reason === "string" ? boundText(raw.reason, 500) : null,
+    batchCount: clampCount(numberOr(raw.batchCount)),
+    elapsedMs: clampDuration(numberOr(raw.elapsedMs)),
+    remaining: raw.remaining == null ? null : clampCount(numberOr(raw.remaining)),
+    actionableRemaining: raw.actionableRemaining == null
+      ? null
+      : clampCount(numberOr(raw.actionableRemaining)),
+    nextRetryAt,
   };
 };
 
@@ -267,6 +292,14 @@ export default defineEventHandler(async (event) => {
         updatedAtMs != null && Date.now() - updatedAtMs >= MANUAL_LOCK_RECOVERY_AFTER_MS,
       completedStages: Array.isArray(summary.completedStages)
         ? summary.completedStages.filter((stage): stage is TelemetryStage => isTelemetryStage(stage))
+        : [],
+      runOutcome: ["COMPLETED", "COMPLETED_PARTIAL", "FAILED"].includes(String(summary.runOutcome))
+        ? summary.runOutcome
+        : null,
+      stageOutcomes: Array.isArray(summary.stageOutcomes)
+        ? summary.stageOutcomes
+          .map(normalizeStageOutcome)
+          .filter((outcome): outcome is JsonRecord => outcome !== null)
         : [],
       error: typeof summary.error === "string" ? boundText(summary.error, 1000) : null,
       workflowDurationMs,
