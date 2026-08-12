@@ -121,6 +121,8 @@ export default defineEventHandler(async (event) => {
     processed: result.processed,
     remaining,
     complete,
+    deferred: result.deferredRemaining ?? 0,
+    nextRetryAt: result.nextRetryAt ?? null,
     telemetry,
   };
 });

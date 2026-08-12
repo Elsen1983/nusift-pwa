@@ -1070,13 +1070,13 @@
                         Retry manually or wait for stale recovery.
                       </div>
                     </div>
-                    <!-- Active PENDING_HEADLESS cooldown (Approach A) -->
-                    <div v-if="item.skippedDueToBrowserCooldown" class="mt-2 rounded-lg border border-cyan-400/20 bg-cyan-500/5 px-2.5 py-1.5 text-[10px] text-cyan-100/90">
+                    <!-- Active durable PENDING_HEADLESS cooldown -->
+                    <div v-if="item.cooldownDeferred" class="mt-2 rounded-lg border border-cyan-400/20 bg-cyan-500/5 px-2.5 py-1.5 text-[10px] text-cyan-100/90">
                       <div class="font-bold uppercase tracking-wider text-cyan-200">In browser cooldown</div>
                       <div class="mt-0.5">
                         Browser skipped — previous run was rate-limited.
-                        <span v-if="item.browserCooldownUntil">Cooldown until: <strong>{{ formatLogTime(item.browserCooldownUntil) }}</strong></span>
-                        <span v-if="cooldownRemainingMinutes(item.browserRetryAfterAt || item.browserCooldownUntil) != null"> (retryable in <strong>{{ cooldownRemainingMinutes(item.browserRetryAfterAt || item.browserCooldownUntil) }} min</strong>)</span>
+                        <span>Cooldown until: <strong>{{ formatLogTime(item.nextEligibleAt!) }}</strong></span>
+                        <span> (retryable in <strong>{{ cooldownRemainingMinutes(item.nextEligibleAt) }} min</strong>)</span>
                       </div>
                       <div v-if="item.browserRateLimitReason" class="mt-0.5 text-on-surface-variant/60">
                         Reason: {{ item.browserRateLimitReason }}
@@ -2647,6 +2647,8 @@ const headlessQueueItems = ref<Array<{
   targetUrl: string | null;
   createdAt: string;
   updatedAt: string;
+  nextEligibleAt: string | null;
+  cooldownDeferred: boolean;
   quality: string | null;
   confidence: string | null;
   escalationReasons: string[];

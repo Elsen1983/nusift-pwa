@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
-const findManyMock = vi.fn();  const updateManyMock = vi.fn();
+const findManyMock = vi.fn();
+const findFirstMock = vi.fn();
+const updateManyMock = vi.fn();
   const countMock = vi.fn();
   const logAgentScanMock = vi.fn();
 const isBrowserFallbackEnabledMock = vi.fn();
@@ -19,6 +21,7 @@ vi.mock("../prisma", () => ({
   prisma: {
     pipelineArtifact: {
       findMany: (...args: any[]) => findManyMock(...args),        updateMany: (...args: any[]) => updateManyMock(...args),
+        findFirst: (...args: any[]) => findFirstMock(...args),
         count: (...args: any[]) => countMock(...args),
     },
   },
@@ -215,6 +218,7 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
   beforeEach(() => {
     vi.clearAllMocks();
     findManyMock.mockReset();
+    findFirstMock.mockReset();
     updateManyMock.mockReset();
     logAgentScanMock.mockReset();
     isBrowserFallbackEnabledMock.mockReset();
@@ -232,6 +236,8 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     createOrUpdateHardSourceProfileMock.mockResolvedValue("profile-1");
     resolveHardSourceProfilesForTargetMock.mockResolvedValue(0);
     loadPersistedHostCooldownsMock.mockResolvedValue(new Map());
+    countMock.mockResolvedValue(0);
+    findFirstMock.mockResolvedValue(null);
     createBrowserArticleDetailSessionMock.mockResolvedValue({
       session: {
         evaluate: (...args: any[]) => evaluateArticleLinkCandidateWithBrowserMock(...args),
@@ -1694,33 +1700,105 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
   // ── Browser cooldown (Approach A) ───────────────────────────────────
 
   it("preserves exact persisted host cooldown metadata when skipping a target", async () => {
-    const retryAfterAt = "2099-07-30T13:00:00.000Z";
+    const queueNow = new Date("2026-08-12T12:00:00.000Z");
+    const retryAfterAt = "2026-08-12T13:00:00.000Z";
     loadPersistedHostCooldownsMock.mockResolvedValue(new Map([[
       "example.com",
       {
         retryAfterAt,
-        rateLimitedAt: "2099-07-30T12:00:00.000Z",
+        rateLimitedAt: queueNow.toISOString(),
         reason: "http_429",
       },
     ]]));
     findManyMock.mockResolvedValue([makeArtifact()]);
     updateManyMock.mockResolvedValue({ count: 1 });
+    countMock
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(1);
+    findFirstMock.mockResolvedValue({ nextEligibleAt: new Date(retryAfterAt) });
 
     const fn = await loadFn();
-    const result = await fn({ dryRun: false, runBrowser: true, limit: 1 });
+    const result = await fn({
+      dryRun: false,
+      runBrowser: true,
+      limit: 1,
+      now: () => queueNow.getTime(),
+    });
 
     if (result.dryRun) throw new Error("Expected queue processing result.");
     expect(result.browserCooldownSkipped).toBe(1);
+    expect(result.processed).toBe(1);
+    expect(result.remainingEligible).toBe(0);
+    expect(result.deferredRemaining).toBe(1);
+    expect(result.nextRetryAt).toBe(retryAfterAt);
     expect(discoverArticleLinksWithBrowserMock).not.toHaveBeenCalled();
-    const payload = updateManyMock.mock.calls[0]![0].data.payload;
+    const cooldownWrite = updateManyMock.mock.calls[0]![0];
+    expect(cooldownWrite.data.nextEligibleAt).toEqual(new Date(retryAfterAt));
+    const payload = cooldownWrite.data.payload;
     expect(payload).toMatchObject({
       browserRateLimited: true,
       browserRateLimitReason: "http_429",
-      browserRateLimitedAt: "2099-07-30T12:00:00.000Z",
+      browserRateLimitedAt: queueNow.toISOString(),
       browserRetryAfterAt: retryAfterAt,
       browserCooldownUntil: retryAfterAt,
       skippedDueToBrowserCooldown: true,
     });
+  });
+
+  it("keeps cooldown eligibility unknown when the materialization CAS is lost", async () => {
+    const retryAfterAt = "2099-07-30T13:00:00.000Z";
+    loadPersistedHostCooldownsMock.mockResolvedValue(new Map([["example.com", {
+      retryAfterAt,
+      rateLimitedAt: "2099-07-30T12:00:00.000Z",
+      reason: "http_429",
+    }]]));
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockResolvedValue({ count: 0 });
+    countMock
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(0);
+
+    const result = await (await loadFn())({ dryRun: false, runBrowser: true, limit: 1 });
+
+    if (result.dryRun) throw new Error("Expected queue processing result.");
+    expect(result).toMatchObject({
+      processed: 0,
+      remainingEligible: 1,
+      deferredRemaining: 0,
+      skippedAlreadyClaimed: 1,
+    });
+    expect(result.targetDispositions.claimLost).toBe(1);
+    expect(result.targetDispositions.persistenceFailed).toBe(0);
+    expect(result.nextRetryAt).toBeNull();
+    expect(discoverArticleLinksWithBrowserMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps cooldown eligibility actionable when materialization persistence throws", async () => {
+    const retryAfterAt = "2099-07-30T13:00:00.000Z";
+    loadPersistedHostCooldownsMock.mockResolvedValue(new Map([["example.com", {
+      retryAfterAt,
+      rateLimitedAt: "2099-07-30T12:00:00.000Z",
+      reason: "http_429",
+    }]]));
+    findManyMock.mockResolvedValue([makeArtifact()]);
+    updateManyMock.mockRejectedValue(new Error("database unavailable"));
+    countMock
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(0);
+
+    const result = await (await loadFn())({ dryRun: false, runBrowser: true, limit: 1 });
+
+    if (result.dryRun) throw new Error("Expected queue processing result.");
+    expect(result).toMatchObject({
+      processed: 0,
+      remainingEligible: 1,
+      deferredRemaining: 0,
+      skippedAlreadyClaimed: 0,
+    });
+    expect(result.targetDispositions.claimLost).toBe(0);
+    expect(result.targetDispositions.persistenceFailed).toBe(1);
+    expect(result.nextRetryAt).toBeNull();
+    expect(discoverArticleLinksWithBrowserMock).not.toHaveBeenCalled();
   });
 
   it("skips browser work when cooldown is active and keeps artifact as PENDING_HEADLESS", async () => {

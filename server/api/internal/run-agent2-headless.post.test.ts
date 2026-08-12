@@ -104,6 +104,43 @@ describe("POST /api/internal/run-agent2-headless", () => {
     expect(mocks.persistTelemetry).toHaveBeenCalledTimes(1);
   });
 
+  it("completes neutrally and exposes the earliest retry when only future cooldown work remains", async () => {
+    mocks.processQueue.mockResolvedValue({
+      dryRun: false,
+      processed: 0,
+      selectedQueueItems: 0,
+      remainingEligible: 0,
+      deferredRemaining: 3,
+      nextRetryAt: "2026-08-12T12:30:00.000Z",
+      targetDispositions: {
+        succeeded: 0,
+        failedRetryable: 0,
+        failedPermanent: 0,
+        skipped: 0,
+        deferred: 0,
+        quarantined: 0,
+        claimLost: 0,
+        persistenceFailed: 0,
+      },
+      productivity: {},
+    });
+
+    const result = await (await loadHandler())({} as any);
+
+    expect(result).toMatchObject({
+      stage: "agent2-headless",
+      processed: 0,
+      remaining: 0,
+      complete: true,
+      deferred: 3,
+      nextRetryAt: "2026-08-12T12:30:00.000Z",
+      telemetry: {
+        remainingAfter: 0,
+        complete: true,
+      },
+    });
+  });
+
   it("completes neutrally without queue work when browser fallback is disabled", async () => {
     mocks.browserEnabled.mockReturnValue(false);
 

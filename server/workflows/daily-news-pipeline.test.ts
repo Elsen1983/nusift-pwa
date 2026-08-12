@@ -418,6 +418,38 @@ describe("daily news pipeline stage batches", () => {
     );
   });
 
+  it("treats a headless batch with only future cooldown work as complete", async () => {
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        stage: "agent2-headless",
+        processed: 0,
+        remaining: 0,
+        complete: true,
+        deferred: 3,
+        nextRetryAt: "2026-08-12T12:30:00.000Z",
+        telemetry: {
+          stage: "agent2-headless",
+          batchSeq: 1,
+          batchSizeLimit: 3,
+          concurrencyLimit: 1,
+          remainingAfter: 0,
+          complete: true,
+        },
+      }),
+    });
+
+    await expect(
+      runDailyPipelineStageBatch("orchestration-1", "agent2-headless"),
+    ).resolves.toMatchObject({
+      processed: 0,
+      remaining: 0,
+      complete: true,
+      deferred: 3,
+      nextRetryAt: "2026-08-12T12:30:00.000Z",
+    });
+  });
+
   it("does not retry deterministic internal-runner authorization failures", async () => {
     mocks.fetch.mockResolvedValue({ ok: false, status: 401 });
 

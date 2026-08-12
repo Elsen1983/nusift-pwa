@@ -1334,13 +1334,33 @@ describe("buildHeadlessQueueSummary", () => {
   });
 
   it("computes cooldownPendingTotal for cooldown items", () => {
+    const nextEligibleAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     const items = [
-      { ...makeItem("PENDING_HEADLESS"), skippedDueToBrowserCooldown: true },
+      { ...makeItem("PENDING_HEADLESS"), nextEligibleAt, skippedDueToBrowserCooldown: true },
       { ...makeItem("PENDING_HEADLESS"), skippedDueToBrowserCooldown: false },
       makeItem("RESOLVED"),
     ];
     const summary = buildHeadlessQueueSummary(items as any);
     expect(summary.cooldownPendingTotal).toBe(1);
+  });
+
+  it("does not treat legacy payload cooldown flags as durable queue deferral", () => {
+    const summary = buildHeadlessQueueSummary([
+      { ...makeItem("PENDING_HEADLESS"), skippedDueToBrowserCooldown: true },
+    ] as any);
+
+    expect(summary.cooldownPendingTotal).toBe(0);
+  });
+
+  it("does not let an out-of-policy timestamp create an unbounded admin defer", () => {
+    const summary = buildHeadlessQueueSummary([
+      {
+        ...makeItem("PENDING_HEADLESS"),
+        nextEligibleAt: new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString(),
+      },
+    ] as any);
+
+    expect(summary.cooldownPendingTotal).toBe(0);
   });
 });
 

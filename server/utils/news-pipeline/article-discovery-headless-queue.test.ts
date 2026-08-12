@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const findManyMock = vi.fn();
+const findFirstMock = vi.fn();
 const updateMock = vi.fn();
 const countMock = vi.fn();
 const logAgentScanMock = vi.fn();
@@ -21,6 +22,7 @@ vi.mock("../prisma", () => ({
   prisma: {
     pipelineArtifact: {
       findMany: (...args: any[]) => findManyMock(...args),
+      findFirst: (...args: any[]) => findFirstMock(...args),
       update: (...args: any[]) => updateMock(...args),        updateMany: (...args: any[]) => updateMock(...args),
       count: (...args: any[]) => countMock(...args),
     },
@@ -60,10 +62,12 @@ const makeArtifact = (overrides: Record<string, unknown> = {}) => ({
 describe("processArticleDiscoveryHeadlessQueue", () => {
   beforeEach(() => {
     findManyMock.mockReset();      updateMock.mockReset();
+      findFirstMock.mockReset();
       countMock.mockReset();
       sourceFindUniqueMock.mockReset();
       categoryFindUniqueMock.mockReset();
       countMock.mockResolvedValue(0);
+      findFirstMock.mockResolvedValue(null);
       logAgentScanMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
     discoverArticleLinksWithBrowserMock.mockReset();
@@ -243,16 +247,56 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
     }
   });
 
-  it("queries only PENDING_HEADLESS artifacts ordered by createdAt ascending", async () => {
+  it("queries only actionable PENDING_HEADLESS artifacts ordered by createdAt ascending", async () => {
     findManyMock.mockResolvedValue([]);
     const fn = await loadFn();
-    await fn({ dryRun: true });
+    const boundary = new Date("2026-08-12T10:00:00.000Z");
+    await fn({ dryRun: true, now: () => boundary.getTime() });
     expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         artifactType: "article_discovery_headless_required",
         status: "PENDING_HEADLESS",
+        OR: [
+          { nextEligibleAt: null },
+          { nextEligibleAt: { lte: boundary } },
+          { nextEligibleAt: { gt: new Date("2026-08-13T10:00:00.000Z") } },
+        ],
       },
       orderBy: { createdAt: "asc" },
+    }));
+  });
+
+  it("reports only future durable work as deferred with the earliest retry boundary", async () => {
+    findManyMock.mockResolvedValue([]);
+    countMock
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(2);
+    const nextEligibleAt = new Date("2026-08-12T12:30:00.000Z");
+    findFirstMock.mockResolvedValue({ nextEligibleAt });
+
+    const fn = await loadFn();
+    const result = await fn({
+      dryRun: false,
+      runBrowser: true,
+      now: () => new Date("2026-08-12T12:00:00.000Z").getTime(),
+    });
+
+    if (result.dryRun) throw new Error("Expected queue processing result.");
+    expect(result).toMatchObject({
+      processed: 0,
+      remainingEligible: 0,
+      deferredRemaining: 2,
+      nextRetryAt: nextEligibleAt.toISOString(),
+    });
+    expect(findFirstMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        status: "PENDING_HEADLESS",
+        nextEligibleAt: {
+          gt: new Date("2026-08-12T12:00:00.000Z"),
+          lte: new Date("2026-08-13T12:00:00.000Z"),
+        },
+      }),
+      orderBy: [{ nextEligibleAt: "asc" }, { createdAt: "asc" }],
     }));
   });
 
@@ -585,8 +629,10 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
 describe("recoverStaleArticleDiscoveryHeadlessProcessing", () => {
   beforeEach(() => {
     findManyMock.mockReset();      updateMock.mockReset();
+      findFirstMock.mockReset();
       countMock.mockReset();
       countMock.mockResolvedValue(0);
+      findFirstMock.mockResolvedValue(null);
       logAgentScanMock.mockReset();
     logAgentScanMock.mockResolvedValue(undefined);
   });

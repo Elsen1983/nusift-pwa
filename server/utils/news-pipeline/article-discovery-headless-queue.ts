@@ -25,7 +25,10 @@ import {
   type ArticleDiscoveryCandidateOutcome,
   type StaticDiscoveryRateLimitEvidence,
 } from "./article-discovery-helpers";
-import { boundStaticRetryAfterTimestamp } from "./retry-after-policy";
+import {
+  boundStaticRetryAfterTimestamp,
+  STATIC_RETRY_AFTER_MAX_MS,
+} from "./retry-after-policy";
 import { persistCandidates } from "./ingest";
 import type { IngestCandidate } from "./types";
 import { stableTargetKey, normalizeTargetUrl } from "./text";
@@ -139,8 +142,12 @@ type HeadlessQueueProcessResult = {
   browserCooldownSkipped?: number;
   skippedDuplicateTarget?: number;
   browserAttemptedTargets?: number;
-  /** Authoritative count of pending headless artifacts after this processing pass. */
+  /** Authoritative count of pending headless artifacts actionable at the final queue timestamp. */
   remainingEligible?: number;
+  /** Durable pending artifacts whose next eligible timestamp is still in the future. */
+  deferredRemaining?: number;
+  /** Earliest known future eligibility boundary, or null when none exists. */
+  nextRetryAt?: string | null;
   /** Selected queue-item disposition buckets; mutually exclusive. */
   targetDispositions: {
     succeeded: number;
@@ -167,6 +174,29 @@ type HeadlessQueueProcessResult = {
 };
 
 export type HeadlessQueueResult = HeadlessQueueDryRunResult | HeadlessQueueProcessResult;
+
+const maximumEligibilityBoundary = (at: Date) =>
+  new Date(at.getTime() + STATIC_RETRY_AFTER_MAX_MS);
+
+const actionableHeadlessWhere = (at: Date) => ({
+  artifactType: "article_discovery_headless_required",
+  status: "PENDING_HEADLESS",
+  OR: [
+    { nextEligibleAt: null },
+    { nextEligibleAt: { lte: at } },
+    // Corrupt or legacy values beyond the policy maximum must not defer forever.
+    { nextEligibleAt: { gt: maximumEligibilityBoundary(at) } },
+  ],
+});
+
+const deferredHeadlessWhere = (at: Date) => ({
+  artifactType: "article_discovery_headless_required",
+  status: "PENDING_HEADLESS",
+  nextEligibleAt: {
+    gt: at,
+    lte: maximumEligibilityBoundary(at),
+  },
+});
 
 /**
  * Validate that an artifact payload has the minimum fields needed for
@@ -257,6 +287,7 @@ async function checkBrowserCooldown(
   sourceId: string,
   categoryId: string | null,
   targetUrl: string,
+  nowMs = Date.now(),
 ): Promise<Date | null> {
   const normalizedTarget = safeNormalizeUrl(targetUrl);
   if (!normalizedTarget) return null;
@@ -299,8 +330,10 @@ async function checkBrowserCooldown(
 
     try {
       const retryAfter = new Date(retryAfterRaw);
-      if (!Number.isNaN(retryAfter.getTime()) && retryAfter > new Date()) {
-        return retryAfter;
+      if (!Number.isNaN(retryAfter.getTime()) && retryAfter.getTime() > nowMs) {
+        return new Date(
+          boundStaticRetryAfterTimestamp(retryAfterRaw, null, nowMs).retryAfterAt,
+        );
       }
     } catch {
       // malformed timestamp — ignore
@@ -347,24 +380,17 @@ export async function processArticleDiscoveryHeadlessQueue(
   });
 
   // Fetch more items than the processing limit when running browser fallback.
-  // Cooldown-skipped items stay as PENDING_HEADLESS (Approach A) and consume
-  // a slot in the fetch window. Over-fetching ensures we still fill the
-  // processing limit even when some items are cooldown-deferred.
-  // Scan window is wider than the processing limit when browser fallback is
-  // actually enabled. Cooldown-skipped items stay as PENDING_HEADLESS (Approach A)
-  // and need extra scan headroom. Capped at MAX_LIMIT so we never over-fetch
-  // excessively. The processing loop enforces the real browser work cap via
-  // browserAttemptedTargets.
+  // Known future cooldowns are excluded by the indexed eligibility predicate.
+  // The bounded extra window lets legacy payload-only cooldowns be materialized
+  // without starving later actionable rows during their migration pass.
   // When browser fallback is disabled (runBrowser=true but env flag off), there
   // are no cooldown checks and no expensive browser work — we just mark artifacts
   // as BROWSER_FALLBACK_DISABLED. No reason to over-fetch for that.
   const fetchLimit = browserEnabled ? Math.min(Math.max(limit * 3, limit), MAX_LIMIT) : limit;
+  const selectionTime = new Date(now());
 
   const artifacts = await prisma.pipelineArtifact.findMany({
-    where: {
-      artifactType: "article_discovery_headless_required",
-      status: "PENDING_HEADLESS",
-    },
+    where: actionableHeadlessWhere(selectionTime),
     orderBy: { createdAt: "asc" },
     take: fetchLimit,
     select: {
@@ -590,7 +616,13 @@ export async function processArticleDiscoveryHeadlessQueue(
         try { hostname = new URL(targetHost).hostname; } catch { /* invalid */ }
       }
       const hostCooldown = hostname ? inRunHostCooldown.get(hostname) : null;
-      if (hostCooldown && Date.parse(hostCooldown.retryAfterAt) > Date.now()) {
+      if (hostCooldown && Date.parse(hostCooldown.retryAfterAt) > now()) {
+        const cooldownNowMs = now();
+        const boundedCooldownUntil = boundStaticRetryAfterTimestamp(
+          hostCooldown.retryAfterAt,
+          null,
+          cooldownNowMs,
+        ).retryAfterAt;
         // Update payload with cooldown metadata but keep PENDING_HEADLESS.
         try {
           const cooldownUpdate = await prisma.pipelineArtifact.updateMany({
@@ -600,19 +632,21 @@ export async function processArticleDiscoveryHeadlessQueue(
               status: "PENDING_HEADLESS",
             },
             data: {
+              nextEligibleAt: new Date(boundedCooldownUntil),
               payload: {
                 ...item.payload,
                 skippedDueToBrowserCooldown: true,
                 browserRateLimited: true,
                 browserRateLimitReason: hostCooldown.reason,
                 browserRateLimitedAt: hostCooldown.rateLimitedAt,
-                browserRetryAfterAt: hostCooldown.retryAfterAt,
-                browserCooldownUntil: hostCooldown.retryAfterAt,
-                lastBrowserCooldownSkipAt: new Date().toISOString(),
+                browserRetryAfterAt: boundedCooldownUntil,
+                browserCooldownUntil: boundedCooldownUntil,
+                lastBrowserCooldownSkipAt: new Date(cooldownNowMs).toISOString(),
               },
             },
           });
           if (cooldownUpdate.count === 1) {
+            processed += 1;
             browserCooldownSkipped += 1;
             dispositionDeferred += 1;
           } else {
@@ -620,8 +654,7 @@ export async function processArticleDiscoveryHeadlessQueue(
             dispositionClaimLost += 1;
           }
         } catch {
-          skippedAlreadyClaimed += 1;
-          dispositionClaimLost += 1;
+          dispositionPersistenceFailed += 1;
         }
         continue;
       }
@@ -676,8 +709,8 @@ export async function processArticleDiscoveryHeadlessQueue(
       // target until the cooldown expires. The artifact stays as PENDING_HEADLESS
       // so it is automatically retried on the next queue run after cooldown.
       // Cooldown-skipped items do NOT consume the browserAttemptedTargets cap.
-      const cooldownUntil = await checkBrowserCooldown(sourceId!, item.categoryId, targetUrl);
-      if (cooldownUntil && cooldownUntil > new Date()) {
+      const cooldownUntil = await checkBrowserCooldown(sourceId!, item.categoryId, targetUrl, now());
+      if (cooldownUntil && cooldownUntil.getTime() > now()) {
         await logAgentScan({
           sourceId: item.sourceId,
           categoryId: item.categoryId || undefined,
@@ -689,21 +722,28 @@ export async function processArticleDiscoveryHeadlessQueue(
         // Update payload with cooldown metadata but keep status as PENDING_HEADLESS.
         // The artifact remains in the queue and will be retried after cooldown expires.
         // Use compare-and-set so a concurrent claim still wins.
-        const cooldownUpdate = await prisma.pipelineArtifact.updateMany({
-          where: {
-            id: item.id,
-            artifactType: "article_discovery_headless_required",
-            status: "PENDING_HEADLESS",
-          },
-          data: {
-            payload: {
-              ...item.payload,
-              skippedDueToBrowserCooldown: true,
-              browserCooldownUntil: cooldownUntil.toISOString(),
-              lastBrowserCooldownSkipAt: new Date().toISOString(),
+        let cooldownUpdate: { count: number };
+        try {
+          cooldownUpdate = await prisma.pipelineArtifact.updateMany({
+            where: {
+              id: item.id,
+              artifactType: "article_discovery_headless_required",
+              status: "PENDING_HEADLESS",
             },
-          },
-        });
+            data: {
+              nextEligibleAt: cooldownUntil,
+              payload: {
+                ...item.payload,
+                skippedDueToBrowserCooldown: true,
+                browserCooldownUntil: cooldownUntil.toISOString(),
+                lastBrowserCooldownSkipAt: new Date(now()).toISOString(),
+              },
+            },
+          });
+        } catch {
+          dispositionPersistenceFailed += 1;
+          continue;
+        }
 
         if (cooldownUpdate.count === 0) {
           // Another worker claimed this artifact between the cooldown check and
@@ -711,6 +751,7 @@ export async function processArticleDiscoveryHeadlessQueue(
           skippedAlreadyClaimed += 1;
           dispositionClaimLost += 1;
         } else {
+          processed += 1;
           browserCooldownSkipped += 1;
           dispositionDeferred += 1;
         }
@@ -739,6 +780,7 @@ export async function processArticleDiscoveryHeadlessQueue(
         },
         data: {
           status: "HEADLESS_PROCESSING",
+          nextEligibleAt: null,
           payload: {
             ...item.payload,
             headlessProcessingStartedAt: new Date().toISOString(),
@@ -892,11 +934,15 @@ export async function processArticleDiscoveryHeadlessQueue(
         // a lost claim must not be counted as a completed browser outcome.
         // Preserve the same compact browser metadata shape as the success
         // path so the admin normalizer can consume both uniformly.
-        const failedFinishedAt = new Date().toISOString();
-        const listingRateLimitedAt = isListingPage429 ? new Date().toISOString() : null;
+        const failureNowMs = now();
+        const failedFinishedAt = new Date(failureNowMs).toISOString();
+        const listingRateLimitedAt = isListingPage429 ? failedFinishedAt : null;
         const listingRetryAfterAt = isListingPage429
-          ? browserResult.diagnostics.browserNavigation?.retryAfterAt
-            ?? new Date(Date.now() + BROWSER_RATE_LIMIT_COOLDOWN_MS).toISOString()
+          ? boundStaticRetryAfterTimestamp(
+            browserResult.diagnostics.browserNavigation?.retryAfterAt,
+            null,
+            failureNowMs,
+          ).retryAfterAt
           : null;
         let failedTransition: { count: number };
         try {
@@ -908,6 +954,9 @@ export async function processArticleDiscoveryHeadlessQueue(
             },
             data: {
               status,
+              nextEligibleAt: isListingPage429 && listingRetryAfterAt
+                ? new Date(listingRetryAfterAt)
+                : null,
               errorLog: `Browser fallback failed: ${browserResult.reason}. ${browserResult.diagnostics.blockedReason || ""}`,
               payload: {
               ...claimedPayload,
@@ -947,7 +996,7 @@ export async function processArticleDiscoveryHeadlessQueue(
               ...(isListingPage429 ? {
                 skippedDueToBrowserCooldown: true,
                 browserCooldownUntil: listingRetryAfterAt,
-                lastBrowserCooldownSkipAt: new Date().toISOString(),
+                lastBrowserCooldownSkipAt: failedFinishedAt,
               } : {}),
               browserOutcomeSummary: {
                 totalEvaluated: 0,
@@ -1003,6 +1052,7 @@ export async function processArticleDiscoveryHeadlessQueue(
           continue;
         }
 
+        browserProcessed += 1;
         if (isListingPage429) {
           dispositionDeferred += 1;
         } else if (browserResult.reason === "browser_runtime_unavailable") {
@@ -1564,6 +1614,9 @@ export async function processArticleDiscoveryHeadlessQueue(
           },
           data: {
             status: finalStatus,
+            nextEligibleAt: detailEvaluationRateLimited && browserRetryAfterAt
+              ? new Date(browserRetryAfterAt)
+              : null,
             candidateCount: candidates.length,
             payload: {
             ...claimedPayload,
@@ -1816,17 +1869,19 @@ export async function processArticleDiscoveryHeadlessQueue(
       (runBrowser ? ` browser: attempted=${browserAttemptedTargets}, processed=${browserProcessed}, disabled=${browserSkippedDisabled}, unavailable=${browserSkippedUnavailable}, failed=${browserFailed}, candidates=${browserCandidatesFound}, cooldownSkipped=${browserCooldownSkipped}, feedFirstSkipped=${feedFirstSkipped}, inserted=${totalInserted}.` : ""),
   });
 
-  // Read the durable queue state after all compare-and-set transitions. This
-  // is the authoritative actionable remainder for the shared headless queue,
-  // intentionally global across pipeline runs because queue artifacts are
-  // claimed from one durable work pool. It must not be inferred from the
-  // requested browser limit or the number of attempted targets.
-  const remainingEligible = await prisma.pipelineArtifact.count({
-    where: {
-      artifactType: "article_discovery_headless_required",
-      status: "PENDING_HEADLESS",
-    },
-  });
+  // Selection, remaining-work accounting, and the next retry boundary share
+  // the same durable eligibility authority. Future work remains pending but
+  // does not keep the current workflow stage open.
+  const finalQueueTime = new Date(now());
+  const [remainingEligible, deferredRemaining, earliestDeferred] = await Promise.all([
+    prisma.pipelineArtifact.count({ where: actionableHeadlessWhere(finalQueueTime) }),
+    prisma.pipelineArtifact.count({ where: deferredHeadlessWhere(finalQueueTime) }),
+    prisma.pipelineArtifact.findFirst({
+      where: deferredHeadlessWhere(finalQueueTime),
+      orderBy: [{ nextEligibleAt: "asc" }, { createdAt: "asc" }],
+      select: { nextEligibleAt: true },
+    }),
+  ]);
   probe.recordDbOperation();
 
   const result: HeadlessQueueProcessResult = {
@@ -1836,6 +1891,8 @@ export async function processArticleDiscoveryHeadlessQueue(
     skippedAlreadyClaimed,
     updatedArtifactIds,
     remainingEligible,
+    deferredRemaining,
+    nextRetryAt: earliestDeferred?.nextEligibleAt?.toISOString() ?? null,
     targetDispositions: {
       succeeded: dispositionSucceeded,
       failedRetryable: dispositionFailedRetryable,

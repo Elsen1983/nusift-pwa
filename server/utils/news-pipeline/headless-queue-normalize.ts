@@ -7,6 +7,8 @@
  * are normalized to null, [], or false rather than propagating cast errors.
  */
 
+import { STATIC_RETRY_AFTER_MAX_MS } from "./retry-after-policy";
+
 // ─── Type-safe payload readers ──────────────────────────────────────────────
 
 /** Returns true only for plain objects (not arrays, null, or primitives). */
@@ -80,6 +82,8 @@ export type NormalizedHeadlessQueueItem = {
   targetUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
+  nextEligibleAt?: string | null;
+  cooldownDeferred?: boolean;
   quality: string | null;
   confidence: string | null;
   escalationReasons: string[];
@@ -355,11 +359,15 @@ export function normalizeHeadlessQueueArtifact(artifact: {
   categoryId: string | null;
   createdAt: Date;
   updatedAt: Date;
+  nextEligibleAt?: Date | null;
   candidateCount: number;
   payload: unknown;
 }): NormalizedHeadlessQueueItem {
   const payload = isPlainObject(artifact.payload) ? artifact.payload : {};
   const qa = readQualityAssessment(payload);
+  const nextEligibleAt = artifact.nextEligibleAt instanceof Date && !Number.isNaN(artifact.nextEligibleAt.getTime())
+    ? artifact.nextEligibleAt.toISOString()
+    : null;
 
   // Browser quality assessment is stored under a dedicated key on browser
   // fallback artifacts. It may be null when the browser failed before any
@@ -375,6 +383,11 @@ export function normalizeHeadlessQueueArtifact(artifact: {
     targetUrl: readString(payload.targetUrl),
     createdAt: artifact.createdAt,
     updatedAt: artifact.updatedAt,
+    nextEligibleAt,
+    cooldownDeferred: isHeadlessQueueCooldownDeferred({
+      status: artifact.status,
+      nextEligibleAt,
+    }),
     quality: readString(qa.quality) ?? readString(payload.quality),
     confidence: readString(qa.confidence),
     escalationReasons:
@@ -450,6 +463,19 @@ export type ExtendedHeadlessQueueSummary = HeadlessQueueSummary & {
   retryableExcludingCooldown: number;
 };
 
+export function isHeadlessQueueCooldownDeferred(
+  item: Pick<NormalizedHeadlessQueueItem, "status" | "nextEligibleAt">,
+  nowMs = Date.now(),
+): boolean {
+  const nextEligibleMs = item.nextEligibleAt == null
+    ? Number.NaN
+    : new Date(item.nextEligibleAt).getTime();
+  return item.status === "PENDING_HEADLESS"
+    && Number.isFinite(nextEligibleMs)
+    && nextEligibleMs > nowMs
+    && nextEligibleMs <= nowMs + STATIC_RETRY_AFTER_MAX_MS;
+}
+
 /**
  * Statuses that are retryable (admin can trigger a manual retry).
  */
@@ -489,9 +515,7 @@ export function buildHeadlessQueueSummary(
     }
 
     const isRetryableStatus = RETRYABLE_STATUSES.has(item.status);
-    const isInCooldown =
-      item.skippedDueToBrowserCooldown ||
-      (item.browserRetryAfterAt !== null && new Date(item.browserRetryAfterAt).getTime() > Date.now());
+    const isInCooldown = isHeadlessQueueCooldownDeferred(item);
 
     // Cooldown-aware retryable classification:
     // retryableTotal excludes items under active cooldown (per Prompt 07).

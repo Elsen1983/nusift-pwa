@@ -210,6 +210,7 @@ describe("GET /api/dev/article-discovery-headless-queue", () => {
         categoryId: null,
         createdAt: now,
         updatedAt: now,
+        nextEligibleAt: new Date(now.getTime() + 30 * 60 * 1000),
         candidateCount: 0,
         payload: { targetUrl: "https://example.com", skippedDueToBrowserCooldown: true },
       },
@@ -225,6 +226,10 @@ describe("GET /api/dev/article-discovery-headless-queue", () => {
     expect(result.summary).toHaveProperty("resolvedRecentTotal");
     expect(result.summary.activeTotal).toBe(1);
     expect(result.summary.cooldownPendingTotal).toBe(1);
+    expect(result.items[0]).toMatchObject({
+      cooldownDeferred: true,
+      nextEligibleAt: expect.any(String),
+    });
   });
 
   it("hides retryable active failures when the same target has a newer resolved artifact", async () => {
