@@ -37,6 +37,9 @@ const makeDb = (initial: DomainGovernorState | null = null) => {
       }),
       updateMany: vi.fn(async ({ where, data }) => {
         const matchesExpiry = (predicate: unknown): boolean => {
+          if (predicate instanceof Date) {
+            return state?.activeLeaseExpiresAt?.getTime() === predicate.getTime();
+          }
           if (!predicate || typeof predicate !== "object") return true;
           const condition = predicate as Record<string, unknown>;
           const expiry = state?.activeLeaseExpiresAt?.getTime() ?? Number.NaN;
@@ -355,8 +358,78 @@ describe("domain request governor persistence API", () => {
     expect(getState()!.version).toBe(4);
     const staleUpdate = db.domainRequestGovernor.updateMany as ReturnType<typeof vi.fn>;
     expect(staleUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ activeLeaseExpiresAt: { lte: NOW } }),
+      where: expect.objectContaining({
+        activeLeaseToken: "stale",
+        activeLeaseExpiresAt: expired.activeLeaseExpiresAt,
+        version: 3,
+      }),
     }));
+  });
+
+  it("rejects a lease renewed between recovery read and CAS update", async () => {
+    const expired = makeState({
+      activeLeaseToken: "stale",
+      activeLeaseExpiresAt: new Date(NOW.getTime() - 1_000),
+      version: 3,
+    });
+    const db = makeDb(expired).db;
+    vi.mocked(db.domainRequestGovernor.updateMany).mockResolvedValue({ count: 0 });
+
+    const result = await recoverExpiredDomainLeases({ mode: "enforce", now: NOW, db });
+
+    expect(result).toMatchObject({ scanned: 1, recovered: 0, conflicted: 1 });
+  });
+
+  it("reports malformed and failed lease recovery rows truthfully", async () => {
+    const malformed = makeDb(makeState({
+      activeLeaseToken: "",
+      activeLeaseExpiresAt: new Date(NOW.getTime() - 1_000),
+    }));
+    await expect(recoverExpiredDomainLeases({ mode: "enforce", now: NOW, db: malformed.db }))
+      .resolves.toMatchObject({ malformed: 1, recovered: 0 });
+
+    const failed = makeDb(makeState({
+      activeLeaseToken: "expired",
+      activeLeaseExpiresAt: new Date(NOW.getTime() - 1_000),
+    }));
+    vi.mocked(failed.db.domainRequestGovernor.updateMany).mockRejectedValue(new Error("write unavailable"));
+    await expect(recoverExpiredDomainLeases({ mode: "enforce", now: NOW, db: failed.db }))
+      .resolves.toMatchObject({ failed: 1, recovered: 0, reason: "governor-persistence-unavailable" });
+  });
+
+  it("allows one mock-concurrent winner for an expired domain lease", async () => {
+    const shared = makeDb(makeState({
+      activeLeaseToken: "expired",
+      activeLeaseExpiresAt: new Date(NOW.getTime() - 1_000),
+      version: 5,
+    }));
+
+    const [first, second] = await Promise.all([
+      recoverExpiredDomainLeases({ mode: "enforce", now: NOW, db: shared.db }),
+      recoverExpiredDomainLeases({ mode: "enforce", now: NOW, db: shared.db }),
+    ]);
+
+    expect(first.recovered + second.recovered).toBe(1);
+    expect(first.conflicted + second.conflicted).toBe(1);
+    expect(shared.getState()).toMatchObject({ activeLeaseToken: null, version: 6 });
+  });
+
+  it("stops before mutation when the domain recovery time budget is exhausted", async () => {
+    const expired = makeDb(makeState({
+      activeLeaseToken: "expired",
+      activeLeaseExpiresAt: new Date(NOW.getTime() - 1_000),
+    }));
+    let tick = 0;
+    const result = await recoverExpiredDomainLeases({
+      mode: "enforce",
+      now: NOW,
+      timeBudgetMs: 5,
+      clock: () => tick++ === 0 ? 0 : 6,
+      db: expired.db,
+    });
+
+    expect(result).toMatchObject({ recovered: 0, timeBudgetExhausted: true });
+    expect(expired.db.domainRequestGovernor.updateMany).not.toHaveBeenCalled();
   });
 
   it("bounds every recovery limit before passing it to Prisma", async () => {

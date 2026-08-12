@@ -126,6 +126,37 @@ const normalizeStageOutcome = (value: unknown): JsonRecord | null => {
   };
 };
 
+const normalizeRecoveryCounters = (value: unknown): JsonRecord | null => {
+  const raw = asRecord(value);
+  if (!raw) return null;
+  return {
+    scanned: clampCount(numberOr(raw.scanned)),
+    recovered: clampCount(numberOr(raw.recovered)),
+    conflicted: clampCount(numberOr(raw.conflicted)),
+    malformed: clampCount(numberOr(raw.malformed)),
+    failed: clampCount(numberOr(raw.failed)),
+    timeBudgetExhausted: raw.timeBudgetExhausted === true,
+  };
+};
+
+const normalizeRecoverySummary = (value: unknown): JsonRecord | null => {
+  const raw = asRecord(value);
+  if (!raw || raw.schemaVersion !== 1) return null;
+  const headlessClaims = normalizeRecoveryCounters(raw.headlessClaims);
+  const domainLeases = normalizeRecoveryCounters(raw.domainLeases);
+  const rawDomain = asRecord(raw.domainLeases);
+  if (!headlessClaims || !domainLeases || !rawDomain) return null;
+  const mode = ["off", "shadow", "enforce"].includes(String(rawDomain.mode))
+    ? rawDomain.mode
+    : "off";
+  return {
+    schemaVersion: 1,
+    headlessClaims,
+    domainLeases: { ...domainLeases, mode },
+    telemetryPersisted: raw.telemetryPersisted === true,
+  };
+};
+
 const normalizeBatch = (artifact: {
   id: string;
   createdAt: Date;
@@ -301,6 +332,7 @@ export default defineEventHandler(async (event) => {
           .map(normalizeStageOutcome)
           .filter((outcome): outcome is JsonRecord => outcome !== null)
         : [],
+      recovery: normalizeRecoverySummary(summary.recovery),
       error: typeof summary.error === "string" ? boundText(summary.error, 1000) : null,
       workflowDurationMs,
       notificationsDurationMs: clampDuration(numberOr(summary.notificationsDurationMs)),

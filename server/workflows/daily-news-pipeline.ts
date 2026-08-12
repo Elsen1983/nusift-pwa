@@ -122,11 +122,28 @@ export type DailyPipelineWorkflowResult = {
   completedStages: DailyPipelineStage[];
   runOutcome: DailyPipelineRunOutcome | null;
   stageOutcomes: DailyPipelineStageOutcome[];
+  recovery: DailyPipelineRecoverySummary | null;
   notificationsProcessed: number;
   /** Aggregated per-stage timing summary (which stage consumed most runtime). */
   stageTimings: PipelineStageTimingSummary[];
   /** Wall-clock duration of the terminal notification phase in ms. */
   notificationsDurationMs: number;
+};
+
+export type RecoveryCounterSummary = {
+  scanned: number;
+  recovered: number;
+  conflicted: number;
+  malformed: number;
+  failed: number;
+  timeBudgetExhausted: boolean;
+};
+
+export type DailyPipelineRecoverySummary = {
+  schemaVersion: 1;
+  headlessClaims: RecoveryCounterSummary;
+  domainLeases: RecoveryCounterSummary & { mode: "off" | "shadow" | "enforce" };
+  telemetryPersisted: boolean;
 };
 
 export function decideStageLoopWait(input: {
@@ -189,7 +206,7 @@ export async function acquireDailyPipelineLock(
 
 async function heartbeatOrchestration(
   orchestrationRunId: string,
-  stage: DailyPipelineStage,
+  _stage: DailyPipelineStage | "recovery",
 ) {
   const { prisma } = await import("../utils/prisma");
   const updated = await prisma.pipelineRun.updateMany({
@@ -198,6 +215,70 @@ async function heartbeatOrchestration(
   });
   if (updated.count !== 1)
     throw new FatalError("Daily pipeline workflow lock was lost.");
+}
+
+export async function runDailyPipelineRecoveryMaintenance(
+  orchestrationRunId: string,
+): Promise<DailyPipelineRecoverySummary> {
+  "use step";
+
+  await heartbeatOrchestration(orchestrationRunId, "recovery");
+  const [headlessModule, governorModule, prismaModule] = await Promise.all([
+    import("../utils/news-pipeline/article-discovery-headless-recovery"),
+    import("../utils/news-pipeline/domain-request-governor"),
+    import("../utils/prisma"),
+  ]);
+  const governorMode = governorModule.parseDomainGovernorMode();
+  const headless = await headlessModule.recoverStaleArticleDiscoveryHeadlessProcessing({
+    mode: "retry",
+    limit: 10,
+    timeBudgetMs: 5_000,
+  });
+  const domain = await governorModule.recoverExpiredDomainLeases({
+    mode: governorMode,
+    limit: 100,
+    timeBudgetMs: 5_000,
+  });
+  const summary: DailyPipelineRecoverySummary = {
+    schemaVersion: 1,
+    headlessClaims: {
+      scanned: headless.inspected,
+      recovered: headless.recovered,
+      conflicted: headless.skippedAlreadyChanged,
+      malformed: headless.malformed,
+      failed: headless.failed,
+      timeBudgetExhausted: headless.timeBudgetExhausted,
+    },
+    domainLeases: {
+      mode: governorMode,
+      scanned: domain.scanned,
+      recovered: domain.recovered,
+      conflicted: domain.conflicted,
+      malformed: domain.malformed,
+      failed: domain.failed,
+      timeBudgetExhausted: domain.timeBudgetExhausted,
+    },
+    telemetryPersisted: false,
+  };
+  summary.telemetryPersisted = true;
+  try {
+    await prismaModule.prisma.pipelineArtifact.create({
+      data: {
+        pipelineRunId: orchestrationRunId,
+        artifactType: "stale_claim_recovery_telemetry",
+        status: summary.headlessClaims.failed > 0 || summary.domainLeases.failed > 0
+          ? "RECOVERY_FAILED"
+          : "CAPTURED",
+        candidateCount: summary.headlessClaims.recovered + summary.domainLeases.recovered,
+        payload: summary,
+      },
+      select: { id: true },
+    });
+  } catch {
+    summary.telemetryPersisted = false;
+    console.error("[daily-pipeline] Recovery telemetry persistence failed.");
+  }
+  return summary;
 }
 
 /**
@@ -499,6 +580,7 @@ async function finishDailyPipeline(
   options?: {
     error?: string;
     stageOutcomes?: DailyPipelineStageOutcome[];
+    recovery?: DailyPipelineRecoverySummary | null;
     stageTimings?: PipelineStageTimingSummary[];
     notificationsDurationMs?: number;
     completion?: Agent3CompletionSummary | null;
@@ -516,6 +598,7 @@ async function finishDailyPipeline(
         runOutcome: status,
         completedStages,
         stageOutcomes: options?.stageOutcomes ?? [],
+        recovery: options?.recovery ?? null,
         stageTimings: options?.stageTimings ?? [],
         notificationsDurationMs: options?.notificationsDurationMs ?? 0,
         ...(options?.completion ? { completion: options.completion } : {}),
@@ -566,6 +649,7 @@ export async function runDailyNewsPipelineWorkflow(
       completedStages: [],
       runOutcome: null,
       stageOutcomes: [],
+      recovery: null,
       notificationsProcessed: 0,
       stageTimings: [],
       notificationsDurationMs: 0,
@@ -574,9 +658,11 @@ export async function runDailyNewsPipelineWorkflow(
 
   const completedStages: DailyPipelineStage[] = [];
   const stageOutcomes: DailyPipelineStageOutcome[] = [];
+  let recovery: DailyPipelineRecoverySummary | null = null;
   // Durable per-batch telemetry records accumulated across the workflow loop.
   const stageTelemetry: StageBatchTelemetry[] = [];
   try {
+    recovery = await runDailyPipelineRecoveryMaintenance(lock.orchestrationRunId);
     for (const stage of DAILY_PIPELINE_STAGES) {
       let previousRemaining: number | null = null;
       let batchesSinceYield = 0;
@@ -732,6 +818,7 @@ export async function runDailyNewsPipelineWorkflow(
           ? { error: "No stage reached a completed or degraded outcome." }
           : {}),
         stageOutcomes,
+        recovery,
         stageTimings,
         notificationsDurationMs,
         completion,
@@ -744,6 +831,7 @@ export async function runDailyNewsPipelineWorkflow(
       completedStages,
       runOutcome,
       stageOutcomes,
+      recovery,
       notificationsProcessed,
       stageTimings,
       notificationsDurationMs,
@@ -760,6 +848,7 @@ export async function runDailyNewsPipelineWorkflow(
         {
           error: message,
           stageOutcomes,
+          recovery,
           stageTimings: summarizeStageTimings(stageTelemetry),
           notificationsDurationMs: 0,
         },

@@ -19,6 +19,9 @@ const mocks = vi.hoisted(() => ({
   completionForRun: vi.fn(),
   fetch: vi.fn(),
   sleep: vi.fn(),
+  headlessRecovery: vi.fn(),
+  domainRecovery: vi.fn(),
+  governorMode: vi.fn(),
 }));
 
 vi.mock("workflow", () => {
@@ -46,8 +49,13 @@ vi.mock("../utils/news-pipeline/orchestrator", () => ({
 vi.mock("../utils/news-pipeline/article-discovery", () => ({
   runArticleDiscoveryBatch: mocks.agent2,
 }));
-vi.mock("../utils/news-pipeline/article-discovery-headless-queue", () => ({
+vi.mock("../utils/news-pipeline/article-discovery-headless-recovery", () => ({
   processArticleDiscoveryHeadlessQueue: mocks.headless,
+  recoverStaleArticleDiscoveryHeadlessProcessing: mocks.headlessRecovery,
+}));
+vi.mock("../utils/news-pipeline/domain-request-governor", () => ({
+  parseDomainGovernorMode: mocks.governorMode,
+  recoverExpiredDomainLeases: mocks.domainRecovery,
 }));
 vi.mock("../utils/news-pipeline/article-discovery-browser", () => ({
   isBrowserFallbackEnabled: mocks.browserEnabled,
@@ -70,6 +78,7 @@ import {
   deriveDailyPipelineRunOutcome,
   runDailyNewsPipelineWorkflow,
   runDailyPipelineStageBatch,
+  runDailyPipelineRecoveryMaintenance,
 } from "./daily-news-pipeline";
 
 const completedAgent1Result = () => ({
@@ -119,6 +128,24 @@ describe("daily news pipeline stage batches", () => {
     mocks.findFirst.mockResolvedValue(null);
     mocks.create.mockResolvedValue({ id: "orchestration-1" });
     mocks.sleep.mockResolvedValue(undefined);
+    mocks.governorMode.mockReturnValue("off");
+    mocks.headlessRecovery.mockResolvedValue({
+      inspected: 0,
+      recovered: 0,
+      skippedAlreadyChanged: 0,
+      malformed: 0,
+      failed: 0,
+      timeBudgetExhausted: false,
+    });
+    mocks.domainRecovery.mockResolvedValue({
+      scanned: 0,
+      recovered: 0,
+      conflicted: 0,
+      malformed: 0,
+      failed: 0,
+      timeBudgetExhausted: false,
+      reason: "off",
+    });
     mocks.artifactCount.mockResolvedValue(0);
     mocks.artifactCreate.mockResolvedValue({ id: "telemetry-1" });
     mocks.browserEnabled.mockReturnValue(true);
@@ -193,6 +220,75 @@ describe("daily news pipeline stage batches", () => {
       data: { status: "DAILY_PIPELINE_WORKFLOW_STALE", finishedAt: expect.any(Date) },
     });
     vi.useRealTimers();
+  });
+
+  it("runs bounded claim and lease recovery before stage selection", async () => {
+    mocks.governorMode.mockReturnValue("enforce");
+    mocks.headlessRecovery.mockResolvedValue({
+      inspected: 3,
+      recovered: 1,
+      skippedAlreadyChanged: 1,
+      malformed: 1,
+      failed: 0,
+      timeBudgetExhausted: false,
+    });
+    mocks.domainRecovery.mockResolvedValue({
+      scanned: 2,
+      recovered: 1,
+      conflicted: 1,
+      malformed: 0,
+      failed: 0,
+      timeBudgetExhausted: false,
+      reason: "recovered",
+    });
+
+    const result = await runDailyPipelineRecoveryMaintenance("orchestration-1");
+
+    expect(mocks.headlessRecovery).toHaveBeenCalledWith({
+      mode: "retry",
+      limit: 10,
+      timeBudgetMs: 5_000,
+    });
+    expect(mocks.domainRecovery).toHaveBeenCalledWith({
+      mode: "enforce",
+      limit: 100,
+      timeBudgetMs: 5_000,
+    });
+    expect(result).toMatchObject({
+      headlessClaims: { scanned: 3, recovered: 1, conflicted: 1, malformed: 1 },
+      domainLeases: { mode: "enforce", scanned: 2, recovered: 1, conflicted: 1 },
+      telemetryPersisted: true,
+    });
+    expect(mocks.artifactCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        pipelineRunId: "orchestration-1",
+        artifactType: "stale_claim_recovery_telemetry",
+        status: "CAPTURED",
+        candidateCount: 2,
+        payload: expect.objectContaining({ telemetryPersisted: true }),
+      }),
+    }));
+  });
+
+  it("keeps repeated recovery maintenance idempotent and honestly reports failures", async () => {
+    mocks.headlessRecovery.mockResolvedValue({
+      inspected: 1,
+      recovered: 0,
+      skippedAlreadyChanged: 0,
+      malformed: 0,
+      failed: 1,
+      timeBudgetExhausted: false,
+    });
+
+    const first = await runDailyPipelineRecoveryMaintenance("orchestration-1");
+    const second = await runDailyPipelineRecoveryMaintenance("orchestration-1");
+
+    expect(first.headlessClaims).toMatchObject({ recovered: 0, failed: 1 });
+    expect(second.headlessClaims).toMatchObject({ recovered: 0, failed: 1 });
+    expect(mocks.headlessRecovery).toHaveBeenCalledTimes(2);
+    expect(mocks.artifactCreate).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "RECOVERY_FAILED" }),
+    }));
   });
 
   it("uses the extensible ordered stage registry", () => {
@@ -788,6 +884,10 @@ describe("daily news pipeline stage batches", () => {
     expect(result.stageOutcomes[0]).toMatchObject({ stage: "agent1", status: "degraded" });
     expect(result.stageOutcomes.at(-1)).toMatchObject({ stage: "agent3", status: "completed" });
     expect(mocks.agent2).toHaveBeenCalled();
+    expect(mocks.headlessRecovery.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.agent1.mock.invocationCallOrder[0]!);
+    expect(mocks.domainRecovery.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.agent1.mock.invocationCallOrder[0]!);
     expect(mocks.fetch).toHaveBeenCalledWith(
       "https://www.nusift.test/api/internal/run-agent3",
       expect.any(Object),

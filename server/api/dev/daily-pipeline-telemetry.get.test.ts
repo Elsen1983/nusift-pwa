@@ -98,6 +98,27 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
             nextRetryAt: null,
           },
         ],
+        recovery: {
+          schemaVersion: 1,
+          headlessClaims: {
+            scanned: 4,
+            recovered: 1,
+            conflicted: 1,
+            malformed: 2,
+            failed: 0,
+            timeBudgetExhausted: false,
+          },
+          domainLeases: {
+            mode: "enforce",
+            scanned: 3,
+            recovered: 2,
+            conflicted: 1,
+            malformed: 0,
+            failed: 0,
+            timeBudgetExhausted: false,
+          },
+          telemetryPersisted: true,
+        },
         stageTimings: [
           {
             stage: "agent1",
@@ -182,6 +203,27 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
       }),
       expect.objectContaining({ stage: "agent3", status: "completed" }),
     ]);
+    expect(result.run!.recovery).toEqual({
+      schemaVersion: 1,
+      headlessClaims: {
+        scanned: 4,
+        recovered: 1,
+        conflicted: 1,
+        malformed: 2,
+        failed: 0,
+        timeBudgetExhausted: false,
+      },
+      domainLeases: {
+        mode: "enforce",
+        scanned: 3,
+        recovered: 2,
+        conflicted: 1,
+        malformed: 0,
+        failed: 0,
+        timeBudgetExhausted: false,
+      },
+      telemetryPersisted: true,
+    });
     expect(result.stageTimings).toHaveLength(2);
     expect(result.stageTimings[0]).toMatchObject({ stage: "agent1", durationMs: 240000 });
     expect(result.stageTimings[1]).toMatchObject({ stage: "agent3", durationMs: 1200000 });

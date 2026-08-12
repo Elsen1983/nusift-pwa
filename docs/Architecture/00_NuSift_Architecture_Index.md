@@ -26,6 +26,7 @@ This directory is the curated navigation layer above the generated Graphify note
 - [[14_Maintenance_And_Cleanup]]
 - [[15_Local_Development_Runbook]]
 - [[16_Testing_And_Safety_Invariants]]
+- [[17_Stale_Claim_And_Lease_Recovery]]
 
 ## Detailed reference
 

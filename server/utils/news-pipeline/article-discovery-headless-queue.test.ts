@@ -389,11 +389,24 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
     // First updateMany call should claim from PENDING_HEADLESS → HEADLESS_PROCESSING
     expect(updateMock).toHaveBeenNthCalledWith(1, expect.objectContaining({
       where: expect.objectContaining({ id: "art-1", status: "PENDING_HEADLESS" }),
-      data: expect.objectContaining({ status: "HEADLESS_PROCESSING" }),
+      data: expect.objectContaining({
+        status: "HEADLESS_PROCESSING",
+        headlessClaimToken: expect.any(String),
+        headlessClaimExpiresAt: expect.any(Date),
+      }),
     }));
+    const claimToken = updateMock.mock.calls[0]![0].data.headlessClaimToken;
     // Second updateMany call should transition from HEADLESS_PROCESSING → final status
     expect(updateMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      where: expect.objectContaining({ id: "art-1", status: "HEADLESS_PROCESSING" }),
+      where: expect.objectContaining({
+        id: "art-1",
+        status: "HEADLESS_PROCESSING",
+        headlessClaimToken: claimToken,
+      }),
+      data: expect.objectContaining({
+        headlessClaimToken: null,
+        headlessClaimExpiresAt: null,
+      }),
     }));
 
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
@@ -619,6 +632,8 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
     const claimCall = updateMock.mock.calls[0]![0];
     expect(claimCall.data.payload.headlessProcessingStartedAt).toBeDefined();
     expect(claimCall.data.payload.headlessProcessingMode).toBe("browser");
+    expect(claimCall.data.headlessClaimToken).toEqual(expect.any(String));
+    expect(claimCall.data.headlessClaimExpiresAt).toBeInstanceOf(Date);
 
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   });
@@ -638,7 +653,7 @@ describe("recoverStaleArticleDiscoveryHeadlessProcessing", () => {
   });
 
   async function loadRecovery() {
-    const mod = await import("./article-discovery-headless-queue");
+    const mod = await import("./article-discovery-headless-recovery");
     return mod.recoverStaleArticleDiscoveryHeadlessProcessing;
   }
 
@@ -652,6 +667,12 @@ describe("recoverStaleArticleDiscoveryHeadlessProcessing", () => {
       sourceId: (overrides.sourceId as string | null) ?? "src-1",
       categoryId: (overrides.categoryId as string | null) ?? null,
       createdAt: (overrides.createdAt as Date) ?? new Date("2026-07-16T10:00:00Z"),
+      headlessClaimToken: overrides.headlessClaimToken === undefined
+        ? `claim-${(overrides.id as string) ?? "art-stale-1"}`
+        : overrides.headlessClaimToken,
+      headlessClaimExpiresAt: overrides.headlessClaimExpiresAt === undefined
+        ? new Date(startedAt.getTime() + 30 * 60 * 1000)
+        : overrides.headlessClaimExpiresAt,
       payload: {
         targetUrl: "https://example.com/news",
         sourceId: "src-1",
@@ -679,8 +700,17 @@ describe("recoverStaleArticleDiscoveryHeadlessProcessing", () => {
     expect(result.artifactIds).toEqual(["art-stale-1"]);
 
     expect(updateMock).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ id: "art-stale-1", status: "HEADLESS_PROCESSING" }),
-      data: expect.objectContaining({ status: "PENDING_HEADLESS" }),
+      where: expect.objectContaining({
+        id: "art-stale-1",
+        status: "HEADLESS_PROCESSING",
+        headlessClaimToken: "claim-art-stale-1",
+        headlessClaimExpiresAt: expect.any(Date),
+      }),
+      data: expect.objectContaining({
+        status: "PENDING_HEADLESS",
+        headlessClaimToken: null,
+        headlessClaimExpiresAt: null,
+      }),
     }));
   });
 
@@ -721,33 +751,33 @@ describe("recoverStaleArticleDiscoveryHeadlessProcessing", () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it("skips artifacts with missing headlessProcessingStartedAt", async () => {
+  it("uses scalar claim expiry when the legacy payload timestamp is missing", async () => {
     // Override headlessProcessingStartedAt to null — the helper always sets
     // a default value, so we must explicitly null it out to simulate missing data.
     findManyMock.mockResolvedValue([
       makeProcessingArtifact({ id: "art-no-ts", payload: { headlessProcessingStartedAt: null } }),
     ]);
-    updateMock.mockResolvedValue({ count: 0 });
+    updateMock.mockResolvedValue({ count: 1 });
 
     const fn = await loadRecovery();
     const result = await fn({ mode: "retry" });
 
     expect(result.inspected).toBe(1);
-    expect(result.recovered).toBe(0);
-    expect(result.artifactIds).toEqual([]);
-    expect(updateMock).not.toHaveBeenCalled();
+    expect(result.recovered).toBe(1);
+    expect(result.artifactIds).toEqual(["art-no-ts"]);
+    expect(updateMock).toHaveBeenCalledTimes(1);
   });
 
   it("emits ARTICLE_DISCOVERY_HEADLESS_RECOVERY_FAILED log when findMany throws", async () => {
     findManyMock.mockRejectedValue(new Error("DB connection lost"));
 
     const fn = await loadRecovery();
-    await expect(fn()).rejects.toThrow("DB connection lost");
+    await expect(fn()).resolves.toMatchObject({ recovered: 0, failed: 1 });
 
     expect(logAgentScanMock).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "ARTICLE_DISCOVERY_HEADLESS_RECOVERY_FAILED",
-        errorLog: expect.stringContaining("DB connection lost"),
+        errorLog: expect.stringContaining("no recovery was claimed"),
       }),
     );
   });
@@ -785,6 +815,69 @@ describe("recoverStaleArticleDiscoveryHeadlessProcessing", () => {
     expect(result.artifactIds).toEqual([]);
   });
 
+  it("leaves malformed legacy ownership visible without mutating it", async () => {
+    findManyMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        id: "legacy-processing",
+        headlessClaimToken: null,
+        headlessClaimExpiresAt: null,
+      }]);
+
+    const fn = await loadRecovery();
+    const result = await fn({ mode: "retry" });
+
+    expect(result).toMatchObject({ inspected: 1, malformed: 1, recovered: 0 });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a per-row persistence failure without claiming recovery", async () => {
+    findManyMock.mockResolvedValue([
+      makeProcessingArtifact({ id: "art-stale-1", _startedMinutesAgo: 45 }),
+    ]);
+    updateMock.mockRejectedValue(new Error("write unavailable"));
+
+    const fn = await loadRecovery();
+    const result = await fn({ mode: "retry" });
+
+    expect(result).toMatchObject({ recovered: 0, failed: 1 });
+  });
+
+  it("stops before mutation when the cooperative wall-clock budget is exhausted", async () => {
+    findManyMock.mockResolvedValue([
+      makeProcessingArtifact({ id: "art-stale-1", _startedMinutesAgo: 45 }),
+    ]);
+    let tick = 0;
+    const fn = await loadRecovery();
+    const result = await fn({
+      mode: "retry",
+      timeBudgetMs: 5,
+      clock: () => tick++ === 0 ? 0 : 6,
+    });
+
+    expect(result).toMatchObject({ recovered: 0, timeBudgetExhausted: true });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("allows one mock-concurrent recovery winner for the same expired token", async () => {
+    const artifact = makeProcessingArtifact({ id: "art-raced", _startedMinutesAgo: 45 });
+    findManyMock.mockImplementation((args) =>
+      args.where.OR ? Promise.resolve([]) : Promise.resolve([artifact]),
+    );
+    updateMock
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+
+    const fn = await loadRecovery();
+    const [first, second] = await Promise.all([
+      fn({ mode: "retry" }),
+      fn({ mode: "retry" }),
+    ]);
+
+    expect(first.recovered + second.recovered).toBe(1);
+    expect(first.skippedAlreadyChanged + second.skippedAlreadyChanged).toBe(1);
+  });
+
   it("increments headlessRecoveryCount on retry", async () => {
     findManyMock.mockResolvedValue([
       makeProcessingArtifact({
@@ -816,43 +909,44 @@ describe("recoverStaleArticleDiscoveryHeadlessProcessing", () => {
     expect(updateCall.data.payload.headlessRecoveryCount).toBe(1);
   });
 
-  it("clamps limit between 1 and 50, scanLimit between 50 and 250", async () => {
+  it("clamps the indexed expired-claim query limit between 1 and 50", async () => {
     findManyMock.mockResolvedValue([]);
     const fn = await loadRecovery();
 
     // limit=0 → clamped to 1; scanLimit = max(1*5, 50) = 50
     await fn({ limit: 0 });
-    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 50 }));
+    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 1 }));
 
     findManyMock.mockResolvedValue([]);
     // limit=200 → clamped to 50; scanLimit = min(50*5, 250) = 250
     await fn({ limit: 200 });
-    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 250 }));
+    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 50 }));
   });
 
-  it("uses default limit of 10 and scanLimit of 50", async () => {
+  it("uses the default recovery limit and bounded wall-clock budget", async () => {
     findManyMock.mockResolvedValue([]);
     const fn = await loadRecovery();
     await fn();
 
     // scanLimit = max(limit * 5, 50) = max(50, 50) = 50
-    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 50 }));
+    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 10 }));
     // Verify the STARTED log mentions both values
     const startedCall = logAgentScanMock.mock.calls.find(
       (c: any[]) => c[0]?.status === "ARTICLE_DISCOVERY_HEADLESS_RECOVERY_STARTED",
     );
     expect(startedCall).toBeDefined();
-    expect(startedCall![0].errorLog).toContain("olderThanMinutes=30");
-    expect(startedCall![0].errorLog).toContain("scanLimit=50");
+    expect(startedCall![0].errorLog).toContain("limit=10");
+    expect(startedCall![0].errorLog).toContain("timeBudgetMs=5000");
   });
 
-  it("scanLimit is larger than recovery limit", async () => {
+  it("bounds the malformed legacy scan independently", async () => {
     findManyMock.mockResolvedValue([]);
     const fn = await loadRecovery();
     await fn({ limit: 5 });
 
     // scanLimit = max(5 * 5, 50) = 50
-    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 50 }));
+    expect(findManyMock).toHaveBeenCalledTimes(2);
+    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 5 }));
   });
 
   it("only recovers stale artifacts when mixed with fresh ones", async () => {
@@ -931,7 +1025,7 @@ describe("recoverStaleArticleDiscoveryHeadlessProcessing", () => {
     );
   });
 
-  it("uses custom olderThanMinutes threshold", async () => {
+  it("keeps olderThanMinutes compatible without overriding scalar expiry", async () => {
     findManyMock.mockResolvedValue([]);
     const fn = await loadRecovery();
     await fn({ olderThanMinutes: 60 });
@@ -939,23 +1033,24 @@ describe("recoverStaleArticleDiscoveryHeadlessProcessing", () => {
     expect(logAgentScanMock).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "ARTICLE_DISCOVERY_HEADLESS_RECOVERY_STARTED",
-        errorLog: expect.stringContaining("olderThanMinutes=60"),
+        errorLog: expect.stringContaining("expiryCutoff="),
       }),
     );
   });
 
-  it("clamps scanLimit between 50 and 250", async () => {
+  it("keeps both recovery scans within explicit bounds", async () => {
     findManyMock.mockResolvedValue([]);
     const fn = await loadRecovery();
 
     // limit=1 → scanLimit = max(1*5, 50) = 50
     await fn({ limit: 1 });
-    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 50 }));
+    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 1 }));
 
     findManyMock.mockResolvedValue([]);
     // limit=50 → scanLimit = min(50*5, 250) = 250
     await fn({ limit: 50 });
-    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 250 }));
+    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 50 }));
+    expect(findManyMock).toHaveBeenCalledWith(expect.objectContaining({ take: 20 }));
   });
 
   it("defaults to retry mode", async () => {

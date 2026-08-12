@@ -611,22 +611,46 @@ export type RecoverExpiredDomainLeasesInput = {
   limit?: number;
   mode?: DomainGovernorMode;
   db?: DomainGovernorDb;
+  timeBudgetMs?: number;
+  clock?: () => number;
 };
 
 export type RecoverExpiredDomainLeasesResult = {
   scanned: number;
   recovered: number;
+  conflicted: number;
+  malformed: number;
+  failed: number;
+  timeBudgetExhausted: boolean;
   reason: "off" | "shadow-noop" | "recovered" | "governor-persistence-unavailable";
 };
+
+const emptyLeaseRecoveryResult = (
+  reason: RecoverExpiredDomainLeasesResult["reason"],
+): RecoverExpiredDomainLeasesResult => ({
+  scanned: 0,
+  recovered: 0,
+  conflicted: 0,
+  malformed: 0,
+  failed: 0,
+  timeBudgetExhausted: false,
+  reason,
+});
 
 export async function recoverExpiredDomainLeases(
   input: RecoverExpiredDomainLeasesInput = {},
 ): Promise<RecoverExpiredDomainLeasesResult> {
   const mode = parseDomainGovernorMode(input.mode);
-  if (mode === "off") return { scanned: 0, recovered: 0, reason: "off" };
-  if (mode === "shadow") return { scanned: 0, recovered: 0, reason: "shadow-noop" };
+  if (mode === "off") return emptyLeaseRecoveryResult("off");
+  if (mode === "shadow") return emptyLeaseRecoveryResult("shadow-noop");
   const now = input.now ?? new Date();
   const limit = parseDomainGovernorRecoveryLimit(input.limit);
+  const clock = input.clock ?? Date.now;
+  const startedAt = clock();
+  const requestedTimeBudget = input.timeBudgetMs ?? 5_000;
+  const timeBudgetMs = Number.isFinite(requestedTimeBudget)
+    ? Math.max(1, Math.min(Math.floor(requestedTimeBudget), 30_000))
+    : 5_000;
   try {
     const db = dbClient(input.db);
     const rows = await db.domainRequestGovernor.findMany({
@@ -635,21 +659,54 @@ export async function recoverExpiredDomainLeases(
       take: limit,
     });
     let recovered = 0;
+    let conflicted = 0;
+    let malformed = 0;
+    let failed = 0;
+    let timeBudgetExhausted = false;
     for (const row of rows) {
+      if (clock() - startedAt >= timeBudgetMs) {
+        timeBudgetExhausted = true;
+        break;
+      }
       const state = asState(row);
-      const result = await db.domainRequestGovernor.updateMany({
-        where: {
-          domainKey: state.domainKey,
-          version: state.version,
-          activeLeaseToken: state.activeLeaseToken,
-          activeLeaseExpiresAt: { lte: now },
-        },
-        data: { activeLeaseToken: null, activeLeaseExpiresAt: null, version: { increment: 1 } },
-      });
-      recovered += result.count;
+      if (
+        !state.activeLeaseToken ||
+        !state.activeLeaseExpiresAt ||
+        !Number.isInteger(row.version) ||
+        row.version < 0
+      ) {
+        malformed += 1;
+        continue;
+      }
+      try {
+        const result = await db.domainRequestGovernor.updateMany({
+          where: {
+            domainKey: state.domainKey,
+            version: state.version,
+            activeLeaseToken: state.activeLeaseToken,
+            activeLeaseExpiresAt: state.activeLeaseExpiresAt,
+          },
+          data: { activeLeaseToken: null, activeLeaseExpiresAt: null, version: { increment: 1 } },
+        });
+        if (result.count === 1) recovered += 1;
+        else conflicted += 1;
+      } catch {
+        failed += 1;
+      }
     }
-    return { scanned: rows.length, recovered, reason: "recovered" };
+    return {
+      scanned: rows.length,
+      recovered,
+      conflicted,
+      malformed,
+      failed,
+      timeBudgetExhausted,
+      reason: failed > 0 ? "governor-persistence-unavailable" : "recovered",
+    };
   } catch {
-    return { scanned: 0, recovered: 0, reason: "governor-persistence-unavailable" };
+    return {
+      ...emptyLeaseRecoveryResult("governor-persistence-unavailable"),
+      failed: 1,
+    };
   }
 }

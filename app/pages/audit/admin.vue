@@ -87,6 +87,15 @@
               <p v-if="outcome.nextRetryAt" class="mt-1 text-[10px] text-amber-200">next retry: {{ formatLogTime(outcome.nextRetryAt) }}</p>
             </div>
           </div>
+          <div v-if="dailyPipelineTelemetry.run.recovery" class="rounded-xl border border-cyan-400/20 bg-cyan-500/5 px-3 py-2.5 text-[10px] text-on-surface-variant">
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <strong class="text-cyan-200">Startup recovery</strong>
+              <span>headless: scanned {{ dailyPipelineTelemetry.run.recovery.headlessClaims.scanned }} / recovered {{ dailyPipelineTelemetry.run.recovery.headlessClaims.recovered }} / conflicts {{ dailyPipelineTelemetry.run.recovery.headlessClaims.conflicted }} / malformed {{ dailyPipelineTelemetry.run.recovery.headlessClaims.malformed }} / failed {{ dailyPipelineTelemetry.run.recovery.headlessClaims.failed }}</span>
+              <span>domain leases ({{ dailyPipelineTelemetry.run.recovery.domainLeases.mode }}): scanned {{ dailyPipelineTelemetry.run.recovery.domainLeases.scanned }} / recovered {{ dailyPipelineTelemetry.run.recovery.domainLeases.recovered }} / conflicts {{ dailyPipelineTelemetry.run.recovery.domainLeases.conflicted }} / malformed {{ dailyPipelineTelemetry.run.recovery.domainLeases.malformed }} / failed {{ dailyPipelineTelemetry.run.recovery.domainLeases.failed }}</span>
+              <span v-if="dailyPipelineTelemetry.run.recovery.headlessClaims.timeBudgetExhausted || dailyPipelineTelemetry.run.recovery.domainLeases.timeBudgetExhausted" class="text-amber-200">bounded recovery window exhausted</span>
+              <span v-if="!dailyPipelineTelemetry.run.recovery.telemetryPersisted" class="text-amber-200">artifact evidence unavailable</span>
+            </div>
+          </div>
           <div class="space-y-2">
             <div v-for="stage in dailyPipelineTelemetry.stageTimings" :key="stage.stage" class="rounded-lg border border-outline-variant/15 bg-surface-container/50 px-3 py-2">
               <div class="flex flex-wrap items-center justify-between gap-2"><span class="text-xs font-bold text-on-surface">{{ stage.stage }}</span><span class="text-[10px] text-on-surface-variant">{{ formatTelemetryMs(stage.durationMs) }} · {{ stage.batches }} batch{{ stage.batches === 1 ? '' : 'es' }}</span></div>

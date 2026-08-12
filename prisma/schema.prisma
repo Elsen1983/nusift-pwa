@@ -540,6 +540,8 @@ model PipelineArtifact {
   artifactType   String
   status         String
   nextEligibleAt DateTime?
+  headlessClaimToken     String?
+  headlessClaimExpiresAt DateTime?
   candidateCount Int    @default(0)
   payload        Json
   errorLog       String? @db.Text
@@ -549,6 +551,7 @@ model PipelineArtifact {
   @@index([categoryId, createdAt])
   @@index([artifactType, status])
   @@index([artifactType, status, nextEligibleAt, createdAt])
+  @@index([artifactType, status, headlessClaimExpiresAt])
 }
 
 // ANCHOR USER READ ACTIVITIES

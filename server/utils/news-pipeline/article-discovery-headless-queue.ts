@@ -8,6 +8,7 @@
  * Otherwise marks artifacts as SKIPPED_UNIMPLEMENTED (safe default).
  */
 
+import { randomUUID } from "node:crypto";
 import { prisma } from "../prisma";
 import { logAgentScan } from "./log";
 import {
@@ -52,6 +53,7 @@ const MAX_BROWSER_LIMIT = 3;
 const MAX_BROWSER_DETAIL_EVALUATED_LINKS = MAX_BROWSER_DETAIL_EVALUATIONS;
 const MAX_BROWSER_ACCEPTED_CANDIDATES = 10;
 const BROWSER_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
+export const HEADLESS_ARTIFACT_CLAIM_TTL_MS = 30 * 60 * 1000;
 
 type HeadlessQueueInput = {
   limit?: number;
@@ -772,6 +774,12 @@ export async function processArticleDiscoveryHeadlessQueue(
       // ── Claim artifact before expensive browser work ───────────────
       // Atomically transition PENDING_HEADLESS → HEADLESS_PROCESSING
       // so concurrent queue runs cannot duplicate browser work.
+      const claimStartedAtMs = now();
+      const claimedProcessingStartedAt = new Date(claimStartedAtMs).toISOString();
+      const headlessClaimToken = randomUUID();
+      const headlessClaimExpiresAt = new Date(
+        claimStartedAtMs + HEADLESS_ARTIFACT_CLAIM_TTL_MS,
+      );
       const claimed = await prisma.pipelineArtifact.updateMany({
         where: {
           id: item.id,
@@ -781,9 +789,11 @@ export async function processArticleDiscoveryHeadlessQueue(
         data: {
           status: "HEADLESS_PROCESSING",
           nextEligibleAt: null,
+          headlessClaimToken,
+          headlessClaimExpiresAt,
           payload: {
             ...item.payload,
-            headlessProcessingStartedAt: new Date().toISOString(),
+            headlessProcessingStartedAt: claimedProcessingStartedAt,
             headlessProcessingMode: "browser",
           },
         },
@@ -814,7 +824,6 @@ export async function processArticleDiscoveryHeadlessQueue(
         errorLog: `Browser fallback started for artifact ${item.id}. targetUrl=${targetUrl}, quality=${fields.quality}.`,
       });
 
-      const claimedProcessingStartedAt = new Date().toISOString();
       const claimedPayload: Record<string, unknown> = {
         ...item.payload,
         headlessProcessingStartedAt: claimedProcessingStartedAt,
@@ -887,9 +896,13 @@ export async function processArticleDiscoveryHeadlessQueue(
             id: item.id,
             artifactType: "article_discovery_headless_required",
             status: "HEADLESS_PROCESSING",
+            headlessClaimToken,
+            headlessClaimExpiresAt,
           },
           data: {
             status: "PENDING_HEADLESS",
+            headlessClaimToken: null,
+            headlessClaimExpiresAt: null,
             errorLog: `Browser navigation deferred by domain governance: ${browserResult.diagnostics.blockedReason || "unknown"}`,
             payload: {
               ...claimedPayload,
@@ -951,9 +964,13 @@ export async function processArticleDiscoveryHeadlessQueue(
               id: item.id,
               artifactType: "article_discovery_headless_required",
               status: "HEADLESS_PROCESSING",
+              headlessClaimToken,
+              headlessClaimExpiresAt,
             },
             data: {
               status,
+              headlessClaimToken: null,
+              headlessClaimExpiresAt: null,
               nextEligibleAt: isListingPage429 && listingRetryAfterAt
                 ? new Date(listingRetryAfterAt)
                 : null,
@@ -1611,9 +1628,13 @@ export async function processArticleDiscoveryHeadlessQueue(
             id: item.id,
             artifactType: "article_discovery_headless_required",
             status: "HEADLESS_PROCESSING",
+            headlessClaimToken,
+            headlessClaimExpiresAt,
           },
           data: {
             status: finalStatus,
+            headlessClaimToken: null,
+            headlessClaimExpiresAt: null,
             nextEligibleAt: detailEvaluationRateLimited && browserRetryAfterAt
               ? new Date(browserRetryAfterAt)
               : null,
@@ -1933,175 +1954,4 @@ export async function processArticleDiscoveryHeadlessQueue(
   }
 
   return result;
-}
-
-// ─── Stale HEADLESS_PROCESSING Recovery ────────────────────────────────────
-
-const RECOVERY_DEFAULT_OLDER_THAN_MINUTES = 30;
-const RECOVERY_DEFAULT_LIMIT = 10;
-const RECOVERY_MAX_LIMIT = 50;
-const RECOVERY_SCAN_MULTIPLIER = 5;
-const RECOVERY_MIN_SCAN = 50;
-const RECOVERY_MAX_SCAN = 250;
-
-type RecoveryInput = {
-  olderThanMinutes?: number;
-  limit?: number;
-  mode?: "retry" | "fail";
-};
-
-type RecoveryResult = {
-  inspected: number;
-  staleFound: number;
-  recovered: number;
-  failedStale: number;
-  skippedAlreadyChanged: number;
-  artifactIds: string[];
-};
-
-/**
- * Recover stale HEADLESS_PROCESSING artifacts that may have been abandoned
- * due to a process crash during browser work.
- *
- * - retry: moves stale artifact back to PENDING_HEADLESS for re-processing
- * - fail: moves stale artifact to HEADLESS_PROCESSING_STALE for manual review
- *
- * Uses compare-and-set to avoid interfering with active processing.
- */
-export async function recoverStaleArticleDiscoveryHeadlessProcessing(
-  input?: RecoveryInput,
-): Promise<RecoveryResult> {
-  const olderThanMinutes = input?.olderThanMinutes ?? RECOVERY_DEFAULT_OLDER_THAN_MINUTES;
-  const limit = Math.min(Math.max(input?.limit ?? RECOVERY_DEFAULT_LIMIT, 1), RECOVERY_MAX_LIMIT);
-  const mode = input?.mode ?? "retry";
-
-  const startedAt = Date.now();
-  const threshold = new Date(Date.now() - olderThanMinutes * 60 * 1000);
-  // Scan limit is larger than recovery limit so stale artifacts are not hidden
-  // behind fresh HEADLESS_PROCESSING artifacts in the query result.
-  const scanLimit = Math.min(Math.max(limit * RECOVERY_SCAN_MULTIPLIER, RECOVERY_MIN_SCAN), RECOVERY_MAX_SCAN);
-
-  await logAgentScan({
-    status: "ARTICLE_DISCOVERY_HEADLESS_RECOVERY_STARTED",
-    executionTimeMs: 0,
-    errorLog: `Headless recovery started. olderThanMinutes=${olderThanMinutes}, limit=${limit}, scanLimit=${scanLimit}, mode=${mode}, threshold=${threshold.toISOString()}.`,
-  });
-
-  let inspected = 0;
-  let staleFound = 0;
-  let recovered = 0;
-  let failedStale = 0;
-  let skippedAlreadyChanged = 0;
-  const artifactIds: string[] = [];
-
-  try {
-    // Query a wider window of HEADLESS_PROCESSING artifacts.
-    // We filter by payload timestamp in JS because Prisma JSON field
-    // queries are limited. scanLimit > limit ensures stale artifacts
-    // behind fresh ones in the sort order are still discovered.
-    const artifacts = await prisma.pipelineArtifact.findMany({
-      where: {
-        artifactType: "article_discovery_headless_required",
-        status: "HEADLESS_PROCESSING",
-      },
-      orderBy: { createdAt: "asc" },
-      take: scanLimit,
-      select: {
-        id: true,
-        sourceId: true,
-        categoryId: true,
-        createdAt: true,
-        payload: true,
-      },
-    });
-
-    inspected = artifacts.length;
-
-    // Filter to only stale artifacts (headlessProcessingStartedAt < threshold)
-    const allStale = artifacts.filter((a) => {
-      const payload = (a.payload as Record<string, unknown>) || {};
-      const startedAtRaw = payload.headlessProcessingStartedAt;
-      if (!startedAtRaw || typeof startedAtRaw !== "string") return false;
-      try {
-        return new Date(startedAtRaw) < threshold;
-      } catch {
-        return false;
-      }
-    });
-
-    staleFound = allStale.length;
-    const toProcess = allStale.slice(0, limit);
-    const now = new Date().toISOString();
-
-    for (const artifact of toProcess) {
-      const payload = (artifact.payload as Record<string, unknown>) || {};
-
-      if (mode === "retry") {
-        // Move back to PENDING_HEADLESS for re-processing
-        const { count } = await prisma.pipelineArtifact.updateMany({
-          where: {
-            id: artifact.id,
-            artifactType: "article_discovery_headless_required",
-            status: "HEADLESS_PROCESSING",
-          },
-          data: {
-            status: "PENDING_HEADLESS",
-            errorLog: `Stale processing recovered after ${olderThanMinutes}min. Reset to PENDING_HEADLESS for retry.`,
-            payload: {
-              ...payload,
-              headlessRecoveryCount: ((payload.headlessRecoveryCount as number) || 0) + 1,
-              lastHeadlessRecoveryAt: now,
-            },
-          },
-        });
-
-        if (count === 0) {
-          skippedAlreadyChanged += 1;
-        } else {
-          recovered += 1;
-          artifactIds.push(artifact.id);
-        }
-      } else {
-        // Move to HEADLESS_PROCESSING_STALE for manual review
-        const { count } = await prisma.pipelineArtifact.updateMany({
-          where: {
-            id: artifact.id,
-            artifactType: "article_discovery_headless_required",
-            status: "HEADLESS_PROCESSING",
-          },
-          data: {
-            status: "HEADLESS_PROCESSING_STALE",
-            errorLog: `Stale processing detected after ${olderThanMinutes}min. Marked for manual review.`,
-            payload: {
-              ...payload,
-              headlessRecoveryCount: ((payload.headlessRecoveryCount as number) || 0) + 1,
-              lastHeadlessRecoveryAt: now,
-            },
-          },
-        });
-
-        if (count === 0) {
-          skippedAlreadyChanged += 1;
-        } else {
-          failedStale += 1;
-          artifactIds.push(artifact.id);
-        }
-      }
-    }
-  } catch (error: any) {
-    await logAgentScan({
-      status: "ARTICLE_DISCOVERY_HEADLESS_RECOVERY_FAILED",
-      executionTimeMs: Date.now() - startedAt,
-      errorLog: `Headless recovery failed: ${error?.message || String(error)}.`,
-    });
-    throw error;
-  }
-
-  await logAgentScan({
-    status: "ARTICLE_DISCOVERY_HEADLESS_RECOVERY_FINISHED",
-    executionTimeMs: Date.now() - startedAt,
-    errorLog: `Headless recovery complete. inspected=${inspected}, staleFound=${staleFound}, recovered=${recovered}, failedStale=${failedStale}, skippedAlreadyChanged=${skippedAlreadyChanged}, mode=${mode}.`,
-  });
-
-  return { inspected, staleFound, recovered, failedStale, skippedAlreadyChanged, artifactIds };
 }

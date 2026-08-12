@@ -1,7 +1,7 @@
 import { createError } from "h3";
 import { requireAdminId } from "../../utils/require-admin";
 import { assertRateLimit } from "../../utils/rate-limit";
-import { recoverStaleArticleDiscoveryHeadlessProcessing } from "../../utils/news-pipeline/article-discovery-headless-queue";
+import { recoverStaleArticleDiscoveryHeadlessProcessing } from "../../utils/news-pipeline/article-discovery-headless-recovery";
 
 export default defineEventHandler(async (event) => {
   await requireAdminId(event);

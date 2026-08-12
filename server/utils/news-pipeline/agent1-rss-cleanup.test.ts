@@ -230,14 +230,13 @@ describe("resolveHeadlessMarkersByAgent1Rss", () => {
     expect(updatePayload.resolvedPipelineRunId).toBeNull();
   });
 
-  it("resolves all resolvable statuses (PENDING_HEADLESS, BROWSER_NO_CANDIDATES, etc.)", async () => {
+  it("resolves retryable and stale statuses without stealing an active claim", async () => {
     const statuses = [
       "PENDING_HEADLESS",
       "BROWSER_NO_CANDIDATES",
       "BROWSER_RUNTIME_UNAVAILABLE",
       "BROWSER_FALLBACK_DISABLED",
       "BROWSER_COOLDOWN_DEFERRED",
-      "HEADLESS_PROCESSING",
       "HEADLESS_PROCESSING_STALE",
     ];
 
@@ -261,6 +260,11 @@ describe("resolveHeadlessMarkersByAgent1Rss", () => {
       expect(result.resolvedMarkerCount).toBe(1);
       expect(updateMock).toHaveBeenCalledTimes(1);
     }
+
+    const headlessQuery = findManyMock.mock.calls.find(
+      (call) => call[0]?.where?.artifactType === "article_discovery_headless_required",
+    )?.[0];
+    expect(headlessQuery.where.status.in).not.toContain("HEADLESS_PROCESSING");
   });
 
   it("resolves matching hard-source profiles", async () => {
