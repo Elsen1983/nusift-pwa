@@ -2,7 +2,7 @@ export const STATIC_RESPONSE_MAX_BYTES = 2_000_000;
 export const CHARSET_SNIFF_MAX_BYTES = 4_096;
 
 type DocumentKind = "html" | "xml" | "text";
-type CharsetSource = "bom" | "http" | "xml" | "html" | "default";
+type CharsetSource = "bom" | "http" | "xml" | "html" | "default" | "utf8_recovery";
 
 export type DecodedResponseText = {
   text: string;
@@ -82,6 +82,23 @@ const sniffDeclaration = (bytes: Uint8Array, kind: DocumentKind): string | null 
     ?? null;
 };
 
+const isSingleByteLegacyCharset = (charset: string): boolean =>
+  charset === "windows-1250" || charset === "windows-1252" || charset === "iso-8859-2";
+
+const isValidUtf8 = (bytes: Uint8Array): boolean => {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// A publisher can serve UTF-8 bytes with an obsolete Latin/Windows charset
+// header. Only override that declaration when its decoded output proves it
+// produced the common UTF-8-as-single-byte mojibake sequences.
+const hasUtf8Mojibake = (text: string): boolean => /(?:Ã[\u0080-\u00bf]|Å[\u0080-\u00bf\u2018\u2019])/.test(text);
+
 const readBoundedBytes = async (
   response: Response,
   limitBytes: number,
@@ -153,8 +170,15 @@ export async function decodeResponseText(
   const declarationLabel = sniffDeclaration(bytes.subarray(detectedBom?.length ?? 0), options.kind ?? "text");
   const headerCharset = headerLabel && !detectedBom ? normalizeLabel(headerLabel) : null;
   const declarationCharset = declarationLabel && !detectedBom && !headerCharset ? normalizeLabel(declarationLabel) : null;
-  const charset = detectedBom?.charset ?? headerCharset ?? declarationCharset ?? "utf-8";
-  const charsetSource: CharsetSource = detectedBom ? "bom" : headerCharset ? "http" : declarationCharset
+  const declaredCharset = detectedBom?.charset ?? headerCharset ?? declarationCharset ?? "utf-8";
+  const payload = bytes.subarray(detectedBom?.length ?? 0);
+  const declaredText = new TextDecoder(declaredCharset, { fatal: false }).decode(payload);
+  const recoveredUtf8 = !detectedBom &&
+    isSingleByteLegacyCharset(declaredCharset) &&
+    isValidUtf8(payload) &&
+    hasUtf8Mojibake(declaredText);
+  const charset = recoveredUtf8 ? "utf-8" : declaredCharset;
+  const charsetSource: CharsetSource = recoveredUtf8 ? "utf8_recovery" : detectedBom ? "bom" : headerCharset ? "http" : declarationCharset
     ? (options.kind === "xml" ? "xml" : "html")
     : "default";
   const lowerPriorityLabels = [detectedBom ? headerLabel : null, detectedBom || headerCharset ? declarationLabel : null]
@@ -162,7 +186,6 @@ export async function decodeResponseText(
   const declarationConflict = lowerPriorityLabels.some((candidate) => {
     try { return normalizeLabel(candidate) !== charset; } catch { return true; }
   });
-  const payload = bytes.subarray(detectedBom?.length ?? 0);
   let hadReplacement = false;
   try {
     new TextDecoder(charset, { fatal: true }).decode(payload);

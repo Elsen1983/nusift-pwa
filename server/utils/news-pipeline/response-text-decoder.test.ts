@@ -34,6 +34,28 @@ describe("decodeResponseText", () => {
     expect((await decodeResponseText(response([0xa1], "text/xml; charset=iso-8859-2"))).text).toBe("Ą");
   });
 
+  it("recovers valid UTF-8 Atom content from a false legacy charset declaration", async () => {
+    const atom = `<?xml version="1.0" encoding="windows-1252"?><feed><title>Let\u00f6lthet\u0151 v\u00e1ltozat</title></feed>`;
+    const decoded = await decodeResponseText(
+      new Response(new TextEncoder().encode(atom), {
+        headers: { "content-type": "application/atom+xml; charset=windows-1252" },
+      }),
+      { kind: "xml" },
+    );
+
+    expect(decoded).toMatchObject({
+      text: atom,
+      charset: "utf-8",
+      charsetSource: "utf8_recovery",
+      declarationConflict: true,
+    });
+  });
+
+  it("does not override a correctly declared legacy single-byte document", async () => {
+    const decoded = await decodeResponseText(response([0x8a], "text/html; charset=windows-1250"));
+    expect(decoded).toMatchObject({ charset: "windows-1250", charsetSource: "http" });
+  });
+
   it("prefers HTTP over an early HTML declaration", async () => {
     const bytes = new TextEncoder().encode('<meta charset="windows-1252">hello');
     const decoded = await decodeResponseText(new Response(bytes, { headers: { "content-type": "text/html; charset=utf-8" } }), { kind: "html" });
