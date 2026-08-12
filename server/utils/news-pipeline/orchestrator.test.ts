@@ -496,6 +496,18 @@ describe("orchestrator – runAgent1Batch", () => {
     expect(result.stoppedReason).toBe("completed");
   });
 
+  it("keeps programming failures batch-fatal", async () => {
+    prismaMock.userSourceSubscription.findMany.mockResolvedValue([
+      { sourceId: "src-1" },
+      { sourceId: "src-2" },
+    ]);
+    ingestSourceMock.mockRejectedValueOnce(new TypeError("invalid ingest invariant"));
+
+    const { runAgent1Batch } = await import("./orchestrator");
+    await expect(runAgent1Batch({ maxTargets: 2 })).rejects.toThrow("invalid ingest invariant");
+    expect(ingestSourceMock).toHaveBeenCalledTimes(1);
+  });
+
   it("classifies a processed governor defer separately from retryable failures", async () => {
     prismaMock.userSourceSubscription.findMany.mockResolvedValue([{ sourceId: "src-1" }]);
     ingestSourceMock.mockResolvedValue({

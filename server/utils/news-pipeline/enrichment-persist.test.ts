@@ -17,6 +17,7 @@ const articleUpdateMock = vi.fn();
 const articleUpdateManyMock = vi.fn();
 const articleFindUniqueMock = vi.fn();
 const artifactCreateMock = vi.fn();
+const artifactDeleteManyMock = vi.fn();
 const claimDeleteManyMock = vi.fn();
 const claimFindUniqueMock = vi.fn();
 const claimCreateMock = vi.fn();
@@ -703,6 +704,60 @@ describe("claimEnrichmentArticle and recovery", () => {
     expect(recovered?.pipelineRunId).toBe("run-recovery");
     expect(recovered?.attemptNumber).toBe(1);
   });
+
+  it("rolls back a neutral defer attempt only for the live owned claim", async () => {
+    const { releaseEnrichmentClaim } = await import("./enrichment-persist");
+    const expiresAt = new Date(Date.now() + 60_000);
+    claimFindUniqueMock.mockResolvedValue({
+      articleId: 42,
+      pipelineRunId: "run-1",
+      token: "claim-1",
+      attemptNumber: 2,
+      expectedStatus: "INGESTED",
+      expiresAt,
+    });
+    articleUpdateManyMock.mockResolvedValue({ count: 1 });
+    claimDeleteManyMock.mockResolvedValue({ count: 1 });
+    artifactDeleteManyMock.mockResolvedValue({ count: 1 });
+    transactionMock.mockImplementation(async (callback: any) => callback({
+      article: { updateMany: (...args: any[]) => articleUpdateManyMock(...args) },
+      articleEnrichmentClaim: {
+        findUnique: (...args: any[]) => claimFindUniqueMock(...args),
+        deleteMany: (...args: any[]) => claimDeleteManyMock(...args),
+      },
+      pipelineArtifact: { deleteMany: (...args: any[]) => artifactDeleteManyMock(...args) },
+    }));
+
+    await expect(releaseEnrichmentClaim(42, "run-1", "claim-1", new Date(), {
+      rollbackAttempt: true,
+      attemptMarkerId: "marker-1",
+    })).resolves.toBe(true);
+    expect(articleUpdateManyMock).toHaveBeenCalledWith({
+      where: { id: 42, enrichmentAttemptCount: 2, enrichmentStatus: "INGESTED" },
+      data: { enrichmentAttemptCount: { decrement: 1 } },
+    });
+    expect(claimDeleteManyMock).toHaveBeenCalledWith({
+      where: { articleId: 42, pipelineRunId: "run-1", token: "claim-1", attemptNumber: 2, expiresAt },
+    });
+    expect(artifactDeleteManyMock).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: "marker-1", status: "ATTEMPTED" }),
+    });
+  });
+
+  it("does not roll back a neutral defer after ownership changed", async () => {
+    const { releaseEnrichmentClaim } = await import("./enrichment-persist");
+    claimFindUniqueMock.mockResolvedValue(null);
+    transactionMock.mockImplementation(async (callback: any) => callback({
+      article: { updateMany: (...args: any[]) => articleUpdateManyMock(...args) },
+      articleEnrichmentClaim: { findUnique: (...args: any[]) => claimFindUniqueMock(...args) },
+      pipelineArtifact: { deleteMany: (...args: any[]) => artifactDeleteManyMock(...args) },
+    }));
+
+    await expect(releaseEnrichmentClaim(42, "run-1", "stale", new Date(), {
+      rollbackAttempt: true,
+    })).resolves.toBe(false);
+    expect(articleUpdateManyMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("persistEnrichmentBatch", () => {
@@ -798,6 +853,17 @@ describe("persistEnrichmentBatch", () => {
     expect(result.claimLost).toBe(0);
     expect(result.byKind.SUCCESS).toBe(1);
     expect(result.byKind.SKIPPED).toBe(0);
+  });
+
+  it("keeps programming failures batch-fatal", async () => {
+    const { persistEnrichmentBatch } = await import("./enrichment-persist");
+    claimFindUniqueMock.mockRejectedValueOnce(new TypeError("invalid persistence adapter"));
+
+    await expect(persistEnrichmentBatch(
+      [makeSuccess()],
+      "run-1",
+      new Map([[42, "claim-42"]]),
+    )).rejects.toThrow("invalid persistence adapter");
   });
 });
 

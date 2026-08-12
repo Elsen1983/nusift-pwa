@@ -33,6 +33,7 @@ import {
 import type { StageBatchProbe } from "./stage-telemetry";
 import { classifyEarlyAccessHint } from "./paywall-detection";
 import { getArticleTransportIdentity } from "./article-transport-policy";
+import { boundedPipelineItemError, isUnsafePipelineInvariantError } from "./item-failure";
 
 type ParsedFeedItem = {
   title: string;
@@ -752,6 +753,28 @@ const toDate = (value: string) => {
 };
 
 const canonicalFromLink = (link: string) => normalizeUrl(link);
+
+export function normalizeParsedFeedEntries(items: ParsedFeedItem[]): {
+  entries: ParsedFeedEntry[];
+  malformed: number;
+} {
+  const entries: ParsedFeedEntry[] = [];
+  let malformed = 0;
+  for (const item of items) {
+    try {
+      const rawLink = typeof item.link === "string" ? item.link.trim() : "";
+      entries.push({
+        item,
+        rawLink,
+        canonicalUrl: rawLink ? canonicalFromLink(rawLink) : "",
+        rssGuid: typeof item.guid === "string" ? item.guid.trim() || null : null,
+      });
+    } catch {
+      malformed += 1;
+    }
+  }
+  return { entries, malformed };
+}
 
 type SourceCategoryMatcher = {
   id: string;
@@ -1858,15 +1881,18 @@ export async function ingestSource(
       }
     };
 
-    const feedEntries: ParsedFeedEntry[] = parsedFeed.items.map((item: ParsedFeedItem) => {
-      const rawLink = item.link.trim();
-      return {
-        item,
-        rawLink,
-        canonicalUrl: rawLink ? canonicalFromLink(rawLink) : "",
-        rssGuid: item.guid.trim() || null,
-      };
-    });
+    const normalizedFeedEntries = normalizeParsedFeedEntries(parsedFeed.items);
+    const feedEntries = normalizedFeedEntries.entries;
+    for (let index = 0; index < normalizedFeedEntries.malformed; index++) {
+      skipSummary.emptyLink += 1;
+      pushRejectedItem(rejectedItems, {
+        reason: "empty_link",
+        rawLink: null,
+        canonicalUrl: null,
+        title: null,
+        publishedAt: null,
+      });
+    }
 
     const feedRssGuids = [...new Set(feedEntries.map((entry: ParsedFeedEntry) => entry.rssGuid).filter(Boolean))] as string[];
     const feedCanonicalUrls = [...new Set(feedEntries.map((entry: ParsedFeedEntry) => entry.canonicalUrl).filter(Boolean))];
@@ -2657,44 +2683,57 @@ export async function persistCandidates(candidates: IngestCandidate[]) {
     return { inserted, skipped, failed, enriched };
   }
 
+  const articleCreateData = (candidate: IngestCandidate) => ({
+    title: candidate.title,
+    sourceId: candidate.sourceId,
+    categoryId: candidate.categoryId,
+    sourceUrl: candidate.sourceUrl,
+    canonicalUrl: candidate.canonicalUrl,
+    rssGuid: candidate.rssGuid,
+    contentHash: candidate.contentHash,
+    bodyText: candidate.bodyText,
+    publishedAt: candidate.publishedAt,
+    date: candidate.publishedAt || new Date(),
+    processingStage: "INGESTED",
+    processingStatus: "SUCCESS",
+    isPaywall: candidate.isPaywall,
+    tags: candidate.rawTags,
+    signals: candidate.rawSignals,
+    reasoning: candidate.reasoning,
+  });
+
   try {
     const result = await prisma.article.createMany({
-      data: newCandidates.map((candidate) => ({
-        title: candidate.title,
-        sourceId: candidate.sourceId,
-        categoryId: candidate.categoryId,
-        sourceUrl: candidate.sourceUrl,
-        canonicalUrl: candidate.canonicalUrl,
-        rssGuid: candidate.rssGuid,
-        contentHash: candidate.contentHash,
-        bodyText: candidate.bodyText,
-        publishedAt: candidate.publishedAt,
-        date: candidate.publishedAt || new Date(),
-        processingStage: "INGESTED",
-        processingStatus: "SUCCESS",
-        isPaywall: candidate.isPaywall,
-        tags: candidate.rawTags,
-        signals: candidate.rawSignals,
-        reasoning: candidate.reasoning,
-      })),
+      data: newCandidates.map(articleCreateData),
       skipDuplicates: true,
     });
     inserted += result.count;
     skipped += newCandidates.length - result.count;
   } catch (error: any) {
-    failed = newCandidates.length;
-    const prismaErrorDetails = formatPrismaError(error);
-    const sources = [...new Set(newCandidates.map((candidate) => candidate.sourceId))];
-    await Promise.all(
-      sources.map((sourceId) =>
-        logAgentScan({
-          sourceId,
+    if (isUnsafePipelineInvariantError(error)) throw error;
+    // createMany is one atomic statement. On failure, retry each bounded input
+    // independently so one malformed/constraint-poisoned row cannot erase its
+    // valid neighbours. Unique conflicts are truthful skips on replay.
+    for (const candidate of newCandidates) {
+      try {
+        await prisma.article.create({ data: articleCreateData(candidate) });
+        inserted += 1;
+      } catch (candidateError: any) {
+        if (isUnsafePipelineInvariantError(candidateError)) throw candidateError;
+        if (candidateError?.code === "P2002") {
+          skipped += 1;
+          continue;
+        }
+        failed += 1;
+        await logAgentScan({
+          sourceId: candidate.sourceId,
+          categoryId: candidate.categoryId || undefined,
           status: "ARTICLE_INSERT_FAILED",
           executionTimeMs: 0,
-          errorLog: `Batch insert failed for ${newCandidates.length} article(s). ${prismaErrorDetails}`,
-        }),
-      ),
-    );
+          errorLog: `Isolated candidate persistence failed. ${boundedPipelineItemError(candidateError)}`,
+        }).catch(() => {});
+      }
+    }
   }
 
   return { inserted, skipped, failed, enriched };

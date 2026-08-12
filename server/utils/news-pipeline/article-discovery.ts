@@ -43,6 +43,7 @@ import {
   createNoopStageBatchProbe,
   type StageBatchProbe,
 } from "./stage-telemetry";
+import { boundedPipelineItemError, isUnsafePipelineInvariantError } from "./item-failure";
 import { evaluateRssOwnedTargetForAgent2 } from "./rss-owned-target";
 import { shouldRunAgent2Discovery } from "./feed-first-policy";
 import { NUSIFT_CRAWLER_USER_AGENT } from "./publisher-user-agent";
@@ -2218,6 +2219,7 @@ export async function runArticleDiscoveryBatch(input?: {
         succeeded += 1;
       }
     } catch (error: any) {
+      if (isUnsafePipelineInvariantError(error)) throw error;
       failed += 1;
       targetFailedRetryable += 1;
       processed += 1;
@@ -2226,7 +2228,7 @@ export async function runArticleDiscoveryBatch(input?: {
         categoryId: target.categoryId || undefined,
         status: "ARTICLE_DISCOVERY_FAILED",
         executionTimeMs: 0,
-        errorLog: error?.message || String(error),
+        errorLog: boundedPipelineItemError(error),
       });
     }
   }

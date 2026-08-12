@@ -13,6 +13,7 @@ import {
   hasUsableAgent3BodyText,
 } from "./publication-gate";
 import { getArticleTransportIdentity } from "./article-transport-policy";
+import { isUnsafePipelineInvariantError } from "./item-failure";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent 3 — Article enrichment persistence wiring (Phase 1)
@@ -402,16 +403,62 @@ export const releaseEnrichmentClaim = async (
   pipelineRunId: string,
   claimToken: string,
   now: Date = new Date(),
+  options?: { rollbackAttempt?: boolean; attemptMarkerId?: string | null },
 ): Promise<boolean> => {
-  const released = await prisma.articleEnrichmentClaim.deleteMany({
-    where: {
-      articleId,
-      pipelineRunId,
-      token: claimToken,
-      expiresAt: { gt: now },
-    },
+  if (!options?.rollbackAttempt) {
+    const released = await prisma.articleEnrichmentClaim.deleteMany({
+      where: {
+        articleId,
+        pipelineRunId,
+        token: claimToken,
+        expiresAt: { gt: now },
+      },
+    });
+    return released.count === 1;
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const claim = await tx.articleEnrichmentClaim.findUnique({ where: { token: claimToken } });
+    if (
+      !claim ||
+      claim.articleId !== articleId ||
+      claim.pipelineRunId !== pipelineRunId ||
+      claim.expiresAt <= now
+    ) return false;
+
+    const rolledBack = await tx.article.updateMany({
+      where: {
+        id: articleId,
+        enrichmentAttemptCount: claim.attemptNumber,
+        enrichmentStatus: claim.expectedStatus,
+      },
+      data: { enrichmentAttemptCount: { decrement: 1 } },
+    });
+    if (rolledBack.count !== 1) return false;
+
+    const released = await tx.articleEnrichmentClaim.deleteMany({
+      where: {
+        articleId,
+        pipelineRunId,
+        token: claimToken,
+        attemptNumber: claim.attemptNumber,
+        expiresAt: claim.expiresAt,
+      },
+    });
+    if (released.count !== 1) throw new Error("Neutral claim release CAS conflict");
+
+    if (options.attemptMarkerId) {
+      await tx.pipelineArtifact.deleteMany({
+        where: {
+          id: options.attemptMarkerId,
+          pipelineRunId,
+          artifactType: "article_enrichment_attempt",
+          status: "ATTEMPTED",
+        },
+      });
+    }
+    return true;
   });
-  return released.count === 1;
 };
 
 /**
@@ -593,7 +640,8 @@ export const persistEnrichmentBatch = async (
       result.persisted += 1;
       result.byKind[outcome.kind] += 1;
       if (persisted.artifactId) result.artifactIds.push(persisted.artifactId);
-    } catch {
+    } catch (error) {
+      if (isUnsafePipelineInvariantError(error)) throw error;
       // Article may have been deleted concurrently, or a constraint violation.
       // Count as failed and continue — the batch is best-effort.
       result.failed += 1;
@@ -649,6 +697,9 @@ export const buildEnrichmentRunSummary = (
     httpEvidence?: Record<string, number>;
     /** Neutral governor deferrals; not publisher/network failures. */
     governorDeferred?: number;
+    selectedCount?: number;
+    sourceCooldownSkipped?: number;
+    dispositions?: Record<string, number>;
   },
 ): Prisma.InputJsonValue =>
   ({
@@ -667,6 +718,9 @@ export const buildEnrichmentRunSummary = (
     ...(options?.expiredClaimsRecovered !== undefined ? { expiredClaimsRecovered: options.expiredClaimsRecovered } : {}),
     ...(options?.httpEvidence ? { httpEvidence: { ...options.httpEvidence } } : {}),
     ...(options?.governorDeferred !== undefined ? { governorDeferred: options.governorDeferred } : {}),
+    ...(options?.selectedCount !== undefined ? { selectedCount: options.selectedCount } : {}),
+    ...(options?.sourceCooldownSkipped !== undefined ? { sourceCooldownSkipped: options.sourceCooldownSkipped } : {}),
+    ...(options?.dispositions ? { dispositions: { ...options.dispositions } } : {}),
   }) as Prisma.InputJsonValue;
 
 /**

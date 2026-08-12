@@ -115,6 +115,7 @@ export default defineEventHandler(async (event) => {
     readyRetry: 0,
     nonRetryable: 0,
   };
+  const selectedCount = result.selectedCount ?? result.articleCount;
   const failedPermanent = Object.entries(byKind)
     .filter(([kind]) => !["SUCCESS", "SKIPPED", "RETRYABLE_FAILURE", "HEADLESS_REQUIRED", "INTERSTITIAL_OR_CHALLENGE"].includes(kind))
     .reduce((sum, [, count]) => sum + (typeof count === "number" ? count : 0), 0)
@@ -126,15 +127,15 @@ export default defineEventHandler(async (event) => {
   // as durable disposition buckets without becoming successes/failures in
   // browserFallbackStats or HTTP evidence.
   const telemetry = tracker.finalize({
-    processed: result.articleCount,
-    succeeded: byKind.SUCCESS ?? 0,
-    failedRetryable: (byKind.RETRYABLE_FAILURE ?? 0) + interstitialCounts.readyRetry,
-    failedPermanent,
-    skipped: byKind.SKIPPED ?? 0,
-    deferred: (byKind.HEADLESS_REQUIRED ?? 0) + interstitialCounts.deferred,
-    quarantined: interstitialCounts.quarantined,
-    claimLost: result.persist?.claimLost ?? 0,
-    persistenceFailed: result.persist?.failed ?? 0,
+    processed: selectedCount,
+    succeeded: result.dispositions?.succeeded ?? (byKind.SUCCESS ?? 0),
+    failedRetryable: result.dispositions?.failedRetryable ?? ((byKind.RETRYABLE_FAILURE ?? 0) + interstitialCounts.readyRetry),
+    failedPermanent: result.dispositions?.failedPermanent ?? failedPermanent,
+    skipped: result.dispositions?.skipped ?? (byKind.SKIPPED ?? 0),
+    deferred: result.dispositions?.deferred ?? ((byKind.HEADLESS_REQUIRED ?? 0) + interstitialCounts.deferred),
+    quarantined: result.dispositions?.quarantined ?? interstitialCounts.quarantined,
+    claimLost: result.dispositions?.claimLost ?? (result.persist?.claimLost ?? 0),
+    persistenceFailed: result.dispositions?.persistenceFailed ?? (result.persist?.failed ?? 0),
     remainingBefore,
     remainingAfter: progress.retryableNow,
     complete,
@@ -147,7 +148,7 @@ export default defineEventHandler(async (event) => {
 
   return {
     stage: "agent3" as const,
-    processed: result.articleCount,
+    processed: selectedCount,
     succeeded: byKind.SUCCESS ?? 0,
     failedRetryable: byKind.RETRYABLE_FAILURE ?? 0,
     deferred: progress.deferred,

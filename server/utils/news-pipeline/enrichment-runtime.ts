@@ -2799,8 +2799,56 @@ export type Agent3InterstitialDispositionCounts = {
   nonRetryable: number;
 };
 
+export type Agent3BatchDispositions = {
+  succeeded: number;
+  failedRetryable: number;
+  failedPermanent: number;
+  skipped: number;
+  deferred: number;
+  quarantined: number;
+  claimLost: number;
+  persistenceFailed: number;
+};
+
+export function buildAgent3BatchDispositions(input: {
+  selectedCount: number;
+  persist: EnrichmentBatchPersistResult;
+  interstitial: Agent3InterstitialDispositionCounts;
+  claimSkipped: number;
+  governorDeferred: number;
+  sourceCooldownSkipped: number;
+}): Agent3BatchDispositions {
+  const byKind = input.persist.byKind;
+  const failedPermanent = Object.entries(byKind)
+    .filter(([kind]) => ![
+      "SUCCESS", "SKIPPED", "RETRYABLE_FAILURE", "HEADLESS_REQUIRED", "INTERSTITIAL_OR_CHALLENGE",
+    ].includes(kind))
+    .reduce((sum, [, count]) => sum + count, 0)
+    + input.interstitial.nonRetryable;
+  const result: Agent3BatchDispositions = {
+    succeeded: byKind.SUCCESS,
+    failedRetryable: byKind.RETRYABLE_FAILURE + input.interstitial.readyRetry,
+    failedPermanent,
+    skipped: byKind.SKIPPED + input.claimSkipped + input.sourceCooldownSkipped,
+    deferred: byKind.HEADLESS_REQUIRED + input.interstitial.deferred + input.governorDeferred,
+    quarantined: input.interstitial.quarantined,
+    claimLost: input.persist.claimLost,
+    persistenceFailed: input.persist.failed,
+  };
+  const reconciled = Object.values(result).reduce((sum, value) => sum + value, 0);
+  if (reconciled !== input.selectedCount) {
+    throw Object.assign(
+      new Error(`Agent 3 disposition invariant failed: selected=${input.selectedCount}, dispositions=${reconciled}.`),
+      { name: "InvariantError" },
+    );
+  }
+  return result;
+}
+
 export interface EnrichmentRunResult {
   pipelineRunId: string;
+  /** Every article selected into this bounded worker batch. */
+  selectedCount: number;
   /** Number of articles durably claimed and processed by this worker. */
   articleCount: number;
   /** Number of selected articles another worker already owned. */
@@ -2809,6 +2857,10 @@ export interface EnrichmentRunResult {
   expiredClaimsRecovered: number;
   /** Neutral governor deferrals; not publisher/network failures. */
   governorDeferred: number;
+  /** Selected articles skipped before claim because their source entered cooldown. */
+  sourceCooldownSkipped: number;
+  /** Authoritative mutually exclusive disposition of every selected article. */
+  dispositions: Agent3BatchDispositions;
   persist: EnrichmentBatchPersistResult;
   /** Authoritative retry-policy queue counts for interstitial outcomes. */
   interstitialDispositionCounts: Agent3InterstitialDispositionCounts;
@@ -2953,11 +3005,13 @@ export const runEnrichmentBatch = async (
     const sourceCooldown = new SourceCooldownTracker();
     let claimSkipped = 0;
     let governorDeferred = 0;
+    let sourceCooldownSkipped = 0;
 
     for (const article of diversified) {
       // Skip articles from sources in cooldown
       if (sourceCooldown.isCoolingDown(article.sourceId)) {
         sourceCooldown.incrementSkip(article.sourceId);
+        sourceCooldownSkipped += 1;
         continue;
       }
 
@@ -2988,6 +3042,7 @@ export const runEnrichmentBatch = async (
         provenanceMap.get(article.id) ?? buildArticleProvenance(article);
       const attemptNumber = claim.attemptNumber;
       const attemptStartedAt = claim.claimedAt.toISOString();
+      let attemptMarkerId: string | null = null;
 
       // Emit a lightweight attempt marker before running extraction.
       // Non-fatal: if the marker fails, we still proceed with the outcome.
@@ -3001,6 +3056,7 @@ export const runEnrichmentBatch = async (
           article.categoryId,
         );
         probe.recordDbOperation();
+        attemptMarkerId = markerId;
         attemptMarkerIds.push(markerId);
       } catch {
         // Attempt marker failure is non-fatal; the final result artifact is
@@ -3043,11 +3099,32 @@ export const runEnrichmentBatch = async (
         );
       } catch (error) {
         if (!(error instanceof GovernedFetchDeferredError)) throw error;
-        governorDeferred += 1;
-        // Release only this worker's live claim. No Article update, final
-        // artifact, cooldown failure, or persisted outcome counter is created.
-        await releaseEnrichmentClaim(article.id, pipelineRun.id, claim.token).catch(() => {});
+        // A governor defer performed no publisher transport/extraction work.
+        // Roll back this worker's provisional attempt increment and marker in
+        // the same token-owned transaction. An unconfirmed rollback is a
+        // persistence failure and retains the lease for expiry recovery.
+        let releaseErrored = false;
+        const released = await releaseEnrichmentClaim(
+          article.id,
+          pipelineRun.id,
+          claim.token,
+          new Date(),
+          { rollbackAttempt: true, attemptMarkerId },
+        ).catch(() => {
+          releaseErrored = true;
+          return false;
+        });
         probe.recordDbOperation();
+        if (!released) {
+          if (releaseErrored) persistResult.failed += 1;
+          else persistResult.claimLost += 1;
+          continue;
+        }
+        if (attemptMarkerId) {
+          const markerIndex = attemptMarkerIds.indexOf(attemptMarkerId);
+          if (markerIndex >= 0) attemptMarkerIds.splice(markerIndex, 1);
+        }
+        governorDeferred += 1;
         await logAgentScan({
           sourceId: article.sourceId,
           categoryId: article.categoryId || undefined,
@@ -3073,9 +3150,28 @@ export const runEnrichmentBatch = async (
         // the durable circuit transition; Agent 3 must not create a final
         // Article outcome, persistence counter, or hard-source side effect.
         browserAttemptsRemaining--;
-        governorDeferred += 1;
-        await releaseEnrichmentClaim(article.id, pipelineRun.id, claim.token).catch(() => {});
+        let releaseErrored = false;
+        const released = await releaseEnrichmentClaim(
+          article.id,
+          pipelineRun.id,
+          claim.token,
+          new Date(),
+          { rollbackAttempt: true, attemptMarkerId },
+        ).catch(() => {
+          releaseErrored = true;
+          return false;
+        });
         probe.recordDbOperation();
+        if (!released) {
+          if (releaseErrored) persistResult.failed += 1;
+          else persistResult.claimLost += 1;
+          continue;
+        }
+        if (attemptMarkerId) {
+          const markerIndex = attemptMarkerIds.indexOf(attemptMarkerId);
+          if (markerIndex >= 0) attemptMarkerIds.splice(markerIndex, 1);
+        }
+        governorDeferred += 1;
         const navigation = outcome.browserFallback.browserDiagnostics?.navigation ?? null;
         await logAgentScan({
           sourceId: article.sourceId,
@@ -3312,11 +3408,22 @@ export const runEnrichmentBatch = async (
     // = articles eligible for enrichment, inserted = successfully enriched).
     // These are the best available fits in the shared run-tracking schema; the
     // canonical per-kind breakdown lives in the `summary` JSON below.
+    const dispositions = buildAgent3BatchDispositions({
+      selectedCount: diversified.length,
+      persist: persistResult,
+      interstitial: interstitialDispositionCounts,
+      claimSkipped,
+      governorDeferred,
+      sourceCooldownSkipped,
+    });
     const finalSummary = buildEnrichmentRunSummary(persistResult, outcomes.length, {
       durationMs: Date.now() - startedAt,
       claimSkipped,
       expiredClaimsRecovered,
       governorDeferred,
+      selectedCount: diversified.length,
+      sourceCooldownSkipped,
+      dispositions,
       agent3SourceCooldowns: sourceCooldown.getEntries().length > 0 ? sourceCooldown.getEntries() : undefined,
       browserFallbackStats: browserFallbackEnabled
         ? {
@@ -3414,10 +3521,13 @@ export const runEnrichmentBatch = async (
     const cooldowns = sourceCooldown.getEntries();
     return {
       pipelineRunId: pipelineRun.id,
+      selectedCount: diversified.length,
       articleCount: outcomes.length,
       claimSkipped,
       expiredClaimsRecovered,
       governorDeferred,
+      sourceCooldownSkipped,
+      dispositions,
       persist: persistResult,
       interstitialDispositionCounts,
       httpEvidence,

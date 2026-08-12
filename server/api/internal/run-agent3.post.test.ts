@@ -267,4 +267,43 @@ describe("POST /api/internal/run-agent3", () => {
       quarantined: 1,
     });
   });
+
+  it("reconciles every selected article across claim, defer, cooldown, and durable outcomes", async () => {
+    mocks.runBatch.mockResolvedValue({
+      selectedCount: 6,
+      articleCount: 3,
+      claimSkipped: 1,
+      sourceCooldownSkipped: 1,
+      governorDeferred: 1,
+      persist: {
+        persisted: 2,
+        failed: 0,
+        claimLost: 1,
+        byKind: { SUCCESS: 1, RETRYABLE_FAILURE: 1 },
+      },
+      dispositions: {
+        succeeded: 1,
+        failedRetryable: 1,
+        failedPermanent: 0,
+        skipped: 2,
+        deferred: 1,
+        quarantined: 0,
+        claimLost: 1,
+        persistenceFailed: 0,
+      },
+      interstitialDispositionCounts: { deferred: 0, quarantined: 0, readyRetry: 0, nonRetryable: 0 },
+    });
+
+    const result = await (await loadHandler())({} as any);
+
+    expect(result.telemetry).toMatchObject({
+      processed: 6,
+      succeeded: 1,
+      failedRetryable: 1,
+      skipped: 2,
+      deferred: 1,
+      claimLost: 1,
+      persistenceFailed: 0,
+    });
+  });
 });

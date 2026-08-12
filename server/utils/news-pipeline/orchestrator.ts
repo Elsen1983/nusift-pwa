@@ -22,6 +22,7 @@ import {
   createNoopStageBatchProbe,
   type StageBatchProbe,
 } from "./stage-telemetry";
+import { boundedPipelineItemError, isUnsafePipelineInvariantError } from "./item-failure";
 
 export type RunNewsPipelineOptions = {
   /**
@@ -561,6 +562,7 @@ export async function runAgent1Batch(input?: {
         errorLog: `Agent 1 target finished. runId=${pipelineRun.id}, position=${i + 1}/${resolvedTargets.length}, candidates=${result.candidates.length}, inserted=${persisted.inserted}, skipped=${persisted.skipped}, failed=${persisted.failed + result.failed}, deferredReason=${result.deferredReason || "none"}.`,
       });
     } catch (error: any) {
+      if (isUnsafePipelineInvariantError(error)) throw error;
       failed += 1;
       if (ingestCompleted) targetPersistenceFailed += 1;
       else targetFailedRetryable += 1;
@@ -570,7 +572,7 @@ export async function runAgent1Batch(input?: {
         categoryId: target.categoryId || undefined,
         status: "A1_TARGET_FAILED",
         executionTimeMs: Date.now() - targetStartedAt,
-        errorLog: `Agent 1 target failed. runId=${pipelineRun.id}, position=${i + 1}/${resolvedTargets.length}, error=${String(error?.message || error).slice(0, 300)}.`,
+        errorLog: `Agent 1 target failed. runId=${pipelineRun.id}, position=${i + 1}/${resolvedTargets.length}, error=${boundedPipelineItemError(error)}.`,
       });
     }
   }

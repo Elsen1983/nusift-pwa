@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArticleEnrichmentOutcome, ArticleUpstreamProvenance } from "./enrichment";
 import { AGENT3_EXTRACTOR_VERSION } from "./enrichment";
 import { StageBatchTelemetryTracker } from "./stage-telemetry";
-import { collectAgent3HttpEvidence } from "./enrichment-runtime";
+import { buildAgent3BatchDispositions, collectAgent3HttpEvidence } from "./enrichment-runtime";
 
 // ─── Mock prisma ────────────────────────────────────────────────────────────
 const articleFindManyMock = vi.fn();
@@ -11,6 +11,7 @@ const articleUpdateManyMock = vi.fn();
 const articleFindUniqueMock = vi.fn();
 const articleCountMock = vi.fn();
 const artifactCreateMock = vi.fn();
+const artifactDeleteManyMock = vi.fn();
 const claimCreateMock = vi.fn();
 const claimDeleteManyMock = vi.fn();
 const claimFindUniqueMock = vi.fn();
@@ -41,6 +42,7 @@ vi.mock("../prisma", () => ({
     pipelineArtifact: {
       create: (...args: any[]) => artifactCreateMock(...args),
       findMany: (...args: any[]) => artifactFindManyMock(...args),
+      deleteMany: (...args: any[]) => artifactDeleteManyMock(...args),
     },
     pipelineRun: {
       create: (...args: any[]) => pipelineRunCreateMock(...args),
@@ -120,6 +122,7 @@ function configureAgent3PrismaMocks(): void {
   claimRows.clear();
   claimDeleteManyDirectMock.mockResolvedValue({ count: 0 });
   claimCountMock.mockResolvedValue(0);
+  artifactDeleteManyMock.mockResolvedValue({ count: 1 });
   claimDeleteManyMock.mockImplementation(async (args: any) => {
     const token = args?.where?.token as string | undefined;
     if (!token) return { count: 0 };
@@ -157,6 +160,7 @@ function configureAgent3PrismaMocks(): void {
         },
         pipelineArtifact: {
           create: (...args: any[]) => artifactCreateMock(...args),
+          deleteMany: (...args: any[]) => artifactDeleteManyMock(...args),
         },
       });
     } catch (error) {
@@ -186,6 +190,48 @@ const makeArticle = (overrides: Record<string, unknown> = {}) => ({
   enrichmentStatus: "INGESTED",
   enrichmentAttemptCount: 0,
   ...overrides,
+});
+
+describe("Agent 3 selected-item accounting", () => {
+  const emptyByKind = () => ({
+    SUCCESS: 0, SKIPPED: 0, RETRYABLE_FAILURE: 0, HEADLESS_REQUIRED: 0,
+    PAYWALL_BLOCKED: 0, CANONICAL_MISMATCH: 0, LOW_CONTENT_QUALITY: 0,
+    UNSUPPORTED_STRUCTURE: 0, HTTP_ACCESS_BLOCKED: 0, INTERSTITIAL_OR_CHALLENGE: 0,
+  });
+
+  it("reconciles mutually exclusive dispositions exactly", () => {
+    const byKind = emptyByKind();
+    byKind.SUCCESS = 1;
+    byKind.RETRYABLE_FAILURE = 1;
+    expect(buildAgent3BatchDispositions({
+      selectedCount: 6,
+      persist: { persisted: 2, failed: 0, claimLost: 1, byKind, artifactIds: [] },
+      interstitial: { deferred: 0, quarantined: 0, readyRetry: 0, nonRetryable: 0 },
+      claimSkipped: 1,
+      governorDeferred: 1,
+      sourceCooldownSkipped: 1,
+    })).toEqual({
+      succeeded: 1,
+      failedRetryable: 1,
+      failedPermanent: 0,
+      skipped: 2,
+      deferred: 1,
+      quarantined: 0,
+      claimLost: 1,
+      persistenceFailed: 0,
+    });
+  });
+
+  it("fails loudly when selected dispositions do not reconcile", () => {
+    expect(() => buildAgent3BatchDispositions({
+      selectedCount: 2,
+      persist: { persisted: 1, failed: 0, claimLost: 0, byKind: { ...emptyByKind(), SUCCESS: 1 }, artifactIds: [] },
+      interstitial: { deferred: 0, quarantined: 0, readyRetry: 0, nonRetryable: 0 },
+      claimSkipped: 0,
+      governorDeferred: 0,
+      sourceCooldownSkipped: 0,
+    })).toThrow("disposition invariant failed");
+  });
 });
 
 /** Build a mock rss_candidates artifact payload from Agent 1. */
@@ -2595,6 +2641,12 @@ describe("Agent 3 browser fallback integration", () => {
       expect(actualWork.browserAttempts).toBe(0);
       expect(actualWork.networkRequests).toBe(0);
       expect(claimDeleteManyDirectMock).toHaveBeenCalled();
+      expect(articleUpdateManyMock).toHaveBeenCalledWith(expect.objectContaining({
+        data: { enrichmentAttemptCount: { decrement: 1 } },
+      }));
+      expect(artifactDeleteManyMock).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ artifactType: "article_enrichment_attempt", status: "ATTEMPTED" }),
+      }));
       const finalArtifacts = artifactCreateMock.mock.calls.filter(
         (call: any[]) => call[0]?.data?.artifactType === "article_enrichment_result",
       );
