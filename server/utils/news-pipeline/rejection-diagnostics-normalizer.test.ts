@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeRejectionDiagnostic,
+  summarizeDeferredCooldowns,
   isRejectionArtifact,
   type RawRejectionArtifact,
 } from "./rejection-diagnostics-normalizer";
@@ -77,6 +78,58 @@ describe("normalizeRejectionDiagnostic", () => {
     expect(result!.diagnostics.stoppedAtText).toBeNull();
     expect(result!.diagnostics.stoppedAtClassOrId).toBeNull();
     expect(result!.diagnostics.excludedBlockCount).toBe(0);
+  });
+
+  it("normalizes bounded transport and retry evidence", () => {
+    const artifact = makeArtifact({
+      payload: {
+        ...(makeArtifact().payload as Record<string, unknown>),
+        method: {
+          originalArticleUrl: "http://example.com/article",
+          transportUrl: "http://example.com/article",
+          transportAttempts: [
+            { protocol: "https", url: "https://example.com/article", statusCode: 503, outcome: "http_error" },
+            { protocol: "http", url: "http://example.com/article", statusCode: 403, outcome: "http_error" },
+          ],
+        },
+        quality: { confidence: 0.3, signals: ["https_first_failed", "http_fallback_used", "unrelated"] },
+        retryDiagnostics: {
+          disposition: "DEFERRED",
+          retryAfter: "2026-08-13T11:00:00.000Z",
+          reasonCode: "http_403",
+        },
+      },
+    });
+
+    const result = normalizeRejectionDiagnostic(artifact)!;
+    expect(result.originalArticleUrl).toBe("http://example.com/article");
+    expect(result.transportUrl).toBe("http://example.com/article");
+    expect(result.transportSignals).toEqual(["https_first_failed", "http_fallback_used"]);
+    expect(result.transportAttempts).toHaveLength(2);
+    expect(result.retryDisposition).toBe("DEFERRED");
+    expect(result.retryAfterAt).toBe("2026-08-13T11:00:00.000Z");
+    expect(result.retryReasonCode).toBe("http_403");
+  });
+
+  it("aggregates deferred diagnostics by host and earliest cooldown", () => {
+    const makeDeferred = (id: string, articleId: number, retryAfter: string, reasonCode: string) => normalizeRejectionDiagnostic(makeArtifact({
+      id,
+      payload: {
+        ...(makeArtifact().payload as Record<string, unknown>),
+        articleId,
+        articleUrl: `https://news.example.com/${articleId}`,
+        retryDiagnostics: { disposition: "DEFERRED", retryAfter, reasonCode },
+      },
+    }))!;
+    const first = makeDeferred("deferred-1", 101, "2026-08-13T12:00:00.000Z", "http_429");
+    const second = makeDeferred("deferred-2", 102, "2026-08-13T11:00:00.000Z", "http_403");
+
+    expect(summarizeDeferredCooldowns([first, second, { ...second, id: "ready", retryDisposition: "READY_RETRY" }])).toEqual([{
+      hostname: "news.example.com",
+      deferredArticles: 2,
+      nextRetryAt: "2026-08-13T11:00:00.000Z",
+      reasons: { http_429: 1, http_403: 1 },
+    }]);
   });
 
   it("caps topCandidates to max 5", () => {
@@ -235,6 +288,19 @@ describe("normalizeRejectionDiagnostic", () => {
     const result = normalizeRejectionDiagnostic(artifact);
     expect(result).not.toBeNull();
     expect(result!.title).toBe("Test Article Title");
+  });
+
+  it("repairs legacy mojibake only in the bounded diagnostic response", () => {
+    const result = normalizeRejectionDiagnostic(makeArtifact({
+      payload: {
+        ...makeArtifact().payload as Record<string, unknown>,
+        rejectionDiagnostics: {
+          ...(makeArtifact().payload as Record<string, any>).rejectionDiagnostics,
+          title: "V\u00c3\u00adzjelezni fogja, ha \u00c5\u0091 gener\u00c3\u00a1lta",
+        },
+      },
+    }));
+    expect(result!.title).toBe("V\u00edzjelezni fogja, ha \u0151 gener\u00e1lta");
   });
 
   it("caps title from rejectionDiagnostics to 180 chars", () => {

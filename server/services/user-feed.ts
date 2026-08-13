@@ -3,6 +3,7 @@ import {
   isEffectivelyPublishableArticle,
 } from "../utils/news-pipeline/publication-gate";
 import { buildSubscriptionArticleScope, getSubscriptionScope, type SubscriptionScope } from "../utils/subscription-scope";
+import { repairUtf8Mojibake } from "../../shared/text-encoding";
 
 /**
  * Shared user-feed service (Prompt 13G).
@@ -140,7 +141,7 @@ export async function loadUserFeed(db: FeedDb, userId: string): Promise<any[]> {
       };
     })(),
     id: article.id,
-    title: article.title,
+    title: repairUtf8Mojibake(article.title),
     source: article.source.mediaName || toSourceLabel(article.source.frontPageUrl),
     sourceUrl: article.source.frontPageUrl,
     sourceTargetUrl: article.category?.pathUrl || article.source.frontPageUrl,
@@ -153,7 +154,7 @@ export async function loadUserFeed(db: FeedDb, userId: string): Promise<any[]> {
     tags: article.tags,
     signals: article.signals,
     reasoning: article.reasoning || "",
-    bodyText: article.bodyText || null,
+    bodyText: article.bodyText ? repairUtf8Mojibake(article.bodyText) : null,
   }));
 }
 

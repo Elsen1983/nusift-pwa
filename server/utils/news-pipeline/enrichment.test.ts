@@ -333,6 +333,33 @@ describe("serialize + validate round trip", () => {
     expect(outcome!.timing.durationMs).toBe(150);
   });
 
+  it("round-trips sanitized transport attempt evidence", () => {
+    const original = buildSuccessOutcome({
+      articleId: 43,
+      articleUrl: "http://example.com/a?token=secret",
+      provenance: baseProvenance,
+      method: {
+        method: "http-dom",
+        originalArticleUrl: "http://example.com/a?token=secret",
+        transportUrl: "http://example.com/a?token=secret",
+        transportAttempts: [
+          { protocol: "https", url: "https://example.com/a?token=secret", statusCode: 503, outcome: "http_error" },
+          { protocol: "http", url: "http://example.com/a?token=secret", statusCode: 200, outcome: "success" },
+        ],
+      },
+      fields: {},
+    });
+
+    const parsed = JSON.parse(JSON.stringify(serializeEnrichmentPayload(original)));
+    expect(parsed.method.transportAttempts).toEqual([
+      { protocol: "https", url: "https://example.com/a", statusCode: 503, outcome: "http_error" },
+      { protocol: "http", url: "http://example.com/a", statusCode: 200, outcome: "success" },
+    ]);
+    const validated = validateEnrichmentOutcome(parsed);
+    expect(validated.valid).toBe(true);
+    expect(validated.outcome?.method.transportAttempts).toHaveLength(2);
+  });
+
   it("round-trips a HEADLESS_REQUIRED outcome", () => {
     const original = buildHeadlessRequiredOutcome({
       articleId: 3,

@@ -12,6 +12,13 @@ const mocks = vi.hoisted(() => ({
 (globalThis as any).defineEventHandler = (fn: any) => fn;
 (globalThis as any).readBody = (...args: any[]) => mocks.readBody(...args);
 
+const batchResult = (value: unknown): { telemetry: unknown } => {
+  if (!value || typeof value !== "object" || !("telemetry" in value)) {
+    throw new Error("Expected an Agent 3 batch response.");
+  }
+  return value as { telemetry: unknown };
+};
+
 vi.mock("h3", () => ({
   defineEventHandler: (fn: any) => fn,
   getHeader: (...args: any[]) => mocks.getHeader(...args),
@@ -150,7 +157,7 @@ describe("POST /api/internal/run-agent3", () => {
 
     const result = await (await loadHandler())({} as any);
 
-    expect(result.telemetry).toMatchObject({
+    expect(batchResult(result).telemetry).toMatchObject({
       processed: 1,
       succeeded: 0,
       failedRetryable: 0,
@@ -176,7 +183,7 @@ describe("POST /api/internal/run-agent3", () => {
 
     const result = await (await loadHandler())({} as any);
 
-    expect(result.telemetry).toMatchObject({
+    expect(batchResult(result).telemetry).toMatchObject({
       processed: 3,
       failedRetryable: 0,
       failedPermanent: 0,
@@ -201,7 +208,7 @@ describe("POST /api/internal/run-agent3", () => {
 
     const result = await (await loadHandler())({} as any);
 
-    expect(result.telemetry).toMatchObject({
+    expect(batchResult(result).telemetry).toMatchObject({
       processed: 1,
       failedRetryable: 0,
       failedPermanent: 1,
@@ -219,7 +226,7 @@ describe("POST /api/internal/run-agent3", () => {
 
     const result = await (await loadHandler())({} as any);
 
-    expect(result.telemetry).toMatchObject({
+    expect(batchResult(result).telemetry).toMatchObject({
       failedPermanent: 0,
       deferred: 0,
       quarantined: 1,
@@ -240,7 +247,7 @@ describe("POST /api/internal/run-agent3", () => {
     const result = await (await loadHandler())({} as any);
 
     // RETRYABLE_FAILURE (byKind) + one READY_RETRY interstitial = 2, exactly.
-    expect(result.telemetry).toMatchObject({
+    expect(batchResult(result).telemetry).toMatchObject({
       processed: 3,
       succeeded: 1,
       failedRetryable: 2,
@@ -263,7 +270,7 @@ describe("POST /api/internal/run-agent3", () => {
 
     const result = await (await loadHandler())({} as any);
 
-    expect(result.telemetry).toMatchObject({
+    expect(batchResult(result).telemetry).toMatchObject({
       processed: 4,
       failedPermanent: 1, // PAYWALL_BLOCKED only
       deferred: 2,
@@ -299,7 +306,7 @@ describe("POST /api/internal/run-agent3", () => {
 
     const result = await (await loadHandler())({} as any);
 
-    expect(result.telemetry).toMatchObject({
+    expect(batchResult(result).telemetry).toMatchObject({
       processed: 6,
       succeeded: 1,
       failedRetryable: 1,

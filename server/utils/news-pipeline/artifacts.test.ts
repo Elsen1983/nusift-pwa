@@ -469,6 +469,20 @@ describe("persistAgent1TargetOutcomeArtifact – errorLog consistency", () => {
       "Agent 1 failed while fetching or parsing this target.",
     );
   });
+
+  it("persists a bounded Agent 1 failure detail without replacing the stable reason", async () => {
+    const { persistAgent1TargetOutcomeArtifact } = await import("./artifacts");
+    await persistAgent1TargetOutcomeArtifact({
+      pipelineRunId: "run-detail",
+      result: makeResult({ failed: 1, failureDetail: "HTTP 503 from https://example.com/feed" }),
+      persisted: makePersisted({ inserted: 0, failed: 1 }),
+    });
+
+    const data = prismaCreateMock.mock.calls[0]![0].data;
+    expect(data.payload.failureDetail).toBe("HTTP 503 from https://example.com/feed");
+    expect(data.payload.failureReason).toBe("Agent 1 failed while fetching or parsing this target.");
+    expect(data.errorLog).toContain("HTTP 503 from https://example.com/feed");
+  });
 });
 
 describe("finalizePipelineRun defer summary", () => {

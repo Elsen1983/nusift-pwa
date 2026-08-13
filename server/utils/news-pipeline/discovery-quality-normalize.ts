@@ -24,6 +24,8 @@ export type NormalizedDiscoveryQualityItem = {
   quality: string | null;
   confidence: string | null;
   shouldEscalateToHeadless: boolean;
+  headlessState: "active" | "history" | "recommended" | "none";
+  headlessStatus: string | null;
   escalationReasons: string[];
   explanation: string | null;
   staleSamples: DiscoveryQualityStaleSample[];
@@ -43,6 +45,13 @@ export type NormalizedDiscoveryQualityItem = {
 };
 
 const MAX_STALE_SAMPLES = 3;
+const HISTORICAL_HEADLESS_STATUSES = new Set([
+  "RESOLVED",
+  "RESOLVED_BY_STATIC_DISCOVERY",
+  "RESOLVED_BY_AGENT1_RSS",
+  "SKIPPED_BY_FEED_FIRST_POLICY",
+  "BROWSER_FALLBACK_DISABLED",
+]);
 
 function collectStaleSamplesFromRejected(
   rejectedCandidates: unknown,
@@ -104,6 +113,13 @@ export function normalizeDiscoveryQualityArtifact(artifact: {
   const qualityAssessment = (payload.qualityAssessment as Record<string, unknown>) || {};
   const outcomeSummary = (payload.outcomeSummary as Record<string, unknown>) || {};
   const discoverySources = payload.discoverySources as Record<string, unknown> | undefined;
+  const isHeadlessMarker = artifact.artifactType === "article_discovery_headless_required";
+  const candidateRecommendsHeadless = "shouldEscalateToHeadless" in qualityAssessment
+    ? Boolean(qualityAssessment.shouldEscalateToHeadless)
+    : false;
+  const headlessState: NormalizedDiscoveryQualityItem["headlessState"] = isHeadlessMarker
+    ? HISTORICAL_HEADLESS_STATUSES.has(artifact.status) ? "history" : "active"
+    : candidateRecommendsHeadless ? "recommended" : "none";
 
   return {
     id: artifact.id,
@@ -117,12 +133,9 @@ export function normalizeDiscoveryQualityArtifact(artifact: {
     quality: (qualityAssessment.quality as string) || (payload.quality as string) || null,
     confidence: (qualityAssessment.confidence as string) || null,
     // Headless markers always escalate; candidates use nested value or default to false
-    shouldEscalateToHeadless:
-      artifact.artifactType === "article_discovery_headless_required"
-        ? true
-        : "shouldEscalateToHeadless" in qualityAssessment
-          ? Boolean(qualityAssessment.shouldEscalateToHeadless)
-          : false,
+    shouldEscalateToHeadless: headlessState === "active" || headlessState === "recommended",
+    headlessState,
+    headlessStatus: isHeadlessMarker ? artifact.status : null,
     escalationReasons:
       (qualityAssessment.escalationReasons as string[]) ||
       (payload.escalationReasons as string[]) ||

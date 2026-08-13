@@ -167,6 +167,14 @@ export function buildFeedUrlCandidates(feedUrl: string | null, frontPageUrl?: st
     if (frontPageUrl) {
       const parsedFront = new URL(frontPageUrl);
       add(`${parsedFront.protocol}//${parsedFront.hostname}/?service=rss`);
+
+      // RTE's legacy `?service=rss` endpoint is reachable but no longer emits
+      // items. Keep this publisher-specific recovery bounded to its root URL.
+      if (parsedFront.hostname.replace(/^www\./i, "").toLowerCase() === "rte.ie" &&
+          parsedFront.pathname.replace(/\/+$/, "") === "") {
+        add("https://www.rte.ie/feeds/rss/?index=/news/");
+        add("https://www.rte.ie/feeds/rss/?index=/news/world/");
+      }
     }
   } catch {}
 

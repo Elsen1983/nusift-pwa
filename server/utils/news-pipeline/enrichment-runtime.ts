@@ -55,6 +55,7 @@ import {
   getAgent3Tier,
   isAgent3RetryableNow,
   MAX_AUTOMATIC_AGENT3_ATTEMPTS,
+  AGENT3_RETRY_COOLDOWN_MS,
 } from "./agent3-retry-policy";
 import type { Agent3RetryDisposition } from "./agent3-retry-policy";
 import {
@@ -118,9 +119,9 @@ export const ENRICHMENT_FRESHNESS_DAYS = ARTICLE_RETENTION_DAYS;
  * Articles that failed with these blocking reasons are temporarily excluded from
  * reselection unless forceReprocess or includeRecentlyBlocked is set.
  */
-const HTTP_403_COOLDOWN_MS = 24 * 60 * 60 * 1000;    // 24 hours
-const HTTP_429_COOLDOWN_MS = 60 * 60 * 1000;           // 1 hour
-const BROWSER_RUNTIME_UNAVAILABLE_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+const HTTP_403_COOLDOWN_MS = AGENT3_RETRY_COOLDOWN_MS.http403;
+const HTTP_429_COOLDOWN_MS = AGENT3_RETRY_COOLDOWN_MS.http429;
+const BROWSER_RUNTIME_UNAVAILABLE_COOLDOWN_MS = AGENT3_RETRY_COOLDOWN_MS.browserRuntimeUnavailable;
 
 /**
  * Determine whether an article is "recently blocked" — its latest enrichment attempt
@@ -170,7 +171,8 @@ export function isRecentlyBlocked(
   const bfRuntimeUnavailable = bf?.runtimeUnavailable === true;
   const bfRateLimited = bf?.rateLimited === true;
 
-  // HTTP 403 blocking: 24h cooldown
+  // HTTP 403 blocking: bounded first-retry cooldown. The host governor opens
+  // a longer circuit only after a confirmed repeated 403 streak.
   if (httpStatus === 403 || rejectionCode === "HTTP_403" || (rejectionCode === "HTTP_FORBIDDEN" && httpStatus !== 429) || (detail.includes("[http_error]") && detail.includes("403"))) {
     return elapsed < HTTP_403_COOLDOWN_MS;
   }
@@ -311,12 +313,73 @@ const ENRICHMENT_ARTICLE_SELECT = {
   enrichmentClaim: true,
 } satisfies Prisma.ArticleSelect;
 
+export type Agent3DeferredReason =
+  | "http_403"
+  | "http_429"
+  | "browser_runtime_unavailable"
+  | "interstitial_or_challenge"
+  | "other_retry";
+
+const AGENT3_DEFERRED_REASONS: readonly Agent3DeferredReason[] = [
+  "http_403",
+  "http_429",
+  "browser_runtime_unavailable",
+  "interstitial_or_challenge",
+  "other_retry",
+];
+
+const emptyDeferredReasonCounts = (): Record<Agent3DeferredReason, number> => ({
+  http_403: 0,
+  http_429: 0,
+  browser_runtime_unavailable: 0,
+  interstitial_or_challenge: 0,
+  other_retry: 0,
+});
+
+function getDeferredReason(article: { enrichmentOutcome?: unknown }): Agent3DeferredReason {
+  const httpStatus = getAgent3HttpStatus(article);
+  if (httpStatus === 429) return "http_429";
+  if (httpStatus === 403) return "http_403";
+  const outcome = article.enrichmentOutcome;
+  const summary = outcome && typeof outcome === "object" && !Array.isArray(outcome)
+    ? outcome as Record<string, unknown>
+    : null;
+  const browserFallback = summary?.browserFallback;
+  if (browserFallback && typeof browserFallback === "object" && !Array.isArray(browserFallback)
+    && (browserFallback as Record<string, unknown>).runtimeUnavailable === true) {
+    return "browser_runtime_unavailable";
+  }
+  if (summary?.kind === "INTERSTITIAL_OR_CHALLENGE" || summary?.rejectionCode === "INTERSTITIAL_OR_CHALLENGE") {
+    return "interstitial_or_challenge";
+  }
+  return "other_retry";
+}
+
+function recordDeferredReason(
+  counts: Record<Agent3DeferredReason, number>,
+  reason: Agent3DeferredReason,
+): void {
+  counts[reason] += 1;
+}
+
+function mergeDeferredReasonCounts(
+  ...counts: Array<Record<Agent3DeferredReason, number>>
+): Record<Agent3DeferredReason, number> {
+  const merged = emptyDeferredReasonCounts();
+  for (const count of counts) {
+    for (const reason of AGENT3_DEFERRED_REASONS) merged[reason] += count[reason];
+  }
+  return merged;
+}
+
 type RecentBlockState = {
   articleIds: ReadonlySet<number>;
   hostnames: ReadonlySet<string>;
   http403Hostnames: ReadonlySet<string>;
   retryAfterByArticleId: ReadonlyMap<number, string>;
   retryAfterByHostname: ReadonlyMap<string, string>;
+  reasonByArticleId: ReadonlyMap<number, Agent3DeferredReason>;
+  reasonByHostname: ReadonlyMap<string, Agent3DeferredReason>;
 };
 
 function articleHostname(article: Pick<EnrichmentEligibleArticle, "canonicalUrl" | "sourceUrl">): string {
@@ -396,6 +459,8 @@ async function scanRecentBlockState(
   const http403Hostnames = new Set<string>();
   const retryAfterByArticleId = new Map<number, string>();
   const retryAfterByHostname = new Map<string, string>();
+  const reasonByArticleId = new Map<number, Agent3DeferredReason>();
+  const reasonByHostname = new Map<string, Agent3DeferredReason>();
   let cursor: number | undefined;
   let scanned = 0;
 
@@ -421,6 +486,8 @@ async function scanRecentBlockState(
     for (const article of page) {
       if (!isRecentlyBlocked(article, now)) continue;
       articleIds.add(article.id);
+      const reason = getDeferredReason(article);
+      reasonByArticleId.set(article.id, reason);
       const retryAfter = getAgent3RetryAfter({ ...article, now });
       if (retryAfter) retryAfterByArticleId.set(article.id, retryAfter);
       const hostname = extractHostname(article.canonicalUrl) !== "unknown"
@@ -428,6 +495,10 @@ async function scanRecentBlockState(
         : extractHostname(article.sourceUrl);
       if (hostname !== "unknown") {
         hostnames.add(hostname);
+        const existingReason = reasonByHostname.get(hostname);
+        if (!existingReason || existingReason === "other_retry" || reason === "http_429") {
+          reasonByHostname.set(hostname, reason);
+        }
         if (getAgent3HttpStatus(article) === 403) {
           http403Hostnames.add(hostname);
         }
@@ -444,7 +515,15 @@ async function scanRecentBlockState(
     if (page.length < PROGRESS_SCAN_PAGE_SIZE) break;
   }
 
-  return { articleIds, hostnames, http403Hostnames, retryAfterByArticleId, retryAfterByHostname };
+  return {
+    articleIds,
+    hostnames,
+    http403Hostnames,
+    retryAfterByArticleId,
+    retryAfterByHostname,
+    reasonByArticleId,
+    reasonByHostname,
+  };
 }
 
 async function countBlockedEligibleArticles(
@@ -575,6 +654,8 @@ export const selectEnrichmentEligibleArticles = async (
         http403Hostnames: new Set<string>(),
         retryAfterByArticleId: new Map<number, string>(),
         retryAfterByHostname: new Map<string, string>(),
+        reasonByArticleId: new Map<number, Agent3DeferredReason>(),
+        reasonByHostname: new Map<string, Agent3DeferredReason>(),
       };
   const sameRunArticleIds = pipelineRunId
     ? await readAttemptedArticleIds(pipelineRunId)
@@ -1152,6 +1233,7 @@ const buildOutcomeFromSuccess = (
       resolvedCanonicalUrl: result.resolvedUrl,
       transportUrl: result.transportUrl ?? null,
       originalArticleUrl: result.originalArticleUrl ?? originalArticleUrl,
+      transportAttempts: result.transportAttempts,
       redirected: result.resolvedUrl !== articleUrl || articleUrl !== originalArticleUrl,
     },
     timing,
@@ -1469,6 +1551,7 @@ export const extractAndBuildArticleOutcome = async (
         method: result.method !== "none" ? result.method : "http-dom",
         transportUrl: result.transportUrl ?? null,
         originalArticleUrl: result.originalArticleUrl ?? articleUrl,
+        transportAttempts: result.transportAttempts,
       },
     timing,
     httpStatus: result.statusCode,
@@ -2168,6 +2251,8 @@ export interface Agent3Progress {
   /** Alias retained for existing callers: readyNew + readyRetry. */
   retryableNow: number;
   deferred: number;
+  /** Queue-wide deferred counts by durable retry/cooldown cause. */
+  deferredByReason: Record<Agent3DeferredReason, number>;
   nextRetryAt: string | null;
   quarantined: number;
   nonRetryable: number;
@@ -2227,6 +2312,107 @@ export interface Agent3Progress {
   progressScanned: number;
 }
 
+const asBoundedRecord = (value: unknown): Record<string, unknown> | null => (
+  value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+);
+
+const asProgressCount = (value: unknown): number => (
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0
+);
+
+/**
+ * Daily and local orchestrations own their PipelineRun summary. Their Agent 3
+ * batch summary is stored in a diagnostic artifact rather than overwriting it.
+ */
+function readAgent3DiagnosticLatestRun(input: {
+  pipelineRunId: string | null;
+  createdAt: Date | null;
+  payload: unknown;
+}): NonNullable<Agent3Progress["latestRun"]> | null {
+  if (!input.pipelineRunId) return null;
+  const payload = asBoundedRecord(input.payload);
+  if (!payload) return null;
+  const summary = asBoundedRecord(payload.enrichmentSummary) ?? payload;
+  const rawByKind = asBoundedRecord(summary.byKind);
+  const byKind = rawByKind
+    ? Object.fromEntries(
+        Object.entries(rawByKind)
+          .filter(([, value]) => typeof value === "number" && Number.isFinite(value) && value >= 0),
+      ) as Record<string, number>
+    : {
+        SUCCESS: asProgressCount(payload.succeeded),
+        RETRYABLE_FAILURE: asProgressCount(payload.failedRetryable),
+      };
+  const processed = asProgressCount(summary.articleCount ?? payload.articleCount);
+  const persistedOutcomes = asProgressCount(summary.persisted ?? payload.persisted);
+  const successfullyEnriched = byKind.SUCCESS ?? asProgressCount(payload.succeeded);
+  const rejected = Object.entries(byKind)
+    .filter(([kind]) => kind !== "SUCCESS" && kind !== "SKIPPED")
+    .reduce((sum, [, count]) => sum + count, 0);
+  const browserRaw = asBoundedRecord(summary.browserFallbackStats);
+  const browserFallbackStats = browserRaw
+    ? {
+        enabled: browserRaw.enabled === true,
+        attempted: asProgressCount(browserRaw.attempted),
+        succeeded: asProgressCount(browserRaw.succeeded),
+        failed: asProgressCount(browserRaw.failed),
+        runtimeUnavailable: asProgressCount(browserRaw.runtimeUnavailable),
+        rateLimited: asProgressCount(browserRaw.rateLimited),
+        stoppedReason: typeof browserRaw.stoppedReason === "string" ? browserRaw.stoppedReason : null,
+      }
+    : null;
+  const optionsRaw = asBoundedRecord(summary.optionsUsed);
+  const optionsUsed = optionsRaw
+    ? {
+        browserFallback: optionsRaw.browserFallback === true,
+        browserFallbackMaxAttempts: asProgressCount(optionsRaw.browserFallbackMaxAttempts) || 3,
+        browserTimeoutMs: asProgressCount(optionsRaw.browserTimeoutMs) || 25_000,
+        includeEnriched: optionsRaw.includeEnriched === true,
+        forceReprocess: optionsRaw.forceReprocess === true,
+        maxArticles: asProgressCount(optionsRaw.maxArticles) || MAX_ARTICLES_PER_RUN,
+        maxArticlesPerSource: asProgressCount(optionsRaw.maxArticlesPerSource) || 5,
+      }
+    : null;
+  const validCooldownReasons = new Set(["http_403", "http_429", "browser_runtime_unavailable"]);
+  const sourceCooldowns = Array.isArray(summary.agent3SourceCooldowns)
+    ? summary.agent3SourceCooldowns
+        .slice(0, 50)
+        .map((value) => asBoundedRecord(value))
+        .filter((value): value is Record<string, unknown> => value !== null)
+        .map((entry) => ({
+          sourceId: typeof entry.sourceId === "string" ? entry.sourceId : "",
+          hostname: typeof entry.hostname === "string" ? entry.hostname : "unknown",
+          reason: typeof entry.reason === "string" && validCooldownReasons.has(entry.reason)
+            ? entry.reason as SourceCooldownEntry["reason"]
+            : "http_403" as const,
+          failureCount: asProgressCount(entry.failureCount),
+          skippedInRun: asProgressCount(entry.skippedInRun),
+          firstFailureAt: typeof entry.firstFailureAt === "string" ? entry.firstFailureAt : "",
+          lastFailureAt: typeof entry.lastFailureAt === "string" ? entry.lastFailureAt : "",
+        }))
+        .filter((entry) => entry.sourceId.length > 0)
+    : null;
+
+  return {
+    pipelineRunId: input.pipelineRunId,
+    processed,
+    successfullyEnriched,
+    rejected,
+    persistedOutcomes,
+    systemPersistFailed: asProgressCount(summary.persistFailed),
+    durationMs: typeof summary.durationMs === "number" && Number.isFinite(summary.durationMs)
+      ? summary.durationMs
+      : null,
+    finishedAt: input.createdAt?.toISOString() ?? null,
+    byKind,
+    browserFallbackStats,
+    optionsUsed,
+    sourceCooldowns,
+  };
+}
+
 /**
  * Options for Agent 3 progress query.
  */
@@ -2272,6 +2458,7 @@ async function scanNonRetryableFailures(
   exhaustedAttempts: number;
   nonRetryable: number;
   nextRetryAt: string | null;
+  deferredByReason: Record<Agent3DeferredReason, number>;
   scanned: number;
   truncated: boolean;
 }> {
@@ -2281,6 +2468,7 @@ async function scanNonRetryableFailures(
   let exhaustedAttempts = 0;
   let nonRetryable = 0;
   let nextRetryAt: string | null = null;
+  const deferredByReason = emptyDeferredReasonCounts();
   let scanned = 0;
   let cursor: number | undefined;
 
@@ -2310,6 +2498,12 @@ async function scanNonRetryableFailures(
       if (article.enrichmentClaim) continue;
       if (blockState && isBlockedByRecentBlockState(article, blockState)) {
         deferred++;
+        recordDeferredReason(
+          deferredByReason,
+          blockState.reasonByArticleId.get(article.id)
+            ?? blockState.reasonByHostname.get(articleHostname(article))
+            ?? "other_retry",
+        );
         const hostname = articleHostname(article);
         const retryAfter = blockState.retryAfterByArticleId.get(article.id)
           ?? blockState.retryAfterByHostname.get(hostname);
@@ -2322,6 +2516,7 @@ async function scanNonRetryableFailures(
       if (disposition.state === "READY_RETRY") readyRetry++;
       if (disposition.state === "DEFERRED") {
         deferred++;
+        recordDeferredReason(deferredByReason, getDeferredReason(article));
         if (!nextRetryAt || Date.parse(disposition.retryAfter) < Date.parse(nextRetryAt)) {
           nextRetryAt = disposition.retryAfter;
         }
@@ -2350,7 +2545,17 @@ async function scanNonRetryableFailures(
     truncated = moreExist > 0;
   }
 
-  return { count, readyRetry, deferred, exhaustedAttempts, nonRetryable, nextRetryAt, scanned, truncated };
+  return {
+    count,
+    readyRetry,
+    deferred,
+    exhaustedAttempts,
+    nonRetryable,
+    nextRetryAt,
+    deferredByReason,
+    scanned,
+    truncated,
+  };
 }
 
 /**
@@ -2365,9 +2570,10 @@ async function scanReadyNewArticles(
   now: Date,
   excludedArticleIds: ReadonlySet<number>,
   blockState: RecentBlockState,
-): Promise<{ ready: number; deferred: number }> {
+): Promise<{ ready: number; deferred: number; deferredByReason: Record<Agent3DeferredReason, number> }> {
   let ready = 0;
   let deferred = 0;
+  const deferredByReason = emptyDeferredReasonCounts();
   let scanned = 0;
   let cursor: number | undefined;
 
@@ -2393,6 +2599,12 @@ async function scanReadyNewArticles(
       if (excludedArticleIds.has(article.id)) continue;
       if (isBlockedByRecentBlockState(article, blockState)) {
         deferred++;
+        recordDeferredReason(
+          deferredByReason,
+          blockState.reasonByArticleId.get(article.id)
+            ?? blockState.reasonByHostname.get(articleHostname(article))
+            ?? "other_retry",
+        );
         continue;
       }
       if (decideAgent3RetryDisposition({ ...article, now }).state === "READY_NEW") ready++;
@@ -2401,7 +2613,7 @@ async function scanReadyNewArticles(
     if (page.length < PROGRESS_SCAN_PAGE_SIZE) break;
   }
 
-  return { ready, deferred };
+  return { ready, deferred, deferredByReason };
 }
 
 async function scanEnrichedArticleVersions(
@@ -2532,6 +2744,10 @@ export const getAgent3Progress = async (
   const readyNew = readyNewScan.ready;
   const readyRetry = nonRetryableScan.readyRetry;
   const deferred = nonRetryableScan.deferred + readyNewScan.deferred;
+  const deferredByReason = mergeDeferredReasonCounts(
+    nonRetryableScan.deferredByReason,
+    readyNewScan.deferredByReason,
+  );
   const quarantined = nonRetryableScan.exhaustedAttempts;
   const nonRetryable = nonRetryableScan.nonRetryable;
   const inProgress = await prisma.articleEnrichmentClaim.count({
@@ -2684,6 +2900,20 @@ export const getAgent3Progress = async (
         sourceCooldowns,
       };
     }
+
+    if (!latestRun) {
+      const latestDiagnostic = await prisma.pipelineArtifact.findFirst({
+        where: {
+          artifactType: { in: ["agent3_orchestration_summary", "agent3_progress_diagnostic"] },
+          status: "CAPTURED",
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { pipelineRunId: true, createdAt: true, payload: true },
+      });
+      latestRun = latestDiagnostic
+        ? readAgent3DiagnosticLatestRun(latestDiagnostic)
+        : null;
+    }
   } catch {
     // PipelineRun query failure is non-fatal; progress still returns counts.
   }
@@ -2699,6 +2929,7 @@ export const getAgent3Progress = async (
       readyNew,
       readyRetry,
       deferred,
+      deferredByReason,
       nextRetryAt,
       quarantined,
       nonRetryable,
@@ -3519,6 +3750,9 @@ export const runEnrichmentBatch = async (
           payload: {
             schemaVersion: 1,
             stage: "agent3",
+            // The orchestration owns the PipelineRun summary. Keep the bounded
+            // Agent 3 summary in its diagnostic artifact for progress readers.
+            enrichmentSummary: finalSummary,
             articleCount: outcomes.length,
             persisted: persistResult.persisted,
             succeeded: persistResult.byKind.SUCCESS,

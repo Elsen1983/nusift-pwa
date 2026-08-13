@@ -69,7 +69,7 @@ describe("Agent 3 retry policy", () => {
         rejectionCode: "HTTP_FORBIDDEN",
       },
     });
-    expect(getAgent3RetryAfter(input)).toBe("2026-08-02T10:00:00.000Z");
+    expect(getAgent3RetryAfter(input)).toBe("2026-08-01T11:00:00.000Z");
   });
 
   it("does not manufacture a sliding HEADLESS_REQUIRED retry time", () => {

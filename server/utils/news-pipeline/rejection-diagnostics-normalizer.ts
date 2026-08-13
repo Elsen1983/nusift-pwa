@@ -9,6 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { EnrichmentOutcomeKind, BrowserFallbackSkippedReason } from "./enrichment";
+import { repairUtf8Mojibake } from "../../../shared/text-encoding";
 
 /** Rejection kinds shown in the diagnostics panel. */
 export const REJECTION_KINDS: ReadonlyArray<EnrichmentOutcomeKind> = [
@@ -45,6 +46,15 @@ export interface NormalizedRejectionDiagnostic {
   articleId: number | null;
   title: string | null;
   articleUrl: string | null;
+  originalArticleUrl: string | null;
+  transportUrl: string | null;
+  transportSignals: string[];
+  transportAttempts: Array<{
+    protocol: "https" | "http";
+    url: string | null;
+    statusCode: number | null;
+    outcome: string;
+  }>;
   sourceId: string | null;
   categoryId: string | null;
   kind: string;
@@ -79,6 +89,9 @@ export interface NormalizedRejectionDiagnostic {
     statusCode: number | null;
   } | null;
   httpAccessBlocked: boolean;
+  retryDisposition: string | null;
+  retryAfterAt: string | null;
+  retryReasonCode: string | null;
 }
 
 /** Raw artifact row from Prisma. */
@@ -94,10 +107,38 @@ export interface RawRejectionArtifact {
   errorLog: string | null;
 }
 
+export interface DeferredCooldownGroup {
+  hostname: string;
+  deferredArticles: number;
+  nextRetryAt: string | null;
+  reasons: Record<string, number>;
+}
+
+/** Aggregate only durable DEFERRED diagnostics in a deterministic bounded view. */
+export function summarizeDeferredCooldowns(items: NormalizedRejectionDiagnostic[]): DeferredCooldownGroup[] {
+  const groups = new Map<string, DeferredCooldownGroup>();
+  for (const item of items) {
+    if (item.retryDisposition !== "DEFERRED") continue;
+    let hostname = "unknown";
+    const diagnosticUrl = item.originalArticleUrl || item.articleUrl;
+    if (diagnosticUrl) {
+      try { hostname = new URL(diagnosticUrl).hostname; } catch { /* malformed URL */ }
+    }
+    const group = groups.get(hostname) || { hostname, deferredArticles: 0, nextRetryAt: null, reasons: {} };
+    group.deferredArticles++;
+    if (item.retryAfterAt && (!group.nextRetryAt || item.retryAfterAt < group.nextRetryAt)) group.nextRetryAt = item.retryAfterAt;
+    const reason = item.retryReasonCode || item.rejectedReason || "unknown";
+    group.reasons[reason] = (group.reasons[reason] ?? 0) + 1;
+    groups.set(hostname, group);
+  }
+  return [...groups.values()].sort((a, b) => b.deferredArticles - a.deferredArticles || a.hostname.localeCompare(b.hostname));
+}
+
 /** Cap a string to a maximum length, returning null for non-strings. */
 function capString(value: unknown, maxLen: number): string | null {
   if (typeof value !== "string") return null;
-  return value.length > maxLen ? value.slice(0, maxLen) : value;
+  const normalized = repairUtf8Mojibake(value);
+  return normalized.length > maxLen ? normalized.slice(0, maxLen) : normalized;
 }
 
 /** Normalize a number, returning null for non-numbers. */
@@ -176,6 +217,24 @@ export function normalizeRejectionDiagnostic(
 
     // Extract extractor version
     const extractorVersion = capString(payload.extractorVersion, 100);
+    const method = isPlainObject(payload.method) ? payload.method : {};
+    const originalArticleUrl = capString(method.originalArticleUrl ?? provenance.originalArticleUrl ?? payload.articleUrl, 2000);
+    const transportUrl = capString(method.transportUrl, 2000);
+    const transportSignals = capStringArray(isPlainObject(payload.quality) ? payload.quality.signals : [], 20)
+      .filter((signal) => signal === "https_first" || signal === "https_first_failed" || signal === "http_fallback_used");
+    const transportAttempts = Array.isArray(method.transportAttempts)
+      ? method.transportAttempts.flatMap((attempt) => {
+          if (!isPlainObject(attempt)) return [];
+          if (attempt.protocol !== "https" && attempt.protocol !== "http") return [];
+          return [{
+            protocol: attempt.protocol as "https" | "http",
+            url: capString(attempt.url, 2000),
+            statusCode: safeNumber(attempt.statusCode),
+            outcome: capString(attempt.outcome, 40) || "unknown",
+          }];
+        }).slice(0, 3)
+      : [];
+    const retryDiagnostics = isPlainObject(payload.retryDiagnostics) ? payload.retryDiagnostics : {};
 
     // Extract rejection diagnostics (the new compact field)
     const diag = isPlainObject(payload.rejectionDiagnostics) ? payload.rejectionDiagnostics : null;
@@ -252,6 +311,10 @@ export function normalizeRejectionDiagnostic(
       articleId,
       title,
       articleUrl,
+      originalArticleUrl,
+      transportUrl,
+      transportSignals,
+      transportAttempts,
       sourceId,
       categoryId,
       kind,
@@ -262,6 +325,9 @@ export function normalizeRejectionDiagnostic(
       diagnostics,
       browserFallback,
       httpAccessBlocked,
+      retryDisposition: capString(retryDiagnostics.disposition, 40),
+      retryAfterAt: capString(retryDiagnostics.retryAfter ?? rejection.retryAfterAt, 80),
+      retryReasonCode: capString(retryDiagnostics.reasonCode, 100),
     };
   } catch {
     // Malformed artifact — skip silently

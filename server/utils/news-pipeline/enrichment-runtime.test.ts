@@ -20,6 +20,7 @@ const claimDeleteManyDirectMock = vi.fn();
 const claimCountMock = vi.fn();
 const transactionMock = vi.fn();
 const artifactFindManyMock = vi.fn();
+const artifactFindFirstMock = vi.fn();
 const pipelineRunCreateMock = vi.fn();
 const pipelineRunUpdateMock = vi.fn();
 const pipelineRunFindFirstMock = vi.fn();
@@ -42,6 +43,7 @@ vi.mock("../prisma", () => ({
     pipelineArtifact: {
       create: (...args: any[]) => artifactCreateMock(...args),
       findMany: (...args: any[]) => artifactFindManyMock(...args),
+      findFirst: (...args: any[]) => artifactFindFirstMock(...args),
       deleteMany: (...args: any[]) => artifactDeleteManyMock(...args),
     },
     pipelineRun: {
@@ -1876,6 +1878,8 @@ describe("getAgent3Progress", () => {
     articleCountMock.mockReset();
     articleFindManyMock.mockReset();
     pipelineRunFindFirstMock.mockReset();
+    artifactFindFirstMock.mockReset();
+    artifactFindFirstMock.mockResolvedValue(null);
   });
 
   it("counts INGESTED + ENRICHMENT_FAILED when includeEnriched=false", async () => {
@@ -2014,6 +2018,61 @@ describe("getAgent3Progress", () => {
     expect(progress.latestRun!.systemPersistFailed).toBe(0);
     expect(progress.latestRun!.durationMs).toBe(15000);
     expect(progress.latestRun!.byKind).toEqual({ SUCCESS: 1, LOW_CONTENT_QUALITY: 28, UNSUPPORTED_STRUCTURE: 21 });
+  });
+
+  it("falls back to the latest orchestration Agent 3 diagnostic", async () => {
+    articleCountMock.mockResolvedValue(0);
+    articleFindManyMock.mockResolvedValue([]);
+    pipelineRunFindFirstMock.mockResolvedValue(null);
+    artifactFindFirstMock.mockResolvedValue({
+      pipelineRunId: "local-pipeline-run",
+      createdAt: new Date("2026-08-13T19:20:00Z"),
+      payload: {
+        enrichmentSummary: {
+          articleCount: 10,
+          persisted: 10,
+          persistFailed: 0,
+          durationMs: 4200,
+          byKind: { SUCCESS: 7, HTTP_ACCESS_BLOCKED: 3 },
+          browserFallbackStats: {
+            enabled: true, attempted: 2, succeeded: 1, failed: 1,
+            runtimeUnavailable: 0, rateLimited: 0, stoppedReason: null,
+          },
+          optionsUsed: {
+            browserFallback: true, browserFallbackMaxAttempts: 2,
+            browserTimeoutMs: 25000, includeEnriched: false,
+            forceReprocess: false, maxArticles: 10, maxArticlesPerSource: 2,
+          },
+          agent3SourceCooldowns: [{
+            sourceId: "source-1", hostname: "publisher.example", reason: "http_403",
+            failureCount: 1, skippedInRun: 0,
+            firstFailureAt: "2026-08-13T19:00:00.000Z",
+            lastFailureAt: "2026-08-13T19:00:00.000Z",
+          }],
+        },
+      },
+    });
+
+    const { getAgent3Progress } = await import("./enrichment-runtime");
+    const progress = await getAgent3Progress();
+
+    expect(progress.latestRun).toMatchObject({
+      pipelineRunId: "local-pipeline-run",
+      processed: 10,
+      successfullyEnriched: 7,
+      rejected: 3,
+      durationMs: 4200,
+      byKind: { SUCCESS: 7, HTTP_ACCESS_BLOCKED: 3 },
+      browserFallbackStats: { attempted: 2, succeeded: 1, failed: 1 },
+      optionsUsed: { browserFallback: true, browserFallbackMaxAttempts: 2 },
+      sourceCooldowns: [{ sourceId: "source-1", hostname: "publisher.example", reason: "http_403" }],
+    });
+    expect(artifactFindFirstMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        artifactType: { in: ["agent3_orchestration_summary", "agent3_progress_diagnostic"] },
+        status: "CAPTURED",
+      },
+    }));
   });
 
   it("remainingAfterLatestRun is recomputed from current DB state", async () => {
@@ -3688,11 +3747,11 @@ describe("isRecentlyBlocked", () => {
     })).toBe(false);
   });
 
-  it("returns true for current-version HTTP 403 failure within 24h cooldown", async () => {
+  it("returns true for current-version HTTP 403 failure within 1h cooldown", async () => {
     const { isRecentlyBlocked } = await import("./enrichment-runtime");
     const now = new Date("2026-07-29T12:00:00Z");
-    // Finished 1 hour ago — within 24h cooldown
-    const finishedAt = new Date("2026-07-29T11:00:00Z");
+    // Finished 30 minutes ago — within 1h cooldown
+    const finishedAt = new Date("2026-07-29T11:30:00Z");
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
@@ -3703,10 +3762,10 @@ describe("isRecentlyBlocked", () => {
     }, now)).toBe(true);
   });
 
-  it("returns false for HTTP 403 failure outside 24h cooldown", async () => {
+  it("returns false for HTTP 403 failure outside 1h cooldown", async () => {
     const { isRecentlyBlocked } = await import("./enrichment-runtime");
     const now = new Date("2026-07-30T12:00:00Z");
-    // Finished 25 hours ago — outside 24h cooldown
+    // Finished 25 hours ago — outside 1h cooldown
     const finishedAt = new Date("2026-07-29T11:00:00Z");
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
@@ -3789,11 +3848,11 @@ describe("isRecentlyBlocked", () => {
     }, new Date("2026-07-29T12:00:00Z"))).toBe(true);
   });
 
-  it("returns true for row-summary with kind HTTP_ACCESS_BLOCKED and rejectionCode HTTP_FORBIDDEN within 24h", async () => {
+  it("returns true for row-summary with kind HTTP_ACCESS_BLOCKED and rejectionCode HTTP_FORBIDDEN within 1h", async () => {
     const { isRecentlyBlocked } = await import("./enrichment-runtime");
     const now = new Date("2026-07-29T12:00:00Z");
-    // Finished 2 hours ago — within 24h cooldown
-    const finishedAt = new Date("2026-07-29T10:00:00Z");
+    // Finished 30 minutes ago — within 1h cooldown
+    const finishedAt = new Date("2026-07-29T11:30:00Z");
     expect(isRecentlyBlocked({
       enrichmentStatus: "ENRICHMENT_FAILED",
       enrichmentOutcome: {
@@ -3827,7 +3886,7 @@ describe("isRecentlyBlocked", () => {
 
   it("returns false for kind HTTP_ACCESS_BLOCKED outside cooldown window", async () => {
     const { isRecentlyBlocked } = await import("./enrichment-runtime");
-    // 403 cooldown is 24h. Finished 25h ago.
+    // 403 cooldown is 1h. Finished 25h ago.
     const now = new Date("2026-07-30T13:00:00Z");
     const finishedAt = new Date("2026-07-29T12:00:00Z");
     expect(isRecentlyBlocked({
@@ -3864,7 +3923,7 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
           rejectionCode: "HTTP_FORBIDDEN",
           rejection: { code: "HTTP_FORBIDDEN", detail: "[http_error] HTTP 403", httpStatus: 403 },
         },
-        enrichmentFinishedAt: new Date("2026-07-29T11:00:00Z"),
+        enrichmentFinishedAt: new Date("2026-07-29T11:30:00Z"),
       }),
     ]);
 
@@ -3893,7 +3952,7 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
           rejectionCode: "HTTP_FORBIDDEN",
           rejection: { code: "HTTP_FORBIDDEN", detail: "[http_error] HTTP 403", httpStatus: 403 },
         },
-        enrichmentFinishedAt: new Date("2026-07-29T11:00:00Z"),
+        enrichmentFinishedAt: new Date("2026-07-29T11:30:00Z"),
       }),
       makeArticle({
         id: 3,
@@ -3921,7 +3980,7 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
           rejectionCode: "HTTP_FORBIDDEN",
           rejection: { code: "HTTP_FORBIDDEN", detail: "[http_error] HTTP 403", httpStatus: 403 },
         },
-        enrichmentFinishedAt: new Date("2026-07-29T11:00:00Z"),
+        enrichmentFinishedAt: new Date("2026-07-29T11:30:00Z"),
       }),
     ]);
 
@@ -3943,7 +4002,7 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
           kind: "HTTP_ACCESS_BLOCKED",
           rejection: { code: "HTTP_FORBIDDEN", httpStatus: 403 },
         },
-        enrichmentFinishedAt: new Date("2026-07-29T11:00:00Z"),
+        enrichmentFinishedAt: new Date("2026-07-29T11:30:00Z"),
       }),
       makeArticle({
         id: 3,
@@ -3977,7 +4036,7 @@ describe("selectEnrichmentEligibleArticles with recently-blocked filter", () => 
           kind: "HTTP_ACCESS_BLOCKED",
           rejection: { code: "HTTP_FORBIDDEN", httpStatus: 403 },
         },
-        enrichmentFinishedAt: new Date("2026-07-29T11:00:00Z"),
+        enrichmentFinishedAt: new Date("2026-07-29T11:30:00Z"),
       }),
       makeArticle({ id: 2, canonicalUrl: "https://blocked.example/new" }),
       makeArticle({
@@ -5205,7 +5264,7 @@ describe("getAgent3Progress with non-retryable counts", () => {
     expect(progress.eligibleNow).toBe(9);
 
     // retryableNow = eligibleNow - recentlyBlocked
-    // The 403 article (id 13) is recently blocked (30 min ago, 24h cooldown)
+    // The 403 article (id 13) is recently blocked (30 min ago, 1h cooldown)
     // Its host gets excluded too. The 429 article (id 14) finished 2h ago (outside 1h cooldown) → not blocked.
     // So recentlyBlocked >= 1 (the 403 article itself + host exclusion)
     expect(progress.recentlyBlocked).toBeGreaterThanOrEqual(1);
@@ -5270,7 +5329,7 @@ describe("getAgent3Progress with non-retryable counts", () => {
       // 2 non-retryable permanent failures
       { id: 10, enrichmentStatus: "ENRICHMENT_FAILED", enrichmentOutcome: { extractorVersion: AGENT3_EXTRACTOR_VERSION, kind: "LOW_CONTENT_QUALITY" }, enrichmentFinishedAt: null },
       { id: 11, enrichmentStatus: "ENRICHMENT_FAILED", enrichmentOutcome: { extractorVersion: AGENT3_EXTRACTOR_VERSION, kind: "UNSUPPORTED_STRUCTURE" }, enrichmentFinishedAt: null },
-      // 1 recently blocked (403, 30 min ago — inside 24h cooldown)
+      // 1 recently blocked (403, 30 min ago — inside 1h cooldown)
       { id: 12, enrichmentStatus: "ENRICHMENT_FAILED", canonicalUrl: "https://blocked.example/failure", sourceUrl: null, enrichmentOutcome: { extractorVersion: AGENT3_EXTRACTOR_VERSION, kind: "HTTP_ACCESS_BLOCKED", rejectionCode: "HTTP_FORBIDDEN", rejectionHttpStatus: 403 }, enrichmentFinishedAt: new Date("2026-07-29T11:30:00Z") },
       // 1 HTTP_ACCESS_BLOCKED 429 outside cooldown (finished 2h ago)
       { id: 13, enrichmentStatus: "ENRICHMENT_FAILED", enrichmentOutcome: { extractorVersion: AGENT3_EXTRACTOR_VERSION, kind: "HTTP_ACCESS_BLOCKED", rejectionCode: "HTTP_FORBIDDEN", rejectionHttpStatus: 429 }, enrichmentFinishedAt: new Date("2026-07-29T10:00:00Z") },
@@ -5302,7 +5361,7 @@ describe("getAgent3Progress with non-retryable counts", () => {
     // eligibleNow = 6 (INGESTED+FAILED) - 2 (nonRetryable) = 4
     expect(progress.eligibleNow).toBe(4);
 
-    // recentlyBlocked: article 12 (403, 30 min ago → inside 24h cooldown) + host exclusion
+    // recentlyBlocked: article 12 (403, 30 min ago → inside 1h cooldown) + host exclusion
     expect(progress.recentlyBlocked).toBeGreaterThanOrEqual(1);
 
     // Only the open-host NEW article and the expired-429 retry are actionable.
@@ -5310,6 +5369,13 @@ describe("getAgent3Progress with non-retryable counts", () => {
     expect(progress.readyNew).toBe(1);
     expect(progress.readyRetry).toBe(1);
     expect(progress.deferred).toBe(2);
+    expect(progress.deferredByReason).toEqual({
+      http_403: 2,
+      http_429: 0,
+      browser_runtime_unavailable: 0,
+      interstitial_or_challenge: 0,
+      other_retry: 0,
+    });
   });
 });
 

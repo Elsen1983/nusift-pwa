@@ -1850,6 +1850,26 @@ export async function ingestSource(
           response = candidateResponse;
           xml = candidateXml;
           feedUrl = candidateFeedUrl;
+          // A source-level fallback that actually yields items is safer than
+          // retrying a reachable-but-empty legacy feed on every future run.
+          if (!categoryId && candidateFeedUrl !== sourceFeedUrl) {
+            await prisma.newsSource.update({
+              where: { id: sourceId },
+              data: {
+                rssFeedUrl: candidateFeedUrl,
+                rssStatus: "ACTIVE",
+                lastRssCheckAt: new Date(),
+                ...getFeedProductivityResetData(source.rssFeedUrl, candidateFeedUrl),
+              },
+            });
+            await logAgentScan({
+              sourceId,
+              categoryId: null,
+              status: "RSS_FEED_URL_RECOVERED",
+              executionTimeMs: Date.now() - startedAt,
+              errorLog: `Replaced nonproductive source feed ${sourceFeedUrl ?? "none"} with productive fallback ${candidateFeedUrl}.`,
+            });
+          }
           break;
         }
 
@@ -2583,6 +2603,7 @@ export async function ingestSource(
       feedFormat: null,
       deferredReason: rateLimitedRetryAt ? "rate_limited" : null,
       feedRunOutcomeKind: rateLimitedRetryAt ? "rate_limited" : failureOutcomeKind,
+      failureDetail: rateLimitedRetryAt ? null : boundedPipelineItemError(error),
       retryAt: rateLimitedRetryAt?.toISOString() || null,      skipSummary: redirectRetryAtIso
         ? { ...emptySkipSummary(), redirectRetryAt: redirectRetryAtIso }
         : emptySkipSummary(),

@@ -768,6 +768,8 @@ export interface IngestResult {
    * kind) rather than re-derived later from `failed`/`feedFormat`.
    */
   feedRunOutcomeKind?: FeedRunOutcomeKind | null;
+  /** Bounded, redacted fetch/parse failure detail for durable diagnostics. */
+  failureDetail?: string | null;
 }
 
 export interface PipelineTarget {

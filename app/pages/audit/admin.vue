@@ -82,7 +82,7 @@
                 <span class="text-xs font-bold text-on-surface">{{ outcome.stage }}</span>
                 <span class="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase" :class="outcome.status === 'completed' ? 'bg-emerald-500/15 text-emerald-200' : outcome.status === 'degraded' ? 'bg-amber-500/15 text-amber-200' : 'bg-rose-500/15 text-rose-200'">{{ outcome.status }}</span>
               </div>
-              <p class="mt-1 text-[10px] text-on-surface-variant">{{ outcome.batchCount }} batch{{ outcome.batchCount === 1 ? '' : 'es' }} Â· remaining {{ outcome.actionableRemaining ?? outcome.remaining ?? 'â€”' }}</p>
+              <p class="mt-1 text-[10px] text-on-surface-variant">{{ outcome.batchCount }} batch{{ outcome.batchCount === 1 ? '' : 'es' }} &middot; remaining {{ outcome.actionableRemaining ?? outcome.remaining ?? '—' }}</p>
               <p v-if="outcome.reason" class="mt-1 break-words text-[10px]" :class="outcome.status === 'failed' ? 'text-rose-200' : 'text-amber-200'">{{ outcome.reason }}</p>
               <p v-if="outcome.nextRetryAt" class="mt-1 text-[10px] text-amber-200">next retry: {{ formatLogTime(outcome.nextRetryAt) }}</p>
             </div>
@@ -551,6 +551,9 @@
                   <p v-else class="mt-1 line-clamp-2 text-[10px]" :class="item.rateLimited ? 'text-amber-100/80' : 'text-rose-100/80'">
                     {{ item.failureReason }}
                   </p>
+                  <p v-if="!item.passed && item.failureDetail" class="mt-0.5 break-words font-mono text-[10px] text-rose-200/70">
+                    {{ item.failureDetail }}
+                  </p>
                 </div>
               </div>
             </div>
@@ -735,7 +738,11 @@
                       {{ item.quality || "unknown" }}
                     </span>
                     <span v-if="item.confidence" class="text-[10px] text-on-surface-variant">confidence: {{ item.confidence }}</span>
-                    <span v-if="item.shouldEscalateToHeadless" class="text-[10px] font-bold text-amber-300">Headless recommended</span>
+                    <span v-if="item.headlessState === 'active'" class="text-[10px] font-bold text-amber-300">Active headless work</span>
+                    <span v-else-if="item.headlessState === 'recommended'" class="text-[10px] font-bold text-amber-300">Static headless recommendation</span>
+                    <span v-else-if="item.headlessState === 'history'" class="text-[10px] font-bold text-emerald-300">
+                      Historical marker · {{ item.headlessStatus === 'RESOLVED_BY_AGENT1_RSS' || item.headlessStatus === 'SKIPPED_BY_FEED_FIRST_POLICY' ? 'RSS-first closed' : item.headlessStatus }}
+                    </span>
                     <span
                       v-if="item.artifactType === 'article_discovery_headless_required'"
                       class="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-300"
@@ -1660,7 +1667,7 @@
           class="rounded-2xl border border-outline-variant/10 bg-surface-container-high/50 px-5 py-3"
         >
           <p class="text-xs text-on-surface-variant/60">
-            No Agent 3 enrichment run in this admin session yet.
+            No manually started Agent 3 run in this admin session yet. Workflow and Docker-run progress appears below when available.
           </p>
         </div>
 
@@ -1688,6 +1695,13 @@
             <span>Needs extractor reprocess: <strong class="text-amber-300">{{ agent3Progress.needsCurrentVersionReprocess }}</strong></span>
             <span>Current version complete: <strong class="text-emerald-300">{{ agent3Progress.currentVersionComplete }}</strong></span>
             <span v-if="(agent3Progress.deferred ?? 0) > 0" class="text-amber-200">Deferred: <strong>{{ agent3Progress.deferred }}</strong></span>
+          </div>
+          <div v-if="agent3Progress && (agent3Progress.deferred ?? 0) > 0" class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-amber-200/80">
+            <span v-if="(agent3Progress.deferredByReason?.http_403 ?? 0) > 0">HTTP 403: <strong>{{ agent3Progress.deferredByReason?.http_403 }}</strong></span>
+            <span v-if="(agent3Progress.deferredByReason?.http_429 ?? 0) > 0">HTTP 429: <strong>{{ agent3Progress.deferredByReason?.http_429 }}</strong></span>
+            <span v-if="(agent3Progress.deferredByReason?.browser_runtime_unavailable ?? 0) > 0">browser unavailable: <strong>{{ agent3Progress.deferredByReason?.browser_runtime_unavailable }}</strong></span>
+            <span v-if="(agent3Progress.deferredByReason?.interstitial_or_challenge ?? 0) > 0">interstitial/challenge: <strong>{{ agent3Progress.deferredByReason?.interstitial_or_challenge }}</strong></span>
+            <span v-if="(agent3Progress.deferredByReason?.other_retry ?? 0) > 0">other retry cooldown: <strong>{{ agent3Progress.deferredByReason?.other_retry }}</strong></span>
           </div>
           <p v-if="(agent3Progress?.nonRetryableCurrentVersionFailures ?? 0) > 0" class="mt-1 text-[10px] text-on-surface-variant/60">
             Non-retryable failures were already attempted with the current extractor and will not be retried until force reprocess or extractor version changes.
@@ -1734,6 +1748,9 @@
           </p>
           <p v-else-if="agent3Progress && (agent3Progress.deferred ?? 0) > 0" class="mt-2 text-xs text-amber-200">
             No Agent 3 work is ready now. Deferred articles become eligible after publisher cooldowns expire<span v-if="agent3Progress.nextRetryAt"> (next retry: {{ formatRetryDateTime(agent3Progress.nextRetryAt) }})</span>.
+          </p>
+          <p v-if="(agent3Progress?.deferred ?? 0) > 0 && agent3Progress?.latestRun?.sourceCooldowns?.length" class="mt-1 text-[10px] text-on-surface-variant/60">
+            The deferred breakdown is queue-wide; source cooldowns below describe only the latest persisted run.
           </p>
           <p v-else-if="agent3Progress" class="mt-2 text-xs text-emerald-300">
             No retryable Agent 3 articles remain for the selected mode.
@@ -1816,6 +1833,17 @@
               {{ agent3RejectionScope === 'latest_run' ? 'latest run only' : 'recent unique articles' }}
             </span>
           </div>
+          <div v-if="agent3RejectionData?.summary.cooldownsByHostname?.length" class="mt-2 rounded-lg border border-amber-500/15 bg-amber-500/5 px-3 py-2">
+            <p class="text-[9px] font-bold uppercase tracking-wider text-amber-200">
+              Deferred by host and cooldown<span v-if="agent3RejectionData.summary.cooldownAggregationBounded"> · bounded window</span>
+            </p>
+            <div v-for="group in agent3RejectionData.summary.cooldownsByHostname" :key="group.hostname" class="mt-1 flex flex-wrap gap-x-3 text-[10px] text-on-surface-variant">
+              <strong class="text-amber-100">{{ group.hostname }}</strong>
+              <span>deferred: {{ group.deferredArticles }}</span>
+              <span>next: {{ group.nextRetryAt ? formatRetryDateTime(group.nextRetryAt) : 'not scheduled' }}</span>
+              <span>{{ Object.entries(group.reasons).map(([reason, count]) => `${reason}: ${count}`).join(', ') }}</span>
+            </div>
+          </div>
 
           <div v-if="!agent3RejectionData && !agent3RejectionLoading" class="mt-3 text-xs text-on-surface-variant/60">
             Click Refresh to load rejection diagnostics.
@@ -1869,6 +1897,14 @@
                   >
                     {{ item.articleUrl.length > 80 ? item.articleUrl.slice(0, 80) + '...' : item.articleUrl }}
                   </a>
+                  <div v-if="item.originalArticleUrl || item.transportUrl || item.transportAttempts.length" class="mt-1 rounded border border-cyan-500/10 bg-cyan-500/5 px-2 py-1 text-[9px] text-on-surface-variant">
+                    <p v-if="item.originalArticleUrl" class="truncate">original: {{ item.originalArticleUrl }}</p>
+                    <p v-if="item.transportUrl" class="truncate">transport: {{ item.transportUrl }}</p>
+                    <p v-if="item.transportSignals.length">signals: {{ item.transportSignals.join(', ') }}</p>
+                    <p v-for="(attempt, attemptIndex) in item.transportAttempts" :key="attemptIndex" class="truncate">
+                      attempt {{ attemptIndex + 1 }}: {{ attempt.protocol.toUpperCase() }} · {{ attempt.statusCode ?? 'no status' }} · {{ attempt.outcome }} · {{ attempt.url || 'URL unavailable' }}
+                    </p>
+                  </div>
                   <p v-if="item.rejectedReason || item.detail" class="mt-1 line-clamp-2 text-[10px] text-on-surface-variant">
                     {{ item.detail || item.rejectedReason }}
                   </p>
@@ -2481,6 +2517,7 @@ const agent3Progress = ref<{
   recentlyBlocked?: number;
   retryableNow?: number;
   deferred?: number;
+  deferredByReason?: Partial<Record<"http_403" | "http_429" | "browser_runtime_unavailable" | "interstitial_or_challenge" | "other_retry", number>>;
   nextRetryAt?: string | null;
   nonRetryableCurrentVersionFailures?: number;
   totalInScope: number;
@@ -2541,6 +2578,8 @@ const agent3RejectionData = ref<{
     byHostname?: Record<string, number>;
     httpAccessBlocked?: number;
     latestOnly?: boolean;
+    cooldownsByHostname?: Array<{ hostname: string; deferredArticles: number; nextRetryAt: string | null; reasons: Record<string, number> }>;
+    cooldownAggregationBounded?: boolean;
   };
   items: Array<{
     id: string;
@@ -2549,6 +2588,10 @@ const agent3RejectionData = ref<{
     articleId: number | null;
     title: string | null;
     articleUrl: string | null;
+    originalArticleUrl: string | null;
+    transportUrl: string | null;
+    transportSignals: string[];
+    transportAttempts: Array<{ protocol: "https" | "http"; url: string | null; statusCode: number | null; outcome: string }>;
     sourceId: string | null;
     categoryId: string | null;
     kind: string;
@@ -2557,6 +2600,9 @@ const agent3RejectionData = ref<{
     confidence: number | null;
     extractorVersion: string | null;
     httpAccessBlocked: boolean;
+    retryDisposition: string | null;
+    retryAfterAt: string | null;
+    retryReasonCode: string | null;
     diagnostics: {
       selectedContainerSelector: string | null;
       selectedContainerScore: number | null;
@@ -2629,6 +2675,8 @@ const discoveryQualityItems = ref<Array<{
   quality: string | null;
   confidence: string | null;
   shouldEscalateToHeadless: boolean;
+  headlessState: "active" | "history" | "recommended" | "none";
+  headlessStatus: string | null;
   escalationReasons: string[];
   explanation: string | null;
   staleSamples: StaleSample[];
@@ -2852,6 +2900,7 @@ const agent1RunSummary = ref<{
     rssUrl: string | null;
     feedFormat: string | null;
     failureReason: string | null;
+    failureDetail: string | null;
     urlPolicyRejected?: number;
   }>;
 }>({ run: null, items: [] });

@@ -185,4 +185,30 @@ describe("GET /api/dev/agent1-run-summary", () => {
     expect(result.items).toHaveLength(1);
     expect(result.items[0]!.urlPolicyRejected).toBe(0);
   });
+
+  it("returns the durable bounded failure detail separately from the summary", async () => {
+    mockPipelineArtifactFindFirst.mockResolvedValue({ pipelineRunId: "run-3" });
+    mockPipelineRunFindUnique.mockResolvedValue(null);
+    mockPipelineArtifactFindMany.mockResolvedValue([{
+      id: "art-4",
+      createdAt: "2026-08-13T10:01:00Z",
+      sourceId: "src-4",
+      categoryId: null,
+      status: "FAILED",
+      candidateCount: 0,
+      payload: {
+        passed: false,
+        failed: 1,
+        failureReason: "Agent 1 failed while fetching or parsing this target.",
+        failureDetail: "HTTP 503 while loading https://example.com/feed?token=[redacted]",
+      },
+      errorLog: null,
+    }]);
+
+    const result = await (await loadHandler())({} as any);
+    expect(result.items[0]).toMatchObject({
+      failureReason: "Agent 1 failed while fetching or parsing this target.",
+      failureDetail: "HTTP 503 while loading https://example.com/feed?token=[redacted]",
+    });
+  });
 });

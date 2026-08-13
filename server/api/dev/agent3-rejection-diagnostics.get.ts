@@ -6,6 +6,7 @@ import {
   isRejectionArtifact,
   type RawRejectionArtifact,
   type NormalizedRejectionDiagnostic,
+  summarizeDeferredCooldowns,
 } from "../../utils/news-pipeline/rejection-diagnostics-normalizer";
 
 /**
@@ -113,6 +114,8 @@ export default defineEventHandler(async (event) => {
     if (item.httpAccessBlocked) httpAccessBlocked++;
   }
 
+  const cooldownsByHostname = summarizeDeferredCooldowns(items);
+
   return {
     ok: true,
     summary: {
@@ -121,6 +124,8 @@ export default defineEventHandler(async (event) => {
       byHostname,
       httpAccessBlocked,
       latestOnly: !includeDuplicates,
+      cooldownsByHostname,
+      cooldownAggregationBounded: artifacts.length === Math.min(limit * 8, 500),
     },
     items,
   };

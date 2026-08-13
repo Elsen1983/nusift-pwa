@@ -448,6 +448,12 @@ describe("extractArticleContentFromUrl", () => {
       expect(result.qualitySignals).toContain("https_first");
       expect(result.transportUrl).toBe("https://example.com/news/42?edition=uk");
       expect(result.originalArticleUrl).toBe("http://example.com/news/42?edition=uk");
+      expect(result.transportAttempts).toEqual([{
+        protocol: "https",
+        url: "https://example.com/news/42?edition=uk",
+        statusCode: 200,
+        outcome: "success",
+      }]);
     }
   });
 
@@ -476,6 +482,10 @@ describe("extractArticleContentFromUrl", () => {
         expect(result.transportUrl).toBe("http://example.com/news/42");
         expect(result.originalArticleUrl).toBe("http://example.com/news/42");
         expect(result.qualitySignals).toContain("http_fallback_used");
+        expect(result.transportAttempts).toEqual([
+          { protocol: "https", url: "https://example.com/news/42", statusCode: 503, outcome: "http_error" },
+          { protocol: "http", url: "http://example.com/news/42", statusCode: 200, outcome: "success" },
+        ]);
       }
     } finally {
       if (previous === undefined) delete process.env.NUSIFT_AGENT3_HTTP_FALLBACK_ALLOWED_HOSTS;

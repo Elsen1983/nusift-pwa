@@ -10,6 +10,12 @@ import {
   type RunProductivityAssessment,
 } from "../utils/news-pipeline/run-productivity";
 import type { Agent3CompletionSummary } from "../utils/news-pipeline/agent3-completion";
+import {
+  DAILY_PIPELINE_STAGES,
+  STAGE_BATCH_SIZE_LIMIT,
+  STAGE_CONCURRENCY_LIMIT,
+  type DailyPipelineStage,
+} from "../utils/news-pipeline/daily-pipeline-stage-contract";
 
 /**
  * Step wrapper for attaching a no-progress reason to the failed batch's
@@ -32,14 +38,8 @@ async function recordStageBatchNoProgress(
     reason,
   });
 }
-export const DAILY_PIPELINE_STAGES = [
-  "agent1",
-  "agent2-static",
-  "agent2-headless",
-  "agent3",
-] as const;
-
-export type DailyPipelineStage = (typeof DAILY_PIPELINE_STAGES)[number];
+export { DAILY_PIPELINE_STAGES };
+export type { DailyPipelineStage };
 
 export type StageBatchResult = {
   stage: DailyPipelineStage;
@@ -72,21 +72,6 @@ const MAX_STAGNANT_BACKOFFS = 1;
 const INTERNAL_RUNNER_TIMEOUT_MS = 240_000;
 const STAGE_REASON_MAX_LENGTH = 500;
 
-/** Phase 1 is serial; these are measured active-operation limits, not batch sizes. */
-const STAGE_CONCURRENCY_LIMIT: Record<DailyPipelineStage, number> = {
-  agent1: 1,
-  "agent2-static": 1,
-  "agent2-headless": 1,
-  agent3: 1,
-};
-
-/** Bounded work selected per stage batch; kept separate from active concurrency. */
-const STAGE_BATCH_SIZE_LIMIT: Record<DailyPipelineStage, number> = {
-  agent1: 5,
-  "agent2-static": 5,
-  "agent2-headless": 3,
-  agent3: 10,
-};
 
 export type DailyPipelineWorkflowInput = {
   orchestrationId: string;

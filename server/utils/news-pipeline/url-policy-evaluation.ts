@@ -23,7 +23,7 @@ export const CURRENT_PRODUCTION_URL_POLICY_VERSION = "url-policy-2026-07-prod";
 export const CANDIDATE_URL_POLICY_VERSION = "url-policy-2026-08-candidate-v5-metadata-tristate";
 
 /** The dataset version for the first URL evaluation dataset. */
-export const URL_EVALUATION_DATASET_VERSION = "url-eval-2026-08-v1";
+export const URL_EVALUATION_DATASET_VERSION = "url-eval-2026-08-v2";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -613,7 +613,7 @@ export function createTuningDataset(): UrlEvaluationDataset {
 
 /**
  * Holdout dataset: stratified set held back for final validation.
- * ~50 labels across all expectedType and discoveryMethod categories.
+ * 100+ labels across all expectedType and discoveryMethod categories.
  * Never used for tuning — only for final candidate policy evaluation.
  * Format supports 300-500+ URLs in the future.
  */
@@ -690,6 +690,56 @@ export function createHoldoutDataset(): UrlEvaluationDataset {
       L("https://example.com/help/faq", "OTHER", { discoveryMethod: "STATIC_LISTING" }),
       L("https://example.com/careers", "OTHER", { discoveryMethod: "STATIC_LISTING" }),
       L("https://example.com/auth/sign-in", "OTHER", { discoveryMethod: "HTML_FALLBACK" }),
+      // Independent calibration expansion: strong article URLs.
+      L("https://holdout-one.example.net/news/2026/08/11/coastal-rescue-operation-saves-five-people", "ARTICLE", { discoveryMethod: "RSS", extractionExpected: true }),
+      L("https://holdout-two.example.net/world/2026/08/11/regional-leaders-sign-new-climate-agreement", "ARTICLE", { discoveryMethod: "ATOM", extractionExpected: true }),
+      L("https://holdout-three.example.net/business/2026/08/11/markets-rally-after-inflation-report", "ARTICLE", { discoveryMethod: "JSON_FEED", extractionExpected: true }),
+      L("https://holdout-four.example.net/technology/2026/08/11/researchers-publish-new-battery-design", "ARTICLE", { discoveryMethod: "SITEMAP", extractionExpected: true }),
+      L("https://holdout-five.example.net/politics/2026/08/11/parliament-approves-transport-funding-bill", "ARTICLE", { discoveryMethod: "BROWSER", extractionExpected: true }),
+      L("https://holdout-six.example.net/sport/2026/08/11/championship-final-decided-after-extra-time", "ARTICLE", { discoveryMethod: "STATIC_LISTING", extractionExpected: true }),
+      L("https://holdout-seven.example.net/culture/2026/08/11/city-museum-opens-major-summer-exhibition", "ARTICLE", { discoveryMethod: "HTML_FALLBACK", extractionExpected: true }),
+      L("https://holdout-eight.example.net/science/2026/08/11/astronomers-observe-rare-stellar-event", "ARTICLE", { discoveryMethod: "MANUAL", extractionExpected: true }),
+      L("https://holdout-nine.example.net/local/2026/08/12/council-confirms-new-housing-development", "ARTICLE", { discoveryMethod: "RSS", extractionExpected: true }),
+      L("https://holdout-ten.example.net/health/2026/08/12/hospital-launches-community-care-programme", "ARTICLE", { discoveryMethod: "ATOM", extractionExpected: true }),
+      L("https://holdout-eleven.example.net/environment/2026/08/12/river-restoration-project-reaches-final-stage", "ARTICLE", { discoveryMethod: "JSON_FEED", extractionExpected: true }),
+      L("https://holdout-twelve.example.net/education/2026/08/12/university-announces-expanded-scholarship-fund", "ARTICLE", { discoveryMethod: "SITEMAP", extractionExpected: true }),
+      L("https://holdout-thirteen.example.net/economy/2026/08/12/central-bank-keeps-interest-rates-unchanged", "ARTICLE", { discoveryMethod: "BROWSER", extractionExpected: true }),
+      L("https://holdout-fourteen.example.net/transport/2026/08/12/new-rail-service-connects-three-regional-cities", "ARTICLE", { discoveryMethod: "STATIC_LISTING", extractionExpected: true }),
+      L("https://holdout-fifteen.example.net/energy/2026/08/12/offshore-wind-project-receives-final-approval", "ARTICLE", { discoveryMethod: "HTML_FALLBACK", extractionExpected: true }),
+      L("https://holdout-sixteen.example.net/justice/2026/08/12/court-publishes-landmark-data-protection-ruling", "ARTICLE", { discoveryMethod: "MANUAL", extractionExpected: true }),
+      L("https://holdout-seventeen.example.net/news/articles/c1234567890x", "ARTICLE", { discoveryMethod: "RSS", extractionExpected: true }),
+      L("https://holdout-eighteen.example.net/article/98765432/regulators-release-annual-safety-review", "ARTICLE", { discoveryMethod: "ATOM", extractionExpected: true }),
+      L("https://holdout-nineteen.example.net/story/2026/08/13/emergency-services-respond-to-severe-weather", "ARTICLE", { discoveryMethod: "JSON_FEED", extractionExpected: true }),
+      L("https://holdout-twenty.example.net/news/20260813/international-aid-convoy-reaches-border-region", "ARTICLE", { discoveryMethod: "SITEMAP", extractionExpected: true }),
+      L("https://holdout-twenty-one.example.net/live/2026/08/13/election-results-and-reaction", "LIVEBLOG", { discoveryMethod: "BROWSER", extractionExpected: true }),
+      L("https://holdout-twenty-two.example.net/live/markets/2026/08/13/trading-session-updates", "LIVEBLOG", { discoveryMethod: "STATIC_LISTING", extractionExpected: true }),
+      L("https://holdout-twenty-three.example.net/archive/2020/05/14/valid-older-investigation", "STALE_ARTICLE", { discoveryMethod: "SITEMAP", extractionExpected: true, expectedPublishedDate: "2020-05-14" }),
+      L("https://holdout-twenty-four.example.net/premium/2026/08/13/inside-the-global-shipping-recovery", "PAYWALL_ARTICLE", { discoveryMethod: "RSS", extractionExpected: true }),
+      // Independent calibration expansion: clear non-article URLs.
+      L("https://holdout-one.example.net/latest", "LISTING", { discoveryMethod: "STATIC_LISTING" }),
+      L("https://holdout-two.example.net/news", "LISTING", { discoveryMethod: "STATIC_LISTING" }),
+      L("https://holdout-three.example.net/category/world", "LISTING", { discoveryMethod: "SITEMAP" }),
+      L("https://holdout-four.example.net/tag/elections", "LISTING", { discoveryMethod: "SITEMAP" }),
+      L("https://holdout-five.example.net/topics/climate", "LISTING", { discoveryMethod: "HTML_FALLBACK" }),
+      L("https://holdout-six.example.net/archive", "LISTING", { discoveryMethod: "MANUAL" }),
+      L("https://holdout-seven.example.net/most-read", "LISTING", { discoveryMethod: "BROWSER" }),
+      L("https://holdout-eight.example.net/section/business", "LISTING", { discoveryMethod: "STATIC_LISTING" }),
+      L("https://holdout-nine.example.net/", "HOMEPAGE", { discoveryMethod: "STATIC_LISTING" }),
+      L("https://holdout-ten.example.net/home", "HOMEPAGE", { discoveryMethod: "HTML_FALLBACK" }),
+      L("https://holdout-eleven.example.net/video/daily-news-bulletin", "MEDIA", { discoveryMethod: "BROWSER", candidateEvidence: { hasPlayerOnlyMetadata: true, structuredDataTypes: ["VideoObject"] } }),
+      L("https://holdout-twelve.example.net/podcast/evening-analysis", "MEDIA", { discoveryMethod: "RSS" }),
+      L("https://holdout-thirteen.example.net/audio/morning-briefing", "MEDIA", { discoveryMethod: "ATOM" }),
+      L("https://holdout-fourteen.example.net/programmes/current-affairs", "MEDIA", { discoveryMethod: "STATIC_LISTING" }),
+      L("https://holdout-fifteen.example.net/gallery/24681012/storm-images", "GALLERY", { discoveryMethod: "SITEMAP" }),
+      L("https://holdout-sixteen.example.net/photos/week-in-review", "GALLERY", { discoveryMethod: "STATIC_LISTING" }),
+      L("https://holdout-seventeen.example.net/slideshow/13579/election-campaign", "GALLERY", { discoveryMethod: "BROWSER" }),
+      L("https://holdout-eighteen.example.net/redirect?url=https%3A%2F%2Fnews.example", "BAD_CANONICAL", { discoveryMethod: "BROWSER" }),
+      L("https://holdout-nineteen.example.net/out?target=story", "BAD_CANONICAL", { discoveryMethod: "HTML_FALLBACK" }),
+      L("https://holdout-twenty.example.net/search?q=markets", "OTHER", { discoveryMethod: "HTML_FALLBACK" }),
+      L("https://holdout-twenty-one.example.net/account/login", "OTHER", { discoveryMethod: "MANUAL" }),
+      L("https://holdout-twenty-two.example.net/newsletter/signup", "OTHER", { discoveryMethod: "STATIC_LISTING" }),
+      L("https://holdout-twenty-three.example.net/about/contact", "OTHER", { discoveryMethod: "STATIC_LISTING" }),
+      L("https://holdout-twenty-four.example.net/rss", "OTHER", { discoveryMethod: "RSS" }),
     ],
   };
 }

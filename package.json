@@ -25,7 +25,8 @@
     "agent2:docker:headless": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1 -headless",
     "agent2:docker:check": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1 -checkRuntime",
     "agent3:docker": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent3-docker.ps1",
-    "agent3:docker:batch": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent3-docker.ps1 -batch"
+    "agent3:docker:batch": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent3-docker.ps1 -batch",
+    "pipeline:docker:all": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-local-pipeline-docker.ps1"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

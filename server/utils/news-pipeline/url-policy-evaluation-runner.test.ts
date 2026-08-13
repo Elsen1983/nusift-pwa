@@ -260,10 +260,13 @@ describe("tuning and holdout reported separately", () => {
   });
 
   it("each split has its own extraction metrics", () => {
-    const report = runUrlPolicyEvaluation(createTuningDataset(), createHoldoutDataset());
+    const tuning = createTuningDataset();
+    const holdout = createHoldoutDataset();
+    const report = runUrlPolicyEvaluation(tuning, holdout);
     const tuningExt = report.splits.tuning!.extractionMetrics!;
     const holdoutExt = report.splits.holdout!.extractionMetrics!;
-    expect(tuningExt.extractionExpectedCount).toBeGreaterThan(holdoutExt.extractionExpectedCount);
+    expect(tuningExt.extractionExpectedCount).toBe(tuning.labels.filter((label) => label.extractionExpected).length);
+    expect(holdoutExt.extractionExpectedCount).toBe(holdout.labels.filter((label) => label.extractionExpected).length);
   });
 });
 

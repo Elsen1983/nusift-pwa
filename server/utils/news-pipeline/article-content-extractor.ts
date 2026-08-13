@@ -261,6 +261,7 @@ export interface ArticleContentExtractionOk {
   transportUrl?: string;
   /** Original article URL before HTTPS-first transport normalization. */
   originalArticleUrl?: string;
+  transportAttempts?: ArticleTransportAttempt[];
   /** Structured Agent 3 access classification; bounded and non-sensitive. */
   access?: ArticleAccessClassificationResult;
   rejectedReason?: never;
@@ -291,6 +292,7 @@ export interface ArticleContentExtractionFail {
   transportUrl?: string;
   /** Original article URL before HTTPS-first transport normalization. */
   originalArticleUrl?: string;
+  transportAttempts?: ArticleTransportAttempt[];
   /** Structured Agent 3 access classification when page analysis reached it. */
   access?: ArticleAccessClassificationResult;
   retryAfterAt?: string | null;
@@ -398,6 +400,28 @@ interface FetchResult {
   qualitySignals?: string[];
   transportUrl?: string;
   originalArticleUrl?: string;
+  transportAttempts?: ArticleTransportAttempt[];
+}
+
+export interface ArticleTransportAttempt {
+  protocol: "https" | "http";
+  url: string;
+  statusCode: number | null;
+  outcome: "success" | "http_error" | "fetch_error" | "non_html" | "blocked";
+}
+
+function summarizeTransportAttempt(url: string, result: FetchResult): ArticleTransportAttempt {
+  const protocol = url.startsWith("https:") ? "https" : "http";
+  const outcome: ArticleTransportAttempt["outcome"] = result.ok
+    ? "success"
+    : result.error?.includes("not eligible")
+      ? "blocked"
+      : result.statusCode >= 400
+        ? "http_error"
+        : result.error?.includes("Non-HTML")
+          ? "non_html"
+          : "fetch_error";
+  return { protocol, url, statusCode: result.statusCode || null, outcome };
 }
 
 async function fetchArticleHtmlOnce(
@@ -546,13 +570,14 @@ async function fetchArticleHtml(
           transportUrl: url,
           originalArticleUrl: url,
           error: "HTTP URL is not eligible for HTTPS-first transport",
+          transportAttempts: [{ protocol: "http", url, statusCode: null, outcome: "blocked" }],
         };
       }
     } catch {
       // Preserve the normal governed failure path for malformed URLs.
     }
     const result = await fetchArticleHtmlOnce(url, telemetry, governedFetchContext);
-    return { ...result, transportUrl: url, originalArticleUrl: url };
+    return { ...result, transportUrl: url, originalArticleUrl: url, transportAttempts: [summarizeTransportAttempt(url, result)] };
   }
 
   const httpsResult = await fetchArticleHtmlOnce(httpsUrl, telemetry, governedFetchContext);
@@ -561,6 +586,7 @@ async function fetchArticleHtml(
       ...httpsResult,
       transportUrl: httpsUrl,
       originalArticleUrl: url,
+      transportAttempts: [summarizeTransportAttempt(httpsUrl, httpsResult)],
       qualitySignals: [...(httpsResult.qualitySignals || []), "https_first"],
     };
   }
@@ -570,6 +596,7 @@ async function fetchArticleHtml(
     ...httpResult,
     transportUrl: url,
     originalArticleUrl: url,
+    transportAttempts: [summarizeTransportAttempt(httpsUrl, httpsResult), summarizeTransportAttempt(url, httpResult)],
     qualitySignals: [
       ...(httpResult.qualitySignals || []),
       "https_first_failed",
@@ -3543,6 +3570,7 @@ export async function extractArticleContentFromUrl(
         ),
         transportUrl: fetchResult.transportUrl,
         originalArticleUrl: fetchResult.originalArticleUrl,
+        transportAttempts: fetchResult.transportAttempts,
       };
     }
     const reason = categorizeFetchError(fetchResult);
@@ -3559,6 +3587,7 @@ export async function extractArticleContentFromUrl(
       ),
       transportUrl: fetchResult.transportUrl,
       originalArticleUrl: fetchResult.originalArticleUrl,
+      transportAttempts: fetchResult.transportAttempts,
     };
   }
 
@@ -3570,6 +3599,7 @@ export async function extractArticleContentFromUrl(
       ...fail("none", fetchResult.resolvedUrl, fetchResult.statusCode || null, "empty_html", "Fetched HTML was empty."),
       transportUrl: fetchResult.transportUrl,
       originalArticleUrl: fetchResult.originalArticleUrl,
+      transportAttempts: fetchResult.transportAttempts,
     };
   }
   const extract = () => extractArticleContentFromHtml({
@@ -3602,6 +3632,7 @@ export async function extractArticleContentFromUrl(
     qualitySignals: [...result.qualitySignals, ...(fetchResult.qualitySignals || [])],
     transportUrl: fetchResult.transportUrl,
     originalArticleUrl: fetchResult.originalArticleUrl,
+    transportAttempts: fetchResult.transportAttempts,
   };
   return resultWithTransport;
 }

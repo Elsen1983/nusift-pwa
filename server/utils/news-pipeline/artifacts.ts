@@ -241,6 +241,7 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
     rssUrl,
     feedFormat: input.result.feedFormat || null,
     failureReason: rssActive ? "RSS feed active but no new articles inserted." : failureReason,
+    failureDetail: input.result.failureDetail || null,
     skipSummary: serializeSkipSummary(input.result.skipSummary),
     capturedAt: new Date().toISOString(),
   };
@@ -269,7 +270,7 @@ export async function persistAgent1TargetOutcomeArtifact(input: {
         ? null
         : rssActive
           ? "RSS feed active but no new articles inserted."
-          : failureReason,
+          : [failureReason, input.result.failureDetail].filter(Boolean).join(" ") || null,
     },
   });
 }

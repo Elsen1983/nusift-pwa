@@ -2,7 +2,8 @@ import { AGENT3_EXTRACTOR_VERSION } from "./enrichment";
 
 export const MAX_AUTOMATIC_AGENT3_ATTEMPTS = 3;
 export const AGENT3_RETRY_COOLDOWN_MS = {
-  http403: 24 * 60 * 60 * 1000,
+  /** First 403 is retried promptly; repeated failures remain bounded by attempts and the host governor. */
+  http403: 60 * 60 * 1000,
   http429: 60 * 60 * 1000,
   browserRuntimeUnavailable: 30 * 60 * 1000,
   /** Bounded pacing for INTERSTITIAL_OR_CHALLENGE while browser recovery is pending. */

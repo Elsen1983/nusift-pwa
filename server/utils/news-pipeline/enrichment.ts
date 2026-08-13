@@ -220,6 +220,13 @@ export interface ExtractionMethod {
   transportUrl?: string | null;
   /** Original Article URL before HTTPS-first transport normalization. */
   originalArticleUrl?: string | null;
+  /** Bounded HTTPS-first/HTTP-fallback attempt evidence. */
+  transportAttempts?: Array<{
+    protocol: "https" | "http";
+    url: string | null;
+    statusCode: number | null;
+    outcome: "success" | "http_error" | "fetch_error" | "non_html" | "blocked";
+  }>;
   /** Whether the page followed redirects and the final URL differed. */
   redirected?: boolean;
 }
@@ -671,6 +678,9 @@ export const createEnrichmentOutcome = (
     ...(input.method?.originalArticleUrl !== undefined
       ? { originalArticleUrl: input.method.originalArticleUrl }
       : {}),
+    ...(input.method?.transportAttempts
+      ? { transportAttempts: input.method.transportAttempts.slice(0, 3) }
+      : {}),
     redirected: input.method?.redirected ?? false,
   },
   timing: {
@@ -790,6 +800,16 @@ export const serializeEnrichmentPayload = (
         : {}),
       ...(outcome.method.originalArticleUrl !== undefined
         ? { originalArticleUrl: sanitizeEnrichmentEvidenceUrl(outcome.method.originalArticleUrl) }
+        : {}),
+      ...(outcome.method.transportAttempts
+        ? {
+            transportAttempts: outcome.method.transportAttempts.slice(0, 3).map((attempt) => ({
+              protocol: attempt.protocol as "https" | "http",
+              url: sanitizeEnrichmentEvidenceUrl(attempt.url),
+              statusCode: attempt.statusCode,
+              outcome: attempt.outcome,
+            })),
+          }
         : {}),
     },
     timing: outcome.timing,
@@ -1148,6 +1168,19 @@ export const validateEnrichmentOutcome = (
         : null,
       transportUrl: isStringOrNull(methodRaw.transportUrl) ? methodRaw.transportUrl : undefined,
       originalArticleUrl: isStringOrNull(methodRaw.originalArticleUrl) ? methodRaw.originalArticleUrl : undefined,
+      transportAttempts: Array.isArray(methodRaw.transportAttempts)
+        ? methodRaw.transportAttempts.flatMap((attempt) => {
+            if (!isPlainObject(attempt)) return [];
+            if (attempt.protocol !== "https" && attempt.protocol !== "http") return [];
+            if (!["success", "http_error", "fetch_error", "non_html", "blocked"].includes(String(attempt.outcome))) return [];
+            return [{
+              protocol: attempt.protocol as "https" | "http",
+              url: isStringOrNull(attempt.url) ? attempt.url : null,
+              statusCode: typeof attempt.statusCode === "number" ? attempt.statusCode : null,
+              outcome: attempt.outcome as NonNullable<ExtractionMethod["transportAttempts"]>[number]["outcome"],
+            }];
+          }).slice(0, 3)
+        : undefined,
       redirected: typeof methodRaw.redirected === "boolean" ? methodRaw.redirected : false,
     },
     timing: {

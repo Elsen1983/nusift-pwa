@@ -29,6 +29,7 @@ describe("normalizeDiscoveryQualityArtifact", () => {
     });
 
     expect(result.shouldEscalateToHeadless).toBe(false);
+    expect(result.headlessState).toBe("none");
     expect(result.quality).toBe("productive");
   });
 
@@ -47,6 +48,7 @@ describe("normalizeDiscoveryQualityArtifact", () => {
     });
 
     expect(result.shouldEscalateToHeadless).toBe(true);
+    expect(result.headlessState).toBe("recommended");
     expect(result.quality).toBe("weak");
   });
 
@@ -73,6 +75,22 @@ describe("normalizeDiscoveryQualityArtifact", () => {
     });
 
     expect(result.shouldEscalateToHeadless).toBe(true);
+    expect(result.headlessState).toBe("active");
+    expect(result.headlessStatus).toBe("PENDING_HEADLESS");
+  });
+
+  it("marks RSS-first resolved headless artifacts as history", () => {
+    const result = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      artifactType: "article_discovery_headless_required",
+      status: "RESOLVED_BY_AGENT1_RSS",
+      candidateCount: 0,
+      payload: { quality: "failed", escalationReasons: ["no_candidates"] },
+    });
+
+    expect(result.shouldEscalateToHeadless).toBe(false);
+    expect(result.headlessState).toBe("history");
+    expect(result.headlessStatus).toBe("RESOLVED_BY_AGENT1_RSS");
   });
 
   it("always returns true for headless_required artifact with weak quality", () => {

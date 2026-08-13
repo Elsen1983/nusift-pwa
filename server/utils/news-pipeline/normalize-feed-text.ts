@@ -137,7 +137,7 @@ const applySourceHeuristics = (input: string) => {
 const computeSuspicionScore = (input: string) =>
   SUSPICIOUS_PATTERNS.reduce(
     (score, token) => score + (input.includes(token) ? 1 : 0),
-    0,
+    hasLikelyUtf8Mojibake(input) ? 1 : 0,
   );
 
 export const normalizeFeedTextDetailed = (input: string): NormalizedFeedTextResult => {
@@ -166,6 +166,12 @@ export const normalizeFeedTextDetailed = (input: string): NormalizedFeedTextResu
     flags.push("mojibake_repaired");
   }
 
+  const utf8Repair = repairUtf8Mojibake(value);
+  if (utf8Repair !== value) {
+    value = utf8Repair;
+    flags.push("mojibake_repaired");
+  }
+
   const heuristic = applySourceHeuristics(value);
   value = heuristic.value;
   if (heuristic.changed) {
@@ -184,3 +190,4 @@ export const normalizeFeedTextDetailed = (input: string): NormalizedFeedTextResu
     changed: value !== original.trim(),
   };
 };
+import { hasLikelyUtf8Mojibake, repairUtf8Mojibake } from "../../../shared/text-encoding";

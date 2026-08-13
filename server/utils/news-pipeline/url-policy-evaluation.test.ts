@@ -245,9 +245,9 @@ describe("createHoldoutDataset", () => {
     expect(dataset.split).toBe("holdout");
   });
 
-  it("has labels array with at least 50 entries", () => {
+  it("has labels array with at least 100 entries", () => {
     expect(Array.isArray(dataset.labels)).toBe(true);
-    expect(dataset.labels.length).toBeGreaterThanOrEqual(50);
+    expect(dataset.labels.length).toBeGreaterThanOrEqual(100);
   });
 
   it("every label has required fields", () => {
