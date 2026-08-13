@@ -118,6 +118,9 @@ describe("POST /api/internal/run-agent3", () => {
       browserFallback: true,
       browserFallbackMaxAttempts: 2,
       allowBrowserRecoveryDuringHttp403Cooldown: true,
+      pipelineRunId: "run-1",
+      orchestrationRunId: "run-1",
+      manifestInvocationKey: "agent3:1",
     }));
     expect(result).toMatchObject({ processed: 2, remaining: 10, complete: false });
   });

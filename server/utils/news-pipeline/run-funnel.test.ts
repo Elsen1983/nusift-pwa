@@ -12,7 +12,12 @@ vi.mock("../prisma", () => ({
   },
 }));
 
-import { chooseFunnelTerminalReason, finalizeOrchestrationFunnels, getRunFunnelPage } from "./run-funnel";
+import {
+  chooseFunnelTerminalReason,
+  finalizeOrchestrationFunnels,
+  getRunFunnelPage,
+  persistRunTargetManifest,
+} from "./run-funnel";
 
 const state = (overrides: Record<string, unknown> = {}) => ({
   sourceId: "source-1",
@@ -61,6 +66,26 @@ describe("chooseFunnelTerminalReason", () => {
 
 describe("run funnel persistence", () => {
   beforeEach(() => vi.resetAllMocks());
+
+  it("deduplicates a replayed logical stage invocation", async () => {
+    mocks.createMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+    const input = {
+      pipelineRunId: "batch-1",
+      orchestrationRunId: "run-1",
+      stage: "agent3" as const,
+      invocationKey: "agent3:7",
+      targets: [{ sourceId: "source-1", selectedCount: 3 }],
+    };
+
+    await expect(persistRunTargetManifest(input)).resolves.toEqual({ persisted: 1, truncated: false });
+    await expect(persistRunTargetManifest(input)).resolves.toEqual({ persisted: 0, truncated: false });
+
+    const first = mocks.createMany.mock.calls[0]![0];
+    const replay = mocks.createMany.mock.calls[1]![0];
+    expect(first.skipDuplicates).toBe(true);
+    expect(first.data[0].id).toMatch(/^manifest_[a-f0-9]{40}$/);
+    expect(replay.data[0].id).toBe(first.data[0].id);
+  });
 
   it("writes one deterministic funnel from attributed durable evidence", async () => {
     mocks.findMany.mockResolvedValueOnce([{ pipelineRunId: "batch-1" }]).mockResolvedValueOnce([

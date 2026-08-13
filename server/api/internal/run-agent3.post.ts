@@ -91,6 +91,8 @@ export default defineEventHandler(async (event) => {
     maxArticlesPerSource: WORKFLOW_MAX_ARTICLES_PER_SOURCE,
     allowBrowserRecoveryDuringHttp403Cooldown: browserRecoveryMode,
     pipelineRunId: orchestrationRunId,
+    orchestrationRunId,
+    manifestInvocationKey: `agent3:${batchSeq}`,
     telemetry: tracker,
   });
   const progress = await getAgent3Progress({

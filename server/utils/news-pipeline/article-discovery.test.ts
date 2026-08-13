@@ -2797,6 +2797,34 @@ describe("article-discovery", () => {
     expect(result.result.failed).toBe(0);
   });
 
+  it("does not enqueue browser recovery for a static target-level 403", async () => {
+    const { runArticleDiscoveryBatch } = await import("./article-discovery");
+    const { resolveActivePipelineTargets } = await import("./targets");
+    const { createPipelineRun } = await import("./artifacts");
+    const { persistCandidates } = await import("./ingest");
+    (resolveActivePipelineTargets as any).mockResolvedValue([{ sourceId: "src-403", categoryId: null }]);
+    prismaNewsSourceFindManyMock.mockResolvedValue([{
+      id: "src-403", frontPageUrl: "https://blocked.example/", mediaName: "Blocked",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false, consecutiveNonProductiveRuns: 0,
+    }]);
+    prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    (createPipelineRun as any).mockResolvedValue({ id: "run-403" });
+    (persistCandidates as any).mockResolvedValue({ inserted: 0, skipped: 0, failed: 0 });
+    prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-403" });
+    safeFetchMock.mockResolvedValue(makeResponse("Forbidden", false, 403));
+
+    const result = await runArticleDiscoveryBatch({ maxTargets: 1 });
+
+    expect(result.processed).toBe(1);
+    expect(createHeadlessQueueArtifactIfAbsentMock).not.toHaveBeenCalled();
+    const discoveryPayload = prismaArtifactCreateMock.mock.calls[0]?.[0]?.data?.payload;
+    expect(discoveryPayload).toMatchObject({
+      detailEvaluationStoppedReason: "access_denied",
+      retryable: false,
+      accessDeniedEvidence: [{ phase: "listing", status: 403 }],
+    });
+  });
+
   it("returns stoppedReason=completed when all targets processed", async () => {
     const { runArticleDiscoveryBatch } = await import("./article-discovery");
     const { resolveActivePipelineTargets } = await import("./targets");
@@ -3032,6 +3060,53 @@ describe("article-discovery", () => {
     expect(result.detailEvaluationStoppedReason).toBe("rate_limited");
     expect(result.rateLimitEvidence).toMatchObject([{ phase: "listing", status: 429 }]);
     expect(safeFetchMock.mock.calls.some((call: any[]) => String(call[0]).includes("should-not-fetch"))).toBe(false);
+  });
+
+  it("stops the full static ladder after a listing-level 403", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse("Forbidden", false, 403);
+      return makeResponse("should not fetch");
+    });
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 2, maxRequests: 10 });
+
+    expect(result.candidates).toHaveLength(0);
+    expect(result.detailEvaluationStoppedReason).toBe("access_denied");
+    expect(result.retryable).toBe(false);
+    expect(result.discoveryComplete).toBe(false);
+    expect(result.accessDeniedEvidence).toEqual([{
+      phase: "listing",
+      url: "https://example.com/",
+      status: 403,
+    }]);
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops later article details after the first detail-level 403", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const links = ["first", "second"]
+      .map((name) => `<article><a href="/news/2026/07/16/${name}-story">${name} story title long enough</a></article>`)
+      .join("");
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/") return makeResponse(`<html><body>${links}</body></html>`);
+      if (url.includes("first-story")) return makeResponse("Forbidden", false, 403);
+      if (url.includes("second-story")) return makeResponse("should not fetch");
+      return makeResponse("", false, 404);
+    });
+    const result = await discoverArticlesFromTarget({
+      targetType: "source", sourceId: "source-1", targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND", currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0, mediaName: "Example",
+    }, undefined, { maxEvaluatedCandidates: 2, maxRequests: 5 });
+
+    expect(result.detailEvaluationStoppedReason).toBe("access_denied");
+    expect(result.retryable).toBe(false);
+    expect(result.accessDeniedEvidence[0]).toMatchObject({ phase: "article_detail", status: 403 });
+    expect(safeFetchMock.mock.calls.some((call: any[]) => String(call[0]).includes("second-story"))).toBe(false);
   });
 
   it("records missing Retry-After with the bounded fallback cooldown", async () => {

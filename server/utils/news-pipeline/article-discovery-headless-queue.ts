@@ -65,6 +65,8 @@ type HeadlessQueueInput = {
   /** Injectable clock for deterministic target wall-clock budget tests. */
   now?: () => number;
   orchestrationRunId?: string | null;
+  /** Stable identity for replay-safe target-manifest persistence. */
+  manifestInvocationKey?: string;
 };
 
 type HeadlessQueueArtifact = {
@@ -423,6 +425,7 @@ export async function processArticleDiscoveryHeadlessQueue(
       pipelineRunId: input.orchestrationRunId,
       orchestrationRunId: input.orchestrationRunId,
       stage: "agent2-headless",
+      invocationKey: input.manifestInvocationKey,
       targets: items.map((item) => ({
         sourceId: item.sourceId ?? "unknown",
         categoryId: item.categoryId,

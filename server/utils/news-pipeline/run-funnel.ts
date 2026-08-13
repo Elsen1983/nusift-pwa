@@ -38,6 +38,16 @@ export type RunManifestTarget = {
 const targetKey = (sourceId: string, categoryId: string | null) =>
   `${sourceId}:${categoryId ?? "source"}`;
 
+const manifestId = (
+  orchestrationRunId: string,
+  stage: string,
+  invocationKey: string,
+  key: string,
+) => `manifest_${createHash("sha256")
+  .update(`${orchestrationRunId}:${stage}:${invocationKey}:${key}`)
+  .digest("hex")
+  .slice(0, 40)}`;
+
 const boundedReason = (value: unknown): string | null =>
   typeof value === "string" ? value.replace(/https?:\/\/\S+/gi, "[url]").slice(0, 160) : null;
 
@@ -45,35 +55,43 @@ export async function persistRunTargetManifest(input: {
   pipelineRunId: string;
   orchestrationRunId: string;
   stage: "agent1" | "agent2-static" | "agent2-headless" | "agent3";
+  /** Stable retry identity for one logical stage invocation. */
+  invocationKey?: string;
   targets: readonly RunManifestTarget[];
   truncated?: boolean;
 }): Promise<{ persisted: number; truncated: boolean }> {
   const bounded = input.targets.slice(0, MANIFEST_LIMIT);
   if (bounded.length === 0) return { persisted: 0, truncated: false };
-  await prisma.pipelineArtifact.createMany({
-    data: bounded.map((target, index) => ({
-      pipelineRunId: input.pipelineRunId,
-      orchestrationRunId: input.orchestrationRunId,
-      sourceId: target.sourceId,
-      categoryId: target.categoryId ?? null,
-      artifactType: RUN_TARGET_MANIFEST_ARTIFACT,
-      status: (target.disposition ?? "selected").toUpperCase(),
-      candidateCount: 0,
-      payload: {
-        schemaVersion: 1,
-        artifactKind: RUN_TARGET_MANIFEST_ARTIFACT,
-        stage: input.stage,
-        targetKey: targetKey(target.sourceId, target.categoryId ?? null),
-        disposition: target.disposition ?? "selected",
-        reason: boundedReason(target.reason),
-        ordinal: index,
-        manifestTruncated: input.truncated === true || input.targets.length > MANIFEST_LIMIT,
-        selectedCount: Math.max(0, Math.trunc(target.selectedCount ?? 1)),
-      } satisfies Prisma.InputJsonValue,
-      errorLog: null,
-    })),
+  const invocationKey = input.invocationKey ?? input.pipelineRunId;
+  const created = await prisma.pipelineArtifact.createMany({
+    data: bounded.map((target, index) => {
+      const key = targetKey(target.sourceId, target.categoryId ?? null);
+      return {
+        id: manifestId(input.orchestrationRunId, input.stage, invocationKey, key),
+        pipelineRunId: input.pipelineRunId,
+        orchestrationRunId: input.orchestrationRunId,
+        sourceId: target.sourceId,
+        categoryId: target.categoryId ?? null,
+        artifactType: RUN_TARGET_MANIFEST_ARTIFACT,
+        status: (target.disposition ?? "selected").toUpperCase(),
+        candidateCount: 0,
+        payload: {
+          schemaVersion: 1,
+          artifactKind: RUN_TARGET_MANIFEST_ARTIFACT,
+          stage: input.stage,
+          targetKey: key,
+          disposition: target.disposition ?? "selected",
+          reason: boundedReason(target.reason),
+          ordinal: index,
+          manifestTruncated: input.truncated === true || input.targets.length > MANIFEST_LIMIT,
+          selectedCount: Math.max(0, Math.trunc(target.selectedCount ?? 1)),
+        } satisfies Prisma.InputJsonValue,
+        errorLog: null,
+      };
+    }),
+    skipDuplicates: true,
   });
-  return { persisted: bounded.length, truncated: input.truncated === true || input.targets.length > MANIFEST_LIMIT };
+  return { persisted: created.count, truncated: input.truncated === true || input.targets.length > MANIFEST_LIMIT };
 }
 
 export type FunnelState = {

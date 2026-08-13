@@ -37,6 +37,7 @@ import {
   createStaticDiscoveryRequestBudget,
   type StaticDiscoveryRequestBudget,
   type StaticDiscoveryRateLimitEvidence,
+  type StaticDiscoveryAccessDeniedEvidence,
   type StaticDiscoveryRequestBudgetSnapshot,
   readStaticResponseHeader,
   type StaticDiscoveryGovernedFetchContext,
@@ -161,10 +162,11 @@ export type ArticleDiscoveryResult = {
   }>;
   /** Static discovery was interrupted by a bounded retryable condition. */
   retryable: boolean;
-  /** False when HTTP 429, governor deferral, or request-budget exhaustion stopped the shortlist early. */
+  /** False when HTTP 403/429, governor deferral, or request-budget exhaustion stopped the shortlist early. */
   discoveryComplete: boolean;
-  detailEvaluationStoppedReason: "rate_limited" | "request_budget_exhausted" | "governor_deferred" | "evaluation_cap" | "accepted_cap" | null;
+  detailEvaluationStoppedReason: "access_denied" | "rate_limited" | "request_budget_exhausted" | "governor_deferred" | "evaluation_cap" | "accepted_cap" | null;
   rateLimitEvidence: StaticDiscoveryRateLimitEvidence[];
+  accessDeniedEvidence: StaticDiscoveryAccessDeniedEvidence[];
   requestBudget: StaticDiscoveryRequestBudgetSnapshot;
 };
 
@@ -193,6 +195,7 @@ export type ListingFetchDiagnostic = {
     | "no_article_like_links"
     | "ok"
     | "parser_error"
+    | "access_denied"
     | "rate_limited"
     | "request_budget_exhausted";
   hints: string[];
@@ -552,13 +555,15 @@ const crawlListingPages = async (
       : null;
     if (!response.ok) {
       const rateLimited = response.status === 429;
+      const accessDenied = response.status === 403;
       const rateLimitEvidence = rateLimited
         ? requestBudget?.recordRateLimit("listing", pageUrl, readStaticResponseHeader(response, "retry-after"))
         : undefined;
+      if (accessDenied) requestBudget?.recordAccessDenied("listing", pageUrl);
       if (rateLimited) telemetry?.recordRateLimited(429);
-      if (rateLimited) {
-        // A confirmed listing 429 invalidates the remaining pagination queue.
-        // Do not fetch page 3, robots, sitemaps, or details after this point.
+      if (rateLimited || accessDenied) {
+        // A confirmed listing 403/429 invalidates the remaining target ladder.
+        // Do not fetch page 3, robots, sitemaps, WordPress, or details.
         queue.length = 0;
       }
       diagnostics.push({
@@ -571,13 +576,13 @@ const crawlListingPages = async (
         rawLinkCount: 0,
         articleLikeLinkCount: 0,
         paginationLinkCount: 0,
-        reason: rateLimited ? "rate_limited" : "fetch_failed",
+        reason: rateLimited ? "rate_limited" : accessDenied ? "access_denied" : "fetch_failed",
         hints: [`status=${response.status}`],
         rateLimited,
         retryAfterAt: rateLimitEvidence?.retryAfterAt ?? null,
         retryAfterSource: rateLimitEvidence?.retryAfterSource ?? null,
       });
-      if (rateLimited) break;
+      if (rateLimited || accessDenied) break;
       continue;
     }
 
@@ -1342,6 +1347,7 @@ export async function persistArticleDiscoveryArtifact(input: {
     discoveryComplete: input.result.discoveryComplete,
     detailEvaluationStoppedReason: input.result.detailEvaluationStoppedReason,
     rateLimitEvidence: input.result.rateLimitEvidence,
+    accessDeniedEvidence: input.result.accessDeniedEvidence,
     requestBudget: input.result.requestBudget,
   };
 
@@ -1467,6 +1473,7 @@ export async function discoverArticlesFromTarget(
   listingGovernorDeferred ||= listing.governorDeferred === true;
   const listingIsSufficient = listing.articleLinks.length >= listingSufficiencyThreshold;
   const listingRateLimited = requestBudget.rateLimitEvidence.some((e) => e.phase === "listing");
+  const listingAccessDenied = requestBudget.accessDeniedEvidence.some((e) => e.phase === "listing");
   const listingBudgetSnapshot = requestBudget.snapshot();
   // A listing-level 429 is already a confirmed host cooldown. Do not amplify
   // it with robots/sitemap probes. If the listing was sparse and no request
@@ -1481,11 +1488,12 @@ export async function discoverArticlesFromTarget(
     sufficiencyThreshold: listingSufficiencyThreshold,
     governorDeferred: listingGovernorDeferred,
     rateLimited: listingRateLimited,
+    accessDenied: listingAccessDenied,
     budgetRemaining: listingBudgetSnapshot.remaining,
     sitemapProbed: false,
     wordPressPositiveEvidence: false,
   }) === "sitemap";
-  if (!listingIsSufficient && !listingRateLimited && !listingBudgetAvailable) {
+  if (!listingIsSufficient && !listingRateLimited && !listingAccessDenied && !listingBudgetAvailable) {
     requestBudget.recordWorkSkipped("sitemap", `${new URL(target.targetUrl).origin}/sitemap.xml`, "sparse listing requires sitemap fallback");
   }
   const sitemapEntries = shouldProbeSitemap
@@ -1518,6 +1526,7 @@ export async function discoverArticlesFromTarget(
     sufficiencyThreshold: listingSufficiencyThreshold,
     governorDeferred: listingGovernorDeferred,
     rateLimited: listingRateLimited || requestBudget.rateLimitEvidence.some((e) => e.phase === "sitemap"),
+    accessDenied: requestBudget.accessDeniedEvidence.length > 0,
     budgetRemaining: postSitemapBudget.remaining,
     sitemapProbed: true,
     wordPressPositiveEvidence: wordPressFingerprintPositive,
@@ -1545,6 +1554,7 @@ export async function discoverArticlesFromTarget(
   // pre-detail budget stop exists only when known work was refused/skipped.
   const initialBudgetExhausted = initialBudgetSnapshot.exhausted && initialBudgetSnapshot.skippedWork.length > 0;
   const initialRateLimitEvidence = requestBudget.rateLimitEvidence.length > 0;
+  const initialAccessDeniedEvidence = requestBudget.accessDeniedEvidence.length > 0;
 
   const targetPageJsonLd = listing.firstPageHtml
     ? extractJsonLdArticles(listing.firstPageHtml, target.targetUrl)
@@ -1650,7 +1660,9 @@ export async function discoverArticlesFromTarget(
   // ── Phase 3: Extract candidates from merged links with outcome tracking ─
   let detailEvaluationStoppedReason: ArticleDiscoveryResult["detailEvaluationStoppedReason"] = listingGovernorDeferred
     ? "governor_deferred"
-    : initialRateLimitEvidence
+    : initialAccessDeniedEvidence
+      ? "access_denied"
+      : initialRateLimitEvidence
       ? "rate_limited"
       : initialBudgetExhausted
         ? "request_budget_exhausted"
@@ -1661,7 +1673,7 @@ export async function discoverArticlesFromTarget(
     // Listing/sitemap/robots rate limits and pre-detail budget exhaustion are
     // terminal for this static attempt. Do not turn them into synthetic detail
     // evaluations or issue any later article requests.
-    if (detailEvaluationStoppedReason === "rate_limited" || detailEvaluationStoppedReason === "request_budget_exhausted") {
+    if (["access_denied", "rate_limited", "request_budget_exhausted"].includes(detailEvaluationStoppedReason ?? "")) {
       discoveryComplete = false;
       break;
     }
@@ -1708,6 +1720,11 @@ export async function discoverArticlesFromTarget(
       // eventual accepted/rejected/failed/stale/duplicate outcome.
       if (!result.candidate) {
         tracker.record(result.outcome);
+        if (result.outcome.httpStatus === 403) {
+          detailEvaluationStoppedReason = "access_denied";
+          discoveryComplete = false;
+          break;
+        }
         if (result.outcome.rateLimited) {
           detailEvaluationStoppedReason = "rate_limited";
           discoveryComplete = false;
@@ -1780,7 +1797,14 @@ export async function discoverArticlesFromTarget(
     discoveryComplete = false;
   }
   const rateLimitEvidence = [...requestBudget.rateLimitEvidence];
-  const retryable = rateLimitEvidence.length > 0 || detailEvaluationStoppedReason === "request_budget_exhausted" || detailEvaluationStoppedReason === "governor_deferred" || !discoveryComplete;
+  const accessDeniedEvidence = [...requestBudget.accessDeniedEvidence];
+  const blockedByAccessDenied = detailEvaluationStoppedReason === "access_denied";
+  const retryable = !blockedByAccessDenied && (
+    rateLimitEvidence.length > 0 ||
+    detailEvaluationStoppedReason === "request_budget_exhausted" ||
+    detailEvaluationStoppedReason === "governor_deferred" ||
+    !discoveryComplete
+  );
   const qualityAssessment = assessArticleDiscoveryQuality({
     acceptedCount: candidates.length,
     totalEvaluated: summary.totalEvaluated,
@@ -1836,6 +1860,7 @@ export async function discoverArticlesFromTarget(
     discoveryComplete,
     detailEvaluationStoppedReason,
     rateLimitEvidence,
+    accessDeniedEvidence,
     requestBudget: requestBudget.snapshot(),
   };
 }
@@ -2167,6 +2192,8 @@ export async function runArticleDiscoveryBatch(input?: {
   telemetry?: StageBatchProbe;
   /** Daily workflow correlation; never replaces the owning batch run ID. */
   orchestrationRunId?: string | null;
+  /** Stable identity for replay-safe target-manifest persistence. */
+  manifestInvocationKey?: string;
 }): Promise<Agent2BatchResult> {
   const probe = input?.telemetry ?? createNoopStageBatchProbe();
   const maxTargets = input?.maxTargets ?? 5;
@@ -2183,6 +2210,7 @@ export async function runArticleDiscoveryBatch(input?: {
         pipelineRunId: input.orchestrationRunId,
         orchestrationRunId: input.orchestrationRunId,
         stage: "agent2-static",
+        invocationKey: input.manifestInvocationKey,
         truncated: resolutionDiagnostics.skippedTargetsTruncated,
         targets: resolutionDiagnostics.skippedTargets.map((target) => ({
           sourceId: target.sourceId,
@@ -2226,6 +2254,7 @@ export async function runArticleDiscoveryBatch(input?: {
       pipelineRunId: pipelineRun.id,
       orchestrationRunId: input.orchestrationRunId,
       stage: "agent2-static",
+      invocationKey: input.manifestInvocationKey,
       truncated: resolutionDiagnostics.skippedTargetsTruncated,
       targets: [...targets.slice(0, Math.max(1, Math.min(maxTargets, 50))).map((target) => ({
         sourceId: target.sourceId,
@@ -2306,9 +2335,10 @@ export async function runArticleDiscoveryBatch(input?: {
       // Persist a marker whenever static discovery needs headless recovery or
       // remains retryable/incomplete. A productive-quality partial result is
       // still incomplete, so quality alone must never suppress the marker.
-      const needsHeadlessMarker = result.qualityAssessment.shouldEscalateToHeadless
+      const staticAccessDenied = result.detailEvaluationStoppedReason === "access_denied";
+      const needsHeadlessMarker = !staticAccessDenied && (result.qualityAssessment.shouldEscalateToHeadless
         || result.retryable
-        || result.discoveryComplete === false;
+        || result.discoveryComplete === false);
       if (needsHeadlessMarker) {
         const rateLimit = result.rateLimitEvidence[0] ?? null;
         const queued = await probe.timed("persistence", () => createHeadlessQueueArtifactIfAbsent({

@@ -370,6 +370,8 @@ export async function runAgent1Batch(input?: {
   telemetry?: StageBatchProbe;
   /** Daily workflow correlation; never replaces the owning batch run ID. */
   orchestrationRunId?: string | null;
+  /** Stable identity for replay-safe target-manifest persistence. */
+  manifestInvocationKey?: string;
 }): Promise<Agent1BatchResult> {
   const probe = input?.telemetry ?? createNoopStageBatchProbe();
   const maxTargets = readBoundedNumber(input?.maxTargets, 5, 1, 50);
@@ -415,6 +417,7 @@ export async function runAgent1Batch(input?: {
       pipelineRunId: pipelineRun.id,
       orchestrationRunId: input.orchestrationRunId,
       stage: "agent1",
+      invocationKey: input.manifestInvocationKey,
       targets: resolvedTargets.slice(0, maxTargets).map((target) => ({
         sourceId: target.sourceId,
         categoryId: target.categoryId ?? null,

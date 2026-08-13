@@ -187,6 +187,21 @@ describe("article-discovery-helpers", () => {
     expect(budget.snapshot().skippedWork).toHaveLength(1);
   });
 
+  it("records bounded, query-redacted access-denied evidence", async () => {
+    const { createStaticDiscoveryRequestBudget } = await import("./article-discovery-helpers");
+    const budget = createStaticDiscoveryRequestBudget(2);
+    const evidence = budget.recordAccessDenied(
+      "listing",
+      "https://example.com/news?token=secret#fragment",
+    );
+    expect(evidence).toEqual({
+      phase: "listing",
+      url: "https://example.com/news",
+      status: 403,
+    });
+    expect(budget.accessDeniedEvidence).toEqual([evidence]);
+  });
+
   beforeEach(() => {
     safeFetchMock.mockReset();
   });
@@ -219,6 +234,7 @@ describe("article-discovery-helpers", () => {
       sufficiencyThreshold: 20,
       governorDeferred: false,
       rateLimited: false,
+      accessDenied: false,
       budgetRemaining: 10,
       sitemapProbed: false,
       wordPressPositiveEvidence: false,
@@ -252,6 +268,11 @@ describe("article-discovery-helpers", () => {
     it("returns done when rate-limited, regardless of other state", async () => {
       const { nextStaticFallbackRung } = await import("./article-discovery-helpers");
       expect(nextStaticFallbackRung({ ...baseState, rateLimited: true })).toBe("done");
+    });
+
+    it("returns done after access denial, regardless of other state", async () => {
+      const { nextStaticFallbackRung } = await import("./article-discovery-helpers");
+      expect(nextStaticFallbackRung({ ...baseState, accessDenied: true })).toBe("done");
     });
 
     it("returns done when no request budget remains", async () => {

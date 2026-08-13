@@ -469,6 +469,7 @@ export async function runDailyPipelineStageBatch(
         minRemainingMs: 30_000,
         telemetry: tracker,
         orchestrationRunId,
+        manifestInvocationKey: `agent1:${telemetryInput?.batchSeq ?? 1}`,
       });
       const complete = result.remainingEligible === 0;
       // Target dispositions are authoritative. Article insertion/skips remain
@@ -507,6 +508,7 @@ export async function runDailyPipelineStageBatch(
         minRemainingMs: 30_000,
         telemetry: tracker,
         orchestrationRunId,
+        manifestInvocationKey: `agent2-static:${telemetryInput?.batchSeq ?? 1}`,
       });
       const complete = result.remainingEligible === 0;
       const dispositions = result.targetDispositions;

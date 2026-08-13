@@ -38,6 +38,7 @@ export type GovernedFetchContext = {
     consume: (...args: any[]) => boolean;
     phase?: string;
     recordRateLimit?: (...args: any[]) => unknown;
+    recordAccessDenied?: (...args: any[]) => unknown;
   };
 };
 

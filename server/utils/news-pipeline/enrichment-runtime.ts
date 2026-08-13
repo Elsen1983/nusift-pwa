@@ -2758,6 +2758,10 @@ export interface EnrichmentBatchOptions {
   maxArticlesPerSource?: number;
   /** Existing durable PipelineRun to use for same-run attempt artifacts. */
   pipelineRunId?: string;
+  /** Parent daily-workflow correlation; distinct from the owning batch run. */
+  orchestrationRunId?: string | null;
+  /** Stable identity for replay-safe target-manifest persistence. */
+  manifestInvocationKey?: string;
   /** Operation-level stage telemetry probe (optional, no-op by default). */
   telemetry?: StageBatchProbe;
   /** Invocation-scoped static-429 safety state shared by Agent 3 articles. */
@@ -2989,7 +2993,7 @@ export const runEnrichmentBatch = async (
       ? articles.slice(0, batchLimit)
       : applySourceDiversity(articles, maxArticlesPerSource, batchLimit);
 
-    if (options?.pipelineRunId) {
+    if (options?.orchestrationRunId) {
       const uniqueTargets = new Map<string, { sourceId: string; categoryId: string | null; selectedCount: number }>();
       for (const article of diversified) {
         const key = `${article.sourceId}:${article.categoryId ?? "source"}`;
@@ -3002,8 +3006,9 @@ export const runEnrichmentBatch = async (
       }
       await persistRunTargetManifest({
         pipelineRunId: pipelineRun.id,
-        orchestrationRunId: options.pipelineRunId,
+        orchestrationRunId: options.orchestrationRunId,
         stage: "agent3",
+        invocationKey: options.manifestInvocationKey,
         targets: [...uniqueTargets.values()].map((target) => ({ ...target, disposition: "selected" as const })),
       }).catch(() => undefined);
     }
@@ -3074,6 +3079,7 @@ export const runEnrichmentBatch = async (
           pipelineRun.id,
           article.sourceId,
           article.categoryId,
+          options?.orchestrationRunId ?? null,
         );
         probe.recordDbOperation();
         attemptMarkerId = markerId;
@@ -3351,7 +3357,10 @@ export const runEnrichmentBatch = async (
         [outcome],
         pipelineRun!.id,
         new Map([[article.id, claim.token]]),
-        { retryDispositions: new Map([[article.id, retryDisposition]]) },
+        {
+          retryDispositions: new Map([[article.id, retryDisposition]]),
+          orchestrationRunId: options?.orchestrationRunId ?? null,
+        },
       ));
       probe.recordDbOperation();
       mergeEnrichmentBatchPersistResult(persistResult, articlePersistResult);
@@ -3501,7 +3510,7 @@ export const runEnrichmentBatch = async (
       await prisma.pipelineArtifact.create({
         data: {
           pipelineRunId: pipelineRun.id,
-          orchestrationRunId: pipelineRun.id,
+          orchestrationRunId: options?.orchestrationRunId ?? null,
           sourceId: null,
           categoryId: null,
           artifactType: "agent3_progress_diagnostic",

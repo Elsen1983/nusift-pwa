@@ -82,6 +82,7 @@ const governedContextForDiscovery = (
       consume: requestBudget.consume,
       phase: purpose,
       recordRateLimit: requestBudget.recordRateLimit,
+      recordAccessDenied: requestBudget.recordAccessDenied,
     }
     : undefined,
 });
@@ -93,6 +94,13 @@ export type StaticDiscoveryRateLimitEvidence = {
   status: 429;
   retryAfterAt: string;
   retryAfterSource: StaticDiscoveryRetryAfterSource;
+};
+
+export type StaticDiscoveryAccessDeniedEvidence = {
+  phase: StaticDiscoveryRequestPhase;
+  /** Query and fragment are removed before persistence or diagnostics. */
+  url: string;
+  status: 403;
 };
 
 export type StaticDiscoverySkippedWork = {
@@ -115,8 +123,19 @@ export type StaticDiscoveryRequestBudget = {
   /** Record known required work that could not start because no slot remained. */
   recordWorkSkipped: (phase: StaticDiscoveryRequestPhase, url: string, reason: string) => void;
   recordRateLimit: (phase: StaticDiscoveryRequestPhase, url: string, retryAfterHeader?: string | null) => StaticDiscoveryRateLimitEvidence;
+  recordAccessDenied: (phase: StaticDiscoveryRequestPhase, url: string) => StaticDiscoveryAccessDeniedEvidence;
   snapshot: () => StaticDiscoveryRequestBudgetSnapshot;
   rateLimitEvidence: StaticDiscoveryRateLimitEvidence[];
+  accessDeniedEvidence: StaticDiscoveryAccessDeniedEvidence[];
+};
+
+const sanitizeStaticEvidenceUrl = (value: string): string => {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`.slice(0, 500);
+  } catch {
+    return "[invalid-url]";
+  }
 };
 
 export function createStaticDiscoveryRequestBudget(limit: number): StaticDiscoveryRequestBudget {
@@ -127,6 +146,7 @@ export function createStaticDiscoveryRequestBudget(limit: number): StaticDiscove
   // the current phase may have finished exactly at the configured boundary.
   let exhausted = boundedLimit === 0;
   const rateLimitEvidence: StaticDiscoveryRateLimitEvidence[] = [];
+  const accessDeniedEvidence: StaticDiscoveryAccessDeniedEvidence[] = [];
   const skippedWork: StaticDiscoverySkippedWork[] = [];
   return {
     limit: boundedLimit,
@@ -155,6 +175,15 @@ export function createStaticDiscoveryRequestBudget(limit: number): StaticDiscove
       rateLimitEvidence.push(evidence);
       return evidence;
     },
+    recordAccessDenied: (phase, url) => {
+      const evidence: StaticDiscoveryAccessDeniedEvidence = {
+        phase,
+        url: sanitizeStaticEvidenceUrl(url),
+        status: 403,
+      };
+      if (accessDeniedEvidence.length < 20) accessDeniedEvidence.push(evidence);
+      return evidence;
+    },
     snapshot: () => ({
       limit: boundedLimit,
       used,
@@ -163,6 +192,7 @@ export function createStaticDiscoveryRequestBudget(limit: number): StaticDiscove
       skippedWork: [...skippedWork],
     }),
     rateLimitEvidence,
+    accessDeniedEvidence,
   };
 }
 
@@ -279,6 +309,7 @@ export const readStaticResponseHeader = (response: { headers?: unknown } | null,
 type SafeFetchTextResult =
   | { kind: "text"; text: string; etag: string | null; lastModified: string | null }
   | { kind: "not_modified" }
+  | { kind: "access_denied" }
   | { kind: "none" };
 
 const safeFetchText = async (
@@ -328,6 +359,10 @@ const safeFetchText = async (
         requestBudget?.recordRateLimit(phase, url, readStaticResponseHeader(response, "retry-after"));
         telemetry?.recordRateLimited(429);
         return { kind: "none" as const };
+      }
+      if (response.status === 403) {
+        requestBudget?.recordAccessDenied(phase, url);
+        return { kind: "access_denied" as const };
       }
       if (response.status === 304) return { kind: "not_modified" as const };
       if (!response.ok) return { kind: "none" as const };
@@ -429,6 +464,7 @@ export async function discoverSitemapUrls(
     context: governedContextForDiscovery(governedContext, "robots", requestBudget),
   });
   if (robots.decision === "deferred") return [];
+  if (requestBudget?.accessDeniedEvidence.some((e) => e.phase === "robots")) return [];
   for (const sitemapUrl of robots.sitemapUrls) {
     try {
       const parsed = new URL(sitemapUrl, origin);
@@ -458,6 +494,7 @@ export async function discoverSitemapUrls(
     if (cachedValidator?.lastModified) conditionalHeaders["If-Modified-Since"] = cachedValidator.lastModified;
 
     const fetched = await safeFetchText(sitemapUrl, origin, telemetry, requestBudget, "sitemap", governedContext, conditionalHeaders);
+    if (fetched.kind === "access_denied") break;
     if (fetched.kind === "none") {
       // The first confirmed sitemap 429 stops all later sitemap probes for
       // this target; continuing would amplify the publisher's rate limit.
@@ -552,6 +589,7 @@ export type StaticFallbackState = {
   sufficiencyThreshold: number;
   governorDeferred: boolean;
   rateLimited: boolean;
+  accessDenied: boolean;
   budgetRemaining: number;
   sitemapProbed: boolean;
   /** From detectCmsFingerprints() on already-fetched listing HTML — zero new requests to compute. */
@@ -567,7 +605,7 @@ export type StaticFallbackState = {
  * machinery, which only ever runs after this function returns "done".
  */
 export function nextStaticFallbackRung(state: StaticFallbackState): StaticFallbackRung {
-  if (state.governorDeferred || state.rateLimited || state.budgetRemaining <= 0) return "done";
+  if (state.governorDeferred || state.rateLimited || state.accessDenied || state.budgetRemaining <= 0) return "done";
   if (state.linkCount >= state.sufficiencyThreshold) return "done";
   if (!state.sitemapProbed) return "sitemap";
   if (state.wordPressPositiveEvidence) return "wordpress_rest";
@@ -617,6 +655,10 @@ export async function discoverWordPressRestCandidates(
         if (response.status === 429) {
           requestBudget?.recordRateLimit("wordpress_rest", requestUrl, readStaticResponseHeader(response, "retry-after"));
           telemetry?.recordRateLimited(429);
+          return null;
+        }
+        if (response.status === 403) {
+          requestBudget?.recordAccessDenied("wordpress_rest", requestUrl);
           return null;
         }
         // 403/other non-2xx stops the ladder for this host without retrying —
@@ -1991,6 +2033,9 @@ export async function evaluateArticleLinkCandidate(input: {
 
   if (!response || !response.ok) {
     const rateLimited = response?.status === 429;
+    if (response?.status === 403) {
+      input.requestBudget?.recordAccessDenied("article_detail", articleUrl);
+    }
     const retryAfterHeader = rateLimited ? readStaticResponseHeader(response, "retry-after") : null;
     // A request budget owns phase-specific evidence when present. Without a
     // budget (the headless queue path), parse the response header directly so

@@ -450,6 +450,7 @@ describe("buildEnrichmentArtifactCreate", () => {
     const data = buildEnrichmentArtifactCreate(outcome, "run-1") as Record<string, unknown>;
 
     expect(data.pipelineRunId).toBe("run-1");
+    expect(data.orchestrationRunId).toBeNull();
     expect(data.sourceId).toBe("src-1");
     expect(data.categoryId).toBe("cat-1");
     expect(data.artifactType).toBe("article_enrichment_result");
@@ -709,6 +710,17 @@ describe("claimEnrichmentArticle and recovery", () => {
     expect(recovered?.attemptNumber).toBe(1);
   });
 
+  it("keeps the owning batch and explicit orchestration identities separate", async () => {
+    const { buildEnrichmentArtifactCreate } = await import("./enrichment-persist");
+    const data = buildEnrichmentArtifactCreate(
+      makeSuccess(),
+      "batch-run",
+      "daily-orchestration",
+    ) as Record<string, unknown>;
+    expect(data.pipelineRunId).toBe("batch-run");
+    expect(data.orchestrationRunId).toBe("daily-orchestration");
+  });
+
   it("rolls back a neutral defer attempt only for the live owned claim", async () => {
     const { releaseEnrichmentClaim } = await import("./enrichment-persist");
     const expiresAt = new Date(Date.now() + 60_000);
@@ -919,6 +931,7 @@ describe("buildAttemptMarkerArtifact", () => {
     ) as Record<string, unknown>;
 
     expect(data.pipelineRunId).toBe("run-1");
+    expect(data.orchestrationRunId).toBeNull();
     expect(data.sourceId).toBe("src-1");
     expect(data.categoryId).toBe("cat-1");
     expect(data.artifactType).toBe("article_enrichment_attempt");
@@ -937,6 +950,16 @@ describe("buildAttemptMarkerArtifact", () => {
     expect(payload.kind).toBeUndefined();
     expect(payload.provenance).toBeUndefined();
     expect(payload.fields).toBeUndefined();
+  });
+
+  it("attributes attempt markers only when an orchestration ID is explicit", async () => {
+    const { buildAttemptMarkerArtifact } = await import("./enrichment-persist");
+    const data = buildAttemptMarkerArtifact(
+      42, 1, "2026-07-16T10:00:00.000Z", "batch-run", "src-1", null,
+      "daily-orchestration",
+    ) as Record<string, unknown>;
+    expect(data.pipelineRunId).toBe("batch-run");
+    expect(data.orchestrationRunId).toBe("daily-orchestration");
   });
 
   it("handles null categoryId", async () => {

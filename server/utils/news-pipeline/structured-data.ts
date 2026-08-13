@@ -137,6 +137,18 @@ const ITEMLIST_REJECTED_ITEM_TYPES = new Set([
   "Event",
   "Recipe",
   "BreadcrumbList",
+  "SiteNavigationElement",
+  "WebPage",
+  "CollectionPage",
+  "SearchResultsPage",
+  "ProfilePage",
+  "AboutPage",
+  "ContactPage",
+]);
+
+const ITEMLIST_REJECTED_LIST_TYPES = new Set([
+  "BreadcrumbList",
+  "SiteNavigationElement",
 ]);
 
 /**
@@ -151,7 +163,7 @@ const ITEMLIST_REJECTED_ITEM_TYPES = new Set([
 export function extractItemListEntries(root: unknown): StructuredItemListEntry[] {
   const lists = collectMatchingObjects(root, (record) => {
     const types = getJsonLdTypes(record["@type"]);
-    return types.includes("ItemList") && !types.includes("BreadcrumbList");
+    return types.includes("ItemList") && !types.some((type) => ITEMLIST_REJECTED_LIST_TYPES.has(type));
   });
 
   const out: StructuredItemListEntry[] = [];
@@ -162,8 +174,9 @@ export function extractItemListEntries(root: unknown): StructuredItemListEntry[]
       const entry = elements[i];
       if (!isRecord(entry)) continue;
       const item = isRecord(entry.item) ? entry.item : null;
-      const itemType = item ? normalizeJsonLdType(item["@type"]) : "";
-      if (itemType && ITEMLIST_REJECTED_ITEM_TYPES.has(itemType)) continue;
+      const itemTypes = item ? getJsonLdTypes(item["@type"]) : [];
+      if (itemTypes.some((type) => ITEMLIST_REJECTED_ITEM_TYPES.has(type))) continue;
+      const itemType = itemTypes[0] ?? "";
 
       const rawUrl =
         (typeof item?.url === "string" && item.url) ||

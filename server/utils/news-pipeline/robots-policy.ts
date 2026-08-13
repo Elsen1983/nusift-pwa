@@ -318,6 +318,9 @@ const fetchRobots = async (origin: string, context: GovernedFetchContext, now: D
       context.requestBudget?.recordRateLimit?.("robots", `${origin}/robots.txt`, retryAfter);
       return { status, retryAfter };
     }
+    if (status === 403) {
+      context.requestBudget?.recordAccessDenied?.("robots", `${origin}/robots.txt`);
+    }
     if (status === 403 || status === 404) return { status, retryAfter: null };
     if (!candidateResponse.ok) return { status, retryAfter: null };
     const bounded = await readBoundedBody(candidateResponse);

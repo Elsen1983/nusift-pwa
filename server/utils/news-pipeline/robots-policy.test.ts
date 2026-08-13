@@ -156,10 +156,22 @@ describe("publisher robots policy", () => {
       .resolves.toMatchObject({ decision: "deferred", reason: "robots_rate_limited" });
 
     const forbidden = makeDb();
+    const recordAccessDenied = vi.fn();
     fetchResponseMock.mockResolvedValueOnce({
       status: 403, ok: false, headers: new Headers(),
     });
-    await expect(checkPublisherRobotsAccess("https://forbidden.example.com/news", { db: forbidden.db, context: context(), now: NOW }))
+    await expect(checkPublisherRobotsAccess("https://forbidden.example.com/news", {
+      db: forbidden.db,
+      context: {
+        ...context(),
+        requestBudget: { consume: vi.fn(() => true), recordAccessDenied },
+      },
+      now: NOW,
+    }))
       .resolves.toMatchObject({ decision: "allowed", status: "forbidden" });
+    expect(recordAccessDenied).toHaveBeenCalledWith(
+      "robots",
+      "https://forbidden.example.com/robots.txt",
+    );
   });
 });

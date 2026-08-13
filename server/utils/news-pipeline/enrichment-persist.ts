@@ -218,11 +218,12 @@ export const buildArticleEnrichmentUpdate = (
 export const buildEnrichmentArtifactCreate = (
   outcome: ArticleEnrichmentOutcome,
   pipelineRunId: string,
+  orchestrationRunId: string | null = null,
 ): Prisma.PipelineArtifactCreateArgs["data"] => {
   const { artifactType, status } = outcomeKindToArtifact(outcome.kind);
   return {
     pipelineRunId,
-    orchestrationRunId: pipelineRunId,
+    orchestrationRunId,
     sourceId: outcome.provenance.sourceId,
     categoryId: outcome.provenance.categoryId ?? null,
     artifactType,
@@ -257,9 +258,10 @@ export const buildAttemptMarkerArtifact = (
   pipelineRunId: string,
   sourceId: string,
   categoryId: string | null,
+  orchestrationRunId: string | null = null,
 ): Prisma.PipelineArtifactCreateArgs["data"] => ({
   pipelineRunId,
-  orchestrationRunId: pipelineRunId,
+  orchestrationRunId,
   sourceId,
   categoryId: categoryId ?? null,
   artifactType: "article_enrichment_attempt" as EnrichmentArtifactType,
@@ -291,6 +293,7 @@ export const persistAttemptMarker = async (
   pipelineRunId: string,
   sourceId: string,
   categoryId: string | null,
+  orchestrationRunId: string | null = null,
 ): Promise<string> => {
   const artifact = await prisma.pipelineArtifact.create({
     data: buildAttemptMarkerArtifact(
@@ -300,6 +303,7 @@ export const persistAttemptMarker = async (
       pipelineRunId,
       sourceId,
       categoryId,
+      orchestrationRunId,
     ),
     select: { id: true },
   });
@@ -477,7 +481,10 @@ export const persistEnrichmentOutcome = async (
   pipelineRunId: string,
   claimToken: string,
   now: Date = new Date(),
-  options?: { retryDisposition?: { state: string } | null },
+  options?: {
+    retryDisposition?: { state: string } | null;
+    orchestrationRunId?: string | null;
+  },
 ): Promise<{ artifactId: string | null; applied: boolean; claimLost: boolean; madePublishable: boolean }> => {
   return prisma.$transaction(async (tx) => {
     const claim = await tx.articleEnrichmentClaim.findUnique({
@@ -549,7 +556,11 @@ export const persistEnrichmentOutcome = async (
     }
 
     const madePublishable = currentArticle.publicationStatus !== "PUBLISHED" && updateData.publicationStatus === "PUBLISHED";
-    const artifactData = buildEnrichmentArtifactCreate(outcome, pipelineRunId);
+    const artifactData = buildEnrichmentArtifactCreate(
+      outcome,
+      pipelineRunId,
+      options?.orchestrationRunId ?? null,
+    );
     const artifact = await tx.pipelineArtifact.create({
       data: {
         ...artifactData,
@@ -643,7 +654,10 @@ export const persistEnrichmentBatch = async (
   outcomes: ArticleEnrichmentOutcome[],
   pipelineRunId: string,
   claimTokens: ReadonlyMap<number, string>,
-  options?: { retryDispositions?: ReadonlyMap<number, { state: string }> | null },
+  options?: {
+    retryDispositions?: ReadonlyMap<number, { state: string }> | null;
+    orchestrationRunId?: string | null;
+  },
 ): Promise<EnrichmentBatchPersistResult> => {
   const result = createEmptyEnrichmentBatchPersistResult();
 
@@ -656,6 +670,7 @@ export const persistEnrichmentBatch = async (
     try {
       const persisted = await persistEnrichmentOutcome(outcome, pipelineRunId, claimToken, undefined, {
         retryDisposition: options?.retryDispositions?.get(outcome.articleId) ?? null,
+        orchestrationRunId: options?.orchestrationRunId ?? null,
       });
       if (persisted.claimLost) {
         result.claimLost += 1;

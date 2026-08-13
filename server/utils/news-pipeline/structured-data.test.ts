@@ -134,6 +134,23 @@ describe("extractItemListEntries", () => {
     expect(extractItemListEntries(root)).toEqual([]);
   });
 
+  it("rejects navigation-typed ItemLists and WebPage/listing entries", () => {
+    expect(extractItemListEntries({
+      "@type": ["ItemList", "SiteNavigationElement"],
+      itemListElement: [{ "@type": "ListItem", item: { url: "/news" } }],
+    })).toEqual([]);
+
+    const root = {
+      "@type": "ItemList",
+      itemListElement: [
+        { "@type": "ListItem", item: { "@type": ["WebPage", "SiteNavigationElement"], url: "/news" } },
+        { "@type": "ListItem", item: { "@type": "CollectionPage", url: "/archive" } },
+        { "@type": "ListItem", item: { "@type": "NewsArticle", url: "/news/story" } },
+      ],
+    };
+    expect(extractItemListEntries(root).map((entry) => entry.url)).toEqual(["/news/story"]);
+  });
+
   it("rejects entries whose nested item is a known non-article type", () => {
     const root = {
       "@type": "ItemList",
