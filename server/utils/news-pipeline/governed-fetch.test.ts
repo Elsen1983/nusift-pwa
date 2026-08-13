@@ -163,6 +163,18 @@ describe("governed static fetch adapter", () => {
     expect(releaseMock).not.toHaveBeenCalled();
   });
 
+  it("classifies 304 as a healthy success, never a failure (Repair 13 conditional caching)", async () => {
+    const budget = { remaining: () => 1, consume: vi.fn(() => true) };
+    acquireMock.mockResolvedValue(permit());
+    recordMock.mockResolvedValue({ recorded: true, reason: "recorded", domainKey: "example.com" });
+    releaseMock.mockResolvedValue({ released: true, reason: "released", domainKey: "example.com" });
+    safeFetchMock.mockResolvedValue(response(304));
+    await governedSafeFetch("https://example.com/sitemap.xml", {}, context("enforce", budget));
+    expect(recordMock).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: expect.objectContaining({ kind: "success", status: 304 }),
+    }));
+  });
+
   it("preserves Retry-After from a plain case-insensitive header object", async () => {
     const budget = { remaining: () => 1, consume: vi.fn(() => true) };
     acquireMock.mockResolvedValue(permit());

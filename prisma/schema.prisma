@@ -262,6 +262,7 @@ model NewsSource {
   consecutiveNonProductiveRuns Int @default(0)
   lastProductiveFeedUrl String?
   lastProductiveAt DateTime?
+  feedProductivityVersion Int @default(0)
 
   feedProvenance        FeedProvenance @default(SYSTEM_DISCOVERED)
   feedSubmittedByUserId String?
@@ -299,6 +300,7 @@ model SourceCategory {
   consecutiveNonProductiveRuns Int @default(0)
   lastProductiveFeedUrl String?
   lastProductiveAt DateTime?
+  feedProductivityVersion Int @default(0)
 
   feedProvenance        FeedProvenance @default(SYSTEM_DISCOVERED)
   feedSubmittedByUserId String?
@@ -670,6 +672,29 @@ model PublisherRobotsPolicy {
 
   @@index([expiresAt])
   @@index([activeLeaseExpiresAt])
+}
+
+// ANCHOR HTTP VALIDATOR CACHE
+// Bounded ETag/Last-Modified conditional-request memory for selected static
+// resource classes (Repair 13). Never stores raw unbounded HTML/XML — only
+// validator headers and the minimum parsed result needed to reconstruct a
+// 304 truthfully.
+model HttpValidatorCache {
+  resourceKey    String   @id
+  resourceClass  String
+  etag           String?
+  lastModified   String?
+  parsedPayload  Json
+  payloadBytes   Int      @default(0)
+  fetchedAt      DateTime
+  expiresAt      DateTime
+  lastHttpStatus Int?
+  version        Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([resourceClass, expiresAt])
+  @@index([expiresAt])
 }
 
 // ANCHOR FEED REVIEW REQUESTS

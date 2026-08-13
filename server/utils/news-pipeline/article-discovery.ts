@@ -5,6 +5,8 @@ import { decodeResponseText } from "./response-text-decoder";
 import { logAgentScan } from "./log";
 import { createPipelineRun, finalizePipelineRun } from "./artifacts";
 import { normalizeUrl } from "./text";
+import { normalizeArticleCanonicalIdentity } from "./article-identity";
+import { isLikelyRedirectorUrl } from "../safe-redirect-resolver";
 import { persistCandidates } from "./ingest";
 import { resolveActivePipelineTargets } from "./targets";
 import { resolveHardSourceProfilesForTarget } from "./hard-source-profile";
@@ -118,6 +120,9 @@ export type ArticleDiscoveryResult = {
     listingPages: number;
     sitemapUrls: number;
     jsonldUrls: number;
+    /** Bounded diagnostic sub-counts of jsonldUrls by structured-data origin. */
+    itemListUrls: number;
+    nextDataUrls: number;
   };
   listingDiagnostics: ListingFetchDiagnostic[];
   pagesVisited: string[];
@@ -1379,7 +1384,7 @@ export async function discoverArticlesFromTarget(
   const candidates: IngestCandidate[] = [];
   const seenCanonicalUrls = new Set<string>();
   const startedAt = Date.now();
-  const discoverySources = { listingPages: 0, sitemapUrls: 0, jsonldUrls: 0 };
+  const discoverySources = { listingPages: 0, sitemapUrls: 0, jsonldUrls: 0, itemListUrls: 0, nextDataUrls: 0 };
   const maxAcceptedCandidates = Math.max(1, Math.floor(options?.maxAcceptedCandidates ?? MAX_ACCEPTED_CANDIDATES));
   const maxEvaluatedCandidates = Math.max(1, Math.floor(options?.maxEvaluatedCandidates ?? MAX_EVALUATED_CANDIDATES));
   const requestBudget = createStaticDiscoveryRequestBudget(options?.maxRequests ?? MAX_STATIC_REQUESTS);
@@ -1545,6 +1550,41 @@ export async function discoverArticlesFromTarget(
     if (!allArticleLinks.has(article.url)) {
       allArticleLinks.set(article.url, { url: article.url, sourcePageUrl: `jsonld:${target.targetUrl}` });
       discoverySources.jsonldUrls += 1;
+      // Bounded diagnostic sub-counts by structured-data origin; gating and
+      // scope enforcement are identical for all three (see extractJsonLdArticles).
+      if (article.type === "ItemList") discoverySources.itemListUrls += 1;
+      else if (article.type === "NextData") discoverySources.nextDataUrls += 1;
+    }
+  }
+
+  // ── Known-URL prefilter (Repair 13) ────────────────────────────────────
+  // Batch-check the bounded merged link set against durably known Article
+  // identities before spending any detail-request budget. canonicalIdentity
+  // is globally unique, so a match unambiguously means "the exact same
+  // destination article" regardless of which source originally persisted
+  // it. Redirector-shaped links are excluded — their true destination
+  // identity is unknown until fetched, so they must still be evaluated.
+  const prefilterIdentityToUrl = new Map<string, string>();
+  for (const link of allArticleLinks.values()) {
+    if (isLikelyRedirectorUrl(link.url)) continue;
+    const identity = normalizeArticleCanonicalIdentity(link.url);
+    if (identity) prefilterIdentityToUrl.set(identity, link.url);
+  }
+  if (prefilterIdentityToUrl.size > 0) {
+    const knownArticles = await prisma.article.findMany({
+      where: { canonicalIdentity: { in: [...prefilterIdentityToUrl.keys()] } },
+      select: { canonicalIdentity: true },
+    });
+    for (const row of knownArticles) {
+      if (!row.canonicalIdentity) continue;
+      const linkUrl = prefilterIdentityToUrl.get(row.canonicalIdentity);
+      if (!linkUrl) continue;
+      const link = allArticleLinks.get(linkUrl);
+      if (!link) continue;
+      allArticleLinks.delete(linkUrl);
+      tracker.record(makeOutcome(linkUrl, link.sourcePageUrl, "known_article_prefiltered", {
+        canonicalUrl: row.canonicalIdentity,
+      }));
     }
   }
 

@@ -27,6 +27,10 @@ const findFirstCategorySubMock = vi.fn();
 const updateManyReviewMock = vi.fn();
 const newsSourceUpdateMock = vi.fn();
 const sourceCategoryUpdateMock = vi.fn();
+const newsSourceFindUniqueMock = vi.fn();
+const newsSourceUpdateManyMock = vi.fn();
+const sourceCategoryFindUniqueMock = vi.fn();
+const sourceCategoryUpdateManyMock = vi.fn();
 const transactionMock = vi.fn();
 
 // Transaction-level mocks (used inside $transaction callback)
@@ -69,9 +73,13 @@ vi.mock("../../../utils/prisma", () => ({
     },
     newsSource: {
       update: (...args: any[]) => newsSourceUpdateMock(...args),
+      findUnique: (...args: any[]) => newsSourceFindUniqueMock(...args),
+      updateMany: (...args: any[]) => newsSourceUpdateManyMock(...args),
     },
     sourceCategory: {
       update: (...args: any[]) => sourceCategoryUpdateMock(...args),
+      findUnique: (...args: any[]) => sourceCategoryFindUniqueMock(...args),
+      updateMany: (...args: any[]) => sourceCategoryUpdateManyMock(...args),
     },
     $transaction: (...args: any[]) => transactionMock(...args),
   },
@@ -353,7 +361,15 @@ describe("auto-resolve review requests in feed-productivity", () => {
 
   it("auto-resolves OPEN requests when source becomes productive", async () => {
     updateManyReviewMock.mockResolvedValue({ count: 2 });
-    newsSourceUpdateMock.mockResolvedValue({});
+    newsSourceFindUniqueMock.mockResolvedValue({
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      lastProductiveFeedUrl: null,
+      lastProductiveAt: null,
+      nextRetryAt: null,
+      feedProductivityVersion: 0,
+    });
+    newsSourceUpdateManyMock.mockResolvedValue({ count: 1 });
 
     const { markFeedRunOutcome } = await import(
       "../../../utils/news-pipeline/feed-productivity"
@@ -361,7 +377,7 @@ describe("auto-resolve review requests in feed-productivity", () => {
     await markFeedRunOutcome({
       sourceId: "src-1",
       feedUrl: "https://example.com/feed.xml",
-      productive: true,
+      feedRunOutcomeKind: "productive",
       shouldTrackFeedProductivity: true,
     });
 
@@ -376,7 +392,15 @@ describe("auto-resolve review requests in feed-productivity", () => {
 
   it("auto-resolves OPEN requests when category becomes productive", async () => {
     updateManyReviewMock.mockResolvedValue({ count: 1 });
-    sourceCategoryUpdateMock.mockResolvedValue({});
+    sourceCategoryFindUniqueMock.mockResolvedValue({
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      lastProductiveFeedUrl: null,
+      lastProductiveAt: null,
+      nextRetryAt: null,
+      feedProductivityVersion: 0,
+    });
+    sourceCategoryUpdateManyMock.mockResolvedValue({ count: 1 });
 
     const { markFeedRunOutcome } = await import(
       "../../../utils/news-pipeline/feed-productivity"
@@ -385,7 +409,7 @@ describe("auto-resolve review requests in feed-productivity", () => {
       sourceId: "src-1",
       categoryId: "cat-1",
       feedUrl: "https://example.com/cat/feed.xml",
-      productive: true,
+      feedRunOutcomeKind: "productive",
       shouldTrackFeedProductivity: true,
     });
 
@@ -399,14 +423,22 @@ describe("auto-resolve review requests in feed-productivity", () => {
   });
 
   it("does not auto-resolve when feed is not productive", async () => {
-    newsSourceUpdateMock.mockResolvedValue({});
+    newsSourceFindUniqueMock.mockResolvedValue({
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      lastProductiveFeedUrl: null,
+      lastProductiveAt: null,
+      nextRetryAt: null,
+      feedProductivityVersion: 0,
+    });
+    newsSourceUpdateManyMock.mockResolvedValue({ count: 1 });
 
     const { markFeedRunOutcome } = await import(
       "../../../utils/news-pipeline/feed-productivity"
     );
     await markFeedRunOutcome({
       sourceId: "src-1",
-      productive: false,
+      feedRunOutcomeKind: "nonproductive",
       shouldTrackFeedProductivity: true,
     });
 
@@ -415,7 +447,15 @@ describe("auto-resolve review requests in feed-productivity", () => {
 
   it("auto-resolve is a no-op when no open requests exist", async () => {
     updateManyReviewMock.mockResolvedValue({ count: 0 });
-    newsSourceUpdateMock.mockResolvedValue({});
+    newsSourceFindUniqueMock.mockResolvedValue({
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      lastProductiveFeedUrl: null,
+      lastProductiveAt: null,
+      nextRetryAt: null,
+      feedProductivityVersion: 0,
+    });
+    newsSourceUpdateManyMock.mockResolvedValue({ count: 1 });
 
     const { markFeedRunOutcome } = await import(
       "../../../utils/news-pipeline/feed-productivity"
@@ -423,7 +463,7 @@ describe("auto-resolve review requests in feed-productivity", () => {
     await markFeedRunOutcome({
       sourceId: "src-1",
       feedUrl: "https://example.com/feed.xml",
-      productive: true,
+      feedRunOutcomeKind: "productive",
       shouldTrackFeedProductivity: true,
     });
 

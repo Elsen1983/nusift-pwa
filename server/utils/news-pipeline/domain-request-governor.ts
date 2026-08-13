@@ -18,6 +18,15 @@ export const DOMAIN_REQUEST_MAX_MIN_INTERVAL_MS = 60 * 60_000;
 export const DOMAIN_REQUEST_DEFAULT_RECOVERY_LIMIT = 100;
 export const DOMAIN_REQUEST_MAX_RECOVERY_LIMIT = 1_000;
 export const DOMAIN_REQUEST_RETRY_AFTER_MAX_MS = STATIC_RETRY_AFTER_MAX_MS;
+export const DOMAIN_REQUEST_403_OPEN_THRESHOLD_ENV = "NUXT_DOMAIN_REQUEST_403_OPEN_THRESHOLD";
+export const DOMAIN_REQUEST_403_COOLDOWN_MS_ENV = "NUXT_DOMAIN_REQUEST_403_COOLDOWN_MS";
+/** A single 403 is evidence, not a block. Only a confirmed streak opens the circuit. */
+export const DOMAIN_REQUEST_DEFAULT_403_OPEN_THRESHOLD = 3;
+export const DOMAIN_REQUEST_MIN_403_OPEN_THRESHOLD = 1;
+export const DOMAIN_REQUEST_MAX_403_OPEN_THRESHOLD = 10;
+/** Conservative base cooldown once the 403 circuit opens; bounded by the same 24h cap as 429. */
+export const DOMAIN_REQUEST_DEFAULT_403_COOLDOWN_MS = 6 * 60 * 60_000;
+export const DOMAIN_REQUEST_MIN_403_COOLDOWN_MS = 60_000;
 
 export type DomainGovernorState = {
   domainKey: string;
@@ -48,6 +57,10 @@ export type DomainOutcome = {
 export type DomainGovernorPolicyOptions = {
   now?: Date;
   minIntervalMs?: number;
+  /** Consecutive authoritative 403 count required to open the circuit. Bounded/validated. */
+  forbiddenOpenThreshold?: number;
+  /** Base 403 cooldown before the same backoff multiplier/cap the 429 path uses. Bounded/validated. */
+  forbiddenCooldownMs?: number;
 };
 
 export type DomainGovernorDb = {
@@ -90,6 +103,28 @@ export const parseDomainGovernorRecoveryLimit = (value?: number): number => {
   if (!Number.isFinite(value)) return DOMAIN_REQUEST_DEFAULT_RECOVERY_LIMIT;
   return Math.max(1, Math.min(Math.floor(value as number), DOMAIN_REQUEST_MAX_RECOVERY_LIMIT));
 };
+
+/** Bounded, validated 403-circuit threshold. Env-driven, same clamp idiom as the other governor knobs. */
+export function parseDomain403OpenThreshold(
+  value: number | undefined = Number(process.env[DOMAIN_REQUEST_403_OPEN_THRESHOLD_ENV]),
+): number {
+  if (!Number.isFinite(value)) return DOMAIN_REQUEST_DEFAULT_403_OPEN_THRESHOLD;
+  return Math.max(
+    DOMAIN_REQUEST_MIN_403_OPEN_THRESHOLD,
+    Math.min(Math.floor(value as number), DOMAIN_REQUEST_MAX_403_OPEN_THRESHOLD),
+  );
+}
+
+/** Bounded, validated 403-circuit base cooldown. Capped by the same max the 429 path uses. */
+export function parseDomain403CooldownMs(
+  value: number | undefined = Number(process.env[DOMAIN_REQUEST_403_COOLDOWN_MS_ENV]),
+): number {
+  if (!Number.isFinite(value) || (value as number) <= 0) return DOMAIN_REQUEST_DEFAULT_403_COOLDOWN_MS;
+  return Math.max(
+    DOMAIN_REQUEST_MIN_403_COOLDOWN_MS,
+    Math.min(Math.floor(value as number), DOMAIN_REQUEST_RETRY_AFTER_MAX_MS),
+  );
+}
 
 const asDateOrNull = (value: unknown): Date | null => value instanceof Date ? value : null;
 
@@ -242,13 +277,37 @@ export function applyDomainOutcome(
   }
 
   if (authoritativeOutcome.kind === "forbidden" && status === 403) {
+    const consecutive403Count = state.consecutive403Count + 1;
+    const openThreshold = parseDomain403OpenThreshold(options.forbiddenOpenThreshold);
+    if (consecutive403Count < openThreshold) {
+      // A single 403 (or a streak still below threshold) is recorded evidence,
+      // not a circuit transition. It cannot preserve an OPEN 429 circuit after
+      // becoming authoritative.
+      return {
+        ...next,
+        circuitState: "CLOSED",
+        consecutive429Count: 0,
+        consecutive403Count,
+        lastBlockedAt: now,
+      };
+    }
+    // A confirmed 403 streak reuses the same OPEN/HALF_OPEN circuit and cooldown
+    // fields as 429, so the existing lease/CAS half-open-probe mechanism governs
+    // recovery for both causes uniformly.
+    const baseCooldownMs = parseDomain403CooldownMs(options.forbiddenCooldownMs);
+    const multiplier = 2 ** Math.min(state.consecutive403Count, 3);
+    const delayMs = Math.min(DOMAIN_REQUEST_RETRY_AFTER_MAX_MS, baseCooldownMs * multiplier);
+    const cooldownUntil = new Date(now.getTime() + delayMs);
+    const priorCooldown = state.cooldownUntil && state.cooldownUntil > cooldownUntil
+      ? state.cooldownUntil
+      : cooldownUntil;
     return {
       ...next,
-      // A 403 is recorded evidence, not a rate-limit circuit transition.
-      // It cannot preserve an OPEN 429 circuit after becoming authoritative.
-      circuitState: "CLOSED",
+      circuitState: "OPEN",
+      cooldownUntil: priorCooldown,
+      nextRequestAt: priorCooldown,
       consecutive429Count: 0,
-      consecutive403Count: state.consecutive403Count + 1,
+      consecutive403Count,
       lastBlockedAt: now,
     };
   }
@@ -479,6 +538,8 @@ export type RecordDomainOutcomeInput = {
   mode?: DomainGovernorMode;
   now?: Date;
   minIntervalMs?: number;
+  forbiddenOpenThreshold?: number;
+  forbiddenCooldownMs?: number;
   db?: DomainGovernorDb;
 };
 
@@ -528,7 +589,12 @@ export async function recordDomainOutcome(
     if (mode === "enforce" && (!input.leaseToken || state.activeLeaseToken !== input.leaseToken)) {
       return { recorded: false, domainKey, reason: "token-mismatch" };
     }
-    const next = applyDomainOutcome(state, input.outcome, { now, minIntervalMs: input.minIntervalMs });
+    const next = applyDomainOutcome(state, input.outcome, {
+      now,
+      minIntervalMs: input.minIntervalMs,
+      forbiddenOpenThreshold: input.forbiddenOpenThreshold,
+      forbiddenCooldownMs: input.forbiddenCooldownMs,
+    });
     const updated = await db.domainRequestGovernor.updateMany({
       where: {
         domainKey,

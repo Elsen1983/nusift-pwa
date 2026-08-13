@@ -185,6 +185,73 @@ describe("domain request governor policy", () => {
     }, { now: NOW });
     expect(next).toMatchObject({ circuitState: "OPEN", consecutive429Count: 1, consecutive403Count: 0 });
   });
+
+  it("stays CLOSED for a 403 streak below the open threshold", () => {
+    const first = applyDomainOutcome(makeState(), { kind: "forbidden", status: 403 }, { now: NOW });
+    const second = applyDomainOutcome(first, { kind: "forbidden", status: 403 }, { now: NOW });
+    expect(first).toMatchObject({ circuitState: "CLOSED", consecutive403Count: 1 });
+    expect(second).toMatchObject({ circuitState: "CLOSED", consecutive403Count: 2 });
+  });
+
+  it("opens a bounded circuit once the 403 streak reaches the default threshold", () => {
+    // Prior count 2 means the streak-backoff multiplier (2**min(prior,3)) is
+    // already 4x by the time the default threshold (3) is confirmed, so the
+    // 6h base cooldown is capped at the shared 24h maximum on this very open.
+    const third = applyDomainOutcome(makeState({ consecutive403Count: 2 }), { kind: "forbidden", status: 403 }, { now: NOW });
+    expect(third.circuitState).toBe("OPEN");
+    expect(third.consecutive403Count).toBe(3);
+    expect(third.consecutive429Count).toBe(0);
+    expect(third.cooldownUntil!.getTime() - NOW.getTime()).toBe(24 * 60 * 60_000);
+    expect(third.nextRequestAt).toEqual(third.cooldownUntil);
+  });
+
+  it("uses the base cooldown with no backoff on a fresh open (threshold reached from a zero streak)", () => {
+    const opened = applyDomainOutcome(makeState(), { kind: "forbidden", status: 403 }, {
+      now: NOW,
+      forbiddenOpenThreshold: 1,
+    });
+    expect(opened.circuitState).toBe("OPEN");
+    expect(opened.cooldownUntil!.getTime() - NOW.getTime()).toBe(6 * 60 * 60_000);
+  });
+
+  it("respects a caller-supplied 403 threshold and base cooldown", () => {
+    const opened = applyDomainOutcome(makeState(), { kind: "forbidden", status: 403 }, {
+      now: NOW,
+      forbiddenOpenThreshold: 1,
+      forbiddenCooldownMs: 60_000,
+    });
+    expect(opened.circuitState).toBe("OPEN");
+    expect(opened.cooldownUntil!.getTime() - NOW.getTime()).toBe(60_000);
+  });
+
+  it("extends but never shrinks the 403 cooldown on a repeated streak, capped at the shared maximum", () => {
+    const opened = applyDomainOutcome(makeState({ consecutive403Count: 2 }), { kind: "forbidden", status: 403 }, { now: NOW });
+    const extended = applyDomainOutcome(
+      { ...opened, circuitState: "HALF_OPEN" },
+      { kind: "forbidden", status: 403 },
+      { now: NOW },
+    );
+    expect(extended.circuitState).toBe("OPEN");
+    expect(extended.cooldownUntil!.getTime()).toBeGreaterThanOrEqual(opened.cooldownUntil!.getTime());
+    const veryExtended = applyDomainOutcome(
+      { ...extended, circuitState: "HALF_OPEN", consecutive403Count: 50 },
+      { kind: "forbidden", status: 403 },
+      { now: NOW },
+    );
+    expect(veryExtended.cooldownUntil!.getTime() - NOW.getTime()).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+  });
+
+  it("closes a 403-opened circuit after a successful half-open probe", () => {
+    const opened = applyDomainOutcome(makeState({ consecutive403Count: 2 }), { kind: "forbidden", status: 403 }, { now: NOW });
+    expect(opened.circuitState).toBe("OPEN");
+    const probed = applyDomainOutcome({ ...opened, circuitState: "HALF_OPEN" }, { kind: "success", status: 200 }, { now: NOW });
+    expect(probed).toMatchObject({ circuitState: "CLOSED", consecutive403Count: 0, consecutive429Count: 0 });
+  });
+
+  it("keeps the 429 circuit fully independent of the 403 threshold change", () => {
+    const next = applyDomainOutcome(makeState(), { kind: "rate_limited", status: 429, retryAfter: "60" }, { now: NOW });
+    expect(next).toMatchObject({ circuitState: "OPEN", consecutive429Count: 1, consecutive403Count: 0 });
+  });
 });
 
 describe("domain request governor persistence API", () => {

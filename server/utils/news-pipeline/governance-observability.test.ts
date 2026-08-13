@@ -57,6 +57,15 @@ describe("governance observability", () => {
     expect(JSON.stringify(result)).not.toContain("secret-expired-token");
   });
 
+  it("surfaces a 403-driven open circuit as 'forbidden', never a paywall claim", async () => {
+    const result = await loadGovernanceDiagnostics(makeDb([
+      { domainKey: "blocked.example.com", circuitState: "OPEN", cooldownUntil: new Date("2026-08-10T18:00:00Z"), nextRequestAt: new Date("2026-08-10T18:00:00Z"), activeLeaseToken: null, activeLeaseExpiresAt: null, lastDecision: null, lastHttpStatus: 403, consecutive429Count: 0, consecutive403Count: 3 },
+    ]), { now, limit: 10 });
+
+    expect(result.domains[0]?.circuitReason).toBe("forbidden");
+    expect(JSON.stringify(result.domains[0])).not.toMatch(/paywall/i);
+  });
+
   it("aggregates durable stage telemetry and persisted browser evidence once", async () => {
     const result = await loadGovernanceDiagnostics(makeDb([], [
       {

@@ -22,6 +22,7 @@ const prismaArtifactUpdateMock = vi.hoisted(() => vi.fn());
 const prismaPipelineRunFindFirstMock = vi.hoisted(() => vi.fn());
 const prismaNewsSourceFindManyMock = vi.hoisted(() => vi.fn());
 const prismaSourceCategoryFindManyMock = vi.hoisted(() => vi.fn());
+const prismaArticleFindManyMock = vi.hoisted(() => vi.fn());
 const resolveHardSourceProfilesForTargetMock = vi.hoisted(() => vi.fn());
 const createHeadlessQueueArtifactIfAbsentMock = vi.hoisted(() => vi.fn().mockResolvedValue({ artifact: { id: "headless-artifact" }, created: true }));
 
@@ -90,6 +91,9 @@ vi.mock("../prisma", () => ({
     sourceCategory: {
       findMany: (...args: any[]) => prismaSourceCategoryFindManyMock(...args),
     },
+    article: {
+      findMany: (...args: any[]) => prismaArticleFindManyMock(...args),
+    },
   },
 }));
 
@@ -118,6 +122,7 @@ describe("article-discovery", () => {
     prismaPipelineRunFindFirstMock.mockReset();
     prismaNewsSourceFindManyMock.mockReset();
     prismaSourceCategoryFindManyMock.mockReset();
+    prismaArticleFindManyMock.mockReset();
     resolveHardSourceProfilesForTargetMock.mockReset();
     createHeadlessQueueArtifactIfAbsentMock.mockClear();
     prismaArtifactCreateMock.mockResolvedValue({ id: "artifact-1" });
@@ -126,6 +131,9 @@ describe("article-discovery", () => {
     prismaPipelineRunFindFirstMock.mockResolvedValue(null);
     prismaNewsSourceFindManyMock.mockResolvedValue([]);
     prismaSourceCategoryFindManyMock.mockResolvedValue([]);
+    // No known articles by default — the Repair 13 prefilter is a no-op
+    // unless a test explicitly opts in.
+    prismaArticleFindManyMock.mockResolvedValue([]);
     resolveHardSourceProfilesForTargetMock.mockResolvedValue(0);
     logAgentScanMock.mockClear();
   });
@@ -638,6 +646,213 @@ describe("article-discovery", () => {
     expect(result.qualityAssessment.explanation).toContain("2 article(s)");
     // 2 accepted candidates < 3 threshold → medium confidence
     expect(result.qualityAssessment.confidence).toBe("medium");
+  });
+
+  it("extracts ItemList and __NEXT_DATA__ candidates from the listing page without extra transport calls, and dedupes a URL shared across both", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const recentDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    // No <a> article links at all — every candidate here must come from the
+    // structured-data extractors, isolating their contribution.
+    const listing = `
+      <html>
+        <body>
+          <script type="application/ld+json">
+            {
+              "@type": "ItemList",
+              "itemListElement": [
+                { "@type": "ListItem", "item": { "url": "/news/itemlist-story", "name": "ItemList story headline" } },
+                { "@type": "ListItem", "item": { "url": "/news/shared-story", "name": "Shared story headline" } }
+              ]
+            }
+          </script>
+          <script id="__NEXT_DATA__" type="application/json">
+            {
+              "props": { "pageProps": { "articles": [
+                { "url": "/news/nextdata-story", "title": "NextData story headline" },
+                { "url": "/news/shared-story", "title": "Shared story headline" }
+              ] } }
+            }
+          </script>
+        </body>
+      </html>
+    `;
+    const detailPage = (title: string) => `
+      <html>
+        <head>
+          <title>${title}</title>
+          <meta property="article:published_time" content="${recentDate}" />
+        </head>
+        <body><p>${title} body content long enough to be meaningful for extraction.</p></body>
+      </html>
+    `;
+
+    const fetchedUrls: string[] = [];
+    safeFetchMock.mockImplementation(async (url: string) => {
+      fetchedUrls.push(url);
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url === "https://example.com/news/itemlist-story") return makeResponse(detailPage("ItemList story headline"));
+      if (url === "https://example.com/news/nextdata-story") return makeResponse(detailPage("NextData story headline"));
+      if (url === "https://example.com/news/shared-story") return makeResponse(detailPage("Shared story headline"));
+      return makeResponse("", false);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    // 2 ItemList entries (itemlist-story, shared-story) + 1 new NextData entry
+    // (nextdata-story; the duplicate shared-story from NextData is dropped).
+    expect(result.discoverySources.itemListUrls).toBe(2);
+    expect(result.discoverySources.nextDataUrls).toBe(1);
+    expect(result.discoverySources.jsonldUrls).toBe(3);
+
+    // The listing page itself was fetched only once — structured-data
+    // extraction reused the already-fetched HTML, no extra transport call.
+    expect(fetchedUrls.filter((u) => u === "https://example.com/")).toHaveLength(1);
+    // The shared URL was evaluated exactly once despite appearing in both
+    // the ItemList and the __NEXT_DATA__ source.
+    expect(fetchedUrls.filter((u) => u === "https://example.com/news/shared-story")).toHaveLength(1);
+
+    expect(result.candidates.map((c) => c.canonicalUrl).sort()).toEqual([
+      "https://example.com/news/itemlist-story",
+      "https://example.com/news/nextdata-story",
+      "https://example.com/news/shared-story",
+    ]);
+  });
+
+  it("known-URL prefilter: all-known links produce zero detail requests", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+
+    const listing = `
+      <html><body>
+        <article><a href="/news/known-story-one">Known story one long enough title</a></article>
+        <article><a href="/news/known-story-two">Known story two long enough title</a></article>
+      </body></html>
+    `;
+    prismaArticleFindManyMock.mockResolvedValue([
+      { canonicalIdentity: "https://example.com/news/known-story-one" },
+      { canonicalIdentity: "https://example.com/news/known-story-two" },
+    ]);
+
+    const fetchedUrls: string[] = [];
+    safeFetchMock.mockImplementation(async (url: string) => {
+      fetchedUrls.push(url);
+      if (url === "https://example.com/") return makeResponse(listing);
+      return makeResponse("", false);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    // No detail requests for either known article URL.
+    expect(fetchedUrls).not.toContain("https://example.com/news/known-story-one");
+    expect(fetchedUrls).not.toContain("https://example.com/news/known-story-two");
+    expect(result.candidates).toHaveLength(0);
+    expect(result.outcomeSummary.byStatus["known_article_prefiltered"]).toBe(2);
+    expect(prismaArticleFindManyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("known-URL prefilter: mixed known/unknown links fetch only the unknown identity", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const recentDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    const listing = `
+      <html><body>
+        <article><a href="/news/already-known-story">Already known story title here</a></article>
+        <article><a href="/news/brand-new-story">Brand new story title here today</a></article>
+      </body></html>
+    `;
+    const detailPage = `
+      <html><head><title>Brand new story title here today</title>
+      <meta property="article:published_time" content="${recentDate}" /></head>
+      <body><p>Body content long enough to be meaningful for extraction.</p></body></html>
+    `;
+    prismaArticleFindManyMock.mockResolvedValue([
+      { canonicalIdentity: "https://example.com/news/already-known-story" },
+    ]);
+
+    const fetchedUrls: string[] = [];
+    safeFetchMock.mockImplementation(async (url: string) => {
+      fetchedUrls.push(url);
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url === "https://example.com/news/brand-new-story") return makeResponse(detailPage);
+      return makeResponse("", false);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    // Only the unknown URL was fetched as a detail request.
+    expect(fetchedUrls).not.toContain("https://example.com/news/already-known-story");
+    expect(fetchedUrls).toContain("https://example.com/news/brand-new-story");
+    expect(result.candidates.map((c) => c.canonicalUrl)).toEqual(["https://example.com/news/brand-new-story"]);
+    expect(result.outcomeSummary.byStatus["known_article_prefiltered"]).toBe(1);
+    // Distinguishable from an in-run duplicate-persistence conflict.
+    expect(result.outcomeSummary.byStatus["rejected_duplicate"]).toBeUndefined();
+  });
+
+  it("known-URL prefilter: redirector-shaped links are never prefiltered, even with a matching identity", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const recentDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    // A redirector-shaped URL (tracking/aggregator wrapper) whose true
+    // destination identity is unknown until fetched.
+    const listing = `
+      <html><body>
+        <article><a href="https://example.com/out/redirect?url=https://elsewhere.example/story">Redirected story title here</a></article>
+      </body></html>
+    `;
+    const detailPage = `
+      <html><head><title>Redirected story title here</title>
+      <meta property="article:published_time" content="${recentDate}" /></head>
+      <body><p>Body content long enough to be meaningful for extraction.</p></body></html>
+    `;
+    // Even though the DB "knows" this exact redirector URL, it must still be
+    // evaluated for real — its true destination isn't provable pre-fetch.
+    prismaArticleFindManyMock.mockResolvedValue([
+      { canonicalIdentity: "https://example.com/out/redirect?url=https://elsewhere.example/story" },
+    ]);
+
+    const fetchedUrls: string[] = [];
+    safeFetchMock.mockImplementation(async (url: string) => {
+      fetchedUrls.push(url);
+      if (url === "https://example.com/") return makeResponse(listing);
+      return makeResponse(detailPage);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    expect(fetchedUrls.length).toBeGreaterThan(1);
+    expect(result.outcomeSummary.byStatus["known_article_prefiltered"]).toBeUndefined();
   });
 
   it("filters utility path URLs at link extraction (not in outcomes)", async () => {

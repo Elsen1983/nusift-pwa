@@ -82,7 +82,9 @@ const outcomeFromResponse = (response: Response): DomainOutcome => {
     };
   }
   if (status === 403) return { kind: "forbidden", status };
-  if (status >= 200 && status < 300) return { kind: "success", status };
+  // A 304 is a fully healthy publisher response (conditional-request
+  // validators matched); it must never degrade circuit-breaker state.
+  if (status >= 200 && status < 300 || status === 304) return { kind: "success", status };
   return { kind: "failure", status };
 };
 

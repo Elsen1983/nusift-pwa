@@ -45,6 +45,7 @@ import {
   getHttpsArticleUrl,
   isExplicitHttpFallbackAllowed,
 } from "./article-transport-policy";
+import { collectMatchingObjects, getJsonLdTypes } from "./structured-data";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -763,32 +764,16 @@ function normalizeJsonLdBodyText(raw: string): string | null {
  * `@type` may be a string or an array of strings.
  */
 function isJsonLdArticleObject(record: Record<string, unknown>): boolean {
-  const typeValue = record["@type"];
-  const typeList = Array.isArray(typeValue) ? typeValue : [typeValue];
-  return typeList.some(
-    (t) => typeof t === "string" && SUPPORTED_JSONLD_ARTICLE_TYPES.has(t.toLowerCase()),
-  );
+  return getJsonLdTypes(record["@type"]).some((t) => SUPPORTED_JSONLD_ARTICLE_TYPES.has(t.toLowerCase()));
 }
 
 /**
- * Collect all JSON-LD objects (recursively, including @graph and arrays)
- * that declare a supported article schema type.
+ * Collect all JSON-LD objects (recursively, including @graph and arrays,
+ * bounded by the shared structured-data authority's depth/count/array-length
+ * limits) that declare a supported article schema type.
  */
-function collectJsonLdArticleObjects(
-  value: unknown,
-  out: Array<Record<string, unknown>> = [],
-): Array<Record<string, unknown>> {
-  if (Array.isArray(value)) {
-    for (const item of value) collectJsonLdArticleObjects(item, out);
-    return out;
-  }
-  if (!value || typeof value !== "object") return out;
-  const record = value as Record<string, unknown>;
-  if (isJsonLdArticleObject(record)) out.push(record);
-  for (const nested of Object.values(record)) {
-    collectJsonLdArticleObjects(nested, out);
-  }
-  return out;
+function collectJsonLdArticleObjects(value: unknown): Array<Record<string, unknown>> {
+  return collectMatchingObjects(value, isJsonLdArticleObject);
 }
 
 /**
@@ -1837,6 +1822,35 @@ function shouldPreferReadabilityBody(
   if (currentLength < 500 && readabilityLength >= 800) return true;
   if (readabilityParagraphs >= currentParagraphs + 3 && readabilityLength >= currentLength * 1.15) return true;
   if (readabilityLength >= currentLength * 1.5 && readabilityParagraphs >= currentParagraphs) return true;
+
+  return false;
+}
+
+/**
+ * One pure quality decision for trusted JSON-LD `articleBody` vs. the
+ * current DOM/readability body. Mirrors `shouldPreferReadabilityBody`'s
+ * "weak current + demonstrably more complete challenger" shape. JSON-LD text
+ * has no `CandidateScore` (no DOM container), so its paragraph count is
+ * derived the same way `isUsableBody` derives it (blank-line splitting).
+ * A missing/empty current body is always replaced by a usable JSON-LD
+ * candidate; a usable-but-weak current body is only replaced when the
+ * JSON-LD candidate is demonstrably longer/more complete; a strong current
+ * body is never regressed.
+ */
+function shouldPreferJsonLdBody(
+  currentText: string | null,
+  currentParagraphCount: number,
+  jsonLdText: string,
+): boolean {
+  const currentLength = currentText?.length ?? 0;
+  if (!currentText || currentLength === 0) return true;
+
+  const jsonLdLength = jsonLdText.length;
+  const jsonLdParagraphs = jsonLdText.split(/\n{2,}/).filter((p) => p.trim().length > 0).length;
+
+  if (currentLength < 500 && jsonLdLength >= 800) return true;
+  if (jsonLdParagraphs >= currentParagraphCount + 3 && jsonLdLength >= currentLength * 1.15) return true;
+  if (jsonLdLength >= currentLength * 1.5 && jsonLdParagraphs >= currentParagraphCount) return true;
 
   return false;
 }
@@ -3144,17 +3158,24 @@ export async function extractArticleContentFromHtml(
     let bodySource: ExtractionDiagnostics["bodySource"] = effectiveResult?.bodySource || "none";
 
     // JSON-LD articleBody extraction: a complete, trustworthy structured-data
-    // body is accepted ONLY when the DOM produced nothing usable. It is never
-    // preferred over a stronger DOM/readability body. The candidate must pass
-    // the same quality gates as DOM-derived text (isUsableBody) and is bounded
-    // by the same storage cap.
+    // body is accepted when the DOM produced nothing usable (unconditional
+    // replace, as before), or when it is demonstrably more complete than a
+    // usable-but-weak DOM/readability body (shouldPreferJsonLdBody). It is
+    // never preferred over a strong DOM/readability body. The candidate must
+    // pass the same quality gate as DOM-derived text (isUsableBody) and is
+    // bounded by the same storage cap.
     let jsonLdBodyText: string | null = null;
-    if (!bodyText || !isUsableBody(bodyText, effectiveResult?.score)) {
+    {
       const jsonLdCandidate = extractJsonLdArticleBody(doc);
       if (jsonLdCandidate && isUsableBody(jsonLdCandidate)) {
-        jsonLdBodyText = jsonLdCandidate;
-        bodyText = jsonLdCandidate;
-        bodySource = "jsonld";
+        const currentUsable = Boolean(bodyText) && isUsableBody(bodyText as string, effectiveResult?.score);
+        const shouldReplace = !currentUsable ||
+          shouldPreferJsonLdBody(bodyText, effectiveResult?.score?.paragraphCount ?? 0, jsonLdCandidate);
+        if (shouldReplace) {
+          jsonLdBodyText = jsonLdCandidate;
+          bodyText = jsonLdCandidate;
+          bodySource = "jsonld";
+        }
       }
     }
 

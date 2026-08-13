@@ -52,6 +52,12 @@ Do not assume global or per-source uniqueness without proving product intent and
 
 ## Migration procedure
 
+The current schema already contains `@@index([sourceId, date])` and
+`@@index([categoryId, date])` on `Article`. Preserve and verify these indexes;
+do not create duplicate FK indexes in this repair. Audit other relevant FK
+indexes read-only, and only include a missing index in a forward migration when
+the query/delete path and existing index set prove that it is necessary.
+
 If schema changes are required:
 
 1. audit current duplicate/conflict counts with read-only bounded queries;

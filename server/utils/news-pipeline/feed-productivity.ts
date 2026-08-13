@@ -1,4 +1,10 @@
 import { prisma } from "../prisma";
+import { logAgentScan } from "./log";
+import {
+  applyFeedProductivityOutcome,
+  type FeedProductivityState,
+  type FeedRunOutcomeKind,
+} from "./feed-productivity-policy";
 
 const normalizeComparableFeedUrl = (value?: string | null) =>
   (value || "").trim().replace(/\/+$/, "").toLowerCase();
@@ -46,69 +52,109 @@ export const getFeedProductivityResetData = (
   };
 };
 
+const stateFromRow = (row: {
+  currentFeedProductive: boolean;
+  consecutiveNonProductiveRuns: number;
+  lastProductiveFeedUrl: string | null;
+  lastProductiveAt: Date | null;
+  nextRetryAt: Date | null;
+}): FeedProductivityState => ({
+  currentFeedProductive: row.currentFeedProductive,
+  consecutiveNonProductiveRuns: row.consecutiveNonProductiveRuns,
+  lastProductiveFeedUrl: row.lastProductiveFeedUrl,
+  lastProductiveAt: row.lastProductiveAt,
+  nextRetryAt: row.nextRetryAt,
+});
+
 export async function markFeedRunOutcome(input: {
   sourceId: string;
   categoryId?: string | null;
   feedUrl?: string | null;
-  productive: boolean;
+  feedRunOutcomeKind?: FeedRunOutcomeKind | null;
   shouldTrackFeedProductivity: boolean;
 }) {
+  if (!input.shouldTrackFeedProductivity) return;
+
+  const kind: FeedRunOutcomeKind = input.feedRunOutcomeKind ?? "unknown";
+  const now = new Date();
+
   if (input.categoryId) {
-    if (!input.shouldTrackFeedProductivity) {
-      return;
-    }
-
-    if (input.productive) {
-      await prisma.sourceCategory.update({
-        where: { id: input.categoryId },
-        data: {
-          currentFeedProductive: true,
-          consecutiveNonProductiveRuns: 0,
-          lastProductiveFeedUrl: input.feedUrl || null,
-          lastProductiveAt: new Date(),
-          nextRetryAt: null,
-        },
-      });
-      await autoResolveOpenReviewRequests({ sourceId: input.sourceId, categoryId: input.categoryId });
-      return;
-    }
-
-    await prisma.sourceCategory.update({
+    const current = await prisma.sourceCategory.findUnique({
       where: { id: input.categoryId },
-      data: {
-        consecutiveNonProductiveRuns: {
-          increment: 1,
-        },
-      },
-    });
-    return;
-  }
-
-  if (!input.shouldTrackFeedProductivity) {
-    return;
-  }
-
-  if (input.productive) {
-    await prisma.newsSource.update({
-      where: { id: input.sourceId },
-      data: {
+      select: {
         currentFeedProductive: true,
-        consecutiveNonProductiveRuns: 0,
-        lastProductiveFeedUrl: input.feedUrl || null,
-        lastProductiveAt: new Date(),
-        nextRetryAt: null,
+        consecutiveNonProductiveRuns: true,
+        lastProductiveFeedUrl: true,
+        lastProductiveAt: true,
+        nextRetryAt: true,
+        feedProductivityVersion: true,
       },
     });
-    await autoResolveOpenReviewRequests({ sourceId: input.sourceId });
+    if (!current) return;
+
+    const next = applyFeedProductivityOutcome(stateFromRow(current), { kind, feedUrl: input.feedUrl }, { now });
+    const updated = await prisma.sourceCategory.updateMany({
+      where: { id: input.categoryId, feedProductivityVersion: current.feedProductivityVersion },
+      data: {
+        currentFeedProductive: next.currentFeedProductive,
+        consecutiveNonProductiveRuns: next.consecutiveNonProductiveRuns,
+        lastProductiveFeedUrl: next.lastProductiveFeedUrl,
+        lastProductiveAt: next.lastProductiveAt,
+        nextRetryAt: next.nextRetryAt,
+        feedProductivityVersion: { increment: 1 },
+      },
+    });
+    if (updated.count !== 1) {
+      await logAgentScan({
+        sourceId: input.sourceId,
+        categoryId: input.categoryId,
+        status: "FEED_PRODUCTIVITY_CAS_CONFLICT",
+        executionTimeMs: 0,
+        errorLog: `Feed-productivity CAS write conflict for category ${input.categoryId}; a concurrent writer already advanced the version. Skipped, will retry next cycle.`,
+      });
+      return;
+    }
+    if (kind === "productive") {
+      await autoResolveOpenReviewRequests({ sourceId: input.sourceId, categoryId: input.categoryId });
+    }
     return;
   }
 
-  await prisma.newsSource.update({
+  const current = await prisma.newsSource.findUnique({
     where: { id: input.sourceId },
-    data: {
-      consecutiveNonProductiveRuns: {
-        increment: 1,
-      },
+    select: {
+      currentFeedProductive: true,
+      consecutiveNonProductiveRuns: true,
+      lastProductiveFeedUrl: true,
+      lastProductiveAt: true,
+      nextRetryAt: true,
+      feedProductivityVersion: true,
     },
   });
+  if (!current) return;
+
+  const next = applyFeedProductivityOutcome(stateFromRow(current), { kind, feedUrl: input.feedUrl }, { now });
+  const updated = await prisma.newsSource.updateMany({
+    where: { id: input.sourceId, feedProductivityVersion: current.feedProductivityVersion },
+    data: {
+      currentFeedProductive: next.currentFeedProductive,
+      consecutiveNonProductiveRuns: next.consecutiveNonProductiveRuns,
+      lastProductiveFeedUrl: next.lastProductiveFeedUrl,
+      lastProductiveAt: next.lastProductiveAt,
+      nextRetryAt: next.nextRetryAt,
+      feedProductivityVersion: { increment: 1 },
+    },
+  });
+  if (updated.count !== 1) {
+    await logAgentScan({
+      sourceId: input.sourceId,
+      status: "FEED_PRODUCTIVITY_CAS_CONFLICT",
+      executionTimeMs: 0,
+      errorLog: `Feed-productivity CAS write conflict for source ${input.sourceId}; a concurrent writer already advanced the version. Skipped, will retry next cycle.`,
+    });
+    return;
+  }
+  if (kind === "productive") {
+    await autoResolveOpenReviewRequests({ sourceId: input.sourceId });
+  }
 }

@@ -35,15 +35,6 @@ export type RunNewsPipelineOptions = {
   runAgent2Afterwards?: boolean;
 };
 
-export const isOperationalFeedResult = (result: {
-  failed: number;
-  feedUrl?: string | null;
-  feedFormat?: string | null;
-}) =>
-  result.failed === 0 &&
-  Boolean(result.feedUrl) &&
-  (result.feedFormat === "rss" || result.feedFormat === "atom" || result.feedFormat === "json");
-
 export const shouldTrackFeedProductivity = (result: {
   feedUrl?: string | null;
   feedFormat?: string | null;
@@ -139,7 +130,7 @@ export async function runNewsPipeline(
           sourceId: target.sourceId,
           categoryId: target.categoryId || undefined,
           feedUrl: result.feedUrl || null,
-          productive: isOperationalFeedResult(result),
+          feedRunOutcomeKind: result.feedRunOutcomeKind,
           shouldTrackFeedProductivity: shouldTrackFeedProductivity(result),
         });
       }
@@ -553,7 +544,7 @@ export async function runAgent1Batch(input?: {
           sourceId: target.sourceId,
           categoryId: target.categoryId || undefined,
           feedUrl: result.feedUrl || null,
-          productive: isOperationalFeedResult(result),
+          feedRunOutcomeKind: result.feedRunOutcomeKind,
           shouldTrackFeedProductivity: shouldTrackFeedProductivity(result),
         }));
         probe.recordDbOperation();

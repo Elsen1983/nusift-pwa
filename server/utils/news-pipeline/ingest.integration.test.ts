@@ -13,6 +13,8 @@ const prismaArticleUpdateMock = vi.hoisted(() => vi.fn());
 const prismaTransactionMock = vi.hoisted(() => vi.fn());
 const prismaFeedReviewUpdateManyMock = vi.hoisted(() => vi.fn());
 const prismaNewsSourceUpdateMock = vi.hoisted(() => vi.fn());
+const prismaNewsSourceUpdateManyMock = vi.hoisted(() => vi.fn());
+const prismaSourceCategoryUpdateManyMock = vi.hoisted(() => vi.fn());
 const prismaPipelineArtifactFindManyMock = vi.hoisted(() => vi.fn());
 const prismaPipelineArtifactCreateMock = vi.hoisted(() => vi.fn());
 const prismaPipelineArtifactUpdateManyMock = vi.hoisted(() => vi.fn());
@@ -22,10 +24,12 @@ vi.mock("../prisma", () => ({
     newsSource: {
       findUnique: (...args: any[]) => prismaNewsSourceFindUniqueMock(...args),
       update: (...args: any[]) => prismaNewsSourceUpdateMock(...args),
+      updateMany: (...args: any[]) => prismaNewsSourceUpdateManyMock(...args),
     },
     sourceCategory: {
       findUnique: (...args: any[]) => prismaSourceCategoryFindUniqueMock(...args),
       update: (...args: any[]) => prismaSourceCategoryUpdateMock(...args),
+      updateMany: (...args: any[]) => prismaSourceCategoryUpdateManyMock(...args),
       findMany: (...args: any[]) => prismaSourceCategoryFindManyMock(...args),
     },
     article: {
@@ -142,6 +146,13 @@ const SOURCE_BASE = {
   rssFeedUrl: "https://example.com/rss",
   rssStatus: "ACTIVE",
   mediaName: "Example",
+  // Shared with feed-productivity.ts's own findUnique read of this same row.
+  currentFeedProductive: false,
+  consecutiveNonProductiveRuns: 0,
+  lastProductiveFeedUrl: null as string | null,
+  lastProductiveAt: null as Date | null,
+  nextRetryAt: null as Date | null,
+  feedProductivityVersion: 0,
 };
 
 const CATEGORY_BASE = {
@@ -150,6 +161,13 @@ const CATEGORY_BASE = {
   rssFeedUrl: null as string | null,
   discoveryEvidence: null as unknown,
   lastRssCheckAt: null as Date | null,
+  // Shared with feed-productivity.ts's own findUnique read of this same row.
+  currentFeedProductive: false,
+  consecutiveNonProductiveRuns: 0,
+  lastProductiveFeedUrl: null as string | null,
+  lastProductiveAt: null as Date | null,
+  nextRetryAt: null as Date | null,
+  feedProductivityVersion: 0,
 };
 
 const GENERIC_EVIDENCE = {
@@ -177,6 +195,8 @@ describe("generic RSS fallback integration", () => {
     prismaTransactionMock.mockResolvedValue([]);
     prismaFeedReviewUpdateManyMock.mockResolvedValue({});
     prismaNewsSourceUpdateMock.mockResolvedValue({});
+    prismaNewsSourceUpdateManyMock.mockResolvedValue({ count: 1 });
+    prismaSourceCategoryUpdateManyMock.mockResolvedValue({ count: 1 });
     safeFetchMock.mockResolvedValue(makeResponse(rssXml([]), false));
     discoverFeedForUrlMock.mockResolvedValue({ feedUrl: null, scopeMatch: "generic", detection: "none", score: 0, scopeConfidence: "low" });
   });
@@ -373,19 +393,19 @@ describe("generic RSS fallback integration", () => {
     // At least one relevant article accepted
     expect(ingestResult.candidates.length).toBeGreaterThanOrEqual(1);
 
-    // Simulate orchestrator calling markFeedRunOutcome with productive=true
+    // Simulate orchestrator calling markFeedRunOutcome with a productive outcome
     await markFeedRunOutcome({
       sourceId: "src-1",
       categoryId: "cat-politics",
       feedUrl: ingestResult.feedUrl,
-      productive: true,
+      feedRunOutcomeKind: "productive",
       shouldTrackFeedProductivity: true,
     });
 
     // Category should be marked productive
-    expect(prismaSourceCategoryUpdateMock).toHaveBeenCalledWith(
+    expect(prismaSourceCategoryUpdateManyMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "cat-politics" },
+        where: expect.objectContaining({ id: "cat-politics" }),
         data: expect.objectContaining({
           currentFeedProductive: true,
           consecutiveNonProductiveRuns: 0,
@@ -432,20 +452,20 @@ describe("generic RSS fallback integration", () => {
     expect(ingestResult.candidates).toHaveLength(0);
     expect(ingestResult.skipSummary.outOfScope).toBeGreaterThanOrEqual(1);
 
-    // Simulate orchestrator calling markFeedRunOutcome with productive=false
+    // Simulate orchestrator calling markFeedRunOutcome with a nonproductive outcome
     await markFeedRunOutcome({
       sourceId: "src-1",
       categoryId: "cat-politics",
       feedUrl: ingestResult.feedUrl,
-      productive: false,
+      feedRunOutcomeKind: "nonproductive",
       shouldTrackFeedProductivity: true,
     });
 
     // consecutiveNonProductiveRuns incremented
-    expect(prismaSourceCategoryUpdateMock).toHaveBeenCalledWith(
+    expect(prismaSourceCategoryUpdateManyMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "cat-politics" },
-        data: { consecutiveNonProductiveRuns: { increment: 1 } },
+        where: expect.objectContaining({ id: "cat-politics" }),
+        data: expect.objectContaining({ consecutiveNonProductiveRuns: 1 }),
       }),
     );
 
@@ -1464,12 +1484,12 @@ describe("generic RSS fallback integration", () => {
       sourceId: "src-1",
       categoryId: "cat-politics",
       feedUrl: result.feedUrl,
-      productive: true,
+      feedRunOutcomeKind: "productive",
       shouldTrackFeedProductivity: true,
     });
-    expect(prismaSourceCategoryUpdateMock).toHaveBeenCalledWith(
+    expect(prismaSourceCategoryUpdateManyMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "cat-politics" },
+        where: expect.objectContaining({ id: "cat-politics" }),
         data: expect.objectContaining({
           currentFeedProductive: true,
           consecutiveNonProductiveRuns: 0,

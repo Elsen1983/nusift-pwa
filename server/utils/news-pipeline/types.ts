@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import type { FeedRunOutcomeKind } from "./feed-productivity-policy";
 
 export type ProcessingStatus = "PENDING" | "SUCCESS" | "SKIPPED" | "FAILED";
 
@@ -760,6 +761,13 @@ export interface IngestResult {
   /** Neutral governor defer; never represents a publisher/network failure. */
   deferredReason?: IngestDeferredReason | null;
   retryAt?: string | null;
+  /**
+   * Feed-productivity classification of this run, consumed by
+   * markFeedRunOutcome/applyFeedProductivityOutcome. Set at the point ingest.ts
+   * already knows what happened (parsed item count, HTTP status, exception
+   * kind) rather than re-derived later from `failed`/`feedFormat`.
+   */
+  feedRunOutcomeKind?: FeedRunOutcomeKind | null;
 }
 
 export interface PipelineTarget {

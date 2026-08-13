@@ -305,7 +305,12 @@ const stateView = (row: DomainGovernorRow, now: Date) => {
   return {
     domainKey: normalizeStoredDomain(row.domainKey) ?? "unknown",
     circuitState: circuit,
-    circuitReason: lastDecision ?? (row.lastHttpStatus === 429 ? "rate_limited" : null),
+    // "forbidden" reads as "publisher likely blocks the configured crawler
+    // identity" in any admin surface — never a paywall or malicious-behavior
+    // claim; that classification is owned by article-access-classification.ts.
+    circuitReason: lastDecision ?? (
+      row.lastHttpStatus === 429 ? "rate_limited" : row.lastHttpStatus === 403 ? "forbidden" : null
+    ),
     nextProbeAt,
     lease: { state: leaseState, expiresAt: expiry },
     consecutive429Count: clampCount(numberOrNull(row.consecutive429Count) ?? 0),

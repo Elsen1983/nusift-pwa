@@ -126,13 +126,25 @@ describe("orchestrator – Agent 1 / Agent 2 split", () => {
     expect(runArticleDiscoveryBatchMock).not.toHaveBeenCalled();
   });
 
-  it("treats a parsed feed as operational without requiring new inserts", async () => {
-    const { isOperationalFeedResult } = await import("./orchestrator");
+  it("passes ingest's feedRunOutcomeKind through to markFeedRunOutcome unmodified", async () => {
+    ingestSourceMock.mockResolvedValueOnce({
+      sourceId: "src-1",
+      categoryId: null,
+      candidates: [],
+      failed: 0,
+      feedUrl: "https://example.com/rss",
+      feedFormat: "rss",
+      feedRunOutcomeKind: "nonproductive",
+      skipSummary: { emptyLink: 0, outOfScope: 0, staleOrMissingPublishedAt: 0, alreadySeenFeedItem: 0, htmlFallbackNonArticle: 0, htmlFallbackStale: 0 },
+      rejectedItems: [],
+      hardCaseQueueCandidates: [],
+    });
+    const { runNewsPipeline } = await import("./orchestrator");
+    await runNewsPipeline(["src-1"]);
 
-    expect(isOperationalFeedResult({ failed: 0, feedUrl: "https://example.com/rss", feedFormat: "rss" })).toBe(true);
-    expect(isOperationalFeedResult({ failed: 0, feedUrl: "https://example.com/feed", feedFormat: "atom" })).toBe(true);
-    expect(isOperationalFeedResult({ failed: 0, feedUrl: "https://example.com", feedFormat: "html_fallback" })).toBe(false);
-    expect(isOperationalFeedResult({ failed: 1, feedUrl: "https://example.com/rss", feedFormat: "rss" })).toBe(false);
+    expect(markFeedRunOutcomeMock).toHaveBeenCalledWith(expect.objectContaining({
+      feedRunOutcomeKind: "nonproductive",
+    }));
   });
 
   it("does not count any deferred disposition as a non-productive feed run", async () => {

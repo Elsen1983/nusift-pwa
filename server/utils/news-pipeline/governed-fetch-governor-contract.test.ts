@@ -130,6 +130,37 @@ describe("governed adapter + real governor lease contract", () => {
     });
   });
 
+  it("counts two independent 403 attempts against the same domain exactly once each, never double", async () => {
+    // Simulates a static request followed by a repair-14 browser fallback to
+    // the same URL: both are real, independent transport attempts against the
+    // same governor-tracked domain and must each contribute exactly one
+    // consecutive403Count increment, not a duplicate count of either attempt.
+    const { db, getState } = makeDb();
+    installParser(makeResponse(403));
+    vi.useFakeTimers();
+    try {
+      const first = await governedSafeFetch("https://example.com/article", {}, {
+        agent: "agent1", stage: "contract", purpose: "feed", mode: "enforce", robotsPolicy: "skip", db,
+      });
+      expect(first.status).toBe(403);
+      expect(getState().consecutive403Count).toBe(1);
+      expect(getState().circuitState).toBe("CLOSED");
+
+      // Clear the same-domain minimum-request-interval defer between the two
+      // independent attempts; unrelated to the 403 accounting under test.
+      await vi.advanceTimersByTimeAsync(1_001);
+
+      const second = await governedSafeFetch("https://example.com/article", {}, {
+        agent: "agent3", stage: "contract", purpose: "article_extraction", mode: "enforce", robotsPolicy: "skip", db,
+      });
+      expect(second.status).toBe(403);
+      expect(getState().consecutive403Count).toBe(2);
+      expect(getState().circuitState).toBe("CLOSED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("completes redirect hops without false defer and records each real domain", async () => {
     const first = makeDb();
     const second = makeDb();

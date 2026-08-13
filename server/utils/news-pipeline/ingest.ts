@@ -9,6 +9,7 @@ import { logAgentScan } from "./log";
 import { cleanFeedValue, hashText, normalizeFeedText, normalizeUrl, stripHtml } from "./text";
 import { normalizeFeedTextDetailed } from "./normalize-feed-text";
 import { getFeedProductivityResetData } from "./feed-productivity";
+import type { FeedRunOutcomeKind } from "./feed-productivity-policy";
 import type {
   DiscoveryOutcome,
   HardCaseDiscoveryCandidate,
@@ -1555,6 +1556,9 @@ export async function ingestSource(
       failed: 1,
       feedUrl: null,
       feedFormat: null,
+      // No matching source row; there is nothing to classify feed-productivity
+      // state against.
+      feedRunOutcomeKind: "unknown",
       skipSummary: emptySkipSummary(),
       rejectedItems: [],
     };
@@ -1577,6 +1581,7 @@ export async function ingestSource(
       feedUrl: category.rssFeedUrl,
       feedFormat: null,
       deferredReason: "rate_limited",
+      feedRunOutcomeKind: "rate_limited",
       retryAt: category.nextRetryAt.toISOString(),
       skipSummary: emptySkipSummary(),
       rejectedItems: [],
@@ -1599,6 +1604,7 @@ export async function ingestSource(
       feedUrl: source.rssFeedUrl,
       feedFormat: null,
       deferredReason: "rate_limited",
+      feedRunOutcomeKind: "rate_limited",
       retryAt: source.nextRetryAt.toISOString(),
       skipSummary: emptySkipSummary(),
       rejectedItems: [],
@@ -1624,6 +1630,7 @@ export async function ingestSource(
         feedUrl: category?.rssFeedUrl || null,
         feedFormat: null,
         deferredReason: "governor_deferred",
+        feedRunOutcomeKind: "governor_or_robots_defer",
         retryAt: null,
         skipSummary: emptySkipSummary(),
         rejectedItems: [],
@@ -1657,6 +1664,7 @@ export async function ingestSource(
         feedUrl: categoryFeedUrl || null,
         feedFormat: null,
         deferredReason: "governor_deferred",
+        feedRunOutcomeKind: "governor_or_robots_defer",
         retryAt: null,
         skipSummary: emptySkipSummary(),
         rejectedItems: [],
@@ -1704,6 +1712,14 @@ export async function ingestSource(
   );
   let rateLimitedRetryAt: Date | null = null;
   let redirectRetryAtIso: string | null = null;
+  // Feed-productivity evidence across candidate feed URLs. `goneCandidateCount`
+  // only ever counts an authoritative 404/410; any other non-ok status, a
+  // reachable-but-empty parse, or a thrown exception marks the run ambiguous
+  // so a stronger `invalid_feed` classification is never claimed from weak
+  // evidence (a single confirmed-gone candidate mixed with a timeout stays
+  // "nonproductive", not "invalid_feed").
+  let goneCandidateCount = 0;
+  let ambiguousCandidateCount = 0;
   try {
     let response: Response | null = null;
     let xml = "";
@@ -1777,6 +1793,11 @@ export async function ingestSource(
 
         if (!candidateResponse.ok) {
           lastFeedFetchError = `Fetch failed for ${candidateFeedUrl} with HTTP ${candidateResponse.status}.`;
+          if (candidateResponse.status === 404 || candidateResponse.status === 410) {
+            goneCandidateCount += 1;
+          } else {
+            ambiguousCandidateCount += 1;
+          }
           if (candidateResponse.status === 429 && categoryId && isUsingDedicatedCategoryFeed) {
             rateLimitedRetryAt = getRssRateLimitRetryAt(candidateResponse);
             await prisma.sourceCategory.update({
@@ -1832,9 +1853,13 @@ export async function ingestSource(
           break;
         }
 
+        // Reachable and parsed, but genuinely empty. This proves the feed is
+        // alive, not gone, so it must not count toward invalid_feed evidence.
+        ambiguousCandidateCount += 1;
         lastFeedFetchError = `No RSS/Atom items found for ${candidateFeedUrl}.`;
           } catch (error: any) {
         if (error instanceof GovernedFetchDeferredError) throw error;
+        ambiguousCandidateCount += 1;
         lastFeedFetchError = `${error?.message || String(error)} for ${candidateFeedUrl}`;
         await logAgentScan({
           sourceId,
@@ -2320,6 +2345,10 @@ export async function ingestSource(
             failed: 1,
             feedUrl,
             feedFormat: parsedFeed.format,
+            // Reached only when parsedFeed already had real items (every item
+            // was filtered/deduped, or the front-page HTML rescue failed) —
+            // the RSS/Atom feed itself is confirmed productive.
+            feedRunOutcomeKind: "productive",
             skipSummary,
             rejectedItems,
             hardCaseQueueCandidates,
@@ -2376,6 +2405,9 @@ export async function ingestSource(
           failed: 1,
           feedUrl,
           feedFormat: parsedFeed.format,
+          // Reached only when parsedFeed already had real items; the front-
+          // page HTML rescue threw, but the RSS/Atom feed itself is proven.
+          feedRunOutcomeKind: "productive",
           skipSummary,
           rejectedItems,
           hardCaseQueueCandidates,
@@ -2428,6 +2460,7 @@ export async function ingestSource(
       failed: 0,
       feedUrl,
       feedFormat: parsedFeed.format,
+      feedRunOutcomeKind: "productive",
       skipSummary,
       rejectedItems,
       hardCaseQueueCandidates,
@@ -2442,12 +2475,18 @@ export async function ingestSource(
         feedUrl: preferredFeedUrl || preferredFrontPageUrl,
         feedFormat: null,
         deferredReason: "governor_deferred",
+        feedRunOutcomeKind: "governor_or_robots_defer",
         retryAt: null,
         skipSummary: emptySkipSummary(),
         rejectedItems: [],
         hardCaseQueueCandidates,
       };
     }
+    // Confirmed only when every attempted candidate feed URL returned an
+    // authoritative 404/410; any other non-ok status, empty-but-reachable
+    // parse, or thrown exception keeps this a plain nonproductive run.
+    const allCandidatesConfirmedGone = goneCandidateCount > 0 && ambiguousCandidateCount === 0;
+    const failureOutcomeKind: FeedRunOutcomeKind = allCandidatesConfirmedGone ? "invalid_feed" : "nonproductive";
     const isSecurityError = error instanceof SSRFError;
     await logAgentScan({
       sourceId,
@@ -2502,6 +2541,10 @@ export async function ingestSource(
               failed: 0,
               feedUrl: source.frontPageUrl,
               feedFormat: "html_fallback",
+              // The RSS/Atom feed path itself threw before proving any items;
+              // a front-page HTML rescue finding candidates is not evidence
+              // the feed mechanism works.
+              feedRunOutcomeKind: failureOutcomeKind,
               skipSummary: htmlFallback.skipSummary,
               rejectedItems: htmlFallback.rejectedItems,
               hardCaseQueueCandidates,
@@ -2539,6 +2582,7 @@ export async function ingestSource(
       feedUrl: preferredFeedUrl || preferredFrontPageUrl,
       feedFormat: null,
       deferredReason: rateLimitedRetryAt ? "rate_limited" : null,
+      feedRunOutcomeKind: rateLimitedRetryAt ? "rate_limited" : failureOutcomeKind,
       retryAt: rateLimitedRetryAt?.toISOString() || null,      skipSummary: redirectRetryAtIso
         ? { ...emptySkipSummary(), redirectRetryAt: redirectRetryAtIso }
         : emptySkipSummary(),

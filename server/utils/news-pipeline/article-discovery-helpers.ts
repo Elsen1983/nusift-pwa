@@ -38,6 +38,23 @@ import {
   STATIC_RETRY_AFTER_MIN_MS,
   type StaticDiscoveryRetryAfterSource,
 } from "./retry-after-policy";
+import {
+  collectMatchingObjects,
+  extractItemListEntries,
+  extractNextDataCandidates,
+  extractStructuredScriptBlocks,
+  getJsonLdTypes,
+  normalizeJsonLdType,
+  parseBoundedJson,
+  STRUCTURED_DATA_MAX_CANDIDATES,
+} from "./structured-data";
+import { normalizeArticleCanonicalIdentity } from "./article-identity";
+import {
+  lookupHttpValidatorCache,
+  recordHttpValidatorNotModified,
+  recordHttpValidatorSuccess,
+} from "./http-validator-cache";
+import { logAgentScan } from "./log";
 
 /** Agent 2 counts one logical request per safeFetch call; redirects remain one logical request. */
 export type DiscoveryNetworkTelemetry = Pick<
@@ -168,7 +185,9 @@ const MAX_SITEMAP_URLS = 40;
 const MAX_SITEMAP_INDEX_ENTRIES = 5;
 /** Extra slots for robots.txt-discovered sitemaps beyond the built-in paths. */
 const MAX_ROBOTS_SITEMAP_SLOTS = 3;
-const MAX_JSONLD_CANDIDATES = 20;
+/** Conditional-cache freshness window for leaf sitemap validators (Repair 13). */
+const SITEMAP_VALIDATOR_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const SITEMAP_RESOURCE_CLASS = "sitemap";
 
 /**
  * Utility path patterns shared across sitemap filtering, link extraction,
@@ -248,6 +267,16 @@ export const readStaticResponseHeader = (response: { headers?: unknown } | null,
   return typeof value === "string" ? value : null;
 };
 
+/**
+ * Result of a text fetch attempt: fresh content with any validator headers
+ * present, an authoritative "unchanged" (304), or no usable result (invalid
+ * target, non-2xx, rate limited, deferred/budget-exhausted).
+ */
+type SafeFetchTextResult =
+  | { kind: "text"; text: string; etag: string | null; lastModified: string | null }
+  | { kind: "not_modified" }
+  | { kind: "none" };
+
 const safeFetchText = async (
   url: string,
   targetOrigin: string,
@@ -255,7 +284,8 @@ const safeFetchText = async (
   requestBudget?: StaticDiscoveryRequestBudget,
   phase: "robots" | "sitemap" = "sitemap",
   governedContext?: StaticDiscoveryGovernedFetchContext,
-): Promise<string | null> => {
+  conditionalHeaders?: Record<string, string>,
+): Promise<SafeFetchTextResult> => {
   let urlObj: URL;
   let targetObj: URL;
   try {
@@ -264,42 +294,53 @@ const safeFetchText = async (
   } catch {
     // Invalid sitemap references are non-network rejections and must not
     // consume a logical request slot.
-    return null;
+    return { kind: "none" };
   }
 
   // Only HTTP(S) URLs can be passed to the SSRF-guard fetch path. Rejecting
   // other schemes here is a non-network validation outcome and must not spend
   // a logical request slot.
   if (!(["http:", "https:"].includes(urlObj.protocol) && ["http:", "https:"].includes(targetObj.protocol))) {
-    return null;
+    return { kind: "none" };
   }
 
   // Validate publisher scope before accounting or invoking safeFetch. A
   // robots.txt directive to an external host is ignored without spending the
   // target's budget or appearing as a publisher request failure.
   if (urlObj.hostname.replace(/^www\./, "") !== targetObj.hostname.replace(/^www\./, "")) {
-    return null;
+    return { kind: "none" };
   }
 
   try {
     return await governedSafeFetchAndParse(url, {
-      headers: { "User-Agent": USER_AGENT, Accept: "application/xml, text/xml, text/plain" },
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "application/xml, text/xml, text/plain",
+        ...conditionalHeaders,
+      },
       telemetry,
     }, governedContextForDiscovery(governedContext, phase, requestBudget), async (response) => {
       if (response.status === 429) {
         requestBudget?.recordRateLimit(phase, url, readStaticResponseHeader(response, "retry-after"));
         telemetry?.recordRateLimited(429);
-        return null;
+        return { kind: "none" as const };
       }
-      if (!response.ok) return null;
-      return (await decodeResponseText(response, { kind: phase === "sitemap" ? "xml" : "text" })).text;
+      if (response.status === 304) return { kind: "not_modified" as const };
+      if (!response.ok) return { kind: "none" as const };
+      const text = (await decodeResponseText(response, { kind: phase === "sitemap" ? "xml" : "text" })).text;
+      return {
+        kind: "text" as const,
+        text,
+        etag: readStaticResponseHeader(response, "etag"),
+        lastModified: readStaticResponseHeader(response, "last-modified"),
+      };
     });
   } catch (error) {
     if (error instanceof GovernedFetchDeferredError) throw error;
     if (error instanceof GovernedFetchRequestBudgetError) {
       requestBudget?.recordWorkSkipped(phase, url, "request budget exhausted");
     }
-    return null;
+    return { kind: "none" };
   }
 };
 
@@ -396,6 +437,8 @@ export async function discoverSitemapUrls(
   // Process sitemaps with index expansion
   const queue = [...sitemapCandidates];
   let processedCount = 0;
+  let conditionalCacheHits = 0;
+  let conditionalCacheMisses = 0;
 
   while (queue.length > 0 &&    processedCount < MAX_SITEMAP_INDEX_ENTRIES + SITEMAP_PATHS.length + MAX_ROBOTS_SITEMAP_SLOTS) {
     const sitemapUrl = queue.shift()!;
@@ -404,16 +447,48 @@ export async function discoverSitemapUrls(
     visitedSitemaps.add(normalized);
     processedCount += 1;
 
-    const xml = await safeFetchText(sitemapUrl, origin, telemetry, requestBudget, "sitemap", governedContext);
-    if (!xml) {
+    const resourceKey = `${SITEMAP_RESOURCE_CLASS}:${normalizeArticleCanonicalIdentity(sitemapUrl) ?? sitemapUrl}`;
+    const cachedValidator = await lookupHttpValidatorCache(resourceKey, governedContext?.db);
+    const conditionalHeaders: Record<string, string> = {};
+    if (cachedValidator?.etag) conditionalHeaders["If-None-Match"] = cachedValidator.etag;
+    if (cachedValidator?.lastModified) conditionalHeaders["If-Modified-Since"] = cachedValidator.lastModified;
+
+    const fetched = await safeFetchText(sitemapUrl, origin, telemetry, requestBudget, "sitemap", governedContext, conditionalHeaders);
+    if (fetched.kind === "none") {
       // The first confirmed sitemap 429 stops all later sitemap probes for
       // this target; continuing would amplify the publisher's rate limit.
       if (requestBudget?.rateLimitEvidence.some((e) => e.phase === "sitemap" && e.url === sitemapUrl)) break;
       continue;
     }
 
+    let xml: string;
+    if (fetched.kind === "not_modified") {
+      const cachedEntries = (cachedValidator?.parsedPayload as { entries?: unknown } | null)?.entries;
+      if (!Array.isArray(cachedEntries)) {
+        // A 304 with no usable cached content is a truthful cache miss, not
+        // fabricated content — treat this sitemap as unavailable this cycle.
+        conditionalCacheMisses += 1;
+        continue;
+      }
+      conditionalCacheHits += 1;
+      await recordHttpValidatorNotModified(resourceKey, SITEMAP_VALIDATOR_CACHE_TTL_MS, governedContext?.db).catch(() => {});
+      for (const entry of cachedEntries as SitemapEntry[]) {
+        if (seenUrls.has(entry.url)) continue;
+        seenUrls.add(entry.url);
+        allEntries.push(entry);
+        if (allEntries.length >= MAX_SITEMAP_URLS) {
+          await logSitemapConditionalCacheSavings(conditionalCacheHits, conditionalCacheMisses);
+          return allEntries;
+        }
+      }
+      continue;
+    }
+    xml = fetched.text;
+
     if (isSitemapIndex(xml)) {
-      // Sitemap index → enqueue child sitemaps
+      // Sitemap index → enqueue child sitemaps. Index pages are not cached;
+      // only leaf sitemaps carry the bounded parsed-entry payload worth
+      // reconstructing on a 304.
       const childUrls = extractSitemapLocs(xml);
       for (const child of childUrls.slice(0, MAX_SITEMAP_INDEX_ENTRIES)) {
         if (!visitedSitemaps.has(child.toLowerCase())) {
@@ -423,17 +498,43 @@ export async function discoverSitemapUrls(
       continue;
     }
 
-    // Regular sitemap → extract entries
+    // Regular sitemap → extract entries, then write through bounded
+    // validators + the minimum parsed result (never the raw XML).
     const entries = extractSitemapEntries(xml);
+    if (fetched.etag || fetched.lastModified) {
+      await recordHttpValidatorSuccess({
+        resourceKey,
+        resourceClass: SITEMAP_RESOURCE_CLASS,
+        etag: fetched.etag,
+        lastModified: fetched.lastModified,
+        parsedPayload: { entries: entries.slice(0, MAX_SITEMAP_URLS) },
+        ttlMs: SITEMAP_VALIDATOR_CACHE_TTL_MS,
+        db: governedContext?.db,
+      }).catch(() => {});
+    }
     for (const entry of entries) {
       if (seenUrls.has(entry.url)) continue;
       seenUrls.add(entry.url);
       allEntries.push(entry);
-      if (allEntries.length >= MAX_SITEMAP_URLS) return allEntries;
+      if (allEntries.length >= MAX_SITEMAP_URLS) {
+        await logSitemapConditionalCacheSavings(conditionalCacheHits, conditionalCacheMisses);
+        return allEntries;
+      }
     }
   }
 
+  await logSitemapConditionalCacheSavings(conditionalCacheHits, conditionalCacheMisses);
   return allEntries;
+}
+
+/** Bounded, human-readable record of actual conditional-cache request savings. */
+async function logSitemapConditionalCacheSavings(hits: number, misses: number): Promise<void> {
+  if (hits === 0 && misses === 0) return;
+  await logAgentScan({
+    status: "SITEMAP_CONDITIONAL_CACHE_SUMMARY",
+    executionTimeMs: 0,
+    errorLog: `Sitemap conditional cache: ${hits} hit(s) reused cached entries, ${misses} miss(es) fell back to a truthful cache miss.`,
+  }).catch(() => {});
 }
 
 /**
@@ -524,75 +625,95 @@ export type JsonLdArticle = {
   type: string;
 };
 
+const readJsonLdAuthorName = (item: Record<string, unknown>): string | undefined => {
+  const author = item.author;
+  if (typeof author === "string") return author;
+  if (author && typeof author === "object" && typeof (author as Record<string, unknown>).name === "string") {
+    return (author as Record<string, unknown>).name as string;
+  }
+  return undefined;
+};
+
+const readJsonLdUrl = (item: Record<string, unknown>, pageUrl: string): string | null => {
+  const rawUrl =
+    (typeof item.url === "string" && item.url) ||
+    (typeof item["@id"] === "string" && (item["@id"] as string)) ||
+    "";
+  if (!rawUrl) return null;
+  try {
+    return new URL(rawUrl, pageUrl).toString();
+  } catch {
+    return null;
+  }
+};
+
 /**
- * Parse JSON-LD blocks from HTML and extract article-type entities.
- *
- * Handles:
- * - Single objects and @graph arrays
- * - NewsArticle, Article, BlogPosting, Report, WebPage types
- * - Extracts url, headline, datePublished, description, author
+ * Extract article-link candidates from already-fetched HTML using the
+ * shared bounded structured-data authority (`structured-data.ts`). Reads,
+ * in order per script block up to the shared candidate cap:
+ * - JSON-LD Article/NewsArticle/BlogPosting/Report/WebPage objects
+ *   (including nested `@graph` arrays at any depth);
+ * - JSON-LD `ItemList.itemListElement` entries (breadcrumb/product/nav
+ *   listings rejected — see `extractItemListEntries`);
+ * - a `__NEXT_DATA__` script's `props.pageProps`, when it contains arrays of
+ *   objects with sufficient URL+title/date evidence.
+ * Every candidate still passes through the full existing URL policy, host
+ * verification, category scope, scoring, freshness, and dedupe pipeline
+ * downstream — this function only decides which URLs are worth evaluating.
  */
 export function extractJsonLdArticles(html: string, pageUrl: string): JsonLdArticle[] {
   const articles: JsonLdArticle[] = [];
   const seenUrls = new Set<string>();
 
-  // Match all <script type="application/ld+json"> blocks
-  const scriptRegex = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-  let scriptMatch: RegExpExecArray | null;
+  const pushArticle = (entry: JsonLdArticle): void => {
+    if (seenUrls.has(entry.url)) return;
+    seenUrls.add(entry.url);
+    articles.push(entry);
+  };
 
-  while ((scriptMatch = scriptRegex.exec(html)) !== null) {
-    const jsonText = scriptMatch[1]?.trim();
-    if (!jsonText) continue;
+  const blocks = extractStructuredScriptBlocks(html, { includeNextData: true });
 
-    try {
-      const parsed = JSON.parse(jsonText);
-      const items = Array.isArray(parsed) ? parsed : [parsed];
+  for (const block of blocks) {
+    if (articles.length >= STRUCTURED_DATA_MAX_CANDIDATES) break;
 
-      // Also handle @graph arrays
-      for (const item of items) {
-        if (item?.["@graph"] && Array.isArray(item["@graph"])) {
-          items.push(...item["@graph"]);
-        }
+    if (block.kind === "next-data") {
+      for (const candidate of extractNextDataCandidates(block.text, pageUrl)) {
+        pushArticle({ url: candidate.url, headline: candidate.title, datePublished: candidate.date, type: "NextData" });
+        if (articles.length >= STRUCTURED_DATA_MAX_CANDIDATES) break;
       }
-
-      for (const item of items) {
-        if (!item || typeof item !== "object") continue;
-
-        const itemType = typeof item["@type"] === "string"
-          ? item["@type"]
-          : Array.isArray(item["@type"]) ? item["@type"][0] : "";
-
-        // Normalize type (strip namespace prefix like "schema:NewsArticle")
-        const normalizedType = itemType.replace(/^[^:]*:/, "");
-        if (!JSONLD_ARTICLE_TYPES.has(normalizedType)) continue;
-
-        const rawUrl = item.url || item["@id"] || "";
-        let resolvedUrl: string;
-        try {
-          resolvedUrl = new URL(rawUrl, pageUrl).toString();
-        } catch {
-          continue;
-        }
-
-        if (seenUrls.has(resolvedUrl)) continue;
-        seenUrls.add(resolvedUrl);
-
-        articles.push({
-          url: resolvedUrl,
-          headline: typeof item.headline === "string" ? item.headline : undefined,
-          datePublished: typeof item.datePublished === "string" ? item.datePublished : undefined,
-          description: typeof item.description === "string" ? item.description : undefined,
-          author: typeof item.author === "string"
-            ? item.author
-            : item.author?.name || undefined,
-          type: normalizedType,
-        });
-
-        if (articles.length >= MAX_JSONLD_CANDIDATES) return articles;
-      }
-    } catch {
-      // Malformed JSON-LD — skip silently
       continue;
+    }
+
+    const parsed = parseBoundedJson(block.text);
+    if (parsed === null) continue;
+
+    const articleObjects = collectMatchingObjects(parsed, (record) =>
+      getJsonLdTypes(record["@type"]).some((type) => JSONLD_ARTICLE_TYPES.has(type)),
+    );
+    for (const item of articleObjects) {
+      const resolvedUrl = readJsonLdUrl(item, pageUrl);
+      if (!resolvedUrl) continue;
+      pushArticle({
+        url: resolvedUrl,
+        headline: typeof item.headline === "string" ? item.headline : undefined,
+        datePublished: typeof item.datePublished === "string" ? item.datePublished : undefined,
+        description: typeof item.description === "string" ? item.description : undefined,
+        author: readJsonLdAuthorName(item),
+        type: normalizeJsonLdType(item["@type"]),
+      });
+      if (articles.length >= STRUCTURED_DATA_MAX_CANDIDATES) break;
+    }
+    if (articles.length >= STRUCTURED_DATA_MAX_CANDIDATES) break;
+
+    for (const entry of extractItemListEntries(parsed)) {
+      let resolvedUrl: string;
+      try {
+        resolvedUrl = new URL(entry.url, pageUrl).toString();
+      } catch {
+        continue;
+      }
+      pushArticle({ url: resolvedUrl, headline: entry.name, type: "ItemList" });
+      if (articles.length >= STRUCTURED_DATA_MAX_CANDIDATES) break;
     }
   }
 
@@ -614,7 +735,8 @@ export type ArticleDiscoveryOutcomeStatus =
   | "rejected_out_of_scope"
   | "fetch_failed"
   | "governor_deferred"
-  | "detail_validation_failed";
+  | "detail_validation_failed"
+  | "known_article_prefiltered";
 
 export type ArticleDiscoveryCandidateOutcome = {
   url: string;

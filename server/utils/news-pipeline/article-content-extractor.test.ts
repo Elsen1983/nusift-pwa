@@ -2302,6 +2302,71 @@ describe("HTTP 202 interstitial/challenge classification", () => {
     }
   });
 
+  it("prefers a demonstrably more complete JSON-LD body over a weak-but-usable DOM body", async () => {
+    const makeParagraph = (chars: number) => "lorem ".repeat(Math.ceil(chars / 6)).trim();
+    // 2 short paragraphs, ~840 chars total — clears the DOM usability gate
+    // (2 paragraphs, >=800 chars) but is weak overall.
+    const weakDomBody = [makeParagraph(420), makeParagraph(420)]
+      .map((p) => `<p>${p}</p>`)
+      .join("\n  ");
+    // 3 long paragraphs, ~2100 chars total — well over 1.5x the DOM body's
+    // length with an equal-or-greater paragraph count.
+    const richJsonLdBody = [makeParagraph(700), makeParagraph(700), makeParagraph(700)].join("\n\n");
+
+    const html = articleHtml({
+      title: "Weak DOM, Strong JSON-LD",
+      body: weakDomBody,
+      jsonLd: `<script type="application/ld+json">
+        { "@type": "NewsArticle", "headline": "Weak DOM, Strong JSON-LD", "articleBody": ${JSON.stringify(richJsonLdBody)} }
+      </script>`,
+    });
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 950,
+      articleUrl: "https://example.com/weak-dom-strong-jsonld",
+      existingTitle: "Weak DOM, Strong JSON-LD",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diagnostics.bodySource).toBe("jsonld");
+      expect(result.bodyText!.length).toBeGreaterThan(weakDomBody.length);
+    }
+  });
+
+  it("keeps a strong DOM body over a shorter, usable-but-weaker JSON-LD body", async () => {
+    const makeParagraph = (chars: number) => "lorem ".repeat(Math.ceil(chars / 6)).trim();
+    const strongDomBody = defaultBody();
+    // 3 short paragraphs, ~600 chars total — usable on its own (3 paragraphs,
+    // >=500 chars) but well short of the strong DOM body above and short of
+    // 1.5x its length, so it must not replace it.
+    const shortJsonLdBody = [makeParagraph(200), makeParagraph(200), makeParagraph(200)].join("\n\n");
+
+    const html = articleHtml({
+      title: "Strong DOM, Weak JSON-LD",
+      body: strongDomBody,
+      jsonLd: `<script type="application/ld+json">
+        { "@type": "NewsArticle", "headline": "Strong DOM, Weak JSON-LD", "articleBody": ${JSON.stringify(shortJsonLdBody)} }
+      </script>`,
+    });
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 951,
+      articleUrl: "https://example.com/strong-dom-weak-jsonld",
+      existingTitle: "Strong DOM, Weak JSON-LD",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diagnostics.bodySource).not.toBe("jsonld");
+      expect(result.bodyText).toContain("first paragraph introduces");
+    }
+  });
+
   it("classifies an HTTP 202 with an EMPTY body as interstitial_or_challenge, not a plain failure", async () => {
     safeFetchMock.mockResolvedValue(makeResponse("", true, "text/html", 202));
 

@@ -28,3 +28,30 @@ The fix is complete only when:
 - the feed only returns publishable article rows;
 - provenance does not assert RSS origin unless it is actually known;
 - the tests cover real failure injection, not only mocked happy paths.
+
+## Current next-repair execution order
+
+The numeric filenames reflect when prompts were written, not the implementation
+dependency order. Execute the remaining work in this order:
+
+1. Repair 05 - cooldown-aware Agent 2 headless eligibility.
+2. Repair 11 - daily workflow stage isolation and truthful degradation.
+3. Repair 06 - stale claim and lease recovery integration.
+4. Repair 07 - poison-row isolation and attempt/claim accounting.
+5. Repair 15 - run productivity assertion and per-source funnel attribution.
+6. Repair 08 - shared charset detection and decoding.
+7. Repair 09 - Article identity and deduplication contract.
+8. Repair 10 - feed productivity demotion and HTTP 403 policy.
+9. Repair 12 - structured yield from already-fetched responses.
+10. Repair 13 - Agent 2 known-URL prefilter and conditional HTTP memory.
+11. Repair 14 - browser-last static fallback ladder.
+
+Do not reimplement capabilities already present in the current repository:
+
+- trusted JSON-LD `articleBody` extraction already exists, but Repair 12 may
+  improve its selection over a weak DOM body;
+- sitemap and news-sitemap discovery already exist and remain authoritative;
+- browser paths already block common heavy file extensions, while Repair 14
+  may extend this with tested `resourceType()`-based policy;
+- Article already has composite source/date and category/date indexes, which
+  Repair 09 must preserve rather than duplicate.

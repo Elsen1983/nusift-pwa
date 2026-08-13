@@ -74,6 +74,10 @@ const ESSENTIAL_AGENT_LOG_STATUSES = new Set([
   "A1_TARGETS_DEFERRED",
   // ── Discovery profile logging ────────────────────────────────────────
   "DISCOVERY_PROFILE_ACTIVATED",
+  // ── Feed-productivity CAS logging ──────────────────────────────────────
+  "FEED_PRODUCTIVITY_CAS_CONFLICT",
+  // ── Conditional HTTP memory logging ─────────────────────────────────────
+  "SITEMAP_CONDITIONAL_CACHE_SUMMARY",
 ]);
 
 const isPersistedAgentLogStatus = (status: string) =>

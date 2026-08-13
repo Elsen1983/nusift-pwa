@@ -398,6 +398,151 @@ describe("article-discovery-helpers", () => {
       expect(filtered.some((e) => e.url.includes("evil.com"))).toBe(false);
       expect(filtered.some((e) => e.url.includes("real-story"))).toBe(true);
     });
+
+    // ── Conditional HTTP memory (Repair 13) ────────────────────────────
+    const makeCacheDb = () => {
+      const rows = new Map<string, any>();
+      return {
+        db: {
+          httpValidatorCache: {
+            findUnique: async ({ where }: { where: { resourceKey: string } }) => rows.get(where.resourceKey) ?? null,
+            create: async ({ data }: { data: any }) => {
+              rows.set(data.resourceKey, { ...data });
+              return data;
+            },
+            updateMany: async ({ where, data }: { where: any; data: any }) => {
+              const row = rows.get(where.resourceKey);
+              if (!row || (where.version !== undefined && row.version !== where.version)) return { count: 0 };
+              const next = { ...row };
+              for (const [key, value] of Object.entries(data)) {
+                next[key] = value && typeof value === "object" && "increment" in (value as any)
+                  ? Number(next[key] ?? 0) + (value as any).increment
+                  : value;
+              }
+              rows.set(where.resourceKey, next);
+              return { count: 1 };
+            },
+          },
+        },
+        rows,
+      };
+    };
+
+    const xmlResponse = (body: string, headers: Record<string, string> = {}, status = 200) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
+      text: async () => body,
+    });
+
+    it("writes bounded validators and parsed entries on a fresh 200 with ETag", async () => {
+      const { discoverSitemapUrls } = await import("./article-discovery-helpers");
+      const { db, rows } = makeCacheDb();
+
+      const sitemapXml = `<?xml version="1.0"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+          <url><loc>https://example.com/news/2026/08/01/cached-story</loc></url>
+        </urlset>`;
+
+      safeFetchMock.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/sitemap.xml") {
+          return xmlResponse(sitemapXml, { etag: "\"v1\"" });
+        }
+        return makeResponse("", false);
+      });
+
+      const entries = await discoverSitemapUrls("https://example.com/", undefined, undefined, { db } as any);
+      expect(entries.some((e) => e.url.includes("cached-story"))).toBe(true);
+      const row = rows.get("sitemap:https://example.com/sitemap.xml");
+      expect(row?.etag).toBe("\"v1\"");
+      expect(row?.parsedPayload.entries.some((e: any) => e.url.includes("cached-story"))).toBe(true);
+    });
+
+    it("reuses cached entries on a 304 without needing a parseable body", async () => {
+      const { discoverSitemapUrls } = await import("./article-discovery-helpers");
+      const { db, rows } = makeCacheDb();
+      rows.set("sitemap:https://example.com/sitemap.xml", {
+        resourceKey: "sitemap:https://example.com/sitemap.xml",
+        resourceClass: "sitemap",
+        etag: "\"stable\"",
+        lastModified: null,
+        parsedPayload: { entries: [{ url: "https://example.com/news/2026/08/01/from-cache", lastmod: null }] },
+        payloadBytes: 64,
+        fetchedAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+        version: 0,
+      });
+
+      safeFetchMock.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/sitemap.xml") return xmlResponse("not parseable xml at all", {}, 304);
+        return makeResponse("", false);
+      });
+
+      const entries = await discoverSitemapUrls("https://example.com/", undefined, undefined, { db } as any);
+      expect(entries.map((e) => e.url)).toContain("https://example.com/news/2026/08/01/from-cache");
+    });
+
+    it("falls back to a truthful miss when a 304 arrives with no usable cached content", async () => {
+      const { discoverSitemapUrls } = await import("./article-discovery-helpers");
+      const { db } = makeCacheDb(); // empty — no prior cache entry
+
+      safeFetchMock.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/sitemap.xml") return xmlResponse("", {}, 304);
+        return makeResponse("", false);
+      });
+
+      const entries = await discoverSitemapUrls("https://example.com/", undefined, undefined, { db } as any);
+      expect(entries.some((e) => e.url.includes("example.com/news"))).toBe(false);
+    });
+
+    it("never overwrites a valid cache entry when a later fetch fails", async () => {
+      const { discoverSitemapUrls } = await import("./article-discovery-helpers");
+      const { db, rows } = makeCacheDb();
+      const goodRow = {
+        resourceKey: "sitemap:https://example.com/sitemap.xml",
+        resourceClass: "sitemap",
+        etag: "\"good\"",
+        lastModified: null,
+        parsedPayload: { entries: [{ url: "https://example.com/news/2026/08/01/still-good", lastmod: null }] },
+        payloadBytes: 64,
+        fetchedAt: new Date(),
+        expiresAt: new Date(Date.now() - 1), // already expired, so no conditional headers are sent
+        version: 0,
+      };
+      rows.set(goodRow.resourceKey, goodRow);
+
+      safeFetchMock.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/sitemap.xml") return xmlResponse("", {}, 500);
+        return makeResponse("", false);
+      });
+
+      await discoverSitemapUrls("https://example.com/", undefined, undefined, { db } as any);
+      expect(rows.get(goodRow.resourceKey)).toEqual(goodRow);
+    });
+
+    it("does not cache sitemap index pages, only leaf sitemaps", async () => {
+      const { discoverSitemapUrls } = await import("./article-discovery-helpers");
+      const { db, rows } = makeCacheDb();
+
+      const sitemapIndex = `<?xml version="1.0"?>
+        <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+          <sitemap><loc>https://example.com/sitemap-posts.xml</loc></sitemap>
+        </sitemapindex>`;
+      const childSitemap = `<?xml version="1.0"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+          <url><loc>https://example.com/news/2026/08/01/child-story</loc></url>
+        </urlset>`;
+
+      safeFetchMock.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/sitemap.xml") return xmlResponse(sitemapIndex, { etag: "\"index-v1\"" });
+        if (url === "https://example.com/sitemap-posts.xml") return xmlResponse(childSitemap, { etag: "\"child-v1\"" });
+        return makeResponse("", false);
+      });
+
+      await discoverSitemapUrls("https://example.com/", undefined, undefined, { db } as any);
+      expect(rows.has("sitemap:https://example.com/sitemap.xml")).toBe(false);
+      expect(rows.has("sitemap:https://example.com/sitemap-posts.xml")).toBe(true);
+    });
   });
 
   describe("filterSitemapArticleUrls", () => {
@@ -616,6 +761,103 @@ describe("article-discovery-helpers", () => {
 
       const articles = extractJsonLdArticles(html, "https://example.com/page");
       expect(articles[0]?.url).toBe("https://example.com/relative/path");
+    });
+
+    it("extracts article URLs from a valid ItemList.itemListElement", async () => {
+      const { extractJsonLdArticles } = await import("./article-discovery-helpers");
+
+      const html = `
+        <script type="application/ld+json">
+          {
+            "@type": "ItemList",
+            "itemListElement": [
+              { "@type": "ListItem", "position": 1, "item": { "url": "/news/first", "name": "First story" } },
+              { "@type": "ListItem", "position": 2, "url": "/news/second", "name": "Second story" }
+            ]
+          }
+        </script>`;
+
+      const articles = extractJsonLdArticles(html, "https://example.com/");
+      expect(articles.map((a) => a.url)).toEqual([
+        "https://example.com/news/first",
+        "https://example.com/news/second",
+      ]);
+      expect(articles.every((a) => a.type === "ItemList")).toBe(true);
+    });
+
+    it("rejects breadcrumb, navigation, and product ItemLists", async () => {
+      const { extractJsonLdArticles } = await import("./article-discovery-helpers");
+
+      const html = `
+        <script type="application/ld+json">
+          {
+            "@type": "BreadcrumbList",
+            "itemListElement": [
+              { "@type": "ListItem", "position": 1, "item": { "url": "/news", "name": "News" } }
+            ]
+          }
+        </script>
+        <script type="application/ld+json">
+          {
+            "@type": "ItemList",
+            "itemListElement": [
+              { "@type": "ListItem", "item": { "@type": "Product", "url": "/shop/widget" } }
+            ]
+          }
+        </script>`;
+
+      const articles = extractJsonLdArticles(html, "https://example.com/");
+      expect(articles).toEqual([]);
+    });
+
+    it("extracts candidates from a __NEXT_DATA__ script with sufficient evidence", async () => {
+      const { extractJsonLdArticles } = await import("./article-discovery-helpers");
+
+      const html = `
+        <script id="__NEXT_DATA__" type="application/json">
+          { "props": { "pageProps": { "articles": [
+            { "url": "/news/next-story", "title": "A Next.js story" }
+          ] } } }
+        </script>`;
+
+      const articles = extractJsonLdArticles(html, "https://example.com/");
+      expect(articles).toHaveLength(1);
+      expect(articles[0]?.url).toBe("https://example.com/news/next-story");
+      expect(articles[0]?.headline).toBe("A Next.js story");
+      expect(articles[0]?.type).toBe("NextData");
+    });
+
+    it("rejects __NEXT_DATA__ entries without sufficient title/date evidence", async () => {
+      const { extractJsonLdArticles } = await import("./article-discovery-helpers");
+
+      const html = `
+        <script id="__NEXT_DATA__" type="application/json">
+          { "props": { "pageProps": { "items": [ { "url": "/news/bare" } ] } } }
+        </script>`;
+
+      const articles = extractJsonLdArticles(html, "https://example.com/");
+      expect(articles).toEqual([]);
+    });
+
+    it("deduplicates the same URL across JSON-LD, ItemList, and __NEXT_DATA__ sources", async () => {
+      const { extractJsonLdArticles } = await import("./article-discovery-helpers");
+
+      const html = `
+        <script type="application/ld+json">
+          { "@type": "Article", "url": "https://example.com/news/shared", "headline": "Shared" }
+        </script>
+        <script type="application/ld+json">
+          {
+            "@type": "ItemList",
+            "itemListElement": [
+              { "@type": "ListItem", "item": { "url": "https://example.com/news/shared" } }
+            ]
+          }
+        </script>`;
+
+      const articles = extractJsonLdArticles(html, "https://example.com/");
+      expect(articles).toHaveLength(1);
+      expect(articles[0]?.type).toBe("Article");
     });
   });
 
