@@ -716,6 +716,8 @@
             "read": "Read"
         },
         "items": "items",
+        "receivedAt": "Received",
+        "receivedAtUnknown": "Unknown time",
         "empty": {
             "new": "No unread notifications right now.",
             "read": "No read notifications yet."

@@ -45,6 +45,13 @@
                 </div>
                 <div class="font-body text-[15px] font-medium text-on-surface break-words">{{ item.title }}</div>
                 <div class="text-sm text-on-surface-variant mt-1 break-words">{{ item.body }}</div>
+                <time
+                  class="mt-2 block text-xs text-on-surface-variant/80"
+                  :datetime="item.createdAt"
+                  :title="item.createdAt"
+                >
+                  {{ $t("notificationsPage.receivedAt") }}: {{ formatNotificationTimestamp(item.createdAt) }}
+                </time>
                 <div v-if="item.type === 'FRIEND_REQUEST'" class="flex gap-2 mt-3" @click.stop>
                   <button class="px-3 py-2 rounded-full bg-primary-container text-on-primary-container text-sm font-medium border border-primary-container/40 min-w-[4.5rem]" @click="acceptFriendRequest(item)">Accept</button>
                   <button class="px-3 py-2 rounded-full border border-outline-variant text-on-surface text-sm font-medium bg-surface-container min-w-[4.5rem]" @click="declineFriendRequest(item)">Decline</button>
@@ -98,6 +105,13 @@
                 </div>
                 <div class="font-body text-[15px] font-medium text-on-surface break-words">{{ item.title }}</div>
                 <div class="text-sm text-on-surface-variant mt-1 break-words">{{ item.body }}</div>
+                <time
+                  class="mt-2 block text-xs text-on-surface-variant/80"
+                  :datetime="item.createdAt"
+                  :title="item.createdAt"
+                >
+                  {{ $t("notificationsPage.receivedAt") }}: {{ formatNotificationTimestamp(item.createdAt) }}
+                </time>
               </div>
               <button class="p-2 rounded-full hover:bg-error/10 text-on-surface-variant hover:text-error" @click="deleteNotification(item.id)">
                 <span class="material-symbols-outlined text-[18px]">delete</span>
@@ -115,6 +129,8 @@
 
 <script setup lang="ts">
 definePageMeta({ layout: "app-layout" });
+
+const { locale, t } = useI18n();
 
 type NotificationItem = {
   id: string;
@@ -142,6 +158,21 @@ const { data, refresh } = await useAsyncData(
 const notifications = computed(() => data.value?.notifications || []);
 const newNotifications = computed(() => notifications.value.filter((item) => !item.readAt));
 const readNotifications = computed(() => notifications.value.filter((item) => !!item.readAt));
+
+function formatNotificationTimestamp(value: string) {
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return t("notificationsPage.receivedAtUnknown");
+
+  return new Intl.DateTimeFormat(locale.value, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
+  }).format(timestamp);
+}
 
 const syncUnreadCount = async () => {
   const res = await $fetch<{ unreadCount: number }>("/api/notifications");

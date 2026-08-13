@@ -759,6 +759,8 @@
             "read": "Olvasott"
         },
         "items": "elem",
+        "receivedAt": "Érkezett",
+        "receivedAtUnknown": "Ismeretlen időpont",
         "empty": {
             "new": "Jelenleg nincs olvasatlan értesítésed.",
             "read": "Még nincs olvasott értesítésed."
