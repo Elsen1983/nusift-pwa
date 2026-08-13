@@ -466,7 +466,12 @@ const parseLinkHeaderFeeds = (linkHeader: string | null, pageUrl: string) => {
   return results;
 };
 
-const detectCmsFingerprints = (
+/**
+ * Body/header-only CMS fingerprint detection — zero network requests, runs on
+ * already-fetched HTML. Exported for reuse as the Repair 14 "positive
+ * same-publisher evidence" gate before any WordPress REST fallback probe.
+ */
+export const detectCmsFingerprints = (
   body: string,
   pageUrl: string,
   headers: Headers,

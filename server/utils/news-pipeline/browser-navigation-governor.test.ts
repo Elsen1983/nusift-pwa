@@ -296,6 +296,43 @@ describe("browser navigation governor contract", () => {
     expect(stored.length).toBeLessThan(700);
   });
 
+  it("records bounded allowedSubrequests alongside blockedHeavyResources (Repair 14)", async () => {
+    const page = makePage(async () => response(200, "https://example.com/article"));
+
+    const navigation = await startGovernedBrowserNavigation({
+      page,
+      url: "https://example.com/article",
+      context,
+      gotoOptions: {},
+      getBlockedHeavyResources: () => 3,
+      getAllowedSubrequests: () => 12,
+    });
+    expect(navigation.allowed).toBe(true);
+    if (!navigation.allowed) return;
+    await navigation.complete();
+
+    expect(navigation.evidence).toMatchObject({
+      blockedHeavyResources: 3,
+      allowedSubrequests: 12,
+    });
+  });
+
+  it("defaults allowedSubrequests to 0 when no callback is supplied", async () => {
+    const page = makePage(async () => response(200, "https://example.com/article"));
+
+    const navigation = await startGovernedBrowserNavigation({
+      page,
+      url: "https://example.com/article",
+      context,
+      gotoOptions: {},
+    });
+    expect(navigation.allowed).toBe(true);
+    if (!navigation.allowed) return;
+    await navigation.complete();
+
+    expect(navigation.evidence.allowedSubrequests).toBe(0);
+  });
+
   it("allows another hostname after one publisher is denied", async () => {
     governor.acquire.mockImplementation(async ({ url }: { url: string }) => {
       const host = new URL(url).hostname;

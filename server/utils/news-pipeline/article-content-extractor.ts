@@ -52,6 +52,17 @@ import { collectMatchingObjects, getJsonLdTypes } from "./structured-data";
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_HTML_BYTES = 2_000_000; // 2 MB cap on downloaded HTML
 const MAX_BODY_TEXT_CHARS = 50_000; // cap stored body text
+// A publisher-declared amphtml alternate is always in <head>; bounding the
+// search keeps this a cheap regex scan even on a very large page.
+const AMP_LINK_SEARCH_BOUND_CHARS = 100_000;
+/** Content-quality failures an AMP alternate can plausibly fix. Never network/
+ * access-level reasons — a static 403/429/paywall/interstitial must not
+ * trigger further same-host fallback (Repair 14 requirement 4). */
+const AMP_RETRY_ELIGIBLE_REASONS: ReadonlySet<string> = new Set([
+  "no_article_text",
+  "too_short",
+  "parse_error",
+]);
 
 const USER_AGENT = NUSIFT_CRAWLER_USER_AGENT;
 
@@ -295,6 +306,12 @@ export interface ExtractArticleContentInput {
   telemetry?: StageBatchProbe;
   /** Optional Prompt 17C context; omitted legacy callers remain ungoverned. */
   governedFetchContext?: import("./governed-fetch").GovernedFetchContext;
+  /**
+   * Internal recursion guard for the Repair 14 AMP-alternate retry. Never set
+   * by external callers — bounds the retry to at most one extra fetch per
+   * article and prevents an AMP page's own amphtml link from looping.
+   */
+  isAmpRetry?: boolean;
 }
 
 /** Compact summary of a candidate container for diagnostics. */
@@ -3457,6 +3474,30 @@ export async function extractArticleContentFromHtml(
   }
 }
 
+const AMP_LINK_RE =
+  /<link\b[^>]*\brel=["']amphtml["'][^>]*\bhref=["']([^"']+)["'][^>]*>|<link\b[^>]*\bhref=["']([^"']+)["'][^>]*\brel=["']amphtml["'][^>]*>/i;
+
+/**
+ * Find a publisher-declared `<link rel="amphtml">` alternate in already-
+ * fetched HTML (no network request). Only a validated absolute http(s) URL,
+ * distinct from the page itself, is returned — never a guessed AMP URL
+ * pattern.
+ */
+function findValidatedAmpAlternate(html: string, pageUrl: string): string | null {
+  const match = AMP_LINK_RE.exec(html.slice(0, AMP_LINK_SEARCH_BOUND_CHARS));
+  const raw = match?.[1] || match?.[2];
+  if (!raw) return null;
+  try {
+    const resolved = new URL(raw, pageUrl);
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") return null;
+    const normalized = resolved.toString();
+    if (normalized === pageUrl) return null;
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Extract article content from a URL using HTTP fetch + jsdom DOM parsing.
  *
@@ -3540,6 +3581,22 @@ export async function extractArticleContentFromUrl(
     method: "http-dom",
   });
   const result = input.telemetry ? await input.telemetry.timed("extraction", extract) : await extract();
+
+  // Repair 14: a publisher-declared AMP alternate can rescue a genuine
+  // content-quality failure (thin/missing body) using the HTML we already
+  // fetched — no extra request unless a validated amphtml link is found.
+  // Never attempted for network/access-level failures, and never more than
+  // once per article (isAmpRetry guard).
+  if (!result.ok && !input.isAmpRetry && AMP_RETRY_ELIGIBLE_REASONS.has(result.rejectedReason)) {
+    const ampUrl = findValidatedAmpAlternate(html, fetchResult.resolvedUrl || articleUrl);
+    if (ampUrl) {
+      const ampResult = await extractArticleContentFromUrl({ ...input, articleUrl: ampUrl, isAmpRetry: true });
+      if (ampResult.ok) {
+        return { ...ampResult, qualitySignals: [...ampResult.qualitySignals, "amp_alternate_used"] };
+      }
+    }
+  }
+
   const resultWithTransport = {
     ...result,
     qualitySignals: [...result.qualitySignals, ...(fetchResult.qualitySignals || [])],

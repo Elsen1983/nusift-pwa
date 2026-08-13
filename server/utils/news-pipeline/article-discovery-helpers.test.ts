@@ -211,6 +211,119 @@ describe("article-discovery-helpers", () => {
     expect(isWithinFreshnessWindow(threeDaysAgo)).toBe(true);
   });
 
+  // ── Ordered Static Fallback Ladder (Repair 14) ──────────────────────────
+
+  describe("nextStaticFallbackRung", () => {
+    const baseState = {
+      linkCount: 0,
+      sufficiencyThreshold: 20,
+      governorDeferred: false,
+      rateLimited: false,
+      budgetRemaining: 10,
+      sitemapProbed: false,
+      wordPressPositiveEvidence: false,
+    };
+
+    it("returns sitemap first when evidence is insufficient and sitemap not yet probed", async () => {
+      const { nextStaticFallbackRung } = await import("./article-discovery-helpers");
+      expect(nextStaticFallbackRung(baseState)).toBe("sitemap");
+    });
+
+    it("returns wordpress_rest after sitemap has been probed and positive evidence exists", async () => {
+      const { nextStaticFallbackRung } = await import("./article-discovery-helpers");
+      expect(nextStaticFallbackRung({ ...baseState, sitemapProbed: true, wordPressPositiveEvidence: true })).toBe("wordpress_rest");
+    });
+
+    it("returns done after sitemap has been probed without positive WordPress evidence", async () => {
+      const { nextStaticFallbackRung } = await import("./article-discovery-helpers");
+      expect(nextStaticFallbackRung({ ...baseState, sitemapProbed: true, wordPressPositiveEvidence: false })).toBe("done");
+    });
+
+    it("returns done once evidence is already sufficient, even before sitemap is probed", async () => {
+      const { nextStaticFallbackRung } = await import("./article-discovery-helpers");
+      expect(nextStaticFallbackRung({ ...baseState, linkCount: 20 })).toBe("done");
+    });
+
+    it("returns done when governor-deferred, regardless of other state", async () => {
+      const { nextStaticFallbackRung } = await import("./article-discovery-helpers");
+      expect(nextStaticFallbackRung({ ...baseState, governorDeferred: true })).toBe("done");
+    });
+
+    it("returns done when rate-limited, regardless of other state", async () => {
+      const { nextStaticFallbackRung } = await import("./article-discovery-helpers");
+      expect(nextStaticFallbackRung({ ...baseState, rateLimited: true })).toBe("done");
+    });
+
+    it("returns done when no request budget remains", async () => {
+      const { nextStaticFallbackRung } = await import("./article-discovery-helpers");
+      expect(nextStaticFallbackRung({ ...baseState, budgetRemaining: 0 })).toBe("done");
+    });
+  });
+
+  describe("discoverWordPressRestCandidates", () => {
+    const withRobotsAllowed = (impl: (url: string) => any) => async (url: string) => {
+      if (url === "https://example.com/robots.txt") return makeResponse("");
+      return impl(url);
+    };
+
+    it("returns bounded candidates from a single page of positive WordPress REST results", async () => {
+      const { discoverWordPressRestCandidates } = await import("./article-discovery-helpers");
+      const posts = [
+        { id: 1, link: "https://example.com/news/wp-story-one", title: { rendered: "WP Story One" }, date: "2026-08-01T00:00:00" },
+        { id: 2, link: "https://example.com/news/wp-story-two", title: "WP Story Two", date: "2026-08-02T00:00:00" },
+      ];
+      safeFetchMock.mockImplementation(withRobotsAllowed((url) => {
+        if (url.includes("/wp-json/wp/v2/posts") && url.includes("page=1")) {
+          return makeResponse(JSON.stringify(posts));
+        }
+        return makeResponse("[]");
+      }));
+
+      const candidates = await discoverWordPressRestCandidates("https://example.com/");
+      expect(candidates.map((c) => c.url)).toEqual([
+        "https://example.com/news/wp-story-one",
+        "https://example.com/news/wp-story-two",
+      ]);
+      expect(candidates[0]?.headline).toBe("WP Story One");
+      expect(candidates.every((c) => c.type === "WordPressRest")).toBe(true);
+    });
+
+    it("stops on the first non-2xx response without retrying", async () => {
+      const { discoverWordPressRestCandidates } = await import("./article-discovery-helpers");
+      let calls = 0;
+      safeFetchMock.mockImplementation(withRobotsAllowed(() => {
+        calls += 1;
+        return makeResponse("", false);
+      }));
+
+      const candidates = await discoverWordPressRestCandidates("https://example.com/");
+      expect(candidates).toEqual([]);
+      expect(calls).toBe(1);
+    });
+
+    it("never exceeds the bounded page count", async () => {
+      const { discoverWordPressRestCandidates } = await import("./article-discovery-helpers");
+      let calls = 0;
+      safeFetchMock.mockImplementation(withRobotsAllowed((url) => {
+        calls += 1;
+        const pageMatch = /page=(\d+)/.exec(url);
+        const page = pageMatch ? Number(pageMatch[1]) : 1;
+        // Always return a full page so pagination would continue forever
+        // without a hard page-count bound.
+        const fullPage = Array.from({ length: 20 }, (_, i) => ({
+          id: page * 100 + i,
+          link: `https://example.com/news/wp-story-${page}-${i}`,
+          title: `Story ${page}-${i}`,
+          date: "2026-08-01T00:00:00",
+        }));
+        return makeResponse(JSON.stringify(fullPage));
+      }));
+
+      await discoverWordPressRestCandidates("https://example.com/");
+      expect(calls).toBeLessThanOrEqual(2);
+    });
+  });
+
   // ── Sitemap Discovery ──────────────────────────────────────────────────
 
   describe("discoverSitemapUrls", () => {

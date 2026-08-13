@@ -69,7 +69,7 @@ export type StaticDiscoveryGovernedFetchContext = Omit<GovernedFetchContext, "ag
 
 const governedContextForDiscovery = (
   context: StaticDiscoveryGovernedFetchContext | undefined,
-  purpose: "robots" | "sitemap" | "article_detail",
+  purpose: "robots" | "sitemap" | "article_detail" | "wordpress_rest",
   requestBudget?: StaticDiscoveryRequestBudget,
 ): GovernedFetchContext => ({
   ...context,
@@ -86,7 +86,7 @@ const governedContextForDiscovery = (
     : undefined,
 });
 
-export type StaticDiscoveryRequestPhase = "listing" | "robots" | "sitemap" | "article_detail";
+export type StaticDiscoveryRequestPhase = "listing" | "robots" | "sitemap" | "article_detail" | "wordpress_rest";
 export type StaticDiscoveryRateLimitEvidence = {
   phase: StaticDiscoveryRequestPhase;
   url: string;
@@ -188,6 +188,10 @@ const MAX_ROBOTS_SITEMAP_SLOTS = 3;
 /** Conditional-cache freshness window for leaf sitemap validators (Repair 13). */
 const SITEMAP_VALIDATOR_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const SITEMAP_RESOURCE_CLASS = "sitemap";
+/** Bounded WordPress REST fallback (Repair 14) — only probed on positive same-publisher CMS evidence. */
+const WORDPRESS_REST_PAGE_SIZE = 20;
+const WORDPRESS_REST_MAX_PAGES = 2;
+const WORDPRESS_REST_FIELDS = "id,link,title,date";
 
 /**
  * Utility path patterns shared across sitemap filtering, link extraction,
@@ -537,6 +541,120 @@ async function logSitemapConditionalCacheSavings(hits: number, misses: number): 
   }).catch(() => {});
 }
 
+// ─── Ordered Static Fallback Ladder (Repair 14) ────────────────────────────
+
+export type StaticFallbackRung = "sitemap" | "wordpress_rest" | "done";
+
+export type StaticFallbackState = {
+  /** Links already gathered from listing + (when already probed) sitemap/WP. */
+  linkCount: number;
+  /** The same bounded sufficiency threshold discoverArticlesFromTarget already computes. */
+  sufficiencyThreshold: number;
+  governorDeferred: boolean;
+  rateLimited: boolean;
+  budgetRemaining: number;
+  sitemapProbed: boolean;
+  /** From detectCmsFingerprints() on already-fetched listing HTML — zero new requests to compute. */
+  wordPressPositiveEvidence: boolean;
+};
+
+/**
+ * One pure, testable order for Agent 2's static fallback ladder: sitemap
+ * before WordPress REST, both skipped once evidence is already sufficient or
+ * the host is deferred/rate-limited/out of budget. Browser fallback (the
+ * ladder's final rung) is deliberately not this function's responsibility —
+ * it stays owned by the existing, unmodified headless-eligibility/queue
+ * machinery, which only ever runs after this function returns "done".
+ */
+export function nextStaticFallbackRung(state: StaticFallbackState): StaticFallbackRung {
+  if (state.governorDeferred || state.rateLimited || state.budgetRemaining <= 0) return "done";
+  if (state.linkCount >= state.sufficiencyThreshold) return "done";
+  if (!state.sitemapProbed) return "sitemap";
+  if (state.wordPressPositiveEvidence) return "wordpress_rest";
+  return "done";
+}
+
+// ─── WordPress REST Fallback (Repair 14) ───────────────────────────────────
+
+type WordPressRestPost = {
+  id?: number;
+  link?: string;
+  title?: { rendered?: string } | string;
+  date?: string;
+};
+
+const readWordPressTitle = (raw: WordPressRestPost["title"]): string | undefined => {
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object" && typeof raw.rendered === "string") return raw.rendered;
+  return undefined;
+};
+
+/**
+ * Bounded WordPress REST discovery. Only ever called by the caller after
+ * positive same-publisher CMS evidence (detectCmsFingerprints) — this
+ * function itself does not gate on that, it just fetches. Stops on the first
+ * non-2xx response (403/429/5xx) without retrying, and never overshoots the
+ * page-size/page-count bounds.
+ */
+export async function discoverWordPressRestCandidates(
+  targetUrl: string,
+  telemetry?: DiscoveryNetworkTelemetry,
+  requestBudget?: StaticDiscoveryRequestBudget,
+  governedContext?: StaticDiscoveryGovernedFetchContext,
+): Promise<JsonLdArticle[]> {
+  const origin = new URL(targetUrl).origin;
+  const candidates: JsonLdArticle[] = [];
+  const seenUrls = new Set<string>();
+
+  for (let page = 1; page <= WORDPRESS_REST_MAX_PAGES; page += 1) {
+    const requestUrl = `${origin}/wp-json/wp/v2/posts?per_page=${WORDPRESS_REST_PAGE_SIZE}&page=${page}&_fields=${WORDPRESS_REST_FIELDS}`;
+    let posts: WordPressRestPost[] | null = null;
+    try {
+      posts = await governedSafeFetchAndParse(requestUrl, {
+        headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+        telemetry,
+      }, governedContextForDiscovery(governedContext, "wordpress_rest", requestBudget), async (response) => {
+        if (response.status === 429) {
+          requestBudget?.recordRateLimit("wordpress_rest", requestUrl, readStaticResponseHeader(response, "retry-after"));
+          telemetry?.recordRateLimited(429);
+          return null;
+        }
+        // 403/other non-2xx stops the ladder for this host without retrying —
+        // never treated as evidence to escalate to browser.
+        if (!response.ok) return null;
+        const text = (await decodeResponseText(response, { kind: "text" })).text;
+        const parsed = parseBoundedJson(text);
+        return Array.isArray(parsed) ? (parsed as WordPressRestPost[]) : null;
+      });
+    } catch (error) {
+      if (error instanceof GovernedFetchDeferredError) throw error;
+      if (error instanceof GovernedFetchRequestBudgetError) {
+        requestBudget?.recordWorkSkipped("wordpress_rest", requestUrl, "request budget exhausted");
+      }
+      break;
+    }
+
+    if (!posts || posts.length === 0) break;
+
+    for (const post of posts) {
+      if (typeof post.link !== "string" || !post.link) continue;
+      if (seenUrls.has(post.link)) continue;
+      seenUrls.add(post.link);
+      candidates.push({
+        url: post.link,
+        headline: readWordPressTitle(post.title),
+        datePublished: typeof post.date === "string" ? post.date : undefined,
+        type: "WordPressRest",
+      });
+      if (candidates.length >= WORDPRESS_REST_PAGE_SIZE * WORDPRESS_REST_MAX_PAGES) return candidates;
+    }
+
+    if (posts.length < WORDPRESS_REST_PAGE_SIZE) break; // last page
+  }
+
+  return candidates;
+}
+
 /**
  * Filter sitemap entries to only article-like URLs.
  * Uses the same domain + path heuristics as the listing page link filter.
@@ -722,7 +840,7 @@ export function extractJsonLdArticles(html: string, pageUrl: string): JsonLdArti
 
 // ─── Candidate Outcome Types ──────────────────────────────────────────────
 
-export type ArticleDiscoverySourceKind = "listing" | "sitemap" | "jsonld" | "browser";
+export type ArticleDiscoverySourceKind = "listing" | "sitemap" | "jsonld" | "browser" | "wordpress";
 
 export type ArticleDiscoveryOutcomeStatus =
   | "accepted"
@@ -1483,6 +1601,7 @@ const resolveSourceKindFromSourcePageUrl = (spu: string): ArticleDiscoverySource
   if (spu.startsWith("sitemap:")) return "sitemap";
   if (spu.startsWith("jsonld:")) return "jsonld";
   if (spu.startsWith("browser:")) return "browser";
+  if (spu.startsWith("wordpress:")) return "wordpress";
   return "listing";
 };
 
@@ -1624,9 +1743,10 @@ export async function evaluateArticleLinkCandidateFromExtractedMetadata(
     };
   }
 
-  // Category scope check is preserved only for sitemap/jsonld sources, matching
-  // the behaviour of the original static path.
-  if (categoryId && (sourcePageUrl.startsWith("sitemap:") || sourcePageUrl.startsWith("jsonld:"))) {
+  // Category scope check is preserved only for sitemap/jsonld/wordpress
+  // sources — each is a site-wide URL enumeration needing the same
+  // category-path scoping, matching the behaviour of the original static path.
+  if (categoryId && (sourcePageUrl.startsWith("sitemap:") || sourcePageUrl.startsWith("jsonld:") || sourcePageUrl.startsWith("wordpress:"))) {
     const categoryPath = targetUrl.replace(/\/+$/, "").replace(/^https?:\/\/[^/]+/, "") || "/";
     const articlePath = canonicalUrl.replace(/\/+$/, "").replace(/^https?:\/\/[^/]+/, "") || "/";
     if (categoryPath !== "/" && !(articlePath === categoryPath || articlePath.startsWith(`${categoryPath}/`))) {

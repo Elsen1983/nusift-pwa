@@ -52,6 +52,7 @@ import {
   type BrowserNavigationGovernorContext,
   type BrowserNavigationLease,
 } from "./browser-navigation-governor";
+import { createResourceBlockingRouteHandler } from "./browser-resource-policy";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -871,7 +872,7 @@ export async function discoverArticleLinksWithBrowser(input: {
   }
 
   let navigation: Awaited<ReturnType<typeof startGovernedBrowserNavigation>> | null = null;
-  let blockedHeavyResources = 0;
+  const resourceRoute = createResourceBlockingRouteHandler();
   try {
     const context = await browser.newContext({
       userAgent: BROWSER_USER_AGENT,
@@ -882,20 +883,16 @@ export async function discoverArticleLinksWithBrowser(input: {
     let blockedReason: string | undefined;
     let renderedUrl: string | undefined;
 
-    // Block heavy resources to speed up rendering
-    await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,mp4,mp3,woff,woff2,ttf}", (route: any) =>
-      {
-        blockedHeavyResources += 1;
-        return route.abort();
-      },
-    );
+    // Block heavy resources to speed up rendering, resourceType()-aware.
+    await page.route("**/*", resourceRoute.handler);
 
     navigation = await startGovernedBrowserNavigation({
       page,
       url: input.targetUrl,
       context: governorContext,
       lease: preflight.lease,
-      getBlockedHeavyResources: () => blockedHeavyResources,
+      getBlockedHeavyResources: resourceRoute.getBlockedCount,
+      getAllowedSubrequests: resourceRoute.getAllowedCount,
       gotoOptions: {
         waitUntil: "domcontentloaded",
         timeout: timeoutMs,
@@ -1566,7 +1563,7 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: BrowserArti
   let context: any = null;
   let page: any = null;
   let navigation: Awaited<ReturnType<typeof startGovernedBrowserNavigation>> | null = null;
-  let blockedHeavyResources = 0;
+  const resourceRoute = createResourceBlockingRouteHandler();
   try {
     context = await browser.newContext({
       userAgent: BROWSER_USER_AGENT,
@@ -1574,12 +1571,8 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: BrowserArti
     });
     page = await context.newPage();
 
-    // Block heavy resources just like the listing browser path.
-    await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,mp4,mp3,woff,woff2,ttf}", (route: any) => {
-      blockedHeavyResources += 1;
-      return route.abort();
-    },
-    );
+    // Block heavy resources just like the listing browser path, resourceType()-aware.
+    await page.route("**/*", resourceRoute.handler);
 
     // Context/page setup and route registration also consume the target budget.
     // Recalculate immediately before navigation so the page timeout cannot be
@@ -1599,7 +1592,8 @@ export async function evaluateArticleLinkCandidateWithBrowser(input: BrowserArti
       url: articleUrl,
       context: governorContext,
       lease: navigationLease,
-      getBlockedHeavyResources: () => blockedHeavyResources,
+      getBlockedHeavyResources: resourceRoute.getBlockedCount,
+      getAllowedSubrequests: resourceRoute.getAllowedCount,
       gotoOptions: { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs },
     });
     if (!navigation.allowed) {

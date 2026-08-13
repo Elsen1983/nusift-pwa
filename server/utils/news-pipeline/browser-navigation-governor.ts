@@ -31,6 +31,8 @@ export type BrowserNavigationEvidence = {
   firstPartySubrequests: number;
   thirdPartySubrequests: number;
   blockedHeavyResources: number;
+  /** Repair 14: subrequests explicitly allowed through the resourceType()-aware route handler. */
+  allowedSubrequests: number;
   mainDocumentStatus: number | null;
   publisherDomain429Observed: boolean;
   authoritativePublisher429: boolean;
@@ -80,6 +82,7 @@ const makeEvidence = (decision: string, domainKey: string | null): BrowserNaviga
   firstPartySubrequests: 0,
   thirdPartySubrequests: 0,
   blockedHeavyResources: 0,
+  allowedSubrequests: 0,
   mainDocumentStatus: null,
   publisherDomain429Observed: false,
   authoritativePublisher429: false,
@@ -195,6 +198,8 @@ export async function startGovernedBrowserNavigation(input: {
   context: BrowserNavigationGovernorContext;
   lease?: BrowserNavigationLease;
   getBlockedHeavyResources?: () => number;
+  /** Repair 14: bounded count of subrequests explicitly allowed through the resourceType()-aware route handler. */
+  getAllowedSubrequests?: () => number;
 }): Promise<GovernedBrowserNavigationResult> {
   const robots = input.context.robotsPolicy === "skip"
     ? { allowed: true, decision: "allowed" as const, status: "no_policy" as const, reason: "robots_test_bypass", domainKey: domainKeyForUrl(input.url), cacheHit: false, sitemapUrls: [] }
@@ -283,6 +288,10 @@ export async function startGovernedBrowserNavigation(input: {
     evidence.blockedHeavyResources = Math.min(
       MAX_NAVIGATION_REQUEST_COUNT,
       Math.max(0, Math.floor(input.getBlockedHeavyResources?.() ?? evidence.blockedHeavyResources)),
+    );
+    evidence.allowedSubrequests = Math.min(
+      MAX_NAVIGATION_REQUEST_COUNT,
+      Math.max(0, Math.floor(input.getAllowedSubrequests?.() ?? evidence.allowedSubrequests)),
     );
     try {
       await completeOrReleaseLease(

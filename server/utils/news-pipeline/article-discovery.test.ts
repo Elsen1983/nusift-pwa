@@ -855,6 +855,78 @@ describe("article-discovery", () => {
     expect(result.outcomeSummary.byStatus["known_article_prefiltered"]).toBeUndefined();
   });
 
+  it("static fallback ladder: probes WordPress REST only after sitemap, on positive fingerprint evidence", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+    const recentDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    // Sparse listing (no article links) with a WordPress generator meta tag.
+    const listing = `
+      <html><head><meta name="generator" content="WordPress 6.4" /></head><body></body></html>
+    `;
+    const detailPage = `
+      <html><head><title>WP REST story title here today</title>
+      <meta property="article:published_time" content="${recentDate}" /></head>
+      <body><p>Body content long enough to be meaningful for extraction.</p></body></html>
+    `;
+    const wpPosts = [
+      { id: 1, link: "https://example.com/news/wp-rest-story", title: { rendered: "WP REST story title here today" }, date: recentDate },
+    ];
+
+    const fetchedUrls: string[] = [];
+    safeFetchMock.mockImplementation(async (url: string) => {
+      fetchedUrls.push(url);
+      if (url === "https://example.com/") return makeResponse(listing);
+      if (url.includes("/wp-json/wp/v2/posts")) return makeResponse(JSON.stringify(wpPosts));
+      if (url === "https://example.com/news/wp-rest-story") return makeResponse(detailPage);
+      return makeResponse("", false);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    expect(result.discoverySources.wordPressUrls).toBe(1);
+    expect(result.candidates.map((c) => c.canonicalUrl)).toEqual(["https://example.com/news/wp-rest-story"]);
+    // Sitemap was probed before WordPress (ladder order).
+    const sitemapIndex = fetchedUrls.findIndex((u) => u.endsWith("/sitemap.xml"));
+    const wpIndex = fetchedUrls.findIndex((u) => u.includes("/wp-json/wp/v2/posts"));
+    expect(sitemapIndex).toBeGreaterThanOrEqual(0);
+    expect(wpIndex).toBeGreaterThan(sitemapIndex);
+  });
+
+  it("static fallback ladder: never probes wp-json on a non-WordPress page", async () => {
+    const { discoverArticlesFromTarget } = await import("./article-discovery");
+
+    // Sparse listing with no CMS fingerprint at all.
+    const listing = `<html><head><title>Plain site</title></head><body></body></html>`;
+
+    const fetchedUrls: string[] = [];
+    safeFetchMock.mockImplementation(async (url: string) => {
+      fetchedUrls.push(url);
+      if (url === "https://example.com/") return makeResponse(listing);
+      return makeResponse("", false);
+    });
+
+    const result = await discoverArticlesFromTarget({
+      targetType: "source",
+      sourceId: "source-1",
+      targetUrl: "https://example.com/",
+      rssStatus: "NO_RSS_FOUND",
+      currentFeedProductive: false,
+      consecutiveNonProductiveRuns: 0,
+      mediaName: "Example",
+    });
+
+    expect(result.discoverySources.wordPressUrls).toBe(0);
+    expect(fetchedUrls.some((u) => u.includes("wp-json"))).toBe(false);
+  });
+
   it("filters utility path URLs at link extraction (not in outcomes)", async () => {
     const { discoverArticlesFromTarget } = await import("./article-discovery");
 

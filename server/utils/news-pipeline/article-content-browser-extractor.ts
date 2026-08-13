@@ -37,6 +37,7 @@ import {
   createAgent3BrowserSession,
   type Agent3BrowserSession,
 } from "./agent3-browser-session";
+import { createResourceBlockingRouteHandler } from "./browser-resource-policy";
 import { GovernedFetchDeferredError } from "./governed-fetch";
 
 /**
@@ -161,20 +162,14 @@ export async function extractArticleContentWithBrowser(
 
   let navigation: Awaited<ReturnType<typeof startGovernedBrowserNavigation>> | null = null;
   let pageLease: Awaited<ReturnType<Agent3BrowserSession["openPage"]>> | null = null;
-  let blockedHeavyResources = 0;
+  const resourceRoute = createResourceBlockingRouteHandler();
   let retireContext = false;
   try {
     pageLease = await browserSession.openPage(articleUrl);
     const page = pageLease.page;
 
-    // Block heavy resources to speed up rendering
-    await page.route(
-      "**/*.{png,jpg,jpeg,gif,svg,webp,mp4,mp3,woff,woff2,ttf,eot}",
-      (route: any) => {
-        blockedHeavyResources += 1;
-        return route.abort();
-      },
-    );
+    // Block heavy resources to speed up rendering, resourceType()-aware.
+    await page.route("**/*", resourceRoute.handler);
 
     const remainingBudgetMs = browserSession.remainingMs;
     const navigationTimeoutMs = remainingBudgetMs == null
@@ -185,7 +180,8 @@ export async function extractArticleContentWithBrowser(
       url: articleUrl,
       context: governorContext,
       lease: preflight.lease,
-      getBlockedHeavyResources: () => blockedHeavyResources,
+      getBlockedHeavyResources: resourceRoute.getBlockedCount,
+      getAllowedSubrequests: resourceRoute.getAllowedCount,
       gotoOptions: {
         waitUntil: "domcontentloaded",
         timeout: navigationTimeoutMs,

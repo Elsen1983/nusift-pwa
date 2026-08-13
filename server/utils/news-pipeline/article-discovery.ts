@@ -7,6 +7,7 @@ import { createPipelineRun, finalizePipelineRun } from "./artifacts";
 import { normalizeUrl } from "./text";
 import { normalizeArticleCanonicalIdentity } from "./article-identity";
 import { isLikelyRedirectorUrl } from "../safe-redirect-resolver";
+import { detectCmsFingerprints } from "./feed-discovery";
 import { persistCandidates } from "./ingest";
 import { resolveActivePipelineTargets } from "./targets";
 import { resolveHardSourceProfilesForTarget } from "./hard-source-profile";
@@ -15,6 +16,8 @@ import {
   BLOCKED_UTILITY_PATTERNS,
   DISCOVERY_FRESHNESS_MS,
   discoverSitemapUrls,
+  discoverWordPressRestCandidates,
+  nextStaticFallbackRung,
   filterSitemapArticleUrls,
   extractJsonLdArticles,
   scoreCandidateUrl,
@@ -123,6 +126,8 @@ export type ArticleDiscoveryResult = {
     /** Bounded diagnostic sub-counts of jsonldUrls by structured-data origin. */
     itemListUrls: number;
     nextDataUrls: number;
+    /** Repair 14: bounded WordPress REST fallback candidates. */
+    wordPressUrls: number;
   };
   listingDiagnostics: ListingFetchDiagnostic[];
   pagesVisited: string[];
@@ -669,6 +674,7 @@ const resolveSourceKind = (sourcePageUrl: string): ArticleDiscoverySourceKind =>
   if (sourcePageUrl.startsWith("sitemap:")) return "sitemap";
   if (sourcePageUrl.startsWith("jsonld:")) return "jsonld";
   if (sourcePageUrl.startsWith("browser:")) return "browser";
+  if (sourcePageUrl.startsWith("wordpress:")) return "wordpress";
   return "listing";
 };
 
@@ -1384,7 +1390,7 @@ export async function discoverArticlesFromTarget(
   const candidates: IngestCandidate[] = [];
   const seenCanonicalUrls = new Set<string>();
   const startedAt = Date.now();
-  const discoverySources = { listingPages: 0, sitemapUrls: 0, jsonldUrls: 0, itemListUrls: 0, nextDataUrls: 0 };
+  const discoverySources = { listingPages: 0, sitemapUrls: 0, jsonldUrls: 0, itemListUrls: 0, nextDataUrls: 0, wordPressUrls: 0 };
   const maxAcceptedCandidates = Math.max(1, Math.floor(options?.maxAcceptedCandidates ?? MAX_ACCEPTED_CANDIDATES));
   const maxEvaluatedCandidates = Math.max(1, Math.floor(options?.maxEvaluatedCandidates ?? MAX_EVALUATED_CANDIDATES));
   const requestBudget = createStaticDiscoveryRequestBudget(options?.maxRequests ?? MAX_STATIC_REQUESTS);
@@ -1467,7 +1473,18 @@ export async function discoverArticlesFromTarget(
   // slot remains, record the known skipped fallback explicitly rather than
   // pretending the target completed normally.
   const listingBudgetAvailable = listingBudgetSnapshot.remaining > 0;
-  const shouldProbeSitemap = !listingGovernorDeferred && !listingIsSufficient && !listingRateLimited && listingBudgetAvailable;
+  // One testable order (Repair 14): sitemap before WordPress REST, both
+  // skipped once evidence is already sufficient or the host is
+  // deferred/rate-limited/out of budget.
+  const shouldProbeSitemap = nextStaticFallbackRung({
+    linkCount: listing.articleLinks.length,
+    sufficiencyThreshold: listingSufficiencyThreshold,
+    governorDeferred: listingGovernorDeferred,
+    rateLimited: listingRateLimited,
+    budgetRemaining: listingBudgetSnapshot.remaining,
+    sitemapProbed: false,
+    wordPressPositiveEvidence: false,
+  }) === "sitemap";
   if (!listingIsSufficient && !listingRateLimited && !listingBudgetAvailable) {
     requestBudget.recordWorkSkipped("sitemap", `${new URL(target.targetUrl).origin}/sitemap.xml`, "sparse listing requires sitemap fallback");
   }
@@ -1488,6 +1505,41 @@ export async function discoverArticlesFromTarget(
         return [];
       })
     : [];
+
+  // WordPress REST rung: only after sitemap has had its chance, and only on
+  // positive same-publisher CMS evidence read from the already-fetched
+  // listing HTML (zero extra requests to decide). Never probes wp-json
+  // speculatively.
+  const wordPressFingerprintPositive = Boolean(listing.firstPageHtml) &&
+    detectCmsFingerprints(listing.firstPageHtml as string, target.targetUrl, new Headers()).includes("wordpress");
+  const postSitemapBudget = requestBudget.snapshot();
+  const shouldProbeWordPress = nextStaticFallbackRung({
+    linkCount: listing.articleLinks.length + sitemapEntries.length,
+    sufficiencyThreshold: listingSufficiencyThreshold,
+    governorDeferred: listingGovernorDeferred,
+    rateLimited: listingRateLimited || requestBudget.rateLimitEvidence.some((e) => e.phase === "sitemap"),
+    budgetRemaining: postSitemapBudget.remaining,
+    sitemapProbed: true,
+    wordPressPositiveEvidence: wordPressFingerprintPositive,
+  }) === "wordpress_rest";
+  const wordPressCandidates = shouldProbeWordPress
+    ? await discoverWordPressRestCandidates(
+        target.targetUrl,
+        telemetry,
+        requestBudget,
+        {
+          sourceId: target.sourceId,
+          categoryId: target.categoryId ?? null,
+          mode: undefined,
+        },
+      ).catch((error) => {
+        if (error instanceof GovernedFetchDeferredError) {
+          listingGovernorDeferred = true;
+        }
+        return [];
+      })
+    : [];
+
   const initialBudgetSnapshot = requestBudget.snapshot();
   // Final-slot consumption is an exact boundary, not exhaustion evidence. A
   // pre-detail budget stop exists only when known work was refused/skipped.
@@ -1554,6 +1606,13 @@ export async function discoverArticlesFromTarget(
       // scope enforcement are identical for all three (see extractJsonLdArticles).
       if (article.type === "ItemList") discoverySources.itemListUrls += 1;
       else if (article.type === "NextData") discoverySources.nextDataUrls += 1;
+    }
+  }
+
+  for (const article of wordPressCandidates) {
+    if (!allArticleLinks.has(article.url)) {
+      allArticleLinks.set(article.url, { url: article.url, sourcePageUrl: `wordpress:${target.targetUrl}` });
+      discoverySources.wordPressUrls += 1;
     }
   }
 

@@ -2367,6 +2367,96 @@ describe("HTTP 202 interstitial/challenge classification", () => {
     }
   });
 
+  // ── AMP alternate retry (Repair 14) ─────────────────────────────────
+  it("rescues a too-short page via a publisher-declared AMP alternate", async () => {
+    safeFetchMock.mockClear();
+    const weakHtml = `<!DOCTYPE html><html><head><title>Weak</title>
+      <link rel="amphtml" href="https://example.com/amp/weak-story">
+    </head><body><article><p>Too short.</p></article></body></html>`;
+    const ampHtml = articleHtml({ title: "Weak", body: defaultBody() });
+
+    safeFetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://example.com/weak-story") return makeResponse(weakHtml);
+      if (url === "https://example.com/amp/weak-story") return makeResponse(ampHtml);
+      return makeResponse("", false);
+    });
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 960,
+      articleUrl: "https://example.com/weak-story",
+      existingTitle: "Weak",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.qualitySignals).toContain("amp_alternate_used");
+    }
+    // Exactly the original attempt + one AMP retry — never a loop.
+    expect(safeFetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("never fetches a self-referential or malformed amphtml link", async () => {
+    safeFetchMock.mockClear();
+    const selfLoopHtml = `<!DOCTYPE html><html><head><title>Weak</title>
+      <link rel="amphtml" href="https://example.com/weak-loop">
+    </head><body><article><p>Too short.</p></article></body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(selfLoopHtml, true, "text/html", 200, "https://example.com/weak-loop"));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 961,
+      articleUrl: "https://example.com/weak-loop",
+      existingTitle: "Weak",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("never fetches a non-http(s) amphtml link", async () => {
+    safeFetchMock.mockClear();
+    const badSchemeHtml = `<!DOCTYPE html><html><head><title>Weak</title>
+      <link rel="amphtml" href="javascript:alert(1)">
+    </head><body><article><p>Too short.</p></article></body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(badSchemeHtml));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 962,
+      articleUrl: "https://example.com/weak-badscheme",
+      existingTitle: "Weak",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("never attempts AMP for a paywall/access-blocked failure", async () => {
+    safeFetchMock.mockClear();
+    const paywallWithAmp = `<!DOCTYPE html><html><head><title>Premium</title>
+      <link rel="amphtml" href="https://example.com/amp/premium">
+    </head><body><article>
+      <p>Subscribe to continue reading this premium article content.</p>
+      <p>This is just a teaser paragraph that is very short.</p>
+    </article></body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(paywallWithAmp));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 963,
+      articleUrl: "https://example.com/premium",
+      existingTitle: "Premium",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejectedReason).toBe("paywall_or_blocked");
+    }
+    // The paywall/access gate never triggers an AMP fetch.
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("classifies an HTTP 202 with an EMPTY body as interstitial_or_challenge, not a plain failure", async () => {
     safeFetchMock.mockResolvedValue(makeResponse("", true, "text/html", 202));
 
