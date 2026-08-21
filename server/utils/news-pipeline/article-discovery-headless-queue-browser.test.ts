@@ -368,7 +368,7 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
 
   // ── runtime unavailable → BROWSER_RUNTIME_UNAVAILABLE ─────────────────
 
-  it("marks artifact as BROWSER_RUNTIME_UNAVAILABLE when browser runtime cannot launch", async () => {
+  it("defers a browser-runtime interruption instead of marking no-candidates", async () => {
     findManyMock.mockResolvedValue([makeArtifact()]);
     // First updateMany = claim (count 1), second = final status
     updateManyMock.mockResolvedValue({ count: 1 });
@@ -396,7 +396,9 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     }
     // Verify the final status update includes compact browser metadata
     const finalCall = updateManyMock.mock.calls[1]![0];
-    expect(finalCall.data.status).toBe("BROWSER_RUNTIME_UNAVAILABLE");
+    expect(finalCall.data.status).toBe("PENDING_HEADLESS");
+    expect(finalCall.data.nextEligibleAt).toBeInstanceOf(Date);
+    expect(finalCall.data.payload.browserFailureKind).toBe("runtime_interrupted");
     expect(finalCall.data.payload.browserFallbackRan).toBe(true);
     expect(finalCall.data.payload.browserError).toContain("browser_runtime_unavailable");
   });

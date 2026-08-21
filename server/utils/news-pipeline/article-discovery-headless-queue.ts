@@ -54,7 +54,20 @@ const MAX_BROWSER_LIMIT = 3;
 const MAX_BROWSER_DETAIL_EVALUATED_LINKS = MAX_BROWSER_DETAIL_EVALUATIONS;
 const MAX_BROWSER_ACCEPTED_CANDIDATES = 10;
 const BROWSER_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
+const BROWSER_TRANSIENT_FAILURE_COOLDOWN_MS = 15 * 60 * 1000;
 export const HEADLESS_ARTIFACT_CLAIM_TTL_MS = 30 * 60 * 1000;
+
+function getBrowserHttpStatus(blockedReason: string | null | undefined): number | null {
+  const match = blockedReason?.match(/\bHTTP\s+(\d{3})\b/i);
+  const status = match ? Number(match[1]) : Number.NaN;
+  return Number.isInteger(status) ? status : null;
+}
+
+function isBrowserRuntimeInterruption(reason: string | null | undefined, blockedReason: string | null | undefined): boolean {
+  if (reason === "browser_runtime_unavailable") return true;
+  return /(?:target page, context or browser has been closed|(?:browser|page|context) has been closed|execution context was destroyed)/i
+    .test(blockedReason ?? "");
+}
 
 type HeadlessQueueInput = {
   limit?: number;
@@ -957,11 +970,19 @@ export async function processArticleDiscoveryHeadlessQueue(
         // article links". Only runtime-unavailable gets its own status
         // (BROWSER_RUNTIME_UNAVAILABLE) because it implies a setup gap,
         // not a per-target failure.
+        const listingHttpStatus = getBrowserHttpStatus(browserResult.diagnostics.blockedReason);
+        const runtimeInterrupted = isBrowserRuntimeInterruption(
+          browserResult.reason,
+          browserResult.diagnostics.blockedReason,
+        );
+        // Reserve BROWSER_NO_CANDIDATES for a successful rendered listing
+        // where link evaluation produced zero candidates. Operational browser
+        // failures remain retryable; a deterministic target 404 is terminal.
         const status = isListingPage429
           ? "PENDING_HEADLESS"
-          : browserResult.reason === "browser_runtime_unavailable"
-            ? "BROWSER_RUNTIME_UNAVAILABLE"
-            : "BROWSER_NO_CANDIDATES";
+          : listingHttpStatus === 404
+            ? "BROWSER_TARGET_NOT_FOUND"
+            : "PENDING_HEADLESS";
 
         // Transition from HEADLESS_PROCESSING → final failure status.
         // Execution-failure counters are updated only after this CAS succeeds;
@@ -992,8 +1013,10 @@ export async function processArticleDiscoveryHeadlessQueue(
               status,
               headlessClaimToken: null,
               headlessClaimExpiresAt: null,
-              nextEligibleAt: isListingPage429 && listingRetryAfterAt
-                ? new Date(listingRetryAfterAt)
+              nextEligibleAt: status === "PENDING_HEADLESS"
+                ? new Date(isListingPage429 && listingRetryAfterAt
+                  ? listingRetryAfterAt
+                  : failureNowMs + BROWSER_TRANSIENT_FAILURE_COOLDOWN_MS)
                 : null,
               errorLog: `Browser fallback failed: ${browserResult.reason}. ${browserResult.diagnostics.blockedReason || ""}`,
               payload: {
@@ -1023,6 +1046,14 @@ export async function processArticleDiscoveryHeadlessQueue(
               browserDetailFetchRecovered: 0,
               browserDetailRecoveryReasons: [],
               browserError: `Browser fallback failed: ${browserResult.reason}. ${browserResult.diagnostics.blockedReason || ""}`,
+              browserFailureKind: isListingPage429
+                ? "http_429"
+                : listingHttpStatus === 404
+                  ? "http_404_terminal"
+                  : runtimeInterrupted
+                    ? "runtime_interrupted"
+                    : browserResult.reason,
+              browserFailureTerminal: listingHttpStatus === 404,
               browserRateLimited: isListingPage429,
               browserRateLimitReason: isListingPage429 ? "http_429" : null,
               browserDetailEvaluationStoppedReason: isListingPage429 ? "rate_limited" : null,
@@ -1093,12 +1124,12 @@ export async function processArticleDiscoveryHeadlessQueue(
         browserProcessed += 1;
         if (isListingPage429) {
           dispositionDeferred += 1;
-        } else if (browserResult.reason === "browser_runtime_unavailable") {
-          browserSkippedUnavailable += 1;
+        } else if (status === "BROWSER_TARGET_NOT_FOUND") {
           dispositionFailedPermanent += 1;
         } else {
           browserFailed += 1;
-          dispositionFailedRetryable += 1;
+          dispositionDeferred += 1;
+          if (runtimeInterrupted) browserSkippedUnavailable += 1;
         }
 
         // ── Listing-page 429: activate host cooldown, skip hard-source profile ──
@@ -1134,28 +1165,9 @@ export async function processArticleDiscoveryHeadlessQueue(
           errorLog: `Browser fallback failed for ${targetUrl}: ${browserResult.reason}. links=${browserResult.diagnostics.articleLikeLinkCount}, runtime=${browserResult.diagnostics.browserRuntimeAvailable}.`,
         });
 
-        // Persist a hard-source profile for failed browser targets so
-        // future AI inspection or custom adapter generation can work
-        // from structured evidence. NOT created for 429 rate-limited targets.
-        if (sourceId) {
-          const topReasons = (browserResult.topRejectionReasons ?? []).map((r) => r.reason);
-          const linkFilterReasons: Record<string, number> = {};
-          for (const r of browserResult.topRejectionReasons ?? []) {
-            linkFilterReasons[r.reason] = r.count;
-          }
-          await createOrUpdateHardSourceProfile({
-            pipelineRunId: item.pipelineRunId,
-            sourceId,
-            categoryId: item.categoryId ?? null,
-            targetUrl,
-            fromArtifactId: item.id,
-            staticQuality: (fields.quality as "failed" | "weak" | "blocked" | null) ?? null,
-            browserStatus: status as "BROWSER_NO_CANDIDATES" | "BROWSER_RUNTIME_UNAVAILABLE",
-            dominantReasons: topReasons,
-            linkFilterReasons,
-            notes: [`Browser fallback failed: ${browserResult.reason}`],
-          });
-        }
+        // Hard-source profiles require a successfully rendered page with zero
+        // viable links. Navigation/runtime/HTTP failures are not publisher
+        // evidence and must never be recorded as BROWSER_NO_CANDIDATES.
         continue;
       }
 

@@ -566,10 +566,19 @@ async function countBlockedEligibleArticles(
   return count;
 }
 
-async function readAttemptedArticleIds(pipelineRunId: string): Promise<ReadonlySet<number>> {
+async function readCurrentRunArticleIds(pipelineRunId: string): Promise<ReadonlySet<number>> {
   const attempted = new Set<number>();
   const artifacts = await prisma.pipelineArtifact.findMany({
-    where: { pipelineRunId, artifactType: "article_enrichment_attempt", status: "ATTEMPTED" },
+    where: {
+      pipelineRunId,
+      artifactType: {
+        in: [
+          "article_enrichment_attempt",
+          "article_enrichment_result",
+          "article_enrichment_rejection",
+        ],
+      },
+    },
     select: { payload: true },
     take: 10_000,
   });
@@ -658,7 +667,7 @@ export const selectEnrichmentEligibleArticles = async (
         reasonByHostname: new Map<string, Agent3DeferredReason>(),
       };
   const sameRunArticleIds = pipelineRunId
-    ? await readAttemptedArticleIds(pipelineRunId)
+    ? await readCurrentRunArticleIds(pipelineRunId)
     : new Set<number>();
   const enrichedFallbackRows: EnrichmentEligibleArticle[] = [];
 
@@ -2702,7 +2711,7 @@ export const getAgent3Progress = async (
   // Run count queries and enriched article scan in parallel.
   // The scan pages through all ENRICHED articles for accurate version-aware counts.
   const sameRunArticleIds = pipelineRunId
-    ? await readAttemptedArticleIds(pipelineRunId)
+    ? await readCurrentRunArticleIds(pipelineRunId)
     : new Set<number>();
   const [totalInScope, needingInitialEnrichment, enrichedInScope, failedRetryable, enrichedScan] = await Promise.all([
     prisma.article.count({ where: baseWhere }),
@@ -3536,6 +3545,12 @@ export const runEnrichmentBatch = async (
           httpStatus: outcome.rejection?.httpStatus ?? outcome.browserFallback?.statusCode ?? null,
           extractorVersion: AGENT3_EXTRACTOR_VERSION,
           previousAttemptAt: article.enrichmentFinishedAt?.toISOString() ?? null,
+          retryAfterSource: retryDisposition.state === "DEFERRED"
+            ? retryDisposition.retryAfterSource
+            : null,
+          retryAfterCapped: retryDisposition.state === "DEFERRED"
+            ? retryDisposition.retryAfterCapped
+            : false,
         };
       }
 

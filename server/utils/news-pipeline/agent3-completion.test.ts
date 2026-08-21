@@ -11,6 +11,13 @@ const baseProgress = (overrides: Partial<Agent3Progress> = {}): Agent3Progress =
   readyRetry: 0,
   retryableNow: 0,
   deferred: 0,
+  deferredByReason: {
+    http_403: 0,
+    http_429: 0,
+    browser_runtime_unavailable: 0,
+    interstitial_or_challenge: 0,
+    other_retry: 0,
+  },
   nextRetryAt: null,
   quarantined: 0,
   nonRetryable: 0,

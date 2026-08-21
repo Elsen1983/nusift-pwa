@@ -5940,4 +5940,24 @@ describe("HTTP 202 INTERSTITIAL_OR_CHALLENGE recovery", () => {
     const articles = await selectEnrichmentEligibleArticles(now, 50, { pipelineRunId: "run-1" });
     expect(articles).toHaveLength(0);
   });
+
+  it("K: same-run final artifacts exclude retryable rows even when an attempt marker was unavailable", async () => {
+    const { selectEnrichmentEligibleArticles } = await import("./enrichment-runtime");
+    const now = new Date("2026-07-29T12:00:00Z");
+    articleFindManyMock.mockResolvedValue([makeArticle({
+      id: 1,
+      enrichmentStatus: "ENRICHMENT_FAILED",
+      enrichmentAttemptCount: 1,
+      enrichmentFinishedAt: new Date("2026-07-29T11:00:00Z"),
+      enrichmentOutcome: {
+        extractorVersion: AGENT3_EXTRACTOR_VERSION,
+        kind: "RETRYABLE_FAILURE",
+        rejectionCode: "FETCH_TIMEOUT",
+      },
+    })]);
+    artifactFindManyMock.mockResolvedValue([{ payload: { articleId: 1 } }]);
+
+    const articles = await selectEnrichmentEligibleArticles(now, 50, { pipelineRunId: "run-1" });
+    expect(articles).toHaveLength(0);
+  });
 });

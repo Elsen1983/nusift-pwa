@@ -74,8 +74,11 @@
             <div class="rounded-lg bg-surface-container/70 px-3 py-2"><div class="text-[9px] uppercase tracking-wider text-on-surface-variant">Notifications</div><div class="mt-1 text-xs font-bold text-on-surface">{{ formatTelemetryMs(dailyPipelineTelemetry.run.notificationsDurationMs) }}</div></div>
           </div>
           <div class="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-on-surface-variant">
-            <span>processed targets/articles: <strong class="text-on-surface">{{ telemetryProcessed }}</strong></span><span>succeeded targets/articles: <strong class="text-emerald-300">{{ telemetrySucceeded }}</strong></span><span>retryable failed: {{ telemetryCount('failedRetryable') }}</span><span>permanent failed: {{ telemetryCount('failedPermanent') }}</span><span>skipped: {{ telemetryCount('skipped') }}</span><span>deferred: {{ telemetryCount('deferred') }}</span><span>quarantined: {{ telemetryCount('quarantined') }}</span><span>claim lost: {{ telemetryCount('claimLost') }}</span><span>persistence failed: {{ telemetryCount('persistenceFailed') }}</span><span>logical request: {{ formatTelemetryMs(telemetryDuration('logicalRequestDurationMs')) }}</span><span>extraction: {{ formatTelemetryMs(telemetryDuration('extractionDurationMs')) }}</span><span>browser: {{ formatTelemetryMs(telemetryDuration('browserDurationMs')) }}</span><span>persistence: {{ formatTelemetryMs(telemetryDuration('persistenceDurationMs')) }}</span><span>sleep: {{ formatTelemetryMs(telemetryDuration('sleepDurationMs')) }}</span><span>403 denied: {{ telemetryCount('accessDenied403') }}</span><span>403 limit: {{ telemetryCount('rateLimited403') }}</span><span>429: <strong class="text-amber-200">{{ telemetryCount('rateLimited429') }}</strong></span><span>timeouts: {{ telemetryCount('timedOut') }}</span>
+            <span>processed targets/articles: <strong class="text-on-surface">{{ telemetryProcessed }}</strong></span><span>succeeded targets/articles: <strong class="text-emerald-300">{{ telemetrySucceeded }}</strong></span><span>retryable failed: {{ telemetryCount('failedRetryable') }}</span><span>permanent failed: {{ telemetryCount('failedPermanent') }}</span><span>skipped: {{ telemetryCount('skipped') }}</span><span>deferred: {{ telemetryCount('deferred') }}</span><span>quarantined: {{ telemetryCount('quarantined') }}</span><span>claim lost: {{ telemetryCount('claimLost') }}</span><span>persistence failed: {{ telemetryCount('persistenceFailed') }}</span><span>logical request: {{ formatTelemetryMs(telemetryDuration('logicalRequestDurationMs')) }}</span><span>extraction: {{ formatTelemetryMs(telemetryDuration('extractionDurationMs')) }}</span><span>browser: {{ formatTelemetryMs(telemetryDuration('browserDurationMs')) }}</span><span>persistence: {{ formatTelemetryMs(telemetryDuration('persistenceDurationMs')) }}</span><span>scheduled wait: {{ formatTelemetryMs(telemetryDuration('sleepDurationMs')) }}</span><span>403 denied: {{ telemetryCount('accessDenied403') }}</span><span>403 limit: {{ telemetryCount('rateLimited403') }}</span><span>429: <strong class="text-amber-200">{{ telemetryCount('rateLimited429') }}</strong></span><span>timeouts: {{ telemetryCount('timedOut') }}</span>
           </div>
+          <p class="text-[10px] text-emerald-300">
+            Newly published by Agent 3 in this workflow: <strong>{{ telemetryPublished }}</strong>
+          </p>
           <div v-if="dailyPipelineTelemetry.run.stageOutcomes?.length" class="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
             <div v-for="outcome in dailyPipelineTelemetry.run.stageOutcomes" :key="outcome.stage" class="rounded-lg border border-outline-variant/15 bg-surface-container/50 px-3 py-2">
               <div class="flex items-center justify-between gap-2">
@@ -98,8 +101,11 @@
           </div>
           <div class="space-y-2">
             <div v-for="stage in dailyPipelineTelemetry.stageTimings" :key="stage.stage" class="rounded-lg border border-outline-variant/15 bg-surface-container/50 px-3 py-2">
+              <p v-if="stage.productivity?.articlesPublishable != null" class="mb-1 text-[10px] text-emerald-300">
+                Newly published: {{ stage.productivity.articlesPublishable }}
+              </p>
               <div class="flex flex-wrap items-center justify-between gap-2"><span class="text-xs font-bold text-on-surface">{{ stage.stage }}</span><span class="text-[10px] text-on-surface-variant">{{ formatTelemetryMs(stage.durationMs) }} · {{ stage.batches }} batch{{ stage.batches === 1 ? '' : 'es' }}</span></div>
-              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-on-surface-variant"><span>processed targets/articles {{ stage.processed }} / succeeded {{ stage.succeeded }}</span><span>failed {{ stage.failedRetryable }} retryable · {{ stage.failedPermanent }} permanent · skipped {{ stage.skipped }}</span><span>deferred {{ stage.deferred }} · quarantined {{ stage.quarantined }} · claim lost {{ stage.claimLost || 0 }} · persistence failed {{ stage.persistenceFailed || 0 }}</span><span>batch size {{ stage.batchSizeLimit }} / concurrency {{ stage.concurrencyLimit }} / peak {{ stage.peakConcurrency }}</span><span>logical request {{ formatTelemetryMs(stage.logicalRequestDurationMs) }} · extraction {{ formatTelemetryMs(stage.extractionDurationMs) }} · browser {{ formatTelemetryMs(stage.browserDurationMs) }} · persistence {{ formatTelemetryMs(stage.persistenceDurationMs) }} · sleep {{ formatTelemetryMs(stage.sleepDurationMs) }}</span><span>remaining {{ stage.remainingBefore ?? '—' }} → {{ stage.remainingAfter ?? '—' }}</span><span>403 denied {{ stage.accessDenied403 }} · 403 limit {{ stage.rateLimited403 }} · 429 {{ stage.rateLimited429 }}</span><span v-if="stage.productivity && Object.keys(stage.productivity).length > 0" class="text-cyan-200">productivity counters are separate</span><span v-if="stage.latestNoProgressReason" class="text-rose-200">no progress: {{ stage.latestNoProgressReason }}</span></div>
+              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-on-surface-variant"><span>processed targets/articles {{ stage.processed }} / succeeded {{ stage.succeeded }}</span><span>failed {{ stage.failedRetryable }} retryable · {{ stage.failedPermanent }} permanent · skipped {{ stage.skipped }}</span><span>deferred {{ stage.deferred }} · quarantined {{ stage.quarantined }} · claim lost {{ stage.claimLost || 0 }} · persistence failed {{ stage.persistenceFailed || 0 }}</span><span>batch size {{ stage.batchSizeLimit }} / concurrency {{ stage.concurrencyLimit }} / peak {{ stage.peakConcurrency }}</span><span>logical request {{ formatTelemetryMs(stage.logicalRequestDurationMs) }} · extraction {{ formatTelemetryMs(stage.extractionDurationMs) }} · browser {{ formatTelemetryMs(stage.browserDurationMs) }} · persistence {{ formatTelemetryMs(stage.persistenceDurationMs) }} · scheduled wait {{ formatTelemetryMs(stage.sleepDurationMs) }}</span><span>remaining {{ stage.remainingBefore ?? '—' }} → {{ stage.remainingAfter ?? '—' }}</span><span>403 denied {{ stage.accessDenied403 }} · 403 limit {{ stage.rateLimited403 }} · 429 {{ stage.rateLimited429 }}</span><span v-if="stage.productivity && Object.keys(stage.productivity).length > 0" class="text-cyan-200">productivity counters are separate</span><span v-if="stage.latestNoProgressReason" class="text-rose-200">no progress: {{ stage.latestNoProgressReason }}</span></div>
             </div>
           </div>
           <div
@@ -733,9 +739,9 @@
                   <div class="flex flex-wrap items-center gap-2">
                     <span
                       class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
-                      :class="qualityBadgeClass(item.quality)"
+                      :class="qualityBadgeClass(isRssFirstClosed(item.headlessStatus) ? 'rss-owned' : item.quality)"
                     >
-                      {{ item.quality || "unknown" }}
+                      {{ isRssFirstClosed(item.headlessStatus) ? 'RSS owned' : (item.quality || "unknown") }}
                     </span>
                     <span v-if="item.confidence" class="text-[10px] text-on-surface-variant">confidence: {{ item.confidence }}</span>
                     <span v-if="item.headlessState === 'active'" class="text-[10px] font-bold text-amber-300">Active headless work</span>
@@ -933,7 +939,7 @@
                       class="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
                       :class="headlessStatusBadgeClass(item.status)"
                     >
-                      {{ item.status }}
+                      {{ headlessStatusLabel(item.status) }}
                       <span v-if="isLegacyHeadlessStatus(item.status)" class="ml-0.5 opacity-60">legacy</span>
                     </span>
                     <span v-if="item.quality" class="text-[10px] text-on-surface-variant">q: {{ item.quality }}</span>
@@ -1825,7 +1831,13 @@
               v-if="agent3RejectionData.summary.httpAccessBlocked"
               class="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-200"
             >
-              HTTP access blocked: {{ agent3RejectionData.summary.httpAccessBlocked }}
+              HTTP 403 access denied: {{ agent3RejectionData.summary.httpAccessBlocked }}
+            </span>
+            <span
+              v-if="agent3RejectionData.summary.rateLimited429"
+              class="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-200"
+            >
+              HTTP 429 rate limited: {{ agent3RejectionData.summary.rateLimited429 }}
             </span>
             <span
               class="rounded-full border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-200"
@@ -1876,10 +1888,16 @@
                       {{ item.kind }}
                     </span>
                     <span
-                      v-if="item.httpAccessBlocked"
+                      v-if="item.rateLimited"
                       class="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-200"
                     >
-                      HTTP access blocked
+                      HTTP 429 rate limited
+                    </span>
+                    <span
+                      v-else-if="item.httpAccessBlocked"
+                      class="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-200"
+                    >
+                      HTTP 403 access denied
                     </span>
                     <span v-if="item.articleId" class="text-[10px] text-on-surface-variant">id: {{ item.articleId }}</span>
                     <span v-if="item.sourceId" class="text-[10px] text-on-surface-variant">src: {{ item.sourceId.slice(0, 8) }}...</span>
@@ -2577,6 +2595,7 @@ const agent3RejectionData = ref<{
     byKind: Record<string, number>;
     byHostname?: Record<string, number>;
     httpAccessBlocked?: number;
+    rateLimited429?: number;
     latestOnly?: boolean;
     cooldownsByHostname?: Array<{ hostname: string; deferredArticles: number; nextRetryAt: string | null; reasons: Record<string, number> }>;
     cooldownAggregationBounded?: boolean;
@@ -2600,6 +2619,8 @@ const agent3RejectionData = ref<{
     confidence: number | null;
     extractorVersion: string | null;
     httpAccessBlocked: boolean;
+    httpStatus: number | null;
+    rateLimited: boolean;
     retryDisposition: string | null;
     retryAfterAt: string | null;
     retryReasonCode: string | null;
@@ -2967,6 +2988,10 @@ const formatTelemetryMs = (ms: number | null | undefined) => {
 };
 const telemetryProcessed = computed(() => dailyPipelineTelemetry.value.stageTimings.reduce((sum: number, stage: any) => sum + (stage.processed || 0), 0));
 const telemetrySucceeded = computed(() => dailyPipelineTelemetry.value.stageTimings.reduce((sum: number, stage: any) => sum + (stage.succeeded || 0), 0));
+const telemetryPublished = computed(() => dailyPipelineTelemetry.value.stageTimings.reduce(
+  (sum: number, stage: any) => sum + (stage.productivity?.articlesPublishable || 0),
+  0,
+));
 const telemetryDuration = (key: string) => dailyPipelineTelemetry.value.stageTimings.reduce((sum: number, stage: any) => sum + (stage[key] || 0), 0);
 const telemetryCount = (key: string) => dailyPipelineTelemetry.value.stageTimings.reduce((sum: number, stage: any) => sum + (stage[key] || 0), 0);
 const dailyTelemetrySlowestStage = computed(() => [...dailyPipelineTelemetry.value.stageTimings].sort((a: any, b: any) => (b.durationMs || 0) - (a.durationMs || 0))[0]?.stage || null);
@@ -3844,11 +3869,15 @@ const truncateStaleUrl = (url: string, maxLen = 50): string => {
 
 const qualityBadgeClass = (quality: string | null) => ({
   "bg-emerald-500/15 text-emerald-300 border border-emerald-500/20": quality === "productive",
+  "bg-teal-500/15 text-teal-300 border border-teal-500/20": quality === "rss-owned",
   "bg-amber-500/15 text-amber-300 border border-amber-500/20": quality === "weak",
   "bg-rose-500/15 text-rose-300 border border-rose-500/20": quality === "failed",
   "bg-red-500/15 text-red-300 border border-red-500/30": quality === "blocked",
   "bg-gray-500/15 text-gray-400 border border-gray-500/20": !quality,
 });
+
+const isRssFirstClosed = (status: string | null | undefined): boolean =>
+  status === "RESOLVED_BY_AGENT1_RSS" || status === "SKIPPED_BY_FEED_FIRST_POLICY";
 
 const headlessStatusBadgeClass = (status: string) => {
   switch (status) {
@@ -3874,9 +3903,18 @@ const headlessStatusBadgeClass = (status: string) => {
       return "bg-slate-500/15 text-slate-400 border-slate-500/20";
     case "RESOLVED_BY_STATIC_DISCOVERY":
       return "bg-teal-500/15 text-teal-300 border-teal-500/20";
+    case "RESOLVED_BY_AGENT1_RSS":
+    case "SKIPPED_BY_FEED_FIRST_POLICY":
+      return "bg-teal-500/15 text-teal-300 border-teal-500/20";
     default:
       return "bg-gray-500/15 text-gray-400 border-gray-500/20";
   }
+};
+
+const headlessStatusLabel = (status: string): string => {
+  if (status === "RESOLVED_BY_AGENT1_RSS") return "RSS-owned resolved";
+  if (status === "SKIPPED_BY_FEED_FIRST_POLICY") return "RSS-owned browser skipped";
+  return status;
 };
 
 const redirectStatusDescriptor = (redirect: {

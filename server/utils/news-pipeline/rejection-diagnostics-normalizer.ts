@@ -62,6 +62,10 @@ export interface NormalizedRejectionDiagnostic {
   detail: string | null;
   confidence: number | null;
   extractorVersion: string | null;
+  /** Effective HTTP status when the rejection represents an HTTP response. */
+  httpStatus: number | null;
+  /** HTTP 429 is a retryable rate limit, not an access-denied diagnostic. */
+  rateLimited: boolean;
   diagnostics: {
     selectedContainerSelector: string | null;
     selectedContainerScore: number | null;
@@ -299,10 +303,20 @@ export function normalizeRejectionDiagnostic(
           statusCode: safeNumber(bf.statusCode),
         }
       : null;
-    const httpAccessBlocked = browserFallback?.statusCode === 403
-      || browserFallback?.statusCode === 429
-      || (typeof detail === "string" && detail.includes("[http_error]")
-        && (detail.includes("403") || detail.includes("429")));
+    const detailHttpStatus = typeof detail === "string"
+      ? Number(detail.match(/\[http_error\]\s+HTTP\s+(\d{3})/i)?.[1]) || null
+      : null;
+    const httpStatus = browserFallback?.statusCode
+      ?? safeNumber(rejection.httpStatus)
+      ?? detailHttpStatus;
+    const rateLimited = httpStatus === 429
+      || browserFallback?.rateLimited === true
+      || retryDiagnostics.reasonCode === "http_429";
+    // A bare legacy HTTP_FORBIDDEN code has no status evidence, so retain its
+    // historical 403 interpretation. Explicit 429 evidence always wins.
+    const httpAccessBlocked = !rateLimited && (
+      httpStatus === 403 || rejectedReason === "HTTP_FORBIDDEN"
+    );
 
     return {
       id: artifact.id,
@@ -322,6 +336,8 @@ export function normalizeRejectionDiagnostic(
       detail,
       confidence,
       extractorVersion,
+      httpStatus,
+      rateLimited,
       diagnostics,
       browserFallback,
       httpAccessBlocked,

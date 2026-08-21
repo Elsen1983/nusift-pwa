@@ -103,6 +103,7 @@ export default defineEventHandler(async (event) => {
   // Compute summary counts by hostname for domain-level debugging
   const byHostname: Record<string, number> = {};
   let httpAccessBlocked = 0;
+  let rateLimited429 = 0;
   for (const item of items) {
     let hostname = "unknown";
     if (item.articleUrl) {
@@ -112,6 +113,7 @@ export default defineEventHandler(async (event) => {
     }
     byHostname[hostname] = (byHostname[hostname] ?? 0) + 1;
     if (item.httpAccessBlocked) httpAccessBlocked++;
+    if (item.rateLimited) rateLimited429++;
   }
 
   const cooldownsByHostname = summarizeDeferredCooldowns(items);
@@ -123,6 +125,7 @@ export default defineEventHandler(async (event) => {
       byKind,
       byHostname,
       httpAccessBlocked,
+      rateLimited429,
       latestOnly: !includeDuplicates,
       cooldownsByHostname,
       cooldownAggregationBounded: artifacts.length === Math.min(limit * 8, 500),

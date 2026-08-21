@@ -444,6 +444,10 @@ export interface Agent3RetryDiagnostics {
   httpStatus?: number | null;
   extractorVersion?: string;
   previousAttemptAt?: string | null;
+  /** Durable retry timestamp origin, without exposing raw response headers. */
+  retryAfterSource?: "persisted" | "derived" | null;
+  /** True when an implausibly distant persisted retry time was bounded. */
+  retryAfterCapped?: boolean;
 }
 
 export interface ArticleAccessOutcomeSummary {

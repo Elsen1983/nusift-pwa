@@ -377,7 +377,7 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
       makeArtifact({ id: "art-1", payload: { targetUrl: "https://example.com/a", sourceId: "src-1", quality: "blocked" } }),
     ]);
     // First updateMany = claim (PENDING_HEADLESS → HEADLESS_PROCESSING)
-    // Second updateMany = final status (HEADLESS_PROCESSING → BROWSER_RUNTIME_UNAVAILABLE)
+    // Second updateMany = retryable runtime interruption (HEADLESS_PROCESSING → PENDING_HEADLESS)
     updateMock.mockResolvedValue({ count: 1 });
 
     const fn = await loadFn();
@@ -404,13 +404,48 @@ describe("processArticleDiscoveryHeadlessQueue", () => {
         headlessClaimToken: claimToken,
       }),
       data: expect.objectContaining({
+        status: "PENDING_HEADLESS",
         headlessClaimToken: null,
         headlessClaimExpiresAt: null,
+        nextEligibleAt: expect.any(Date),
       }),
     }));
 
     process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
   }, 15_000);
+
+  it("records a listing HTTP 404 as a terminal target failure, not no-candidates", async () => {
+    const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = "true";
+    findManyMock.mockResolvedValue([
+      makeArtifact({ id: "art-404", payload: { targetUrl: "https://example.com/missing", sourceId: "src-1", quality: "failed" } }),
+    ]);
+    updateMock.mockResolvedValue({ count: 1 });
+    discoverArticleLinksWithBrowserMock.mockResolvedValue({
+      ok: false,
+      reason: "http_error",
+      links: [],
+      diagnostics: {
+        pageTitle: null,
+        linkCount: 0,
+        articleLikeLinkCount: 0,
+        blockedReason: "HTTP 404",
+        browserRuntimeAvailable: true,
+        browserAttempted: true,
+        elapsedMs: 10,
+      },
+    });
+
+    const fn = await loadFn();
+    await fn({ dryRun: false, runBrowser: true });
+    expect(updateMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      data: expect.objectContaining({
+        status: "BROWSER_TARGET_NOT_FOUND",
+        nextEligibleAt: null,
+      }),
+    }));
+    process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK = original || "";
+  });
 
   it("terminally skips a productive-feed artifact without launching browser work", async () => {
     const original = process.env.NUXT_ENABLE_AGENT2_BROWSER_FALLBACK;

@@ -1,6 +1,8 @@
 import { AGENT3_EXTRACTOR_VERSION } from "./enrichment";
 
 export const MAX_AUTOMATIC_AGENT3_ATTEMPTS = 3;
+/** Durable retry evidence must not park work for an unbounded period. */
+export const MAX_AGENT3_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
 export const AGENT3_RETRY_COOLDOWN_MS = {
   /** First 403 is retried promptly; repeated failures remain bounded by attempts and the host governor. */
   http403: 60 * 60 * 1000,
@@ -12,7 +14,13 @@ export const AGENT3_RETRY_COOLDOWN_MS = {
 
 export type Agent3RetryDisposition =
   | { state: "READY_NEW" | "READY_RETRY"; priority: number; attemptNumber: number }
-  | { state: "DEFERRED"; retryAfter: string; reasonCode: string }
+  | {
+      state: "DEFERRED";
+      retryAfter: string;
+      reasonCode: string;
+      retryAfterSource: "persisted" | "derived";
+      retryAfterCapped: boolean;
+    }
   | { state: "QUARANTINED"; reasonCode: string; attemptNumber: number }
   | { state: "NON_RETRYABLE"; reasonCode: string };
 
@@ -33,13 +41,13 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
     ? value as Record<string, unknown>
     : null;
 
-const outcomeValue = (input: Agent3RetryInput, key: string): unknown => {
+const outcomeValue = (input: Pick<Agent3RetryInput, "enrichmentOutcome">, key: string): unknown => {
   const outcome = asRecord(input.enrichmentOutcome);
   if (!outcome) return undefined;
   return outcome[key];
 };
 
-const rejection = (input: Agent3RetryInput): Record<string, unknown> | null =>
+const rejection = (input: Pick<Agent3RetryInput, "enrichmentOutcome">): Record<string, unknown> | null =>
   asRecord(outcomeValue(input, "rejection"));
 
 export function getAgent3AttemptNumber(input: Agent3RetryInput): number {
@@ -48,7 +56,19 @@ export function getAgent3AttemptNumber(input: Agent3RetryInput): number {
     : 0);
 }
 
-export function getAgent3RetryAfter(input: Agent3RetryInput): string | null {
+export type Agent3RetryAfterResolution = {
+  retryAfter: string;
+  source: "persisted" | "derived";
+  capped: boolean;
+};
+
+export function getAgent3RetryAfterResolution(
+  input: Agent3RetryInput,
+): Agent3RetryAfterResolution | null {
+  // A corrupted future timestamp must be capped relative to the durable
+  // failure time, not the current scan time. Otherwise every subsequent scan
+  // would slide the cap forward and defer the same row forever.
+  const retryAnchor = input.enrichmentFinishedAt ?? input.now ?? new Date();
   const explicit = [
     outcomeValue(input, "retryAfterAt"),
     outcomeValue(input, "retryAfter"),
@@ -57,7 +77,15 @@ export function getAgent3RetryAfter(input: Agent3RetryInput): string | null {
     rejection(input)?.retryAfterAt,
     asRecord(outcomeValue(input, "browserFallback"))?.retryAfterAt,
   ].find((value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)));
-  if (explicit) return new Date(explicit).toISOString();
+  if (explicit) {
+    const parsedMs = Date.parse(explicit);
+    const cappedMs = Math.min(parsedMs, retryAnchor.getTime() + MAX_AGENT3_RETRY_AFTER_MS);
+    return {
+      retryAfter: new Date(cappedMs).toISOString(),
+      source: "persisted",
+      capped: cappedMs !== parsedMs,
+    };
+  }
 
   const finishedAt = input.enrichmentFinishedAt;
   if (!finishedAt) return null;
@@ -82,10 +110,20 @@ export function getAgent3RetryAfter(input: Agent3RetryInput): string | null {
           ? AGENT3_RETRY_COOLDOWN_MS.interstitialBrowserPending
           : null;
   if (cooldown === null) return null;
-  return new Date(finishedAt.getTime() + cooldown).toISOString();
+  return {
+    retryAfter: new Date(finishedAt.getTime() + cooldown).toISOString(),
+    source: "derived",
+    capped: false,
+  };
 }
 
-export function getAgent3HttpStatus(input: Agent3RetryInput): number | null {
+export function getAgent3RetryAfter(input: Agent3RetryInput): string | null {
+  return getAgent3RetryAfterResolution(input)?.retryAfter ?? null;
+}
+
+export function getAgent3HttpStatus(
+  input: Pick<Agent3RetryInput, "enrichmentOutcome">,
+): number | null {
   const rejectionValue = rejection(input);
   const status = rejectionValue?.httpStatus ?? outcomeValue(input, "rejectionHttpStatus")
     ?? asRecord(outcomeValue(input, "browserFallback"))?.statusCode;
@@ -135,9 +173,16 @@ export function decideAgent3RetryDisposition(input: Agent3RetryInput): Agent3Ret
   const browser = asRecord(outcomeValue(input, "browserFallback"));
   const runtimeUnavailable = browser?.runtimeUnavailable === true
     || browser?.browserRejectedReason === "browser_runtime_unavailable";
-  const retryAfter = getAgent3RetryAfter(input);
+  const retryAfterResolution = getAgent3RetryAfterResolution(input);
+  const retryAfter = retryAfterResolution?.retryAfter ?? null;
   if (!input.ignoreCooldown && retryAfter && Date.parse(retryAfter) > now.getTime()) {
-    return { state: "DEFERRED", retryAfter, reasonCode: runtimeUnavailable ? "BROWSER_RUNTIME_UNAVAILABLE" : code };
+    return {
+      state: "DEFERRED",
+      retryAfter,
+      reasonCode: runtimeUnavailable ? "BROWSER_RUNTIME_UNAVAILABLE" : code,
+      retryAfterSource: retryAfterResolution?.source ?? "derived",
+      retryAfterCapped: retryAfterResolution?.capped ?? false,
+    };
   }
   if (!input.ignoreCooldown && (kind === "HEADLESS_REQUIRED" || code === "HEADLESS_REQUIRED" || runtimeUnavailable)) {
     if (!retryAfter) {
@@ -149,6 +194,8 @@ export function decideAgent3RetryDisposition(input: Agent3RetryInput): Agent3Ret
       state: "DEFERRED",
       retryAfter,
       reasonCode: runtimeUnavailable ? "BROWSER_RUNTIME_UNAVAILABLE" : "HEADLESS_REQUIRED",
+      retryAfterSource: retryAfterResolution?.source ?? "derived",
+      retryAfterCapped: retryAfterResolution?.capped ?? false,
     };
   }
 

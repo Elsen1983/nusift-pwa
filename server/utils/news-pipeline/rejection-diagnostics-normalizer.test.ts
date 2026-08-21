@@ -111,6 +111,22 @@ describe("normalizeRejectionDiagnostic", () => {
     expect(result.retryReasonCode).toBe("http_403");
   });
 
+  it("keeps HTTP 429 rate limits distinct from HTTP 403 access denial", () => {
+    const artifact = makeArtifact({
+      payload: {
+        ...(makeArtifact().payload as Record<string, unknown>),
+        kind: "HTTP_ACCESS_BLOCKED",
+        rejection: { code: "HTTP_FORBIDDEN", httpStatus: 429, detail: "[http_error] HTTP 429" },
+        retryDiagnostics: { disposition: "DEFERRED", reasonCode: "http_429" },
+      },
+    });
+
+    const result = normalizeRejectionDiagnostic(artifact)!;
+    expect(result.httpStatus).toBe(429);
+    expect(result.rateLimited).toBe(true);
+    expect(result.httpAccessBlocked).toBe(false);
+  });
+
   it("aggregates deferred diagnostics by host and earliest cooldown", () => {
     const makeDeferred = (id: string, articleId: number, retryAfter: string, reasonCode: string) => normalizeRejectionDiagnostic(makeArtifact({
       id,
@@ -447,7 +463,9 @@ describe("normalizeRejectionDiagnostic", () => {
 
     expect(result).not.toBeNull();
     expect(result!.kind).toBe("HTTP_ACCESS_BLOCKED");
-    expect(result!.httpAccessBlocked).toBe(true);
+    expect(result!.httpStatus).toBe(429);
+    expect(result!.rateLimited).toBe(true);
+    expect(result!.httpAccessBlocked).toBe(false);
     expect(result!.browserFallback).not.toBeNull();
     expect(result!.browserFallback!.skippedReason).toBe("runtime_unavailable_global_stop");
   });

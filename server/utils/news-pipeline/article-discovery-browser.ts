@@ -1041,9 +1041,14 @@ export async function discoverArticleLinksWithBrowser(input: {
       },
     };
   } catch (error: any) {
+    const message = error?.message || String(error);
+    // A page/context/browser-closed exception is a local runtime interruption,
+    // not evidence that the publisher has no article links.
+    const runtimeInterrupted = /(?:target page, context or browser has been closed|(?:browser|page|context) has been closed|execution context was destroyed)/i
+      .test(message);
     return {
       ok: false,
-      reason: "browser_error",
+      reason: runtimeInterrupted ? "browser_runtime_unavailable" : "browser_error",
       links: [],
       rawLinkCount: 0,
       shortlistedLinkCount: 0,
@@ -1054,8 +1059,8 @@ export async function discoverArticleLinksWithBrowser(input: {
         pageTitle: null,
         linkCount: 0,
         articleLikeLinkCount: 0,
-        blockedReason: error?.message || String(error),
-        browserRuntimeAvailable: true,
+        blockedReason: message,
+        browserRuntimeAvailable: !runtimeInterrupted,
         browserAttempted: Boolean(navigation?.allowed),
         ...(navigation?.allowed ? { browserNavigation: navigation.evidence } : {}),
         elapsedMs: Date.now() - startedAt,

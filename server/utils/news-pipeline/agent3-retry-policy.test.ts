@@ -3,6 +3,7 @@ import { AGENT3_EXTRACTOR_VERSION } from "./enrichment";
 import {
   decideAgent3RetryDisposition,
   getAgent3RetryAfter,
+  getAgent3RetryAfterResolution,
 } from "./agent3-retry-policy";
 
 const finishedAt = new Date("2026-08-01T10:00:00.000Z");
@@ -170,5 +171,30 @@ describe("Agent 3 retry policy", () => {
       reasonCode: "BROWSER_RUNTIME_UNAVAILABLE",
     });
     expect(getAgent3RetryAfter(input)).toBe("2026-08-01T10:30:00.000Z");
+  });
+
+  it("caps implausibly distant persisted retry evidence and preserves its provenance", () => {
+    const input = failed({
+      enrichmentOutcome: {
+        extractorVersion: AGENT3_EXTRACTOR_VERSION,
+        kind: "RETRYABLE_FAILURE",
+        rejectionCode: "FETCH_TIMEOUT",
+        retryAfterAt: "2027-08-01T10:00:00.000Z",
+      },
+    });
+    expect(getAgent3RetryAfterResolution(input)).toEqual({
+      retryAfter: "2026-08-02T10:00:00.000Z",
+      source: "persisted",
+      capped: true,
+    });
+    expect(decideAgent3RetryDisposition(input)).toMatchObject({
+      state: "DEFERRED",
+      retryAfterSource: "persisted",
+      retryAfterCapped: true,
+    });
+    expect(decideAgent3RetryDisposition({
+      ...input,
+      now: new Date("2026-08-02T10:01:00.000Z"),
+    }).state).toBe("READY_RETRY");
   });
 });
