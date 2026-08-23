@@ -17,6 +17,12 @@ const DAILY_STATUSES = [
   "DAILY_PIPELINE_WORKFLOW_FAILED",
   "DAILY_PIPELINE_WORKFLOW_STALE",
 ] as const;
+const LOCAL_DOCKER_STATUSES = [
+  "LOCAL_DOCKER_PIPELINE_RUNNING",
+  "LOCAL_DOCKER_PIPELINE_COMPLETED",
+  "LOCAL_DOCKER_PIPELINE_COMPLETED_PARTIAL",
+] as const;
+const TELEMETRY_STATUSES = [...DAILY_STATUSES, ...LOCAL_DOCKER_STATUSES] as const;
 const STAGES: ReadonlySet<TelemetryStage> = new Set(["agent1", "agent2-static", "agent2-headless", "agent3"]);
 const STAGE_OUTCOMES = new Set(["completed", "degraded", "failed"]);
 const isTelemetryStage = (value: unknown): value is TelemetryStage =>
@@ -244,8 +250,8 @@ export default defineEventHandler(async (event) => {
 
   const latestRun = await prisma.pipelineRun.findFirst({
     where: runId
-      ? { id: runId, status: { in: [...DAILY_STATUSES] } }
-      : { status: { in: [...DAILY_STATUSES] } },
+      ? { id: runId, status: { in: [...TELEMETRY_STATUSES] } }
+      : { status: { in: [...TELEMETRY_STATUSES] } },
     orderBy: { createdAt: "desc" },
     select: { id: true, status: true, createdAt: true, updatedAt: true, finishedAt: true, summary: true },
   });
@@ -253,7 +259,9 @@ export default defineEventHandler(async (event) => {
   if (!latestRun) return { ok: true, run: null, stageTimings: [], batches: [], pagination: { truncated: false, totalReturned: 0, limit: BATCH_LIMIT } };
 
   const summary = asRecord(latestRun.summary);
-  if (summary?.kind !== "daily_news_pipeline_workflow") {
+  const isDailyWorkflow = summary?.kind === "daily_news_pipeline_workflow";
+  const isLocalDockerPipeline = summary?.kind === "local_docker_pipeline";
+  if (!isDailyWorkflow && !isLocalDockerPipeline) {
     // A selected PipelineRun must never be exposed merely because its id was known.
     return { ok: true, run: null, stageTimings: [], batches: [], pagination: { truncated: false, totalReturned: 0, limit: BATCH_LIMIT } };
   }
@@ -316,10 +324,10 @@ export default defineEventHandler(async (event) => {
       createdAt: latestRun.createdAt,
       updatedAt: latestRun.updatedAt,
       finishedAt: latestRun.finishedAt,
-      lockHeartbeatAgeMs: latestRun.status === "DAILY_PIPELINE_WORKFLOW_RUNNING" && updatedAtMs != null
+      lockHeartbeatAgeMs: isDailyWorkflow && latestRun.status === "DAILY_PIPELINE_WORKFLOW_RUNNING" && updatedAtMs != null
         ? clampDuration(Math.max(0, Date.now() - updatedAtMs))
         : null,
-      lockRecoveryEligible: latestRun.status === "DAILY_PIPELINE_WORKFLOW_RUNNING" &&
+      lockRecoveryEligible: isDailyWorkflow && latestRun.status === "DAILY_PIPELINE_WORKFLOW_RUNNING" &&
         updatedAtMs != null && Date.now() - updatedAtMs >= MANUAL_LOCK_RECOVERY_AFTER_MS,
       completedStages: Array.isArray(summary.completedStages)
         ? summary.completedStages.filter((stage): stage is TelemetryStage => isTelemetryStage(stage))

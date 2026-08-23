@@ -79,6 +79,18 @@ describe("hard-source-profile — pure helpers", () => {
       })).toBe("weak_date_policy_review");
     });
 
+    it("prioritizes weak-date review over noisy out-of-scope links when a candidate passed scope", async () => {
+      const { determineSuggestedNextAction } = await loadModule();
+      expect(determineSuggestedNextAction({
+        staticQuality: "weak",
+        browserStatus: "BROWSER_NO_CANDIDATES",
+        dominantReasons: ["wouldAcceptWithWeakDate", "missing_published_at"],
+        linkFilterReasons: { out_of_category_scope: 20 },
+        detailRejectionReasons: { missing_published_at: 1 },
+        failureCount: 1,
+      })).toBe("weak_date_policy_review");
+    });
+
     it("returns ai_profile_inspection when dynamic_or_empty_html + browser no candidates", async () => {
       const { determineSuggestedNextAction } = await loadModule();
       expect(determineSuggestedNextAction({

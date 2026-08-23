@@ -44,6 +44,61 @@ export type NormalizedDiscoveryQualityItem = {
   };
 };
 
+/**
+ * Keep one current diagnostic per logical target. Historical RSS-first and
+ * resolved markers remain in PipelineArtifact, but showing them next to the
+ * current candidate or queue state makes the dashboard look like duplicate work.
+ */
+export function collapseDiscoveryQualityItems(
+  items: readonly NormalizedDiscoveryQualityItem[],
+): NormalizedDiscoveryQualityItem[] {
+  const priority = (item: NormalizedDiscoveryQualityItem): number => {
+    if (item.headlessState === "active") return 4;
+    if (item.headlessState === "recommended") return 3;
+    if (item.headlessState === "none") return 2;
+    return 1;
+  };
+  const normalizeTargetKey = (value: string | null): string | null => {
+    if (!value) return null;
+    try {
+      const url = new URL(value);
+      url.hash = "";
+      url.search = "";
+      url.hostname = url.hostname.toLowerCase();
+      if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+      return url.toString();
+    } catch {
+      return value.trim().replace(/\/+$/, "") || null;
+    }
+  };
+  const keyFor = (item: NormalizedDiscoveryQualityItem): string =>
+    `${item.sourceId ?? ""}:${item.categoryId ?? ""}:${normalizeTargetKey(item.targetUrl) ?? item.id}`;
+  const selected = new Map<string, NormalizedDiscoveryQualityItem>();
+
+  for (const item of items) {
+    const key = keyFor(item);
+    const existing = selected.get(key);
+    if (!existing) {
+      selected.set(key, item);
+      continue;
+    }
+    const priorityDelta = priority(item) - priority(existing);
+    if (
+      priorityDelta > 0 ||
+      (priorityDelta === 0 && (
+        item.createdAt.getTime() > existing.createdAt.getTime() ||
+        (item.createdAt.getTime() === existing.createdAt.getTime() && item.id > existing.id)
+      ))
+    ) {
+      selected.set(key, item);
+    }
+  }
+
+  return [...selected.values()].sort((left, right) =>
+    right.createdAt.getTime() - left.createdAt.getTime() || right.id.localeCompare(left.id),
+  );
+}
+
 const MAX_STALE_SAMPLES = 3;
 const HISTORICAL_HEADLESS_STATUSES = new Set([
   "RESOLVED",

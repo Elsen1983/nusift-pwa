@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { normalizeDiscoveryQualityArtifact } from "./discovery-quality-normalize";
+import {
+  collapseDiscoveryQualityItems,
+  normalizeDiscoveryQualityArtifact,
+} from "./discovery-quality-normalize";
 
 const baseArtifact = {
   id: "art-1",
@@ -523,5 +526,61 @@ describe("normalizeDiscoveryQualityArtifact", () => {
     expect(result.quality).toBe("failed");
     expect(result.shouldEscalateToHeadless).toBe(true);
     expect(result.targetUrl).toBe("https://www.nba.com/news/trade-story");
+  });
+});
+
+describe("collapseDiscoveryQualityItems", () => {
+  it("keeps the active headless marker instead of a duplicate historical RSS marker", () => {
+    const active = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      id: "active-marker",
+      createdAt: new Date("2026-08-21T10:00:00Z"),
+      artifactType: "article_discovery_headless_required",
+      status: "PENDING_HEADLESS",
+      payload: { targetUrl: "https://example.com/section" },
+    });
+    const historical = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      id: "rss-history",
+      createdAt: new Date("2026-08-21T11:00:00Z"),
+      artifactType: "article_discovery_headless_required",
+      status: "RESOLVED_BY_AGENT1_RSS",
+      payload: { targetUrl: "https://example.com/section" },
+    });
+
+    expect(collapseDiscoveryQualityItems([historical, active])).toEqual([active]);
+  });
+
+  it("keeps only the newest equivalent static diagnostic when no active queue exists", () => {
+    const older = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      id: "older",
+      createdAt: new Date("2026-08-21T10:00:00Z"),
+      payload: { targetUrl: "https://example.com/section" },
+    });
+    const newer = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      id: "newer",
+      createdAt: new Date("2026-08-21T11:00:00Z"),
+      payload: { targetUrl: "https://example.com/section" },
+    });
+
+    expect(collapseDiscoveryQualityItems([older, newer])).toEqual([newer]);
+  });
+
+  it("collapses equivalent target URLs that differ only by trailing slash or query", () => {
+    const older = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      id: "older-url",
+      payload: { targetUrl: "https://example.com/section?utm_source=test" },
+    });
+    const newer = normalizeDiscoveryQualityArtifact({
+      ...baseArtifact,
+      id: "newer-url",
+      createdAt: new Date("2026-08-23T12:00:00Z"),
+      payload: { targetUrl: "https://example.com/section/" },
+    });
+
+    expect(collapseDiscoveryQualityItems([older, newer])).toEqual([newer]);
   });
 });

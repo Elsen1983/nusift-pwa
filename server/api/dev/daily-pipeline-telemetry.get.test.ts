@@ -66,6 +66,31 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
     expect(result.batches).toEqual([]);
   });
 
+  it("exposes a local Docker pipeline without enabling workflow lock recovery", async () => {
+    mockPipelineRunFindFirst.mockResolvedValue({
+      id: "local-run-1",
+      status: "LOCAL_DOCKER_PIPELINE_COMPLETED",
+      createdAt: "2026-08-21T10:00:00Z",
+      updatedAt: "2026-08-21T10:05:00Z",
+      finishedAt: "2026-08-21T10:05:00Z",
+      summary: {
+        kind: "local_docker_pipeline",
+        outcomes: [{ stage: "agent3", status: "completed" }],
+      },
+    });
+    mockPipelineArtifactFindMany.mockResolvedValue([]);
+
+    const handler = await loadHandler();
+    const result = await handler({ query: {} } as any);
+
+    expect(result.run).toMatchObject({
+      id: "local-run-1",
+      status: "LOCAL_DOCKER_PIPELINE_COMPLETED",
+      lockHeartbeatAgeMs: null,
+      lockRecoveryEligible: false,
+    });
+  });
+
   it("returns the run summary, stage timings, and bounded batch telemetry", async () => {
     mockPipelineRunFindFirst.mockResolvedValue({
       id: "run-1",

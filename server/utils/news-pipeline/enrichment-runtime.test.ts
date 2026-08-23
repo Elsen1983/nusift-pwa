@@ -2075,6 +2075,35 @@ describe("getAgent3Progress", () => {
     }));
   });
 
+  it("prefers a newer orchestration diagnostic over an older standalone enrichment run", async () => {
+    articleCountMock.mockResolvedValue(0);
+    articleFindManyMock.mockResolvedValue([]);
+    pipelineRunFindFirstMock.mockResolvedValue({
+      id: "older-standalone-run",
+      candidatesFound: 0,
+      inserted: 0,
+      skipped: 0,
+      failed: 0,
+      finishedAt: new Date("2026-08-23T09:00:00Z"),
+      summary: { agent: "enrichment", articleCount: 0, persisted: 0, byKind: {} },
+    });
+    artifactFindFirstMock.mockResolvedValue({
+      pipelineRunId: "newer-workflow-run",
+      createdAt: new Date("2026-08-23T10:00:00Z"),
+      payload: { enrichmentSummary: { articleCount: 10, persisted: 10, byKind: { SUCCESS: 8, LOW_CONTENT_QUALITY: 2 } } },
+    });
+
+    const { getAgent3Progress } = await import("./enrichment-runtime");
+    const progress = await getAgent3Progress();
+
+    expect(progress.latestRun).toMatchObject({
+      pipelineRunId: "newer-workflow-run",
+      processed: 10,
+      successfullyEnriched: 8,
+      rejected: 2,
+    });
+  });
+
   it("remainingAfterLatestRun is recomputed from current DB state", async () => {
     let callIndex = 0;
     articleCountMock.mockImplementation(() => {

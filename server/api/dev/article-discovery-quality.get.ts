@@ -1,7 +1,10 @@
 import { requireAdminId } from "../../utils/require-admin";
 import { assertRateLimit } from "../../utils/rate-limit";
 import { prisma } from "../../utils/prisma";
-import { normalizeDiscoveryQualityArtifact } from "../../utils/news-pipeline/discovery-quality-normalize";
+import {
+  collapseDiscoveryQualityItems,
+  normalizeDiscoveryQualityArtifact,
+} from "../../utils/news-pipeline/discovery-quality-normalize";
 
 export default defineEventHandler(async (event) => {
   await requireAdminId(event);
@@ -28,5 +31,5 @@ export default defineEventHandler(async (event) => {
     take: 50,
   });
 
-  return { ok: true, items: artifacts.map(normalizeDiscoveryQualityArtifact) };
+  return { ok: true, items: collapseDiscoveryQualityItems(artifacts.map(normalizeDiscoveryQualityArtifact)) };
 });

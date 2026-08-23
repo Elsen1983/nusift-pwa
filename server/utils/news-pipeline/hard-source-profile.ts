@@ -187,27 +187,33 @@ export function determineSuggestedNextAction(input: {
     return "browser_runtime_fix";
   }
 
-  // Check if mostly out_of_category_scope rejections
-  const outOfScopeCount =
-    (linkFilterReasons["out_of_category_scope"] || 0) +
-    (linkFilterReasons["different_domain"] || 0) +
-    (detailRejectionReasons["rejected_out_of_scope"] || 0);
   const totalReasons = Object.values(linkFilterReasons).reduce((a, b) => a + b, 0) +
     Object.values(detailRejectionReasons).reduce((a, b) => a + b, 0);
-  if (totalReasons > 0 && outOfScopeCount / totalReasons > 0.5) {
-    return "relax_category_scope";
-  }
 
-  // Check for date-related issues with good titles
+  // A browser-discovered candidate that already passes scope but lacks only a
+  // publish date is stronger evidence than unrelated links. Do not recommend
+  // widening scope for that recoverable metadata problem.
   const dateIssues =
     (detailRejectionReasons["missing_published_at"] || 0) +
     (detailRejectionReasons["invalid_published_at"] || 0) +
     (detailRejectionReasons["future_published_at"] || 0);
-  const hasGoodTitles = dominantReasons.some(
-    (r) => r.includes("title") || r.includes("wouldAcceptWithWeakDate"),
+  const hasWeakDateCandidate = dominantReasons.some((reason) =>
+    reason.includes("wouldAcceptWithWeakDate"),
   );
-  if (totalReasons > 0 && dateIssues / totalReasons > 0.4 && hasGoodTitles) {
+  const hasGoodTitles = dominantReasons.some(
+    (reason) => reason.includes("title") || reason.includes("wouldAcceptWithWeakDate"),
+  );
+  if (hasWeakDateCandidate || (totalReasons > 0 && dateIssues / totalReasons > 0.4 && hasGoodTitles)) {
     return "weak_date_policy_review";
+  }
+
+  // Check if mostly out_of_category_scope rejections.
+  const outOfScopeCount =
+    (linkFilterReasons["out_of_category_scope"] || 0) +
+    (linkFilterReasons["different_domain"] || 0) +
+    (detailRejectionReasons["rejected_out_of_scope"] || 0);
+  if (totalReasons > 0 && outOfScopeCount / totalReasons > 0.5) {
+    return "relax_category_scope";
   }
 
   // Static dynamic_or_empty_html + browser no candidates → AI inspection

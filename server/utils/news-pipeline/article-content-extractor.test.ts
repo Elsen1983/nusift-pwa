@@ -3837,3 +3837,76 @@ describe("Prompt 15A-3 main fallback and auth-gate regressions", () => {
     }
   });
 });
+
+describe("localized article boundary and lead regressions", () => {
+  it("preserves a Hungarian lead while excluding embedded recommendations, hidden headlines, and commerce cards", async () => {
+    const lead = "A politikus közösségi oldalán osztotta meg, hogy hivatalos választ kért a minisztériumtól, amely részletesen reagált a felvetéseire és a nyilvánosság előtt ismertette az álláspontját.";
+    const bodyParagraphs = [
+      "Az első bekezdés részletesen bemutatja az ügy előzményeit, a korábbi megkereséseket és azokat a körülményeket, amelyek miatt a kérdés ismét a közéleti vita középpontjába került.",
+      "A második bekezdés idézi a hivatalos válasz legfontosabb megállapításait, és további összefüggéseket ad ahhoz, hogyan értékelte a tárca a nyilvánosságra hozott kérdéseket.",
+      "A harmadik bekezdés a kapcsolódó ajánló után is a cikk szerves része, ezért ennek változatlanul meg kell maradnia a kinyert törzsszövegben.",
+      "A negyedik bekezdés ismerteti a politikai és jogi hátteret, valamint összefoglalja a korábbi hatósági döntéseket és az érintettek nyilatkozatait.",
+      "Az ötödik bekezdés lezárja a beszámolót, pontosítja az események időrendjét, és megadja az olvasó számára szükséges utolsó ténybeli információkat.",
+    ];
+
+    const html = `<!DOCTYPE html>
+<html lang="hu-HU"><head>
+  <title>Magyar közéleti cikk</title>
+  <meta name="description" content="${lead}" />
+</head><body>
+  <main>
+    <article>
+      <div class="lead"><p>${lead}</p></div>
+      <div class="article-content">
+        <p>Kövesse az Indexet Facebookon is!</p>
+        <p>${bodyParagraphs[0]}</p>
+        <p>${bodyParagraphs[1]}</p>
+        <section class="embedded-card">
+          <h2>KAPCSOLÓDÓ</h2>
+          <a href="/masik-cikk">Novák Előd nekiment Ajsa Lunának, a kormány visszavágott</a>
+          <p>Egy év elteltével sem ült el a vita a szereplők között.</p>
+        </section>
+        <p>${bodyParagraphs[2]}</p>
+        <p>${bodyParagraphs[3]}</p>
+        <p>${bodyParagraphs[4]}</p>
+        <section class="commerce-cards">
+          <h2>Ehhez a cikkhez ajánljuk</h2>
+          <a href="/termek/1">Stefan Ahnhem - A birtok</a>
+          <p>5 841 Ft</p>
+          <a href="/termek/2">Bartos Erika - Érzelmek meséi</a>
+          <p>Tovább a termékoldalra</p>
+        </section>
+      </div>
+    </article>
+    <aside>
+      <h2>TOVÁBBI BELFÖLD CIKKEK</h2>
+      <a href="/oldalso-hir">Tizenhárom éve nem volt ilyen augusztus 20-án</a>
+      <div style="display: none">
+        <a href="/elore-betoltott-hir">Hadházy Ákos nekiment a mezőgazdasági döntésnek</a>
+      </div>
+    </aside>
+  </main>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 1600,
+      articleUrl: "https://example.com/hu/kozelet/cikk",
+      existingTitle: "Magyar közéleti cikk",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.bodyText).toContain(lead);
+      expect(result.bodyText).toContain("A harmadik bekezdés");
+      expect(result.bodyText).toContain("Az ötödik bekezdés");
+      expect(result.bodyText).not.toContain("Kövesse az Indexet");
+      expect(result.bodyText).not.toContain("Novák Előd nekiment");
+      expect(result.bodyText).not.toContain("Tizenhárom éve nem volt ilyen");
+      expect(result.bodyText).not.toContain("Hadházy Ákos nekiment");
+      expect(result.bodyText).not.toContain("Stefan Ahnhem");
+      expect(result.bodyText).not.toContain("5 841 Ft");
+    }
+  });
+});

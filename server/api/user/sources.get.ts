@@ -3,25 +3,10 @@ import { prisma } from "../../utils/prisma";
 import { requireUserId } from "../../utils/require-user";
 import { validateDiscoveryEvidence } from "../../utils/news-pipeline/types";
 import type { ScopeMatch } from "../../utils/news-pipeline/types";
+import { isSamePublisherDomain } from "../../utils/publisher-domain";
 
 const normalizeComparableUrl = (value?: string | null) =>
   (value || "").trim().replace(/\/+$/, "").toLowerCase();
-
-const isSameRootDomain = (left?: string | null, right?: string | null) => {
-  if (!left || !right) return false;
-
-  try {
-    const leftHost = new URL(left).hostname.replace(/^www\./, "").toLowerCase();
-    const rightHost = new URL(right).hostname.replace(/^www\./, "").toLowerCase();
-    return (
-      leftHost === rightHost ||
-      leftHost.endsWith(`.${rightHost}`) ||
-      rightHost.endsWith(`.${leftHost}`)
-    );
-  } catch {
-    return false;
-  }
-};
 
 const toAbsoluteUrl = (baseUrl: string, candidate: string) => {
   try {
@@ -106,7 +91,7 @@ const buildFeedHints = (input: {
   const evidence = readDiscoveryEvidence(input.discoveryEvidence);
   const matchedFeeds = (evidence?.taxonomyEvidence?.matchedFeedUrls || [])
     .map((candidate) => toAbsoluteUrl(input.targetUrl, candidate))
-    .filter((candidate) => isSameRootDomain(candidate, input.targetUrl))
+    .filter((candidate) => isSamePublisherDomain(candidate, input.targetUrl))
     .filter(isLikelyRecoveryCandidate)
     .map((feedUrl) => ({
       feedUrl,
@@ -120,7 +105,7 @@ const buildFeedHints = (input: {
       score: candidate.score ?? 0,
       scopeMatch: candidate.scopeMatch ?? "generic",
     }))
-    .filter((candidate) => candidate.feedUrl && isSameRootDomain(candidate.feedUrl, input.targetUrl))
+    .filter((candidate) => candidate.feedUrl && isSamePublisherDomain(candidate.feedUrl, input.targetUrl))
     .filter((candidate) => isLikelyRecoveryCandidate(candidate.feedUrl));
 
   const allCandidates = [...matchedFeeds, ...topFeeds]

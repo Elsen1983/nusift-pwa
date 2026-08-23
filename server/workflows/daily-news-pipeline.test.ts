@@ -320,6 +320,17 @@ describe("daily news pipeline stage batches", () => {
     ).toBe("stagnant_backoff");
   });
 
+  it("does not put Agent 3 into a long backoff when no selected article was processed", () => {
+    expect(
+      decideStageLoopWait({
+        stage: "agent3",
+        batchesSinceYield: 3,
+        stagnantBatches: 3,
+        stagnantBackoffs: 0,
+      }),
+    ).toBe("fail");
+  });
+
   it("fails instead of entering repeated long sleep cycles", () => {
     expect(
       decideStageLoopWait({
@@ -917,7 +928,7 @@ describe("daily news pipeline stage batches", () => {
     ]));
   });
 
-  it("gives Agent 3 one bounded stagnation backoff before degrading", async () => {
+  it("degrades Agent 3 stagnation without a long workflow backoff", async () => {
     mocks.agent1.mockResolvedValue(completedAgent1Result());
     mocks.agent2.mockResolvedValue(completedAgent2Result());
     mocks.fetch.mockImplementation(async (url, options) => {
@@ -934,12 +945,11 @@ describe("daily news pipeline stage batches", () => {
       triggeredAt: "2026-08-12T10:00:00.000Z",
     });
 
-    expect(mocks.sleep).toHaveBeenCalledTimes(1);
-    expect(mocks.sleep).toHaveBeenCalledWith("30m");
+    expect(mocks.sleep).not.toHaveBeenCalledWith("30m");
     expect(result.stageOutcomes.at(-1)).toMatchObject({
       stage: "agent3",
       status: "degraded",
-      batchCount: 6,
+      batchCount: 3,
       remaining: 2,
     });
   });

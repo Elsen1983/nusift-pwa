@@ -7,16 +7,7 @@ import { resolveHeadlessMarkersByAgent1Rss } from "../../../utils/news-pipeline/
 import { runNewsPipeline } from "../../../utils/news-pipeline/orchestrator";
 import { createDiscoveryOutcome, emptyTaxonomyEvidence } from "../../../utils/news-pipeline/types";
 import type { FeedDiscoveryResult } from "../../../utils/news-pipeline/types";
-
-const isSameRootDomain = (left: string, right: string) => {
-  const leftHost = new URL(left).hostname.replace(/^www\./, "").toLowerCase();
-  const rightHost = new URL(right).hostname.replace(/^www\./, "").toLowerCase();
-  return (
-    leftHost === rightHost ||
-    leftHost.endsWith(`.${rightHost}`) ||
-    rightHost.endsWith(`.${leftHost}`)
-  );
-};
+import { assessFeedPublisherCompatibility } from "../../../utils/publisher-domain";
 
 export default defineEventHandler(async (event) => {
   const userId = requireUserId(event);
@@ -73,15 +64,31 @@ export default defineEventHandler(async (event) => {
     ? rootSubscription.newsSource.frontPageUrl
     : categorySubscription!.category.pathUrl;
 
-  if (!isSameRootDomain(normalizedFeedUrl, targetUrl)) {
-    throw createError({ statusCode: 400, statusMessage: "Feed URL must belong to the same source domain." });
-  }
-
   const verification = await verifyImportedRssFeed(normalizedFeedUrl);
   if (!verification.verified) {
     throw createError({
       statusCode: 400,
       statusMessage: verification.reason || "Feed URL did not validate as RSS/Atom.",
+    });
+  }
+
+  const publisherCompatibility = assessFeedPublisherCompatibility({
+    feedUrl: normalizedFeedUrl,
+    targetUrl,
+    entryUrls: verification.entryUrls,
+  });
+  if (!publisherCompatibility.allowed) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: "Feed entries could not be verified as belonging to the source publisher.",
+      data: {
+        reason: publisherCompatibility.reason,
+        feedDomain: publisherCompatibility.feedDomain,
+        targetDomain: publisherCompatibility.targetDomain,
+        inspectedEntryCount: publisherCompatibility.inspectedEntryCount,
+        matchingEntryCount: publisherCompatibility.matchingEntryCount,
+        foreignEntryCount: publisherCompatibility.foreignEntryCount,
+      },
     });
   }
 

@@ -43,6 +43,8 @@ export type { DailyPipelineStage };
 
 export type StageBatchResult = {
   stage: DailyPipelineStage;
+  /** Targets/articles selected before claims and in-batch cooldowns are applied. */
+  selected?: number;
   processed: number;
   remaining: number;
   complete: boolean;
@@ -55,6 +57,10 @@ export type StageBatchResult = {
   readyRetry?: number;
   retryableNow?: number;
   nextRetryAt?: string | null;
+  /** Selected work that could not acquire a durable Agent 3 claim. */
+  claimSkipped?: number;
+  /** Selected Agent 3 work skipped after its source entered an in-batch cooldown. */
+  sourceCooldownSkipped?: number;
   /** Durable per-batch telemetry record (always present in production runs). */
   telemetry?: StageBatchTelemetry;
 };
@@ -146,11 +152,17 @@ export type DailyPipelineRecoverySummary = {
 };
 
 export function decideStageLoopWait(input: {
+  stage?: DailyPipelineStage;
   batchesSinceYield: number;
   stagnantBatches: number;
   stagnantBackoffs: number;
 }): "fairness_yield" | "stagnant_backoff" | "fail" | null {
   if (input.stagnantBatches >= STAGNANT_BATCHES_BEFORE_BACKOFF) {
+    // Agent 3 only reaches this state when a selected article did not become
+    // a durable outcome. Waiting for 30 minutes cannot make a lost claim or
+    // source-local skip productive, so preserve the diagnosis and return the
+    // queue to the next orchestration instead of burning workflow time.
+    if (input.stage === "agent3") return "fail";
     return input.stagnantBackoffs >= MAX_STAGNANT_BACKOFFS
       ? "fail"
       : "stagnant_backoff";
@@ -745,6 +757,7 @@ export async function runDailyNewsPipelineWorkflow(
           stagnantBatches = stagnant ? stagnantBatches + 1 : 0;
 
           const waitAction = decideStageLoopWait({
+            stage,
             batchesSinceYield,
             stagnantBatches,
             stagnantBackoffs,
@@ -761,7 +774,9 @@ export async function runDailyNewsPipelineWorkflow(
             const message = boundedStageReason(
               `${stage} made no progress: ` +
               `previousRemaining=${priorRemaining ?? "null"}, ` +
-              `currentRemaining=${batch.remaining}, processed=${batch.processed}, ` +
+              `currentRemaining=${batch.remaining}, selected=${batch.selected ?? batch.processed}, ` +
+              `processed=${batch.processed}, claimSkipped=${batch.claimSkipped ?? 0}, ` +
+              `sourceCooldownSkipped=${batch.sourceCooldownSkipped ?? 0}, ` +
               `readyNew=${batch.readyNew ?? "n/a"}, readyRetry=${batch.readyRetry ?? "n/a"}, ` +
               `retryableNow=${batch.retryableNow ?? batch.remaining}, ` +
               `deferred=${batch.deferred ?? "n/a"}, quarantined=${batch.quarantined ?? "n/a"}, ` +

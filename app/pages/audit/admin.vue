@@ -971,6 +971,7 @@
                     <span v-if="item.lastBrowserFinishedAt">browser finished: {{ formatLogTime(item.lastBrowserFinishedAt) }}</span>
                     <span v-if="item.headlessRecoveryCount">recovered: {{ item.headlessRecoveryCount }}x</span>
                     <span v-if="item.lastHeadlessRecoveryAt">last recovery: {{ formatLogTime(item.lastHeadlessRecoveryAt) }}</span>
+                    <span v-if="item.status === 'PENDING_HEADLESS' && item.nextEligibleAt" class="text-amber-300">retry after: {{ formatRetryDateTime(item.nextEligibleAt) }}</span>
                   </div>
                   <div v-if="canRunManualPipeline && isRetryableHeadlessStatus(item.status)" class="mt-2">
                     <button
@@ -1693,8 +1694,8 @@
           </div>
           <div v-if="agent3Progress" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-on-surface-variant">
             <span>Total in scope: <strong>{{ agent3Progress.totalInScope }}</strong></span>
-            <span>Policy eligible: <strong class="text-violet-300">{{ agent3Progress.eligibleNow }}</strong></span>
-            <span>Retryable now: <strong class="text-emerald-300">{{ agent3Progress.retryableNow ?? agent3Progress.eligibleNow }}</strong></span>
+            <span>Eligible under policy: <strong class="text-violet-300">{{ agent3Progress.eligibleNow }}</strong></span>
+            <span>Ready now: <strong class="text-emerald-300">{{ agent3Progress.retryableNow ?? agent3Progress.eligibleNow }}</strong></span>
             <span v-if="(agent3Progress.recentlyBlocked ?? 0) > 0" class="text-amber-300">Recently blocked: <strong>{{ agent3Progress.recentlyBlocked }}</strong></span>
             <span v-if="(agent3Progress.nonRetryableCurrentVersionFailures ?? 0) > 0" class="text-rose-300/80">Non-retryable failures: <strong>{{ agent3Progress.nonRetryableCurrentVersionFailures }}</strong></span>
             <span>Needs initial enrichment: <strong>{{ agent3Progress.needingInitialEnrichment }}</strong></span>
@@ -1722,6 +1723,9 @@
             <span>Last run processed: <strong>{{ agent3Progress.latestRun.processed }}</strong></span>
             <span>Enriched: <strong class="text-emerald-300">{{ agent3Progress.latestRun.successfullyEnriched }}</strong></span>
             <span>Rejected: <strong :class="agent3Progress.latestRun.rejected > 0 ? 'text-rose-300' : 'text-emerald-300'">{{ agent3Progress.latestRun.rejected }}</strong></span>
+            <span v-if="agent3Progress.latestRun.skipped > 0">Skipped: <strong>{{ agent3Progress.latestRun.skipped }}</strong></span>
+            <span v-if="agent3Progress.latestRun.claimLost > 0" class="text-amber-300">Claim lost: <strong>{{ agent3Progress.latestRun.claimLost }}</strong></span>
+            <span v-if="agent3Progress.latestRun.systemPersistFailed > 0" class="text-rose-300">Persistence failed: <strong>{{ agent3Progress.latestRun.systemPersistFailed }}</strong></span>
             <span v-if="agent3Progress.latestRun.durationMs != null">Duration: <strong>{{ Math.round(agent3Progress.latestRun.durationMs / 1000) }}s</strong></span>
           </div>
           <div v-if="agent3Progress?.latestRun?.browserFallbackStats && agent3Progress.latestRun.browserFallbackStats.attempted > 0" class="mt-1.5 rounded-lg border border-sky-500/15 bg-sky-500/5 px-2.5 py-1.5">
@@ -1758,7 +1762,7 @@
           <p v-if="(agent3Progress?.deferred ?? 0) > 0 && agent3Progress?.latestRun?.sourceCooldowns?.length" class="mt-1 text-[10px] text-on-surface-variant/60">
             The deferred breakdown is queue-wide; source cooldowns below describe only the latest persisted run.
           </p>
-          <p v-else-if="agent3Progress" class="mt-2 text-xs text-emerald-300">
+          <p v-if="agent3Progress && (agent3Progress.retryableNow ?? 0) === 0 && (agent3Progress.deferred ?? 0) === 0" class="mt-2 text-xs text-emerald-300">
             No retryable Agent 3 articles remain for the selected mode.
           </p>
         </div>
@@ -2553,6 +2557,8 @@ const agent3Progress = ref<{
     successfullyEnriched: number;
     rejected: number;
     persistedOutcomes: number;
+    skipped: number;
+    claimLost: number;
     systemPersistFailed: number;
     durationMs: number | null;
     finishedAt: string | null;

@@ -101,7 +101,13 @@ export async function runAgent3WorkflowBatch(input: {
   }
   return {
     stage: "agent3",
-    processed: selectedCount,
+    // `selectedCount` includes rows skipped before a claim or after an
+    // in-batch source cooldown. Only extracted outcomes represent actual
+    // Agent 3 progress; using the selected count here masked stagnation and
+    // allowed a workflow to spend repeated fairness/backoff waits on the same
+    // untouched queue.
+    selected: selectedCount,
+    processed: result.articleCount,
     succeeded: byKind.SUCCESS ?? 0,
     failedRetryable: byKind.RETRYABLE_FAILURE ?? 0,
     deferred: progress.deferred,
@@ -110,6 +116,8 @@ export async function runAgent3WorkflowBatch(input: {
     readyRetry: progress.readyRetry,
     retryableNow: progress.retryableNow,
     nextRetryAt: progress.nextRetryAt,
+    claimSkipped: result.claimSkipped,
+    sourceCooldownSkipped: result.sourceCooldownSkipped,
     remaining: browserRecoveryMadeProgress ? Math.max(progress.deferred, 1) : progress.retryableNow,
     complete,
     browserFallbackStats: result.browserFallbackStats ?? null,

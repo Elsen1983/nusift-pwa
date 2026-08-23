@@ -49,6 +49,7 @@ type LocalStageOutcome = {
 type LocalAgent3Summary = {
   articleCount: number;
   persisted: number;
+  claimLost: number;
   persistFailed: number;
   durationMs: number;
   byKind: Record<string, number>;
@@ -71,6 +72,8 @@ type LocalAgent3Summary = {
     maxArticlesPerSource: number;
   };
 };
+
+const LOCAL_PROGRESS_HEARTBEAT_MS = 30_000;
 
 const parseArgs = () => {
   const args = new Map<string, string>();
@@ -147,12 +150,14 @@ const aggregateLocalAgent3Summary = (batches: readonly LocalStageResult[]): Loca
   };
   let articleCount = 0;
   let persisted = 0;
+  let claimLost = 0;
   let persistFailed = 0;
   let durationMs = 0;
   for (const batch of batches) {
     const telemetry = batch.telemetry;
     articleCount += telemetry.processed;
     persisted += Math.max(0, telemetry.processed - (telemetry.claimLost ?? 0) - (telemetry.persistenceFailed ?? 0));
+    claimLost += telemetry.claimLost ?? 0;
     persistFailed += telemetry.persistenceFailed ?? 0;
     durationMs += telemetry.durationMs;
     byKind.SUCCESS += telemetry.succeeded;
@@ -174,6 +179,7 @@ const aggregateLocalAgent3Summary = (batches: readonly LocalStageResult[]): Loca
   return {
     articleCount,
     persisted,
+    claimLost,
     persistFailed,
     durationMs,
     byKind,
@@ -280,8 +286,24 @@ const runStageToCurrentCompletion = async (
   let lastDeferred = 0;
   let lastRetryAt: string | null = null;
   for (let batchSeq = 1; batchSeq <= maxBatches; batchSeq += 1) {
-    const batch = await runStage(pipelineRunId, stage, batchSeq, previousRemaining);
+    const batchStartedAt = Date.now();
+    console.log(`[local-pipeline] stage=${stage} batch=${batchSeq} started remainingBefore=${previousRemaining ?? "unknown"}`);
+    const heartbeat = setInterval(() => {
+      const elapsedSeconds = Math.floor((Date.now() - batchStartedAt) / 1_000);
+      console.log(`[local-pipeline] stage=${stage} batch=${batchSeq} running elapsed=${elapsedSeconds}s`);
+    }, LOCAL_PROGRESS_HEARTBEAT_MS);
+    heartbeat.unref();
+
+    let batch: LocalStageResult;
+    try {
+      batch = await runStage(pipelineRunId, stage, batchSeq, previousRemaining);
+    } finally {
+      clearInterval(heartbeat);
+    }
     onBatch?.(batch);
+    console.log(
+      `[local-pipeline] stage=${stage} batch=${batchSeq} finished processed=${batch.processed} remaining=${batch.remaining} deferred=${batch.deferred ?? 0} complete=${batch.complete} durationMs=${batch.telemetry.durationMs}`,
+    );
     totalProcessed += batch.processed;
     lastDeferred = batch.deferred ?? 0;
     lastRetryAt = batch.nextRetryAt ?? null;
@@ -337,14 +359,20 @@ const outcomes: LocalStageOutcome[] = [];
 const agent3Batches: LocalStageResult[] = [];
 try {
   for (const stage of DAILY_PIPELINE_STAGES) {
+    console.log(`[local-pipeline] stage=${stage} started`);
     try {
-      outcomes.push(await runStageToCurrentCompletion(
+      const outcome = await runStageToCurrentCompletion(
         pipelineRun.id,
         stage,
         maxBatchesPerStage,
         stage === "agent3" ? (batch) => agent3Batches.push(batch) : undefined,
-      ));
+      );
+      outcomes.push(outcome);
+      console.log(
+        `[local-pipeline] stage=${stage} ${outcome.status} batches=${outcome.batches} processed=${outcome.processed} remaining=${outcome.remaining ?? "unknown"} deferred=${outcome.deferred}`,
+      );
     } catch (error) {
+      const reason = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
       outcomes.push({
         stage,
         status: "failed",
@@ -353,8 +381,9 @@ try {
         remaining: null,
         deferred: 0,
         nextRetryAt: null,
-        reason: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+        reason,
       });
+      console.error(`[local-pipeline] stage=${stage} failed reason=${reason}`);
     }
   }
   const status = outcomes.some((outcome) => outcome.status === "failed")

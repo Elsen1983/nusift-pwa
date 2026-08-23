@@ -205,6 +205,42 @@ const extractFeedLinks = (body: string) => {
   return links;
 };
 
+const FEED_VERIFICATION_ENTRY_LIMIT = 20;
+const FEED_VERIFICATION_SCAN_LIMIT = 1_000_000;
+
+const normalizeFeedEntryUrl = (value: string, feedUrl: string) => {
+  const decoded = value
+    .trim()
+    .replace(/^<!\[CDATA\[([\s\S]*)\]\]>$/i, "$1")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#0*38;|&#x0*26;/gi, "&")
+    .trim();
+
+  try {
+    const parsed = new URL(decoded, feedUrl);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+};
+
+export const extractVerifiedFeedEntryUrls = (
+  body: string,
+  feedUrl: string,
+  limit = FEED_VERIFICATION_ENTRY_LIMIT,
+) => {
+  const boundedLimit = Math.max(1, Math.min(FEED_VERIFICATION_ENTRY_LIMIT, Math.floor(limit) || 1));
+  const result = new Set<string>();
+
+  for (const link of extractFeedLinks(body.slice(0, FEED_VERIFICATION_SCAN_LIMIT))) {
+    const normalized = normalizeFeedEntryUrl(link, feedUrl);
+    if (normalized) result.add(normalized);
+    if (result.size >= boundedLimit) break;
+  }
+
+  return [...result];
+};
+
 const toComparablePath = (rawUrl: string) => {
   try {
     const parsed = new URL(rawUrl);
@@ -500,7 +536,12 @@ const looksLikeFeed = (body: string) => {
  */
 export async function verifyImportedRssFeed(rssFeedUrl: string | null) {
   if (!rssFeedUrl) {
-    return { verified: false, status: RssStatus.NO_RSS_FOUND, reason: "No rss_feed_url in import data." };
+    return {
+      verified: false,
+      status: RssStatus.NO_RSS_FOUND,
+      reason: "No rss_feed_url in import data.",
+      entryUrls: [] as string[],
+    };
   }
 
   const urlsToTry = buildFeedUrlCandidates(rssFeedUrl);
@@ -531,6 +572,7 @@ export async function verifyImportedRssFeed(rssFeedUrl: string | null) {
         verified: true,
         status: RssStatus.ACTIVE,
         reason: `Feed URL verified successfully via ${candidateUrl}.`,
+        entryUrls: extractVerifiedFeedEntryUrls(body, candidateUrl),
       };
     } catch (error: any) {
       lastReason = `${error?.message || String(error)} via ${candidateUrl}`;
@@ -541,6 +583,7 @@ export async function verifyImportedRssFeed(rssFeedUrl: string | null) {
     verified: false,
     status: RssStatus.FAILED,
     reason: lastReason,
+    entryUrls: [] as string[],
   };
 }
 

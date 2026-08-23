@@ -2290,6 +2290,8 @@ export interface Agent3Progress {
     successfullyEnriched: number;
     rejected: number;
     persistedOutcomes: number;
+    skipped: number;
+    claimLost: number;
     systemPersistFailed: number;
     durationMs: number | null;
     finishedAt: string | null;
@@ -2357,9 +2359,6 @@ function readAgent3DiagnosticLatestRun(input: {
   const processed = asProgressCount(summary.articleCount ?? payload.articleCount);
   const persistedOutcomes = asProgressCount(summary.persisted ?? payload.persisted);
   const successfullyEnriched = byKind.SUCCESS ?? asProgressCount(payload.succeeded);
-  const rejected = Object.entries(byKind)
-    .filter(([kind]) => kind !== "SUCCESS" && kind !== "SKIPPED")
-    .reduce((sum, [, count]) => sum + count, 0);
   const browserRaw = asBoundedRecord(summary.browserFallbackStats);
   const browserFallbackStats = browserRaw
     ? {
@@ -2404,12 +2403,18 @@ function readAgent3DiagnosticLatestRun(input: {
         .filter((entry) => entry.sourceId.length > 0)
     : null;
 
+  const skipped = asProgressCount(byKind.SKIPPED);
+  const claimLost = asProgressCount(summary.claimLost);
+  const rejected = Math.max(0, processed - successfullyEnriched - skipped - claimLost - asProgressCount(summary.persistFailed));
+
   return {
     pipelineRunId: input.pipelineRunId,
     processed,
     successfullyEnriched,
     rejected,
     persistedOutcomes,
+    skipped,
+    claimLost,
     systemPersistFailed: asProgressCount(summary.persistFailed),
     durationMs: typeof summary.durationMs === "number" && Number.isFinite(summary.durationMs)
       ? summary.durationMs
@@ -2802,12 +2807,12 @@ export const getAgent3Progress = async (
       const summary = (latestPipelineRun.summary ?? {}) as Record<string, unknown>;
       const byKind = (summary.byKind ?? {}) as Record<string, number>;
       const successfullyEnriched = byKind.SUCCESS ?? latestPipelineRun.inserted ?? 0;
-      const rejected = Object.entries(byKind)
-        .filter(([k]) => k !== "SUCCESS" && k !== "SKIPPED")
-        .reduce((sum, [, v]) => sum + (v as number), 0);
       const systemPersistFailed = (summary.persistFailed as number) ?? latestPipelineRun.failed ?? 0;
       const processed = (summary.articleCount as number) ?? latestPipelineRun.candidatesFound ?? 0;
       const persistedOutcomes = (summary.persisted as number) ?? processed;
+      const skipped = (byKind.SKIPPED as number) ?? latestPipelineRun.skipped ?? 0;
+      const claimLost = (summary.claimLost as number) ?? 0;
+      const rejected = Math.max(0, processed - successfullyEnriched - skipped - claimLost - systemPersistFailed);
 
       const startedAt = latestPipelineRun.finishedAt
         ? new Date(latestPipelineRun.finishedAt.getTime() - ((summary.durationMs as number) ?? 0))
@@ -2900,6 +2905,8 @@ export const getAgent3Progress = async (
         successfullyEnriched,
         rejected,
         persistedOutcomes,
+        skipped,
+        claimLost,
         systemPersistFailed,
         durationMs,
         finishedAt: latestPipelineRun.finishedAt?.toISOString() ?? null,
@@ -2910,18 +2917,25 @@ export const getAgent3Progress = async (
       };
     }
 
-    if (!latestRun) {
-      const latestDiagnostic = await prisma.pipelineArtifact.findFirst({
-        where: {
-          artifactType: { in: ["agent3_orchestration_summary", "agent3_progress_diagnostic"] },
-          status: "CAPTURED",
-        },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        select: { pipelineRunId: true, createdAt: true, payload: true },
-      });
-      latestRun = latestDiagnostic
-        ? readAgent3DiagnosticLatestRun(latestDiagnostic)
-        : null;
+    // Orchestration batches deliberately keep their owning PipelineRun summary
+    // intact and store Agent 3 results in diagnostics. Compare both sources by
+    // completion time instead of allowing an older standalone zero-work run to
+    // hide the latest workflow batch in the progress panel.
+    const latestDiagnostic = await prisma.pipelineArtifact.findFirst({
+      where: {
+        artifactType: { in: ["agent3_orchestration_summary", "agent3_progress_diagnostic"] },
+        status: "CAPTURED",
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { pipelineRunId: true, createdAt: true, payload: true },
+    });
+    const diagnosticRun = latestDiagnostic
+      ? readAgent3DiagnosticLatestRun(latestDiagnostic)
+      : null;
+    const latestRunTime = latestRun?.finishedAt ? Date.parse(latestRun.finishedAt) : Number.NEGATIVE_INFINITY;
+    const diagnosticRunTime = diagnosticRun?.finishedAt ? Date.parse(diagnosticRun.finishedAt) : Number.NEGATIVE_INFINITY;
+    if (diagnosticRun && (!latestRun || diagnosticRunTime > latestRunTime)) {
+      latestRun = diagnosticRun;
     }
   } catch {
     // PipelineRun query failure is non-fatal; progress still returns counts.

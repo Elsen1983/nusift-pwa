@@ -46,6 +46,11 @@ import {
   isExplicitHttpFallbackAllowed,
 } from "./article-transport-policy";
 import { collectMatchingObjects, getJsonLdTypes } from "./structured-data";
+import {
+  detectArticleExtractionLanguage,
+  matchesArticleBoilerplateText,
+  matchesArticleBoundaryText,
+} from "./article-extraction-language-policy";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -113,30 +118,6 @@ const LEAD_LIKE_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Text patterns that signal the end of article content ("more by", "related", etc.).
- * Used for boundary detection during paragraph extraction.
- */
-const END_BOUNDARY_TEXT_PATTERNS: RegExp[] = [
-  /^more\s+(by|from|stories|news|on|about)/i,
-  /^more\s*$/i,
-  /^related\s*(articles?|stories|posts?|content|links?|news)?$/i,
-  /^recommended\s*(articles?|stories|posts?|for\s*you)?$/i,
-  /^most\s*(read|popular|viewed|shared|commented)/i,
-  /^popular\s*(articles?|stories|posts?|now|today)?$/i,
-  /^trending\s*(now|today|stories|articles?)?$/i,
-  /^latest\s*(news|stories|articles?|updates?)?$/i,
-  /^read\s*more$/i,
-  /^also\s*read$/i,
-  /^see\s*also$/i,
-  /^around\s*the\s*web$/i,
-  /^you\s*may\s*also\s*(like|enjoy)/i,
-  /^from\s*(our|the)\s*(partners?|sponsors?|network)/i,
-  /^sponsored\s*(content|stories|by)/i,
-  /^top\s*(stories|articles?|news)/i,
-  /^elsewhere\s*on\s*\w+/i,
-];
-
-/**
  * Class/id patterns that signal article boundary sections.
  * More specific than boilerplate — these are used for ordered extraction
  * to know where article body content definitively ends.
@@ -183,6 +164,12 @@ const BOILERPLATE_SELECTORS = [
   ".ad",
   ".advertisement",
   ".sponsored",
+];
+
+const HIDDEN_CONTENT_SELECTORS = [
+  "[hidden]",
+  '[aria-hidden="true"]',
+  "[inert]",
 ];
 
 // NOTE (Prompt 15A): the generic /paywall/i keyword signal list that previously
@@ -907,6 +894,64 @@ function walkJsonForField(obj: unknown, field: string): unknown {
  * nodeName matches entries in STRIP_TAGS and boilerplate sections.
  * Works in-place on a cloned element.
  */
+function isExplicitlyHiddenElement(element: Element): boolean {
+  if (element.hasAttribute("hidden") || element.hasAttribute("inert")) return true;
+  if ((element.getAttribute("aria-hidden") || "").trim().toLowerCase() === "true") return true;
+
+  const style = element.getAttribute("style") || "";
+  if (/(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!important\s*)?(?:;|$)/i.test(style)) {
+    return true;
+  }
+
+  const classTokens = (element.getAttribute("class") || "").toLowerCase().split(/\s+/);
+  return classTokens.some((token) => token === "hidden" || token === "is-hidden" || token === "d-none" || token === "u-hidden");
+}
+
+function isInsideExplicitlyHiddenTree(element: Element): boolean {
+  let current: Element | null = element;
+  while (current) {
+    if (isExplicitlyHiddenElement(current)) return true;
+    current = current.parentElement;
+  }
+  return false;
+}
+
+function removeLocalizedBoundarySections(container: Element): void {
+  const language = detectArticleExtractionLanguage(container.ownerDocument);
+  const headings = Array.from(container.querySelectorAll("h2, h3, h4, h5, h6"));
+
+  for (const heading of headings) {
+    const text = (heading.textContent || "").trim();
+    if (text.length === 0 || text.length > 100 || !matchesArticleBoundaryText(text, language)) continue;
+
+    const semanticWrapper = heading.closest('aside, section, [role="complementary"]');
+    if (semanticWrapper && semanticWrapper !== container && container.contains(semanticWrapper)) {
+      semanticWrapper.remove();
+      continue;
+    }
+
+    const parent = heading.parentElement;
+    if (parent && parent !== container && computeLinkTextRatio(parent) >= 0.25) {
+      parent.remove();
+      continue;
+    }
+
+    // Without a trustworthy wrapper, remove only the recommendation region.
+    // A later substantive paragraph is an article continuation, not a boundary.
+    let next = heading.nextElementSibling;
+    heading.remove();
+    while (next) {
+      const following = next.nextElementSibling;
+      const nextText = (next.textContent || "").trim();
+      const isSubstantiveParagraph = next.tagName.toLowerCase() === "p" && nextText.length >= 120;
+      const recommendationLike = nextText.length < 180 || computeLinkTextRatio(next) >= 0.25;
+      if (isSubstantiveParagraph || !recommendationLike) break;
+      next.remove();
+      next = following;
+    }
+  }
+}
+
 function stripNonContentElements(container: Element): void {
   for (const tag of STRIP_TAGS) {
     try {
@@ -929,6 +974,32 @@ function stripNonContentElements(container: Element): void {
       // Invalid selector; skip
     }
   }
+
+  for (const sel of HIDDEN_CONTENT_SELECTORS) {
+    const elements = container.querySelectorAll(sel);
+    for (let i = elements.length - 1; i >= 0; i--) {
+      elements[i]?.remove();
+    }
+  }
+
+  const styledOrClassed = container.querySelectorAll("[style], [class]");
+  for (let i = styledOrClassed.length - 1; i >= 0; i--) {
+    const element = styledOrClassed[i];
+    if (element && isExplicitlyHiddenElement(element)) element.remove();
+  }
+
+  const language = detectArticleExtractionLanguage(container.ownerDocument);
+  const textCandidates = container.querySelectorAll("p, li, div, span, a, h2, h3, h4, h5, h6, button");
+  for (let i = textCandidates.length - 1; i >= 0; i--) {
+    const element = textCandidates[i];
+    if (!element) continue;
+    const text = (element.textContent || "").trim();
+    if (text.length > 0 && text.length <= 180 && matchesArticleBoilerplateText(text, language)) {
+      element.remove();
+    }
+  }
+
+  removeLocalizedBoundarySections(container);
 }
 
 function measureContainerText(element: Element): {
@@ -977,20 +1048,12 @@ function countHeadings(container: Element): number {
 /**
  * Compute a boilerplate penalty based on boilerplate-like content density.
  */
-function computeBoilerplatePenalty(paragraphs: string[]): number {
+function computeBoilerplatePenalty(paragraphs: string[], doc: Document): number {
   let penalty = 0;
-  const boilerplatePatterns = [
-    /^(share|tweet|pin|email|print|subscribe|sign up|follow us)/i,
-    /^(related articles?|more (from|stories|news)|you may also like)/i,
-    /^(advertisement|sponsored|promoted)/i,
-    /^(©|copyright|all rights reserved)/i,
-    /^(click here|read more|continue reading|load more)/i,
-    /^(loading|please wait)/i,
-    /^(cookie|privacy policy|terms of (use|service))/i,
-  ];
+  const language = detectArticleExtractionLanguage(doc);
 
   for (const para of paragraphs) {
-    if (boilerplatePatterns.some((p) => p.test(para.trim()))) {
+    if (matchesArticleBoilerplateText(para, language)) {
       penalty += 0.1;
     }
   }
@@ -1034,11 +1097,13 @@ function isArticleEndBoundaryElement(el: Element): boolean {
     // 3. <aside> elements are always boundary
     if (tag === "aside") return true;
 
-    // 4. Headings (h2-h6) with boundary text patterns
+    const language = detectArticleExtractionLanguage(el.ownerDocument);
+
+    // 4. Headings (h2-h6) with localized boundary text patterns
     if (tag.length === 2 && tag[0] === "h" && tag >= "h2" && tag <= "h6") {
       const text = (el.textContent || "").trim();
       if (text.length > 0 && text.length < 80 &&
-          END_BOUNDARY_TEXT_PATTERNS.some((p) => p.test(text))) {
+          matchesArticleBoundaryText(text, language)) {
         return true;
       }
     }
@@ -1047,7 +1112,7 @@ function isArticleEndBoundaryElement(el: Element): boolean {
     if (tag !== "p" && tag !== "div" && tag !== "section" && tag !== "article") {
       const text = (el.textContent || "").trim();
       if (text.length > 0 && text.length < 60 &&
-          END_BOUNDARY_TEXT_PATTERNS.some((p) => p.test(text))) {
+          matchesArticleBoundaryText(text, language)) {
         return true;
       }
     }
@@ -1081,6 +1146,7 @@ function isSkippableNonContentElement(el: Element): boolean {
   try {
     const tag = el.tagName.toLowerCase();
     if (STRIP_TAGS.includes(tag)) return true;
+    if (isInsideExplicitlyHiddenTree(el)) return true;
 
     const cls = el.getAttribute("class") || "";
     const id = el.getAttribute("id") || "";
@@ -1092,6 +1158,12 @@ function isSkippableNonContentElement(el: Element): boolean {
       /newsletter/i, /signup/i,
     ];
     if (skipPatterns.some((p) => p.test(combined))) return true;
+
+    const text = (el.textContent || "").trim();
+    if (text.length > 0 && text.length <= 180 &&
+        matchesArticleBoilerplateText(text, detectArticleExtractionLanguage(el.ownerDocument))) {
+      return true;
+    }
 
     return false;
   } catch {
@@ -1178,6 +1250,8 @@ function scoreCandidate(
   doc: Document,
   excerpt?: string | null,
 ): CandidateScore | null {
+  if (isInsideExplicitlyHiddenTree(element)) return null;
+
   // Clone to avoid mutating original
   const clone = element.cloneNode(true) as Element;
   const { rawTextLength, cleanedTextLength } = measureContainerText(element);
@@ -1191,7 +1265,7 @@ function scoreCandidate(
   const averageParagraphLength = totalTextLength / paragraphCount;
   const linkTextRatio = computeLinkTextRatio(clone);
   const headingCount = countHeadings(clone);
-  const boilerplatePenalty = computeBoilerplatePenalty(paragraphs);
+  const boilerplatePenalty = computeBoilerplatePenalty(paragraphs, doc);
 
   // Count duplicate paragraphs
   const seen = new Set<string>();
@@ -1410,7 +1484,87 @@ function collectAndScoreCandidates(doc: Document, excerpt?: string | null): Cand
 
 /**
 /** Non-article sibling tags to skip during expansion. */
-const NON_ARTICLE_SIBLING_TAGS = new Set(["nav", "footer", "header", "aside", "form", "script", "style", "noscript"]);
+const NON_ARTICLE_SIBLING_TAGS = new Set(["article", "nav", "footer", "header", "aside", "form", "script", "style", "noscript"]);
+
+function findMatchingDocumentLead(
+  doc: Document,
+  excerpt: string | null | undefined,
+  existingParagraphs: readonly string[],
+): string[] {
+  if (!excerpt) return [];
+
+  const existing = new Set(existingParagraphs.map((paragraph) => paragraph.trim().toLowerCase()));
+  let best: { paragraphs: string[]; overlap: number; length: number } | null = null;
+
+  for (const element of doc.querySelectorAll("p, div, section")) {
+    if (!isLeadLikeContainer(element) || isInsideExplicitlyHiddenTree(element)) continue;
+
+    const clone = element.cloneNode(true) as Element;
+    stripNonContentElements(clone);
+    const paragraphs = extractMeaningfulParagraphs(clone)
+      .filter((paragraph) => !existing.has(paragraph.trim().toLowerCase()));
+    const text = paragraphs.join(" ");
+    if (paragraphs.length === 0 || text.length > 1_200) continue;
+
+    const overlap = wordOverlap(text, excerpt);
+    if (overlap < 0.55) continue;
+    if (!best || overlap > best.overlap || (overlap === best.overlap && text.length < best.length)) {
+      best = { paragraphs, overlap, length: text.length };
+    }
+  }
+
+  return best?.paragraphs ?? [];
+}
+
+function prependAdjacentLead(
+  candidate: CandidateScore,
+  excerpt?: string | null,
+): [CandidateScore, boolean] {
+  if (!excerpt) return [candidate, false];
+
+  const parent = candidate.element.parentElement;
+  if (!parent) return [candidate, false];
+
+  const children = Array.from(parent.children);
+  const candidateIndex = children.indexOf(candidate.element);
+  if (candidateIndex <= 0) return [candidate, false];
+
+  for (let offset = 1; offset <= 3 && candidateIndex - offset >= 0; offset++) {
+    const sibling = children[candidateIndex - offset];
+    if (!sibling) continue;
+
+    const tag = sibling.tagName.toLowerCase();
+    if (tag === "h1" || isSkippableNonContentElement(sibling)) continue;
+    if (!isLeadLikeContainer(sibling)) break;
+
+    const clone = sibling.cloneNode(true) as Element;
+    stripNonContentElements(clone);
+    const leadParagraphs = extractMeaningfulParagraphs(clone);
+    const leadText = leadParagraphs.join(" ");
+    if (leadParagraphs.length === 0 || wordOverlap(leadText, excerpt) < 0.55) return [candidate, false];
+
+    const existing = new Set(candidate.paragraphs.map((paragraph) => paragraph.trim().toLowerCase()));
+    const uniqueLeadParagraphs = leadParagraphs.filter((paragraph) => !existing.has(paragraph.trim().toLowerCase()));
+    if (uniqueLeadParagraphs.length === 0) return [candidate, false];
+
+    const measured = measureContainerText(sibling);
+    const paragraphs = [...uniqueLeadParagraphs, ...candidate.paragraphs];
+    const totalTextLength = paragraphs.reduce((sum, paragraph) => sum + paragraph.length, 0);
+    return [{
+      ...candidate,
+      paragraphs,
+      paragraphCount: paragraphs.length,
+      totalTextLength,
+      rawTextLength: candidate.rawTextLength + measured.rawTextLength,
+      cleanedTextLength: candidate.cleanedTextLength + measured.cleanedTextLength,
+      averageParagraphLength: totalTextLength / paragraphs.length,
+      score: candidate.score + uniqueLeadParagraphs.length * 3,
+      scoreReasons: [...candidate.scoreReasons, "adjacent_lead_preserved"],
+    }, true];
+  }
+
+  return [candidate, false];
+}
 
 /**
  * Try parent/sibling expansion for a thin candidate.
@@ -1428,13 +1582,16 @@ function tryExpandCandidate(
   doc: Document,
   excerpt?: string | null,
 ): [CandidateScore, "parent" | "siblings" | "parent+siblings" | null] {
+  const [leadAwareBest, leadAdded] = prependAdjacentLead(best, excerpt);
+  best = leadAwareBest;
+
   if (best.paragraphCount >= 4 && best.totalTextLength >= 1200) {
-    return [best, null]; // Already good enough — don't expand
+    return [best, leadAdded ? "siblings" : null];
   }
 
   let expanded = best;
   let usedParent = false;
-  let usedSiblings = false;
+  let usedSiblings = leadAdded;
 
   // Try parent expansion (up to 2 levels)
   let parent = best.element.parentElement;
@@ -1767,7 +1924,9 @@ async function extractReadabilityBodyText(
     });
     domWindow = dom.window;
 
-    const article = new Readability(dom.window.document).parse();
+    const readabilityDocument = dom.window.document.cloneNode(true) as Document;
+    stripNonContentElements(readabilityDocument.documentElement);
+    const article = new Readability(readabilityDocument).parse();
     if (!article) return null;
 
     const contentDom = new JSDOM(article.content || "", {
@@ -1776,6 +1935,9 @@ async function extractReadabilityBodyText(
       pretendToBeVisual: false,
     });
     try {
+      const declaredLanguage = dom.window.document.documentElement.getAttribute("lang");
+      if (declaredLanguage) contentDom.window.document.documentElement.setAttribute("lang", declaredLanguage);
+      stripNonContentElements(contentDom.window.document.body);
       const blockParagraphs = Array.from(contentDom.window.document.querySelectorAll("p, li, blockquote"))
         .map((node) => collapseWhitespace(node.textContent || ""))
         .filter(isMeaningfulParagraph);
@@ -1783,8 +1945,10 @@ async function extractReadabilityBodyText(
         .split(/(?<=[.!?])\s+(?=[A-Z0-9"“])/)
         .map((part) => part.trim())
         .filter(isMeaningfulParagraph);
+      const extractedParagraphs = blockParagraphs.length > 0 ? blockParagraphs : fallbackParagraphs;
+      const matchingLead = findMatchingDocumentLead(dom.window.document, excerpt, extractedParagraphs);
       const seenParagraphs = new Set<string>();
-      const paragraphs = (blockParagraphs.length > 0 ? blockParagraphs : fallbackParagraphs).filter((paragraph) => {
+      const paragraphs = [...matchingLead, ...extractedParagraphs].filter((paragraph) => {
         const key = paragraph.toLowerCase().slice(0, 160);
         if (seenParagraphs.has(key)) return false;
         seenParagraphs.add(key);
