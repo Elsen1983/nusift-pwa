@@ -11,7 +11,12 @@ import {
 
 export type Agent3WorkflowBatchResult = {
   stage: "agent3";
+  // Rows selected before claim and source-cooldown filtering. This is
+  // intentionally separate from `processed`, which measures extracted rows.
+  selected: number;
   processed: number;
+  claimSkipped: number;
+  sourceCooldownSkipped: number;
   succeeded: number;
   failedRetryable: number;
   deferred: number;
