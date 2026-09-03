@@ -1,0 +1,92 @@
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${APP_DATABASE_NAME:-nusift}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in deploy/self-hosted/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/self-hosted/.env}
+      WORKFLOW_DATABASE_NAME: ${WORKFLOW_DATABASE_NAME:-nusift_workflow}
+    volumes:
+      - nusift-postgres-data:/var/lib/postgresql/data
+      - ./deploy/self-hosted/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [internal]
+
+  bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile.self-hosted
+    image: nusift-self-hosted:local
+    restart: "no"
+    env_file: deploy/self-hosted/.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${APP_DATABASE_NAME:-nusift}?schema=public
+      WORKFLOW_POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${WORKFLOW_DATABASE_NAME:-nusift_workflow}
+    command: ["node", "scripts/self-hosted/bootstrap.mjs"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+
+  app:
+    image: nusift-self-hosted:local
+    restart: unless-stopped
+    env_file: deploy/self-hosted/.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${APP_DATABASE_NAME:-nusift}?schema=public
+      WORKFLOW_POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${WORKFLOW_DATABASE_NAME:-nusift_workflow}
+      NUSIFT_SELF_HOSTED: "true"
+      WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+      WORKFLOW_POSTGRES_JOB_PREFIX: nusift
+      WORKFLOW_POSTGRES_WORKER_CONCURRENCY: ${WORKFLOW_POSTGRES_WORKER_CONCURRENCY:-2}
+      WORKFLOW_POSTGRES_MAX_POOL_SIZE: ${WORKFLOW_POSTGRES_MAX_POOL_SIZE:-4}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-4}
+      NUXT_INTERNAL_BASE_URL: http://app:3000
+      NUXT_ENABLE_AGENT2_BROWSER_FALLBACK: "true"
+      CHROMIUM_EXECUTABLE_PATH: /usr/bin/chromium
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/ping').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [internal]
+
+  scheduler:
+    image: nusift-self-hosted:local
+    restart: unless-stopped
+    env_file: deploy/self-hosted/.env
+    environment:
+      NUXT_INTERNAL_BASE_URL: http://app:3000
+    command: ["node", "scripts/self-hosted/run-scheduler.mjs"]
+    depends_on:
+      app:
+        condition: service_healthy
+    networks: [internal]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: [tunnel]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in deploy/self-hosted/.env}
+    depends_on:
+      app:
+        condition: service_healthy
+    networks: [internal]
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  nusift-postgres-data:
