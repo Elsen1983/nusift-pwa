@@ -18,9 +18,6 @@ services:
     networks: [internal]
 
   bootstrap:
-    build:
-      context: .
-      dockerfile: Dockerfile.self-hosted
     image: nusift-self-hosted:local
     restart: "no"
     env_file: deploy/self-hosted/.env
@@ -34,6 +31,9 @@ services:
     networks: [internal]
 
   app:
+    build:
+      context: .
+      dockerfile: Dockerfile.self-hosted
     image: nusift-self-hosted:local
     restart: unless-stopped
     env_file: deploy/self-hosted/.env
@@ -70,6 +70,31 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    networks: [internal]
+
+  backup:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    user: "${BACKUP_UID:-1000}:${BACKUP_GID:-1000}"
+    read_only: true
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:?Set POSTGRES_USER in deploy/self-hosted/.env}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/self-hosted/.env}
+      APP_DATABASE_NAME: ${APP_DATABASE_NAME:-nusift}
+      WORKFLOW_DATABASE_NAME: ${WORKFLOW_DATABASE_NAME:-nusift_workflow}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ./backups:/backups
+      - ./scripts/self-hosted/backup-postgres.sh:/usr/local/bin/backup-postgres.sh:ro
+    command: ["/bin/sh", "/usr/local/bin/backup-postgres.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks: [internal]
 
   cloudflared:

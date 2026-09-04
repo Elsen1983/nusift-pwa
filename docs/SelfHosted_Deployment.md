@@ -14,6 +14,8 @@ The worker also requires `NUSIFT_SELF_HOSTED=true`. This explicit marker prevent
 
 `scheduler` only calls the two current Vercel-equivalent internal endpoints at 03:00 and 05:30 UTC. The durable workflow and database locks remain responsible for idempotency.
 
+`backup` creates validated custom-format dumps of both the application and workflow databases on startup and daily at 02:00 UTC. It retains 14 days by default and writes only to the host `backups` directory.
+
 `cloudflared` is optional and connects the private `app` service to a named Cloudflare Tunnel. No database or internal-worker port is published to the LAN or internet.
 
 ## First Server Deployment
@@ -26,9 +28,10 @@ The worker also requires `NUSIFT_SELF_HOSTED=true`. This explicit marker prevent
 
 ```bash
 cd /srv/nusift
+mkdir -p backups
 docker compose --env-file deploy/self-hosted/.env -f docker-compose.self-hosted.yml up -d --build
 docker compose --env-file deploy/self-hosted/.env -f docker-compose.self-hosted.yml ps
-docker compose --env-file deploy/self-hosted/.env -f docker-compose.self-hosted.yml logs --tail=150 bootstrap app scheduler
+docker compose --env-file deploy/self-hosted/.env -f docker-compose.self-hosted.yml logs --tail=150 bootstrap app scheduler backup
 ```
 
 6. Verify the app from the host before exposing it:
@@ -59,12 +62,22 @@ The old Vercel deployment should remain available as a rollback target until the
 
 ## Backups And Updates
 
-Create a backup on the host before every release and copy it off-host:
+The `backup` service creates an immediate backup when it starts, then runs daily at 02:00 UTC. Configure `BACKUP_RETENTION_DAYS`, `BACKUP_UID`, and `BACKUP_GID` in the env file when the host defaults are unsuitable. Confirm both dumps after deployment:
 
 ```bash
-docker compose --env-file deploy/self-hosted/.env -f docker-compose.self-hosted.yml exec -T postgres \
-  sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > "nusift-$(date +%F).dump"
+mkdir -p backups
+docker compose --env-file deploy/self-hosted/.env -f docker-compose.self-hosted.yml up -d backup
+docker compose --env-file deploy/self-hosted/.env -f docker-compose.self-hosted.yml logs --tail=50 backup
+ls -lh backups/nusift-*.dump
 ```
+
+Create an additional backup before every release and copy at least one current backup off-host:
+
+```bash
+docker compose --env-file deploy/self-hosted/.env -f docker-compose.self-hosted.yml restart backup
+```
+
+The host directory is not an independent disaster-recovery copy. Regularly copy both `nusift-app-*.dump` and `nusift-workflow-*.dump` to encrypted storage on another device.
 
 For each reviewed release, pull the commit, rebuild, and inspect the bootstrap and app logs:
 
