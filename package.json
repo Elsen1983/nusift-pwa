@@ -60,7 +60,7 @@
     "vue-chartjs": "^5.3.3",
     "vue-router": "^5.0.4",
     "web-push": "^3.6.7",
-    "workflow": "^4.8.0"
+    "workflow": "4.8.5"
   },
   "devDependencies": {
     "@nuxt/icon": "^2.2.2",

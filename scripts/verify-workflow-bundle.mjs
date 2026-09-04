@@ -12,6 +12,9 @@ if (!existsSync(outputRoot)) {
 
 const forbidden = [
   ["/var/package.json", "/var/package.json resolution path"],
+  ["file:///@workflow/", "absolute Workflow file URL"],
+  ["from \"/@workflow/", "absolute Workflow ESM import"],
+  ["from '/@workflow/", "absolute Workflow ESM import"],
   ["from \"playwright\"", "full playwright ESM import"],
   ["from 'playwright'", "full playwright CJS-style import"],
   ["xhr-sync-worker", "xhr-sync-worker dependency marker"],
