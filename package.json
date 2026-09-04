@@ -19,6 +19,7 @@
     "pretest:integration": "nuxt prepare",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "nuxt typecheck",
+    "fix:self-hosted-workflow-bundle": "node ./scripts/fix-self-hosted-workflow-bundle.mjs",
     "verify:workflow-bundle": "node ./scripts/verify-workflow-bundle.mjs",
     "test:self-hosted-scheduler": "node --test scripts/self-hosted/run-scheduler.test.mjs",
     "agent2:docker": "powershell -ExecutionPolicy Bypass -File scripts/dev/run-agent2-docker.ps1",

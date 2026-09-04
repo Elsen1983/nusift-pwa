@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const root = process.cwd();
 const nodeOutputRoot = join(root, ".output");
@@ -13,8 +13,8 @@ if (!existsSync(outputRoot)) {
 const forbidden = [
   ["/var/package.json", "/var/package.json resolution path"],
   ["file:///@workflow/", "absolute Workflow file URL"],
-  ["from \"/@workflow/", "absolute Workflow ESM import"],
-  ["from '/@workflow/", "absolute Workflow ESM import"],
+  ["\"/@workflow/", "absolute Workflow import"],
+  ["'/@workflow/", "absolute Workflow import"],
   ["from \"playwright\"", "full playwright ESM import"],
   ["from 'playwright'", "full playwright CJS-style import"],
   ["xhr-sync-worker", "xhr-sync-worker dependency marker"],
@@ -32,10 +32,23 @@ const visit = (directory) => {
 visit(outputRoot);
 
 const hits = [];
+const workflowRoot = join(root, "node_modules", "@workflow");
+const isWithin = (parent, child) => {
+  const path = relative(parent, child);
+  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+};
+
 for (const path of files) {
   const text = readFileSync(path, "utf8");
   for (const [needle, label] of forbidden) {
     if (text.includes(needle)) hits.push(`${label}: ${path}`);
+  }
+
+  for (const match of text.matchAll(/["']((?:\.\.\/)+@workflow\/[^"']+)["']/g)) {
+    const resolved = resolve(dirname(path), match[1]);
+    if (!isWithin(workflowRoot, resolved)) {
+      hits.push(`misplaced relative Workflow import (${match[1]}): ${path}`);
+    }
   }
 }
 
