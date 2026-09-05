@@ -50,6 +50,7 @@ const PRODUCTIVITY_KEYS = [
   "candidateArticlesFound", "articlesInserted", "articlesSkipped", "articlePersistenceFailures",
   "rawLinks", "evaluatedCandidates", "acceptedCandidates", "rejectedCandidates",
   "insertedCandidates", "skippedCandidates", "candidatePersistenceFailures",
+  "articlesEnriched", "articlesPublishable",
 ] as const;
 
 const normalizeProductivity = (value: unknown): Record<string, number> => {

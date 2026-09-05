@@ -169,6 +169,10 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
             batches: 3,
             processed: 30,
             succeeded: 28,
+            productivity: {
+              articlesEnriched: 28,
+              articlesPublishable: 24,
+            },
             durationMs: 1200000,
             fetchDurationMs: 1100000,
             extractionDurationMs: 50000,
@@ -251,7 +255,14 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
     });
     expect(result.stageTimings).toHaveLength(2);
     expect(result.stageTimings[0]).toMatchObject({ stage: "agent1", durationMs: 240000 });
-    expect(result.stageTimings[1]).toMatchObject({ stage: "agent3", durationMs: 1200000 });
+    expect(result.stageTimings[1]).toMatchObject({
+      stage: "agent3",
+      durationMs: 1200000,
+      productivity: {
+        articlesEnriched: 28,
+        articlesPublishable: 24,
+      },
+    });
     expect(result.run!.notificationsDurationMs).toBe(5000);
     expect(result.latestNoProgressReason).toBe("agent3 stalled");
     expect(result.batches).toHaveLength(1);
@@ -387,6 +398,10 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
           processed: 5,
           succeeded: 0,
           failedPermanent: 5,
+          productivity: {
+            articlesEnriched: 4,
+            articlesPublishable: 3,
+          },
           networkRequests: 5,
           logicalRequestDurationMs: 1855,
           extractionMs: 1,
@@ -412,6 +427,10 @@ describe("GET /api/dev/daily-pipeline-telemetry", () => {
       failedPermanent: 5,
       logicalRequestDurationMs: 1855,
       persistenceDurationMs: 3124,
+      productivity: {
+        articlesEnriched: 4,
+        articlesPublishable: 3,
+      },
     });
   });
 });
