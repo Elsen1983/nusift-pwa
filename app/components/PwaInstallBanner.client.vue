@@ -8,20 +8,20 @@
         <p
           class="mb-4 font-headline text-sm font-bold text-on-surface uppercase tracking-wide"
         >
-          {{ $t('auth.pwa.install_prompt') }}
+          {{ safeT("auth.pwa.install_prompt", pwaFallbacks.installPrompt) }}
         </p>
         <div class="flex justify-center gap-3">
           <button
             class="min-btn-width bg-primary-container/10 hover:bg-primary-container/20 text-primary-container font-headline text-[11px] font-bold uppercase tracking-widest px-4 py-3 rounded-lg transition-colors border border-primary-container/30"
             @click="installApp"
           >
-            {{ $t('auth.pwa.buttons.install') }}
+            {{ safeT("auth.pwa.buttons.install", pwaFallbacks.install) }}
           </button>
           <button
             class="min-btn-width bg-surface-container hover:bg-surface-container-high text-on-surface-variant font-headline text-[11px] font-bold uppercase tracking-widest px-4 py-3 rounded-lg transition-colors border border-outline-variant/30"
             @click="dismiss"
           >
-            {{ $t('auth.pwa.buttons.not_now') }}
+            {{ safeT("auth.pwa.buttons.not_now", pwaFallbacks.notNow) }}
           </button>
         </div>
       </div>
@@ -33,23 +33,31 @@
         class="pwa-toast bg-surface-container-highest/95 backdrop-blur-xl border border-outline-variant/30 shadow-2xl"
       >
         <i18n-t
+          v-if="hasFirefoxInstructions"
           keypath="auth.pwa.firefox_instructions"
           tag="p"
           class="font-body text-sm text-on-surface mb-4"
         >
           <template #action1>
-            <strong class="text-primary-container">{{ $t('auth.pwa.firefox_action1') }}</strong>
+            <strong class="text-primary-container">
+              {{ safeT("auth.pwa.firefox_action1", pwaFallbacks.firefoxAction1) }}
+            </strong>
           </template>
           <template #action2>
-            <strong class="text-primary-container">{{ $t('auth.pwa.firefox_action2') }}</strong>
+            <strong class="text-primary-container">
+              {{ safeT("auth.pwa.firefox_action2", pwaFallbacks.firefoxAction2) }}
+            </strong>
           </template>
         </i18n-t>
+        <p v-else class="font-body text-sm text-on-surface mb-4">
+          {{ pwaFallbacks.firefoxInstructions }}
+        </p>
         
         <button
           class="w-full py-3 bg-surface text-on-surface font-label text-xs uppercase tracking-widest rounded-lg border border-outline-variant/50 hover:bg-surface-container-high transition-colors"
           @click="dismiss"
         >
-          {{ $t('auth.pwa.buttons.got_it') }}
+          {{ safeT("auth.pwa.buttons.got_it", pwaFallbacks.gotIt) }}
         </button>
       </div>
     </transition>
@@ -60,23 +68,31 @@
         class="pwa-toast bg-surface-container-highest/95 backdrop-blur-xl border border-outline-variant/30 shadow-2xl"
       >
         <i18n-t
+          v-if="hasIosInstructions"
           keypath="auth.pwa.ios_instructions"
           tag="p"
           class="font-body text-sm text-on-surface mb-4"
         >
           <template #action1>
-            <strong class="text-primary-container">{{ $t('auth.pwa.ios_action1') }}</strong>
+            <strong class="text-primary-container">
+              {{ safeT("auth.pwa.ios_action1", pwaFallbacks.iosAction1) }}
+            </strong>
           </template>
           <template #action2>
-            <strong class="text-primary-container">{{ $t('auth.pwa.ios_action2') }}</strong>
+            <strong class="text-primary-container">
+              {{ safeT("auth.pwa.ios_action2", pwaFallbacks.iosAction2) }}
+            </strong>
           </template>
         </i18n-t>
+        <p v-else class="font-body text-sm text-on-surface mb-4">
+          {{ pwaFallbacks.iosInstructions }}
+        </p>
 
         <button
           class="w-full py-3 bg-surface text-on-surface font-label text-xs uppercase tracking-widest rounded-lg border border-outline-variant/50 hover:bg-surface-container-high transition-colors"
           @click="dismiss"
         >
-          {{ $t('auth.pwa.buttons.got_it') }}
+          {{ safeT("auth.pwa.buttons.got_it", pwaFallbacks.gotIt) }}
         </button>
       </div>
     </transition>
@@ -87,6 +103,48 @@
 import { ref, computed } from "vue";
 
 const { $pwa } = useNuxtApp();
+const { safeT, locale } = useI18nReady();
+
+const PWA_FALLBACKS = {
+  en: {
+    installPrompt: "Install NuSift on your device?",
+    install: "Install",
+    notNow: "Not now",
+    gotIt: "Got it",
+    firefoxInstructions:
+      'To install this app in Firefox, open the browser menu and select "Install" or "Add to App Library".',
+    firefoxAction1: '"Install"',
+    firefoxAction2: '"Add to App Library"',
+    iosInstructions:
+      'To install this app in Safari, tap "Share", then "Add to Home Screen".',
+    iosAction1: "Share",
+    iosAction2: "Add to Home Screen",
+  },
+  hu: {
+    installPrompt: "Telepíted a NuSift-et az eszközödre?",
+    install: "Telepítés",
+    notNow: "Most nem",
+    gotIt: "Értem",
+    firefoxInstructions:
+      'A Firefoxban való telepítéshez nyisd meg a böngésző menüjét, és válaszd a "Telepítés" vagy a "Hozzáadás az alkalmazástárhoz" lehetőséget.',
+    firefoxAction1: '"Telepítés"',
+    firefoxAction2: '"Hozzáadás az alkalmazástárhoz"',
+    iosInstructions:
+      'A telepítéshez bökj a "Megosztás", majd a "Főképernyőhöz adás" gombra a Safariban.',
+    iosAction1: "Megosztás",
+    iosAction2: "Főképernyőhöz adás",
+  },
+} as const;
+
+const pwaFallbacks = computed(() =>
+  locale.value === "hu" ? PWA_FALLBACKS.hu : PWA_FALLBACKS.en,
+);
+const hasFirefoxInstructions = computed(
+  () => safeT("auth.pwa.firefox_instructions", "") !== "",
+);
+const hasIosInstructions = computed(
+  () => safeT("auth.pwa.ios_instructions", "") !== "",
+);
 
 const { isInstallable, triggerInstall, isIOS, isInStandalone } =
   usePWADetector();
