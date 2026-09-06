@@ -1306,6 +1306,108 @@ describe("boundary detection regressions", () => {
     }
   });
 
+  it("rejects non-semantic camel-case side rails and their nested text containers", async () => {
+    const mainParagraphs = [
+      "The first article paragraph explains the central finding with enough detail to establish the subject and its practical consequences for readers.",
+      "The second article paragraph describes the supporting evidence and gives additional context needed to understand the reported result accurately.",
+      "The third article paragraph compares the new evidence with earlier observations and explains why the difference matters to the affected community.",
+      "The fourth article paragraph records the response from specialists and outlines the limitations that readers should keep in mind when interpreting it.",
+      "The final article paragraph summarizes the conclusion and identifies the next steps that will follow from the published findings over the coming months.",
+    ].map((text) => `<p>${text.repeat(2)}</p>`).join("\n");
+    const railParagraphs = Array.from({ length: 12 }, (_, index) =>
+      `<p>Unrelated recommendation ${index + 1} presents another headline and teaser that belongs to the surrounding website rather than this article.</p>`,
+    ).join("\n");
+
+    const html = `<!DOCTYPE html>
+<html><head><title>Side Rail Boundary</title>
+<meta property="og:description" content="The central finding and its consequences" />
+</head><body>
+  <div class="page-layout">
+    <section id="rightSideColumn">
+      <a href="/recommended"><div class="recommendation-copy">${railParagraphs}</div></a>
+    </section>
+    <div class="article-shell">
+      <div class="article-header"><p>Unrelated author biography and source metadata.</p></div>
+      <div class="articleMain-visible">
+        <h1>Side Rail Boundary</h1>
+        ${mainParagraphs}
+      </div>
+      <div class="post-block-promo"><p>Unrelated sponsored recommendation after the article.</p></div>
+      <div class="article-end-block"><p>Unrelated popular stories after the article.</p></div>
+    </div>
+  </div>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 3031,
+      articleUrl: "https://news.example.com/side-rail-boundary",
+      existingTitle: "Side Rail Boundary",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.bodyText).toContain("first article paragraph");
+      expect(result.bodyText).toContain("final article paragraph");
+      expect(result.bodyText).not.toContain("Unrelated recommendation");
+      expect(result.bodyText).not.toContain("Unrelated author biography");
+      expect(result.bodyText).not.toContain("Unrelated sponsored recommendation");
+      expect(result.bodyText).not.toContain("Unrelated popular stories");
+    }
+  });
+
+  it("extracts title-aligned embedded gallery slides without evaluating surrounding JavaScript", async () => {
+    const slides = JSON.stringify([
+      {
+        title: "3. First &amp; primary subject",
+        desc: `<p>${"The first gallery description contains substantive reporting about the subject and explains the evid&eacute;nce for readers. ".repeat(3)}</p>`,
+      },
+      {
+        title: "2. Second subject",
+        desc: `<p>${"The second gallery description adds independent context and records the practical consequences discussed by specialists. ".repeat(3)}</p>`,
+      },
+      {
+        title: "1. Third subject",
+        desc: `<p>${"The final gallery description completes the report with a detailed conclusion and useful next steps for the audience. ".repeat(3)}</p>`,
+      },
+    ]);
+    const html = `<!DOCTYPE html>
+<html><head><title>Embedded Gallery Article</title>
+<meta property="og:description" content="A report presented as a three-part gallery" />
+</head><body>
+  <main>
+    <div class="article-content">
+      <p>${"The article introduction establishes the subject before presenting the detailed gallery entries. ".repeat(4)}</p>
+      <p>${"The second introductory paragraph explains how the entries were selected and what readers should compare. ".repeat(4)}</p>
+      <div class="article-gallery"><p>Gallery with three entries</p></div>
+      <script>window.galleryPayload = { title: "Embedded Gallery Article", slides: ${slides} };</script>
+    </div>
+    <div class="article-end-block"><p>Unrelated recommendation after the gallery.</p></div>
+  </main>
+</body></html>`;
+    safeFetchMock.mockResolvedValue(makeResponse(html));
+
+    const { extractArticleContentFromUrl } = await import("./article-content-extractor");
+    const result = await extractArticleContentFromUrl({
+      articleId: 3032,
+      articleUrl: "https://news.example.com/embedded-gallery",
+      existingTitle: "Embedded Gallery Article",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.bodyText).toContain("article introduction");
+      expect(result.bodyText).toContain("3. First & primary subject");
+      expect(result.bodyText).toContain("evidénce");
+      expect(result.bodyText).not.toContain("&amp;");
+      expect(result.bodyText).toContain("final gallery description");
+      expect(result.bodyText).not.toContain("Unrelated recommendation");
+      expect(result.diagnostics.bodySource).toBe("embedded-gallery");
+      expect(result.qualitySignals).toContain("bodySource:embedded-gallery");
+    }
+  });
+
   it("Test E: Related heading after body — collection stops before related section", async () => {
     const bodyP1 = "The research team published their findings today after three years of extensive fieldwork across multiple continents and diverse ecosystems.".repeat(2);
     const bodyP2 = "The study found significant correlations between climate patterns and biodiversity loss in tropical regions of the world today.".repeat(2);

@@ -57,6 +57,8 @@ import {
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_HTML_BYTES = 2_000_000; // 2 MB cap on downloaded HTML
 const MAX_BODY_TEXT_CHARS = 50_000; // cap stored body text
+const MAX_EMBEDDED_GALLERY_SCRIPT_CHARS = 500_000;
+const MAX_EMBEDDED_GALLERY_SLIDES = 100;
 // A publisher-declared amphtml alternate is always in <head>; bounding the
 // search keeps this a cheap regex scan even on a very large page.
 const AMP_LINK_SEARCH_BOUND_CHARS = 100_000;
@@ -130,8 +132,16 @@ const END_BOUNDARY_CLASS_ID_PATTERNS: RegExp[] = [
   /social.?share/i, /share.?buttons?/i, /share.?bar/i,
   /comments?/i, /comment.?section/i, /disqus/i,
   /author.?bio/i, /author.?profile/i, /about.?the.?author/i,
+  /article.?recommend/i, /post.?block.?promo/i,
+  /article.?end(?:$|[\s_-])/i, /article.?rate(?:$|[\s_-])/i,
   /sidebar/i, /tag.?cloud/i, /topics?$/i,
 ];
+
+// Side rails are often plain divs without <aside> or role="complementary".
+// Require an explicit left/right + side + rail/bar/column shape so ordinary
+// article columns are not discarded merely for containing "column".
+const SIDE_RAIL_CLASS_ID_PATTERN =
+  /(?:^|[\s_-])(?:left|right)[\s_-]*side[\s_-]*(?:bar|rail|column)(?:$|[\s_-])/i;
 
 /** Class/id patterns that suggest media/caption sections. */
 const CAPTION_LIKE_PATTERNS: RegExp[] = [
@@ -160,6 +170,8 @@ const BOILERPLATE_SELECTORS = [
   ".tag-cloud",
   ".tags",
   ".author-bio",
+  ".article-header",
+  ".article__header",
   ".sidebar",
   ".ad",
   ".advertisement",
@@ -327,7 +339,7 @@ export interface ExtractionDiagnostics {
   scoreReasons: string[];
   excerptLength: number | null;
   bodyEqualsExcerpt: boolean;
-  bodySource: "dom" | "expanded-dom" | "readability" | "jsonld" | "existing-fallback" | "none";
+  bodySource: "dom" | "expanded-dom" | "readability" | "jsonld" | "embedded-gallery" | "existing-fallback" | "none";
   linkTextRatio: number | null;
   boilerplatePenalty: number | null;
   topCandidates: TopCandidateSummary[];
@@ -790,6 +802,18 @@ function normalizeJsonLdBodyText(raw: string): string | null {
   return capBodyText(normalized);
 }
 
+function normalizeEmbeddedMarkupText(raw: string, doc: Document): string | null {
+  // A detached div works consistently in both the production linkedom facade
+  // and jsdom tests while decoding named/numeric HTML entities.
+  const container = doc.createElement("div");
+  container.innerHTML = raw;
+  for (const element of container.querySelectorAll("script, style, noscript, iframe, svg")) {
+    element.remove();
+  }
+  const normalized = normalizeExtractedText(container.textContent || "");
+  return normalized ? capBodyText(normalized) : null;
+}
+
 /**
  * Whether a JSON-LD object declares a supported article schema type.
  * `@type` may be a string or an array of strings.
@@ -839,6 +863,123 @@ function extractJsonLdArticleBody(doc: Document): string | null {
   } catch {
     return null;
   }
+}
+
+function extractBalancedJsonArray(source: string, openBracketIndex: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = openBracketIndex; index < source.length; index++) {
+    const char = source[index]!;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+    } else if (char === "[") {
+      depth++;
+    } else if (char === "]") {
+      depth--;
+      if (depth === 0) return source.slice(openBracketIndex, index + 1);
+    }
+  }
+
+  return null;
+}
+
+function readFirstString(record: Record<string, unknown>, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+/**
+ * Extract article-gallery slide copy from a JSON array embedded in an inline
+ * script. The array itself must be valid JSON; surrounding JavaScript is never
+ * evaluated. Title alignment and bounded slide/content thresholds prevent an
+ * unrelated recommendation carousel from becoming article body text.
+ */
+export function extractEmbeddedGalleryBody(doc: Document, articleTitle: string | null): string | null {
+  if (!articleTitle || articleTitle.trim().length < 8) return null;
+
+  let best: string | null = null;
+  for (const script of doc.querySelectorAll("script:not([type='application/ld+json'])")) {
+    if (isInsideBoundarySection(script)) continue;
+
+    const source = script.textContent?.trim();
+    if (!source || source.length > MAX_EMBEDDED_GALLERY_SCRIPT_CHARS) continue;
+
+    const slidesPattern = /\bslides\s*:\s*\[/g;
+    let match: RegExpExecArray | null;
+    while ((match = slidesPattern.exec(source)) !== null) {
+      const titleContext = decodeHtmlEntities(source.slice(Math.max(0, match.index - 600), match.index));
+      if (!titleContext.includes(articleTitle) && wordOverlap(titleContext, articleTitle) < 0.6) continue;
+
+      const openBracketIndex = source.indexOf("[", match.index);
+      const jsonArray = extractBalancedJsonArray(source, openBracketIndex);
+      if (!jsonArray) continue;
+
+      let slides: unknown;
+      try {
+        slides = JSON.parse(jsonArray);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(slides) || slides.length < 3 || slides.length > MAX_EMBEDDED_GALLERY_SLIDES) continue;
+
+      const paragraphs: string[] = [];
+      let descriptionCount = 0;
+      for (const slide of slides) {
+        if (!slide || typeof slide !== "object" || Array.isArray(slide)) continue;
+        const record = slide as Record<string, unknown>;
+        const rawTitle = readFirstString(record, ["title", "headline", "name"]);
+        const rawDescription = readFirstString(record, ["desc", "description", "text", "content"]);
+        const title = rawTitle ? normalizeEmbeddedMarkupText(rawTitle, doc) : null;
+        const description = rawDescription ? normalizeEmbeddedMarkupText(rawDescription, doc) : null;
+
+        if (title && title.length >= 3) paragraphs.push(title);
+        if (description && isMeaningfulParagraph(description)) {
+          paragraphs.push(description);
+          descriptionCount++;
+        }
+      }
+
+      if (descriptionCount < 3) continue;
+      const candidate = paragraphs.join("\n\n");
+      if (candidate.length < 500) continue;
+      if (!best || candidate.length > best.length) best = candidate;
+    }
+  }
+
+  return best ? capBodyText(best) : null;
+}
+
+function mergeDistinctBodyParagraphs(...texts: Array<string | null>): string {
+  const seen = new Set<string>();
+  const paragraphs: string[] = [];
+  for (const text of texts) {
+    if (!text) continue;
+    for (const paragraph of text.split(/\n{2,}/)) {
+      const normalized = paragraph.trim();
+      if (!normalized) continue;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      paragraphs.push(normalized);
+    }
+  }
+  return capBodyText(paragraphs.join("\n\n"));
 }
 
 /**
@@ -982,6 +1123,16 @@ function stripNonContentElements(container: Element): void {
     }
   }
 
+  // Remove structural boundaries from broad layout candidates. Candidate
+  // rejection below handles the boundary itself and its descendants; this
+  // pass prevents the same content leaking through page-level parents or
+  // Readability's reconstructed article.
+  const structuralBoundaries = container.querySelectorAll("aside, [role], [class], [id]");
+  for (let i = structuralBoundaries.length - 1; i >= 0; i--) {
+    const element = structuralBoundaries[i];
+    if (element && isStructuralBoundarySectionElement(element)) element.remove();
+  }
+
   const styledOrClassed = container.querySelectorAll("[style], [class]");
   for (let i = styledOrClassed.length - 1; i >= 0; i--) {
     const element = styledOrClassed[i];
@@ -1083,19 +1234,9 @@ function isLeadLikeContainer(element: Element): boolean {
 function isArticleEndBoundaryElement(el: Element): boolean {
   try {
     const tag = el.tagName.toLowerCase();
-    const cls = el.getAttribute("class") || "";
-    const id = el.getAttribute("id") || "";
-    const combined = `${cls} ${id}`;
 
-    // 1. Class/id patterns are the strongest signal
-    if (END_BOUNDARY_CLASS_ID_PATTERNS.some((p) => p.test(combined))) return true;
-
-    // 2. role="complementary" (sidebar), role="navigation" (nav)
-    const role = (el.getAttribute("role") || "").toLowerCase();
-    if (role === "complementary" || role === "navigation") return true;
-
-    // 3. <aside> elements are always boundary
-    if (tag === "aside") return true;
+    // 1. Class/id and structural semantics are the strongest signals.
+    if (isStructuralBoundarySectionElement(el)) return true;
 
     const language = detectArticleExtractionLanguage(el.ownerDocument);
 
@@ -1121,6 +1262,26 @@ function isArticleEndBoundaryElement(el: Element): boolean {
   } catch {
     return false;
   }
+}
+
+function isStructuralSideRailElement(el: Element): boolean {
+  const cls = el.getAttribute("class") || "";
+  const id = el.getAttribute("id") || "";
+  return SIDE_RAIL_CLASS_ID_PATTERN.test(`${cls} ${id}`);
+}
+
+function isStructuralBoundarySectionElement(el: Element): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (tag === "aside") return true;
+
+  const role = (el.getAttribute("role") || "").toLowerCase();
+  if (role === "complementary" || role === "navigation") return true;
+
+  const cls = el.getAttribute("class") || "";
+  const id = el.getAttribute("id") || "";
+  const combined = `${cls} ${id}`;
+  return END_BOUNDARY_CLASS_ID_PATTERNS.some((pattern) => pattern.test(combined)) ||
+    isStructuralSideRailElement(el);
 }
 
 /**
@@ -1251,6 +1412,7 @@ function scoreCandidate(
   excerpt?: string | null,
 ): CandidateScore | null {
   if (isInsideExplicitlyHiddenTree(element)) return null;
+  if (isInsideBoundarySection(element)) return null;
 
   // Clone to avoid mutating original
   const clone = element.cloneNode(true) as Element;
@@ -3324,6 +3486,10 @@ export async function extractArticleContentFromHtml(
     const imageUrl = extractImageUrl(doc);
     const author = extractAuthor(doc);
     const publishedAt = extractPublishedAt(doc);
+    // Capture inline gallery data before DOM candidate collection. Candidate
+    // scoring is clone-based by contract, but this ordering also guarantees
+    // that future cleanup changes cannot remove source scripts first.
+    const embeddedGalleryBodyText = extractEmbeddedGalleryBody(doc, title);
 
     // Step 4: Extract body text with multi-candidate scoring
     // Pass excerpt so scoring can penalize containers that are just the summary
@@ -3385,6 +3551,11 @@ export async function extractArticleContentFromHtml(
           bodySource = "jsonld";
         }
       }
+    }
+
+    if (embeddedGalleryBodyText) {
+      bodyText = mergeDistinctBodyParagraphs(bodyText, embeddedGalleryBodyText);
+      bodySource = "embedded-gallery";
     }
 
     // Merge diagnostics: always prefer captured DOM diagnostics (which include
@@ -3636,6 +3807,10 @@ export async function extractArticleContentFromHtml(
     if (jsonLdBodyText) {
       qualitySignals.push(`bodySource:jsonld`);
       qualitySignals.push(`jsonLdBodyLength:${jsonLdBodyText.length}`);
+    }
+    if (embeddedGalleryBodyText) {
+      qualitySignals.push("bodySource:embedded-gallery");
+      qualitySignals.push(`embeddedGalleryBodyLength:${embeddedGalleryBodyText.length}`);
     }
     if (bodyText.length > 0) qualitySignals.push(`bodyLength:${bodyText.length}`);
 
