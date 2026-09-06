@@ -59,6 +59,8 @@ export type StageBatchResult = {
   nextRetryAt?: string | null;
   /** Selected work that could not acquire a durable Agent 3 claim. */
   claimSkipped?: number;
+  /** Selected Agent 3 work deferred by the durable domain governor. */
+  governorDeferred?: number;
   /** Selected Agent 3 work skipped after its source entered an in-batch cooldown. */
   sourceCooldownSkipped?: number;
   /** Durable per-batch telemetry record (always present in production runs). */
@@ -776,6 +778,7 @@ export async function runDailyNewsPipelineWorkflow(
               `previousRemaining=${priorRemaining ?? "null"}, ` +
               `currentRemaining=${batch.remaining}, selected=${batch.selected ?? batch.processed}, ` +
               `processed=${batch.processed}, claimSkipped=${batch.claimSkipped ?? 0}, ` +
+              `governorDeferred=${batch.governorDeferred ?? 0}, ` +
               `sourceCooldownSkipped=${batch.sourceCooldownSkipped ?? 0}, ` +
               `readyNew=${batch.readyNew ?? "n/a"}, readyRetry=${batch.readyRetry ?? "n/a"}, ` +
               `retryableNow=${batch.retryableNow ?? batch.remaining}, ` +

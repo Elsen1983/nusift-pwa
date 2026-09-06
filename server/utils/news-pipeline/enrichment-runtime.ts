@@ -3389,7 +3389,11 @@ export const runEnrichmentBatch = async (
           pipelineRun.id,
           claim.token,
           new Date(),
-          { rollbackAttempt: true, attemptMarkerId },
+          {
+            rollbackAttempt: true,
+            attemptMarkerId,
+            neutralDefer: { reason: error.reason, domainKey: error.domainKey },
+          },
         ).catch(() => {
           releaseErrored = true;
           return false;
@@ -3399,10 +3403,6 @@ export const runEnrichmentBatch = async (
           if (releaseErrored) persistResult.failed += 1;
           else persistResult.claimLost += 1;
           continue;
-        }
-        if (attemptMarkerId) {
-          const markerIndex = attemptMarkerIds.indexOf(attemptMarkerId);
-          if (markerIndex >= 0) attemptMarkerIds.splice(markerIndex, 1);
         }
         governorDeferred += 1;
         await logAgentScan({
@@ -3436,7 +3436,15 @@ export const runEnrichmentBatch = async (
           pipelineRun.id,
           claim.token,
           new Date(),
-          { rollbackAttempt: true, attemptMarkerId },
+          {
+            rollbackAttempt: true,
+            attemptMarkerId,
+            neutralDefer: {
+              reason: "browser_http_429",
+              domainKey: outcome.browserFallback.browserDiagnostics?.navigation?.domainKey
+                ?? articleHostname(article),
+            },
+          },
         ).catch(() => {
           releaseErrored = true;
           return false;
@@ -3446,10 +3454,6 @@ export const runEnrichmentBatch = async (
           if (releaseErrored) persistResult.failed += 1;
           else persistResult.claimLost += 1;
           continue;
-        }
-        if (attemptMarkerId) {
-          const markerIndex = attemptMarkerIds.indexOf(attemptMarkerId);
-          if (markerIndex >= 0) attemptMarkerIds.splice(markerIndex, 1);
         }
         governorDeferred += 1;
         const navigation = outcome.browserFallback.browserDiagnostics?.navigation ?? null;

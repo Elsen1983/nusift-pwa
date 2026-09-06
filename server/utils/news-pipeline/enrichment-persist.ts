@@ -413,7 +413,11 @@ export const releaseEnrichmentClaim = async (
   pipelineRunId: string,
   claimToken: string,
   now: Date = new Date(),
-  options?: { rollbackAttempt?: boolean; attemptMarkerId?: string | null },
+  options?: {
+    rollbackAttempt?: boolean;
+    attemptMarkerId?: string | null;
+    neutralDefer?: { reason: string; domainKey?: string | null };
+  },
 ): Promise<boolean> => {
   if (!options?.rollbackAttempt) {
     const released = await prisma.articleEnrichmentClaim.deleteMany({
@@ -458,14 +462,23 @@ export const releaseEnrichmentClaim = async (
     if (released.count !== 1) throw new Error("Neutral claim release CAS conflict");
 
     if (options.attemptMarkerId) {
-      await tx.pipelineArtifact.deleteMany({
-        where: {
-          id: options.attemptMarkerId,
-          pipelineRunId,
-          artifactType: "article_enrichment_attempt",
-          status: "ATTEMPTED",
-        },
-      });
+      const markerWhere = {
+        id: options.attemptMarkerId,
+        pipelineRunId,
+        artifactType: "article_enrichment_attempt",
+        status: "ATTEMPTED",
+      };
+      if (options.neutralDefer) {
+        await tx.pipelineArtifact.updateMany({
+          where: markerWhere,
+          data: {
+            status: "DEFERRED_GOVERNOR",
+            errorLog: `Agent 3 request deferred by domain governance: ${options.neutralDefer.reason.slice(0, 120)}${options.neutralDefer.domainKey ? ` (${options.neutralDefer.domainKey.slice(0, 253)})` : ""}`,
+          },
+        });
+      } else {
+        await tx.pipelineArtifact.deleteMany({ where: markerWhere });
+      }
     }
     return true;
   });

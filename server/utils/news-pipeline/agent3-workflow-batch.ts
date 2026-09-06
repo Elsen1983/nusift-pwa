@@ -16,6 +16,7 @@ export type Agent3WorkflowBatchResult = {
   selected: number;
   processed: number;
   claimSkipped: number;
+  governorDeferred: number;
   sourceCooldownSkipped: number;
   succeeded: number;
   failedRetryable: number;
@@ -122,6 +123,7 @@ export async function runAgent3WorkflowBatch(input: {
     retryableNow: progress.retryableNow,
     nextRetryAt: progress.nextRetryAt,
     claimSkipped: result.claimSkipped,
+    governorDeferred: result.governorDeferred,
     sourceCooldownSkipped: result.sourceCooldownSkipped,
     remaining: browserRecoveryMadeProgress ? Math.max(progress.deferred, 1) : progress.retryableNow,
     complete,

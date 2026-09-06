@@ -253,6 +253,7 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
   }
 
   it("requeues governor-denied listing work without consuming browser budget", async () => {
+    const queueNow = new Date("2026-08-12T12:00:00.000Z");
     findManyMock
       .mockResolvedValueOnce([makeArtifact()])
       .mockResolvedValueOnce([]);
@@ -280,7 +281,12 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const telemetry = makeTelemetryProbe();
 
     const fn = await loadFn();
-    const result = await fn({ dryRun: false, runBrowser: true, telemetry: telemetry as any });
+    const result = await fn({
+      dryRun: false,
+      runBrowser: true,
+      telemetry: telemetry as any,
+      now: () => queueNow.getTime(),
+    });
 
     expect(result.dryRun).toBe(false);
     if (!result.dryRun) {
@@ -292,7 +298,14 @@ describe("processArticleDiscoveryHeadlessQueue — browser fallback lifecycle", 
     const finalTransition = updateManyMock.mock.calls.at(-1)?.[0];
     expect(finalTransition.data).toMatchObject({
       status: "PENDING_HEADLESS",
-      payload: { browserGovernorDeferred: true, browserFallbackRan: false, resolvedAt: null },
+      nextEligibleAt: new Date("2026-08-12T12:15:00.000Z"),
+      payload: {
+        browserGovernorDeferred: true,
+        browserGovernorRetryAfterAt: "2026-08-12T12:15:00.000Z",
+        browserGovernorRetryAfterSource: "fallback",
+        browserFallbackRan: false,
+        resolvedAt: null,
+      },
     });
   });
 

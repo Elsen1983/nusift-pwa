@@ -925,6 +925,12 @@ export async function processArticleDiscoveryHeadlessQueue(
       }
 
       if (browserResult.reason === "governor_deferred") {
+        const deferredAtMs = now();
+        const governorRetry = boundStaticRetryAfterTimestamp(
+          browserResult.diagnostics.browserNavigation?.retryAfterAt,
+          null,
+          deferredAtMs,
+        );
         const deferredTransition = await prisma.pipelineArtifact.updateMany({
           where: {
             id: item.id,
@@ -935,6 +941,7 @@ export async function processArticleDiscoveryHeadlessQueue(
           },
           data: {
             status: "PENDING_HEADLESS",
+            nextEligibleAt: new Date(governorRetry.retryAfterAt),
             headlessClaimToken: null,
             headlessClaimExpiresAt: null,
             errorLog: `Browser navigation deferred by domain governance: ${browserResult.diagnostics.blockedReason || "unknown"}`,
@@ -942,6 +949,8 @@ export async function processArticleDiscoveryHeadlessQueue(
               ...claimedPayload,
               browserGovernorDeferred: true,
               browserGovernorEvidence: browserResult.diagnostics.browserNavigation ?? null,
+              browserGovernorRetryAfterAt: governorRetry.retryAfterAt,
+              browserGovernorRetryAfterSource: governorRetry.source,
               browserFallbackRan: false,
               resolvedAt: null,
             },

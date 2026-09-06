@@ -12,6 +12,7 @@ const articleFindUniqueMock = vi.fn();
 const articleCountMock = vi.fn();
 const artifactCreateMock = vi.fn();
 const artifactDeleteManyMock = vi.fn();
+const artifactUpdateManyMock = vi.fn();
 const claimCreateMock = vi.fn();
 const claimDeleteManyMock = vi.fn();
 const claimFindUniqueMock = vi.fn();
@@ -45,6 +46,7 @@ vi.mock("../prisma", () => ({
       findMany: (...args: any[]) => artifactFindManyMock(...args),
       findFirst: (...args: any[]) => artifactFindFirstMock(...args),
       deleteMany: (...args: any[]) => artifactDeleteManyMock(...args),
+      updateMany: (...args: any[]) => artifactUpdateManyMock(...args),
     },
     pipelineRun: {
       create: (...args: any[]) => pipelineRunCreateMock(...args),
@@ -125,6 +127,7 @@ function configureAgent3PrismaMocks(): void {
   claimDeleteManyDirectMock.mockResolvedValue({ count: 0 });
   claimCountMock.mockResolvedValue(0);
   artifactDeleteManyMock.mockResolvedValue({ count: 1 });
+  artifactUpdateManyMock.mockResolvedValue({ count: 1 });
   claimDeleteManyMock.mockImplementation(async (args: any) => {
     const token = args?.where?.token as string | undefined;
     if (!token) return { count: 0 };
@@ -163,6 +166,7 @@ function configureAgent3PrismaMocks(): void {
         pipelineArtifact: {
           create: (...args: any[]) => artifactCreateMock(...args),
           deleteMany: (...args: any[]) => artifactDeleteManyMock(...args),
+          updateMany: (...args: any[]) => artifactUpdateManyMock(...args),
         },
       });
     } catch (error) {
@@ -2732,9 +2736,11 @@ describe("Agent 3 browser fallback integration", () => {
       expect(articleUpdateManyMock).toHaveBeenCalledWith(expect.objectContaining({
         data: { enrichmentAttemptCount: { decrement: 1 } },
       }));
-      expect(artifactDeleteManyMock).toHaveBeenCalledWith(expect.objectContaining({
+      expect(artifactUpdateManyMock).toHaveBeenCalledWith(expect.objectContaining({
         where: expect.objectContaining({ artifactType: "article_enrichment_attempt", status: "ATTEMPTED" }),
+        data: expect.objectContaining({ status: "DEFERRED_GOVERNOR" }),
       }));
+      expect(artifactDeleteManyMock).not.toHaveBeenCalled();
       const finalArtifacts = artifactCreateMock.mock.calls.filter(
         (call: any[]) => call[0]?.data?.artifactType === "article_enrichment_result",
       );
